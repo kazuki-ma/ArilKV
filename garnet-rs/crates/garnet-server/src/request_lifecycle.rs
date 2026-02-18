@@ -2,7 +2,9 @@
 
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_common::ArgSlice;
+use std::collections::HashMap;
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 use tsavorite::{
     DeleteInfo, DeleteOperationStatus, HybridLogDeleteAdapter, HybridLogReadAdapter,
     HybridLogRmwAdapter, HybridLogUpsertAdapter, ISessionFunctions, ReadInfo, ReadOperationStatus,
@@ -33,6 +35,7 @@ impl From<TsavoriteKvInitError> for RequestProcessorInitError {
 
 pub struct RequestProcessor {
     store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
+    expirations: Mutex<HashMap<Vec<u8>, Instant>>,
     functions: KvSessionFunctions,
 }
 
@@ -40,6 +43,7 @@ impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
         Ok(Self {
             store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
+            expirations: Mutex::new(HashMap::new()),
             functions: KvSessionFunctions,
         })
     }
@@ -81,6 +85,8 @@ impl RequestProcessor {
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
+        self.expire_key_if_needed(&key)?;
+
         let mut store = self.store.lock().expect("store mutex poisoned");
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
@@ -117,6 +123,20 @@ impl RequestProcessor {
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
         let value = unsafe { args[2].as_slice() }.to_vec();
+        let options = parse_set_options(args)?;
+        self.expire_key_if_needed(&key)?;
+
+        if options.only_if_absent || options.only_if_present {
+            let exists = self.key_exists(&key)?;
+            if options.only_if_absent && exists {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            if options.only_if_present && !exists {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        }
 
         let mut store = self.store.lock().expect("store mutex poisoned");
         let mut session = store.session(&self.functions);
@@ -125,6 +145,18 @@ impl RequestProcessor {
         session
             .upsert(&key, &value, &mut output, &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
+        drop(session);
+        drop(store);
+
+        let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
+        match options.expiration {
+            Some(deadline) => {
+                expirations.insert(key, deadline);
+            }
+            None => {
+                expirations.remove(&key);
+            }
+        }
 
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -142,19 +174,35 @@ impl RequestProcessor {
             });
         }
 
+        let keys: Vec<Vec<u8>> = args[1..]
+            .iter()
+            .map(|arg| {
+                // SAFETY: caller guarantees argument backing memory validity.
+                unsafe { arg.as_slice() }.to_vec()
+            })
+            .collect();
+
+        for key in &keys {
+            self.expire_key_if_needed(key)?;
+        }
+
         let mut deleted = 0i64;
         let mut store = self.store.lock().expect("store mutex poisoned");
         let mut session = store.session(&self.functions);
-        for arg in &args[1..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { arg.as_slice() }.to_vec();
+        for key in keys {
             let mut info = DeleteInfo::default();
             let status = session
                 .delete(&key, &mut info)
                 .map_err(|_| RequestExecutionError::StorageFailure)?;
             match status {
                 DeleteOperationStatus::TombstonedInPlace
-                | DeleteOperationStatus::AppendedTombstone => deleted += 1,
+                | DeleteOperationStatus::AppendedTombstone => {
+                    deleted += 1;
+                    self.expirations
+                        .lock()
+                        .expect("expiration mutex poisoned")
+                        .remove(&key);
+                }
                 DeleteOperationStatus::NotFound => {}
                 DeleteOperationStatus::RetryLater => {
                     return Err(RequestExecutionError::StorageBusy);
@@ -181,6 +229,7 @@ impl RequestProcessor {
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
+        self.expire_key_if_needed(&key)?;
         let input = delta.to_string().into_bytes();
         let mut output = Vec::new();
         let mut info = RmwInfo::default();
@@ -251,6 +300,115 @@ impl RequestProcessor {
         append_bulk_string(response_out, unsafe { args[1].as_slice() });
         Ok(())
     }
+
+    fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut session = store.session(&self.functions);
+        let mut output = Vec::new();
+        let key_vec = key.to_vec();
+        let status = session
+            .read(&key_vec, &Vec::new(), &mut output, &ReadInfo::default())
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+
+        match status {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
+            ReadOperationStatus::NotFound => Ok(false),
+            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
+    }
+
+    fn expire_key_if_needed(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
+        let should_expire = {
+            let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
+            match expirations.get(key) {
+                Some(deadline) if *deadline <= Instant::now() => {
+                    expirations.remove(key);
+                    true
+                }
+                _ => false,
+            }
+        };
+
+        if !should_expire {
+            return Ok(());
+        }
+
+        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut session = store.session(&self.functions);
+        let mut info = DeleteInfo::default();
+        session
+            .delete(&key.to_vec(), &mut info)
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct SetOptions {
+    only_if_absent: bool,
+    only_if_present: bool,
+    expiration: Option<Instant>,
+}
+
+fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionError> {
+    let mut options = SetOptions::default();
+    let mut index = 3usize;
+
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let option = unsafe { args[index].as_slice() };
+
+        if ascii_eq_ignore_case(option, b"NX") {
+            if options.only_if_absent || options.only_if_present {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.only_if_absent = true;
+            index += 1;
+            continue;
+        }
+
+        if ascii_eq_ignore_case(option, b"XX") {
+            if options.only_if_absent || options.only_if_present {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.only_if_present = true;
+            index += 1;
+            continue;
+        }
+
+        if ascii_eq_ignore_case(option, b"EX") || ascii_eq_ignore_case(option, b"PX") {
+            if options.expiration.is_some() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            if index + 1 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+
+            // SAFETY: caller guarantees argument backing memory validity.
+            let value = unsafe { args[index + 1].as_slice() };
+            let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidExpireTime)?;
+            if amount == 0 {
+                return Err(RequestExecutionError::InvalidExpireTime);
+            }
+
+            let duration = if ascii_eq_ignore_case(option, b"EX") {
+                Duration::from_secs(amount)
+            } else {
+                Duration::from_millis(amount)
+            };
+            options.expiration = Some(
+                Instant::now()
+                    .checked_add(duration)
+                    .ok_or(RequestExecutionError::InvalidExpireTime)?,
+            );
+            index += 2;
+            continue;
+        }
+
+        return Err(RequestExecutionError::SyntaxError);
+    }
+
+    Ok(options)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,6 +418,8 @@ pub enum RequestExecutionError {
         expected: &'static str,
     },
     UnknownCommand,
+    SyntaxError,
+    InvalidExpireTime,
     StorageBusy,
     StorageFailure,
     ValueNotInteger,
@@ -273,6 +433,10 @@ impl RequestExecutionError {
                 &format!("ERR wrong number of arguments for '{}' command", command),
             ),
             Self::UnknownCommand => append_error(response_out, "ERR unknown command"),
+            Self::SyntaxError => append_error(response_out, "ERR syntax error"),
+            Self::InvalidExpireTime => {
+                append_error(response_out, "ERR invalid expire time in 'set' command")
+            }
             Self::StorageBusy => append_error(response_out, "ERR storage busy, retry later"),
             Self::StorageFailure => append_error(response_out, "ERR internal storage failure"),
             Self::ValueNotInteger => {
@@ -288,6 +452,24 @@ fn parse_i64_ascii(input: &[u8]) -> Option<i64> {
     }
     let text = core::str::from_utf8(input).ok()?;
     text.parse::<i64>().ok()
+}
+
+fn parse_u64_ascii(input: &[u8]) -> Option<u64> {
+    if input.is_empty() {
+        return None;
+    }
+    let text = core::str::from_utf8(input).ok()?;
+    text.parse::<u64>().ok()
+}
+
+fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
+    if input.len() != expected_upper.len() {
+        return false;
+    }
+    input
+        .iter()
+        .zip(expected_upper.iter())
+        .all(|(lhs, rhs)| lhs.to_ascii_uppercase() == *rhs)
 }
 
 fn append_simple_string(response_out: &mut Vec<u8>, value: &[u8]) {
@@ -535,6 +717,8 @@ impl HybridLogDeleteAdapter for KvSessionFunctions {
 mod tests {
     use super::*;
     use garnet_common::parse_resp_command_arg_slices;
+    use std::thread;
+    use std::time::Duration;
 
     #[test]
     fn executes_set_then_get_roundtrip() {
@@ -595,5 +779,75 @@ mod tests {
             .execute(&args[..del_meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b":1\r\n");
+    }
+
+    #[test]
+    fn set_supports_nx_and_xx_conditions() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 6];
+        let mut response = Vec::new();
+
+        let set_nx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nNX\r\n";
+        let meta = parse_resp_command_arg_slices(set_nx, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let set_nx_again = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$6\r\nvalue2\r\n$2\r\nNX\r\n";
+        let meta = parse_resp_command_arg_slices(set_nx_again, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let set_xx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$7\r\nupdated\r\n$2\r\nXX\r\n";
+        let meta = parse_resp_command_arg_slices(set_xx, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+    }
+
+    #[test]
+    fn set_with_px_expires_key() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set_px = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$2\r\n10\r\n";
+        let meta = parse_resp_command_arg_slices(set_px, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        thread::sleep(Duration::from_millis(20));
+
+        response.clear();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+    }
+
+    #[test]
+    fn set_returns_error_for_invalid_expire_time() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let invalid = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$1\r\n0\r\n";
+        let meta = parse_resp_command_arg_slices(invalid, &mut args).unwrap();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .err()
+            .unwrap();
+        err.append_resp_error(&mut response);
+        assert_eq!(response, b"-ERR invalid expire time in 'set' command\r\n");
     }
 }

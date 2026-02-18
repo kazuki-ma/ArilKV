@@ -291,10 +291,30 @@ mod tests {
         .await;
         send_and_expect(
             &mut client,
-            b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n",
-            b"$5\r\nvalue\r\n",
+            b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$6\r\nvalue2\r\n$2\r\nNX\r\n",
+            b"$-1\r\n",
         )
         .await;
+        send_and_expect(
+            &mut client,
+            b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$7\r\nupdated\r\n$2\r\nXX\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n",
+            b"$7\r\nupdated\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*5\r\n$3\r\nSET\r\n$3\r\nttl\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$2\r\n10\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        send_and_expect(&mut client, b"*2\r\n$3\r\nGET\r\n$3\r\nttl\r\n", b"$-1\r\n").await;
         send_and_expect(
             &mut client,
             b"*2\r\n$4\r\nINCR\r\n$7\r\ncounter\r\n",
