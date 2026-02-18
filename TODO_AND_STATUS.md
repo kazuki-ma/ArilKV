@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 6 — Basic Redis Commands
-> **Current Iteration**: 36
+> **Current Iteration**: 39
 
 ---
 
@@ -121,10 +121,10 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 6.1 | Implement `GET` command — full path from TCP to response | TODO | 5.6 | See doc 09. RESP parse → hash lookup → ConcurrentReader → RESP bulk string response. |
+| 6.1 | Implement `GET` command — full path from TCP to response | DONE | 5.6 | Wired GET through `request_lifecycle` and connection loop: RESP parse → dispatch → Tsavorite read → RESP bulk/null response, validated by TCP integration test. |
 | 6.2 | Implement `SET` command — upsert path | TODO | 5.6 | See doc 09. RESP parse → Upsert → `+OK\r\n` response. Handle EX/PX/NX/XX options. |
-| 6.3 | Implement `DEL` command — delete path | TODO | 5.6 | Delete → tombstone → `:1\r\n` or `:0\r\n`. |
-| 6.4 | Implement `INCR`/`DECR` commands — RMW path with in-place update | TODO | 5.6 | RMW → InPlaceUpdater (parse int, add 1, write back). Handle non-integer error. |
+| 6.3 | Implement `DEL` command — delete path | DONE | 5.6 | Added DEL execution path with tombstone-backed delete calls and integer reply count (`:n\r\n`) over TCP request lifecycle. |
+| 6.4 | Implement `INCR`/`DECR` commands — RMW path with in-place update | DONE | 5.6 | Added INCR/DECR via Tsavorite RMW callbacks (integer parse/add with overflow checks), including error response on non-integer values and TCP integration coverage. |
 | 6.5 | Implement `EXPIRE`/`TTL`/`PEXPIRE`/`PTTL` — expiration metadata | TODO | 6.2 | RecordInfo.HasExpiration flag + expiration timestamp in record. Background expiry scan. |
 | 6.6 | Implement `PING`/`ECHO`/`INFO`/`DBSIZE`/`COMMAND` — utility commands | TODO | 5.6 | Simple response generation. No storage interaction for PING/ECHO. |
 | 6.7 | Integration test: redis-cli compatibility | TODO | 6.1-6.6 | Start server, connect with `redis-cli`, run GET/SET/DEL/INCR/PING. |
@@ -226,6 +226,7 @@
 | 2026-02-18 | Implement command-name dispatch with fixed-length ASCII fast-path checks before falling back to a slower lookup branch. | Keeps hot command routing (`GET`/`SET`/`DEL`/`INCR`) branch-light while retaining extensibility for less frequent commands. |
 | 2026-02-18 | Build request lifecycle around a shared `RequestProcessor` that combines RESP parsing, command dispatch, Tsavorite-backed storage callbacks, and inline RESP encoding within the connection loop. | Delivers an end-to-end receive-to-send pipeline in Phase 5 while keeping parser/dispatch/storage responsibilities modular and testable. |
 | 2026-02-18 | Use property-based tests in RESP parser coverage to approximate fuzz-style input diversity without introducing a separate fuzzing harness yet. | Expands malformed/edge-case surface coverage immediately while keeping CI setup simple for the current phase. |
+| 2026-02-18 | Implement initial command handlers directly in `RequestProcessor` (GET/SET/DEL/INCR/DECR/PING/ECHO) on top of Tsavorite session callbacks before adding option-rich variants. | Enables immediate end-to-end TCP validation for core command flow while deferring option combinatorics (e.g., SET EX/PX/NX/XX) to dedicated follow-up work. |
 
 ---
 
@@ -277,3 +278,6 @@
 | 34 | 2026-02-18 | 5.6 | DONE | Added parse→dispatch→storage→response pipeline and integrated it into the TCP connection loop with partial-frame handling and protocol error responses. |
 | 35 | 2026-02-18 | 5.7 | DONE | Expanded RESP parser test suite with valid/invalid/partial scenarios and proptest-generated command frame roundtrip checks. |
 | 36 | 2026-02-18 | 5.8 | DONE | Finalized buffer-pool unit coverage for size-class selection, reuse/clear behavior, capacity overflow handling, and concurrent access invariants. |
+| 37 | 2026-02-18 | 6.1 | DONE | Implemented GET command full path from RESP/TCP input through Tsavorite read and RESP bulk/null output, with socket-level integration validation. |
+| 38 | 2026-02-18 | 6.3 | DONE | Implemented DEL command end-to-end using tombstone delete path and integer deleted-count response semantics. |
+| 39 | 2026-02-18 | 6.4 | DONE | Implemented INCR/DECR command path via Tsavorite RMW integer callbacks with correct integer/error RESP responses. |

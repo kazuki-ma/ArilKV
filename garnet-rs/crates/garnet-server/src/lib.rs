@@ -202,7 +202,7 @@ impl Drop for ConnectionLifecycle<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::io::AsyncWriteExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration, Instant};
 
@@ -266,6 +266,54 @@ mod tests {
         assert_eq!(metrics.accepted_connections(), 0);
     }
 
+    #[tokio::test]
+    async fn tcp_pipeline_executes_basic_crud_commands() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let metrics = Arc::new(ServerMetrics::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_metrics = Arc::clone(&metrics);
+        let server = tokio::spawn(async move {
+            run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n",
+            b"$5\r\nvalue\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$4\r\nINCR\r\n$7\r\ncounter\r\n",
+            b":1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$4\r\nINCR\r\n$7\r\ncounter\r\n",
+            b":2\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n", b":1\r\n").await;
+        send_and_expect(&mut client, b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n", b"$-1\r\n").await;
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+
     async fn wait_until<P>(mut predicate: P, timeout: Duration)
     where
         P: FnMut() -> bool,
@@ -277,5 +325,16 @@ mod tests {
             }
             sleep(Duration::from_millis(10)).await;
         }
+    }
+
+    async fn send_and_expect(client: &mut TcpStream, request: &[u8], expected_response: &[u8]) {
+        client.write_all(request).await.unwrap();
+
+        let mut actual = vec![0u8; expected_response.len()];
+        tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut actual))
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(actual, expected_response);
     }
 }
