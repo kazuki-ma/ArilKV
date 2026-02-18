@@ -80,6 +80,62 @@ impl RequestProcessor {
         }
     }
 
+    pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
+        if max_keys == 0 {
+            return Ok(0);
+        }
+
+        let now = Instant::now();
+        let expired_keys: Vec<Vec<u8>> = self
+            .expirations
+            .lock()
+            .expect("expiration mutex poisoned")
+            .iter()
+            .filter_map(|(key, deadline)| {
+                if *deadline <= now {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .take(max_keys)
+            .collect();
+
+        let mut removed = 0usize;
+        for key in expired_keys {
+            let status = {
+                let mut store = self.store.lock().expect("store mutex poisoned");
+                let mut session = store.session(&self.functions);
+                let mut info = DeleteInfo::default();
+                session
+                    .delete(&key, &mut info)
+                    .map_err(|_| RequestExecutionError::StorageFailure)?
+            };
+
+            self.expirations
+                .lock()
+                .expect("expiration mutex poisoned")
+                .remove(&key);
+            self.key_registry
+                .lock()
+                .expect("key registry mutex poisoned")
+                .remove(&key);
+
+            match status {
+                DeleteOperationStatus::TombstonedInPlace
+                | DeleteOperationStatus::AppendedTombstone => {
+                    removed += 1;
+                }
+                DeleteOperationStatus::NotFound => {}
+                DeleteOperationStatus::RetryLater => {
+                    return Err(RequestExecutionError::StorageBusy);
+                }
+            }
+        }
+
+        Ok(removed)
+    }
+
     fn handle_get(
         &self,
         args: &[ArgSlice],
@@ -1118,6 +1174,32 @@ mod tests {
         assert_eq!(response, b"+OK\r\n");
 
         thread::sleep(Duration::from_millis(20));
+
+        response.clear();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+    }
+
+    #[test]
+    fn expiration_scan_removes_expired_keys_in_background_style() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set_px = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$2\r\n10\r\n";
+        let meta = parse_resp_command_arg_slices(set_px, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        thread::sleep(Duration::from_millis(20));
+        let removed = processor.expire_stale_keys(16).unwrap();
+        assert_eq!(removed, 1);
 
         response.clear();
         let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";

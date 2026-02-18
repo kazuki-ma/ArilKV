@@ -50,7 +50,9 @@ async fn redis_cli_basic_command_compatibility() {
         "OK"
     );
     assert_eq!(
-        run_redis_cli(port, &["PEXPIRE", "pfoo", "0"]).await.unwrap(),
+        run_redis_cli(port, &["PEXPIRE", "pfoo", "0"])
+            .await
+            .unwrap(),
         "1"
     );
     assert_eq!(run_redis_cli(port, &["PTTL", "pfoo"]).await.unwrap(), "-2");

@@ -102,6 +102,15 @@ where
         )
     })?);
     let mut tasks = JoinSet::new();
+    let expiration_processor = Arc::clone(&processor);
+    let expiration_task = tokio::spawn(async move {
+        let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        loop {
+            interval.tick().await;
+            let _ = expiration_processor.expire_stale_keys(128);
+        }
+    });
     tokio::pin!(shutdown);
 
     loop {
@@ -127,6 +136,8 @@ where
 
     tasks.abort_all();
     while tasks.join_next().await.is_some() {}
+    expiration_task.abort();
+    let _ = expiration_task.await;
     Ok(())
 }
 
