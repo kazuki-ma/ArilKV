@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-18
-> **Current Phase**: Phase 5 — Network Layer
-> **Current Iteration**: 34
+> **Current Phase**: Phase 6 — Basic Redis Commands
+> **Current Iteration**: 36
 
 ---
 
@@ -110,8 +110,8 @@
 | 5.4 | Implement `ArgSlice` — 12-byte pointer+length reference to RESP argument | DONE | 5.3 | Added packed 12-byte `ArgSlice` in `garnet-common` with pointer/length accessors, conversion from byte slices, unsafe view reconstruction, layout tests, and RESP parser output support (`parse_resp_command_arg_slices`). |
 | 5.5 | Implement command dispatch — `match` on command byte pattern | DONE | 5.3 | Added `garnet-server::command_dispatch` with case-insensitive fast-path byte checks for GET/SET/DEL/INCR and fallback lookup for additional command names, including ArgSlice-based dispatch entrypoints and tests. |
 | 5.6 | Implement request lifecycle — parse → dispatch → storage op → response write → send | DONE | 5.1-5.5, 4.6 | Added `request_lifecycle` module with command execution over shared `TsavoriteKV`, RESP response builders, and connection-loop integration that parses frames, dispatches commands, executes storage ops, writes responses, and handles partial frames/protocol errors. |
-| 5.7 | Unit tests for RESP parser | TODO | 5.3 | Valid/invalid RESP parsing. Partial message handling. Fuzz with `cargo-fuzz`. |
-| 5.8 | Unit tests for buffer pool | TODO | 5.2 | Allocation/deallocation, pool exhaustion, size class selection. |
+| 5.7 | Unit tests for RESP parser | DONE | 5.3 | Added parser coverage for valid/invalid/partial RESP frames plus property-based generated bulk-argument roundtrip tests (fuzz-style input diversity) in `garnet-common::resp` tests. |
+| 5.8 | Unit tests for buffer pool | DONE | 5.2 | Added `LimitedFixedBufferPool` tests for allocation/reuse, clear-on-return behavior, level-full drop semantics, size-class mapping, and concurrent get/return capacity invariants. |
 
 ---
 
@@ -225,6 +225,7 @@
 | 2026-02-18 | Represent `ArgSlice` as a packed 12-byte pointer+length record and expose an unsafe `as_slice` view API for caller-controlled lifetime reconstruction. | Matches the documented compact layout target while keeping unsafe boundaries explicit at the conversion point. |
 | 2026-02-18 | Implement command-name dispatch with fixed-length ASCII fast-path checks before falling back to a slower lookup branch. | Keeps hot command routing (`GET`/`SET`/`DEL`/`INCR`) branch-light while retaining extensibility for less frequent commands. |
 | 2026-02-18 | Build request lifecycle around a shared `RequestProcessor` that combines RESP parsing, command dispatch, Tsavorite-backed storage callbacks, and inline RESP encoding within the connection loop. | Delivers an end-to-end receive-to-send pipeline in Phase 5 while keeping parser/dispatch/storage responsibilities modular and testable. |
+| 2026-02-18 | Use property-based tests in RESP parser coverage to approximate fuzz-style input diversity without introducing a separate fuzzing harness yet. | Expands malformed/edge-case surface coverage immediately while keeping CI setup simple for the current phase. |
 
 ---
 
@@ -274,3 +275,5 @@
 | 32 | 2026-02-18 | 5.4 | DONE | Added 12-byte `ArgSlice` representation and wired RESP parsing to produce pointer+length argument references without payload copies. |
 | 33 | 2026-02-18 | 5.5 | DONE | Added command dispatch module with hot-path byte-pattern matching and fallback command lookup, including ArgSlice-based command extraction tests. |
 | 34 | 2026-02-18 | 5.6 | DONE | Added parse→dispatch→storage→response pipeline and integrated it into the TCP connection loop with partial-frame handling and protocol error responses. |
+| 35 | 2026-02-18 | 5.7 | DONE | Expanded RESP parser test suite with valid/invalid/partial scenarios and proptest-generated command frame roundtrip checks. |
+| 36 | 2026-02-18 | 5.8 | DONE | Finalized buffer-pool unit coverage for size-class selection, reuse/clear behavior, capacity overflow handling, and concurrent access invariants. |

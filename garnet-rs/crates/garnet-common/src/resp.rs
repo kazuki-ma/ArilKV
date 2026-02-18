@@ -214,6 +214,7 @@ fn parse_i64_until_crlf(input: &[u8], start: usize) -> Result<(i64, usize), Resp
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn parses_resp_command_and_returns_zero_copy_slices() {
@@ -291,5 +292,33 @@ mod tests {
             err,
             RespParseError::ArgumentCapacityExceeded { .. }
         ));
+    }
+
+    proptest! {
+        #[test]
+        fn parser_roundtrips_generated_bulk_args(
+            args in prop::collection::vec(prop::collection::vec(any::<u8>(), 0..32), 1..8)
+        ) {
+            let mut frame = Vec::new();
+            frame.extend_from_slice(b"*");
+            frame.extend_from_slice(args.len().to_string().as_bytes());
+            frame.extend_from_slice(b"\r\n");
+            for arg in &args {
+                frame.extend_from_slice(b"$");
+                frame.extend_from_slice(arg.len().to_string().as_bytes());
+                frame.extend_from_slice(b"\r\n");
+                frame.extend_from_slice(arg);
+                frame.extend_from_slice(b"\r\n");
+            }
+
+            let mut out = [&b""[..]; 8];
+            let meta = parse_resp_command(&frame, &mut out).unwrap();
+            prop_assert_eq!(meta.argument_count, args.len());
+            prop_assert_eq!(meta.bytes_consumed, frame.len());
+
+            for (index, expected) in args.iter().enumerate() {
+                prop_assert_eq!(out[index], expected.as_slice());
+            }
+        }
     }
 }
