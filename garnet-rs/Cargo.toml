@@ -1,0 +1,27 @@
+[workspace]
+members = [
+    "crates/garnet-common",
+    "crates/tsavorite",
+    "crates/garnet-server",
+    "crates/garnet-cluster",
+    "crates/garnet-client",
+]
+resolver = "2"
+
+[workspace.package]
+edition = "2021"
+license = "MIT"
+version = "0.1.0"
+
+[workspace.dependencies]
+crossbeam-epoch = "0.9"
+crossbeam-utils = "0.8"
+parking_lot = "0.12"
+bytes = "1"
+tokio = { version = "1", features = ["full"] }
+mio = "1"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+thiserror = "2"
+criterion = "0.5"
+proptest = "1"
