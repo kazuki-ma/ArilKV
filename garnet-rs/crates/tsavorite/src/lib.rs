@@ -17,7 +17,7 @@ pub mod session_functions;
 pub mod tsavorite_kv;
 pub mod upsert_operation;
 
-pub use aof_log::{AofReader, AofWriter, AofWriterConfig};
+pub use aof_log::{compact_aof_file, AofReader, AofWriter, AofWriterConfig};
 pub use checkpoint_aof_coordinator::{
     CheckpointAofCoordinator, CheckpointAofCoordinatorError, RecoveryPlan,
 };

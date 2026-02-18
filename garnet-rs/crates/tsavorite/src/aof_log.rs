@@ -1,7 +1,7 @@
 //! Append-only file (AOF) primitives for durable operation logging.
 
 use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 
 const AOF_LENGTH_PREFIX_SIZE: usize = core::mem::size_of::<u32>();
@@ -69,6 +69,10 @@ impl AofWriter {
     pub fn pending_ops(&self) -> usize {
         self.pending_ops
     }
+
+    pub fn current_offset(&mut self) -> io::Result<u64> {
+        self.file.seek(SeekFrom::End(0))
+    }
 }
 
 pub struct AofReader {
@@ -116,6 +120,26 @@ fn read_one_record(file: &mut File) -> io::Result<Option<Vec<u8>>> {
     Ok(Some(operation))
 }
 
+pub fn compact_aof_file<P: AsRef<Path>, Q: AsRef<Path>>(
+    source_path: P,
+    destination_path: Q,
+    replay_from_offset: u64,
+) -> io::Result<u64> {
+    let mut source = OpenOptions::new().read(true).open(source_path)?;
+    let source_len = source.metadata()?.len();
+    let start = replay_from_offset.min(source_len);
+    source.seek(SeekFrom::Start(start))?;
+
+    let mut destination = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(destination_path)?;
+    let copied = io::copy(&mut source, &mut destination)?;
+    destination.sync_all()?;
+    Ok(copied)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -161,6 +185,24 @@ mod tests {
     }
 
     #[test]
+    fn current_offset_matches_written_aof_bytes() {
+        let path = temp_path("offset");
+        let mut writer = AofWriter::open(
+            &path,
+            AofWriterConfig {
+                flush_every_ops: 10,
+            },
+        )
+        .unwrap();
+        writer.append_operation(b"AAA").unwrap();
+        writer.append_operation(b"BBBB").unwrap();
+        let offset = writer.current_offset().unwrap();
+        assert_eq!(offset, (4 + 3 + 4 + 4) as u64);
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[test]
     fn tolerant_replay_ignores_truncated_tail_record() {
         let path = temp_path("truncated-tail");
         let mut bytes = Vec::new();
@@ -175,5 +217,26 @@ mod tests {
         assert_eq!(operations, vec![b"SET".to_vec()]);
 
         let _ = fs::remove_file(path);
+    }
+
+    #[test]
+    fn compact_aof_file_keeps_only_suffix_from_offset() {
+        let source = temp_path("compact-src");
+        let compacted = temp_path("compact-dst");
+        let mut writer = AofWriter::open(&source, AofWriterConfig { flush_every_ops: 1 }).unwrap();
+        writer.append_operation(b"SET a 1").unwrap();
+        writer.append_operation(b"SET b 2").unwrap();
+        writer.sync_all().unwrap();
+
+        let second_offset = (4 + b"SET a 1".len()) as u64;
+        let copied = compact_aof_file(&source, &compacted, second_offset).unwrap();
+        assert_eq!(copied, (4 + b"SET b 2".len()) as u64);
+
+        let mut reader = AofReader::open(&compacted).unwrap();
+        let operations = reader.replay_all_tolerant().unwrap();
+        assert_eq!(operations, vec![b"SET b 2".to_vec()]);
+
+        let _ = fs::remove_file(source);
+        let _ = fs::remove_file(compacted);
     }
 }

@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 8 — Checkpointing & AOF
-> **Current Iteration**: 58
+> **Current Iteration**: 59
 
 ---
 
@@ -156,7 +156,7 @@
 | 8.1 | Implement checkpoint state machine — fold-over and snapshot modes | DONE | 4.6, 1.3 | Added `checkpoint_state_machine` module with fold-over/snapshot modes, tokenized REST→PREPARE→IN_PROGRESS→WAIT_FLUSH→PERSISTENCE_CALLBACK→REST transitions, transition validation, TsavoriteKV facade APIs, and safe-epoch-gated wait-flush progression tests. |
 | 8.2 | Implement AOF writer — append-only log with TsavoriteLog | DONE | 2.5 | Added `aof_log` module with append-only writer (`AofWriter`) using length-prefixed operation records and configurable flush-by-operation-count policy, plus sync and unit coverage. |
 | 8.3 | Implement AOF replay — recovery from AOF | DONE | 8.2 | Added tolerant AOF record replay and server-side replay helpers (`replay_aof_file` / `replay_aof_operations`) that parse RESP operation frames and apply them through `RequestProcessor`, with unit coverage for roundtrip recovery and invalid-frame handling. |
-| 8.4 | Implement checkpoint + AOF coordination | IN_PROGRESS | 8.1, 8.2 | Added `CheckpointAofCoordinator` with active-checkpoint tracking, token validation, recovery-plan state (`durable_checkpoint_id` + `replay_from_aof_offset`), and completion/abort semantics; integration with concrete checkpoint persistence/truncation workflow is pending. |
+| 8.4 | Implement checkpoint + AOF coordination | IN_PROGRESS | 8.1, 8.2 | Added `CheckpointAofCoordinator` with active-checkpoint tracking, token validation, and recovery-plan state plus AOF compaction helper (`compact_aof_file`) for suffix retention after checkpoint; end-to-end checkpoint-triggered truncation wiring remains. |
 | 8.5 | Integration test: crash recovery | TODO | 8.4 | Insert data → checkpoint → more inserts → simulate crash → recover → verify all data. |
 
 ---
@@ -246,6 +246,7 @@
 | 2026-02-18 | Store AOF records as little-endian `u32` length prefix + raw operation payload and replay them with truncated-tail tolerance. | Keeps writer/reader format simple and sequential while allowing safe recovery from partially-written final records after crashes. |
 | 2026-02-18 | Encode AOF operations as full RESP command frames and reuse `RequestProcessor::execute` for replay application. | Avoids introducing a separate operation-decoder path and keeps replay behavior aligned with live command semantics. |
 | 2026-02-18 | Track checkpoint/AOF coordination in a dedicated state object (`CheckpointAofCoordinator`) that emits a recovery plan after checkpoint completion. | Separates orchestration state from storage and network layers, making checkpoint-token validation and replay-offset updates testable before full truncation integration. |
+| 2026-02-18 | Implement AOF compaction as copy-from-offset into a new file (`compact_aof_file`) instead of in-place prefix truncation. | In-place prefix removal is OS/filesystem dependent and riskier; rewrite-by-suffix is deterministic and aligns with checkpoint-completed replay windows. |
 
 ---
 
@@ -319,3 +320,4 @@
 | 56 | 2026-02-18 | 8.2-8.3 | IN_PROGRESS | Added append-only AOF writer with flush policy (`AofWriter`) and tolerant replay reader (`AofReader`) plus roundtrip/truncation tests; store-operation replay integration remains for full 8.3 completion. |
 | 57 | 2026-02-18 | 8.3 | DONE | Added `garnet-server` AOF replay utilities that parse RESP operation frames and apply them to `RequestProcessor`, with tests for successful recovery and invalid-frame failures. |
 | 58 | 2026-02-18 | 8.4 | IN_PROGRESS | Added `CheckpointAofCoordinator` to track active checkpoint token/ID and update replay offsets on completion, with coordinator-level tests for busy/token/abort flows; wiring into real checkpoint truncation lifecycle remains. |
+| 59 | 2026-02-18 | 8.4 | IN_PROGRESS | Added AOF offset introspection and suffix-compaction helper (`compact_aof_file`) with coverage for retained-tail replay behavior; checkpoint-completion-triggered invocation path remains to be integrated. |
