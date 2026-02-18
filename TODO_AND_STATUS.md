@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 6 — Basic Redis Commands
-> **Current Iteration**: 45
+> **Current Iteration**: 46
 
 ---
 
@@ -125,7 +125,7 @@
 | 6.2 | Implement `SET` command — upsert path | DONE | 5.6 | Extended SET path with option parsing for `NX`/`XX` and `EX`/`PX`, conditional write behavior (`$-1` on unmet condition), expiration bookkeeping, and invalid option/expire-time error handling. |
 | 6.3 | Implement `DEL` command — delete path | DONE | 5.6 | Added DEL execution path with tombstone-backed delete calls and integer reply count (`:n\r\n`) over TCP request lifecycle. |
 | 6.4 | Implement `INCR`/`DECR` commands — RMW path with in-place update | DONE | 5.6 | Added INCR/DECR via Tsavorite RMW callbacks (integer parse/add with overflow checks), including error response on non-integer values and TCP integration coverage. |
-| 6.5 | Implement `EXPIRE`/`TTL`/`PEXPIRE`/`PTTL` — expiration metadata | IN_PROGRESS | 6.2 | Added EXPIRE/TTL/PEXPIRE/PTTL command handlers and RESP routing over the existing in-memory deadline map (including missing-key codes and immediate-expire semantics) plus a periodic background expiry scan task in the TCP server; RecordInfo.HasExpiration persistence is still pending. |
+| 6.5 | Implement `EXPIRE`/`TTL`/`PEXPIRE`/`PTTL` — expiration metadata | IN_PROGRESS | 6.2 | Added EXPIRE/TTL/PEXPIRE/PTTL plus PERSIST command handling over the existing in-memory deadline map, including missing-key/immediate-expire semantics and a periodic background expiry scan task in the TCP server; RecordInfo.HasExpiration persistence is still pending. |
 | 6.6 | Implement `PING`/`ECHO`/`INFO`/`DBSIZE`/`COMMAND` — utility commands | DONE | 5.6 | Added utility command handlers in `RequestProcessor` with RESP responses for PING/ECHO and dynamic INFO/DBSIZE/COMMAND output, plus unit/TCP integration coverage. |
 | 6.7 | Integration test: redis-cli compatibility | DONE | 6.1-6.6 | Added `garnet-server/tests/redis_cli_compat.rs` that boots the server, executes PING/SET/GET/INCR/DEL via `redis-cli`, and verifies compatibility outputs. |
 | 6.8 | Benchmark: GET/SET throughput and latency | DONE | 6.1, 6.2 | Added Criterion benchmark target `garnet-server/benches/redis_command_path.rs` for request-processor GET/SET hot-path throughput; benchmark target builds with `cargo bench --no-run`. |
@@ -233,6 +233,7 @@
 | 2026-02-18 | Benchmark command handling at the `RequestProcessor` layer with Criterion to isolate command-path overhead from transport variability. | Provides stable, repeatable GET/SET throughput baselines before adding full socket-level benchmarking. |
 | 2026-02-18 | Implement EXPIRE/TTL/PEXPIRE/PTTL semantics in `RequestProcessor` using the existing in-memory deadline map before RecordInfo-backed expiry metadata is available. | Unlocks wire-compatible expiration command coverage in Phase 6 while keeping metadata migration isolated to the remaining 6.5 work. |
 | 2026-02-18 | Run a lightweight periodic expiration sweep (`expire_stale_keys`) in a background Tokio task alongside the accept loop. | Reduces reliance on pure lazy-expiration access paths while preserving the current request-layer deadline map architecture. |
+| 2026-02-18 | Add `PERSIST` command support to remove per-key expiration deadlines and surface TTL state transitions (`-1` after persistence). | Completes the practical deadline-lifecycle control path for in-memory expiration management while 6.5 metadata migration remains open. |
 
 ---
 
@@ -293,3 +294,4 @@
 | 43 | 2026-02-18 | 6.8 | DONE | Added and validated Criterion benchmark target for GET/SET request-path throughput measurement in `garnet-server`. |
 | 44 | 2026-02-18 | 6.5 | IN_PROGRESS | Added EXPIRE/TTL/PEXPIRE/PTTL dispatch + handlers, extended utility command registry output, and added unit/TCP/redis-cli coverage using the temporary deadline map; RecordInfo metadata + background scan remain to complete 6.5. |
 | 45 | 2026-02-18 | 6.5 | IN_PROGRESS | Added `RequestProcessor::expire_stale_keys` plus a periodic server-side expiration sweep task and unit coverage for scan-based eviction; RecordInfo-backed expiration metadata integration remains outstanding. |
+| 46 | 2026-02-18 | 6.5 | IN_PROGRESS | Added PERSIST command dispatch/handling plus unit/TCP/redis-cli coverage and updated COMMAND output; RecordInfo-backed expiration metadata integration remains outstanding. |

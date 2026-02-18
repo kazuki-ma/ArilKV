@@ -71,6 +71,7 @@ impl RequestProcessor {
             CommandId::Ttl => self.handle_ttl(args, response_out),
             CommandId::Pexpire => self.handle_pexpire(args, response_out),
             CommandId::Pttl => self.handle_pttl(args, response_out),
+            CommandId::Persist => self.handle_persist(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -508,6 +509,36 @@ impl RequestProcessor {
         Ok(())
     }
 
+    fn handle_persist(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "PERSIST",
+                expected: "PERSIST key",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        self.expire_key_if_needed(&key)?;
+        if !self.key_exists(&key)? {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        let removed = self
+            .expirations
+            .lock()
+            .expect("expiration mutex poisoned")
+            .remove(&key)
+            .is_some();
+        append_integer(response_out, if removed { 1 } else { 0 });
+        Ok(())
+    }
+
     fn handle_ping(
         &self,
         args: &[ArgSlice],
@@ -597,7 +628,7 @@ impl RequestProcessor {
             response_out,
             &[
                 b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"EXPIRE", b"TTL", b"PEXPIRE", b"PTTL",
-                b"PING", b"ECHO", b"INFO", b"DBSIZE", b"COMMAND",
+                b"PERSIST", b"PING", b"ECHO", b"INFO", b"DBSIZE", b"COMMAND",
             ],
         );
         Ok(())
@@ -1131,6 +1162,44 @@ mod tests {
     }
 
     #[test]
+    fn key_can_be_recreated_after_delete() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 3];
+        let mut response = Vec::new();
+
+        let set_first = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set_first, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let del = b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let set_second = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$7\r\nupdated\r\n";
+        let meta = parse_resp_command_arg_slices(set_second, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$7\r\nupdated\r\n");
+    }
+
+    #[test]
     fn set_supports_nx_and_xx_conditions() {
         let processor = RequestProcessor::new().unwrap();
         let mut args = [ArgSlice::EMPTY; 6];
@@ -1344,6 +1413,51 @@ mod tests {
             response,
             b"-ERR value is not an integer or out of range\r\n"
         );
+    }
+
+    #[test]
+    fn persist_removes_existing_expiration() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set_px = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$4\r\n1000\r\n";
+        let meta = parse_resp_command_arg_slices(set_px, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let persist = b"*2\r\n$7\r\nPERSIST\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(persist, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":-1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(persist, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
+
+        response.clear();
+        let persist_missing = b"*2\r\n$7\r\nPERSIST\r\n$7\r\nmissing\r\n";
+        let meta = parse_resp_command_arg_slices(persist_missing, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
     }
 
     #[test]

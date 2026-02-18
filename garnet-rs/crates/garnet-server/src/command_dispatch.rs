@@ -15,6 +15,7 @@ pub enum CommandId {
     Ttl,
     Pexpire,
     Pttl,
+    Persist,
     Ping,
     Echo,
     Info,
@@ -74,6 +75,9 @@ fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     }
     if is_ascii_eq_4(command, b"PTTL") {
         return CommandId::Pttl;
+    }
+    if is_ascii_eq_7(command, b"PERSIST") {
+        return CommandId::Persist;
     }
     if is_ascii_eq_4(command, b"PING") {
         return CommandId::Ping;
@@ -162,6 +166,7 @@ mod tests {
         assert_eq!(dispatch_command_name(b"ttl"), CommandId::Ttl);
         assert_eq!(dispatch_command_name(b"pexpire"), CommandId::Pexpire);
         assert_eq!(dispatch_command_name(b"PTTL"), CommandId::Pttl);
+        assert_eq!(dispatch_command_name(b"persist"), CommandId::Persist);
     }
 
     #[test]
