@@ -17,7 +17,10 @@ pub use hash_bucket_entry::{
     PENDING_BIT_MASK, PENDING_BIT_SHIFT, READ_CACHE_BIT_MASK, READ_CACHE_BIT_SHIFT, TAG_BITS,
     TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
 };
-pub use hybrid_log::{LogicalAddress, Page, PageAddressSpace, PageManager, PageManagerError};
+pub use hybrid_log::{
+    LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page, PageAddressSpace,
+    PageManager, PageManagerError,
+};
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
 };

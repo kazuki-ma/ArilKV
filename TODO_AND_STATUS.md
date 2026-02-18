@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 2 — Hybrid Log Allocator
-> **Current Iteration**: 9
+> **Current Iteration**: 10
 
 ---
 
@@ -58,7 +58,7 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 2.1 | Implement page management — allocate/flush/evict pages, logical address space (page + offset) | DONE | 1.6 | Added `hybrid_log::PageManager` and `PageAddressSpace` with logical address encode/decode, page allocation, flush/eviction checks, and page-local read/write APIs plus lifecycle tests. |
-| 2.2 | Implement log address pointers — TailAddress, ReadOnlyAddress, SafeReadOnlyAddress, HeadAddress, SafeHeadAddress, BeginAddress | TODO | 2.1 | See doc 02. AtomicU64 for each. Monotonically increasing. Fuzzy region between ReadOnly and SafeReadOnly. |
+| 2.2 | Implement log address pointers — TailAddress, ReadOnlyAddress, SafeReadOnlyAddress, HeadAddress, SafeHeadAddress, BeginAddress | DONE | 2.1 | Added `LogAddressPointers` with `AtomicU64` fields for all six pointers, monotonic shift APIs, tail `fetch_add`, and snapshot/test coverage for non-regressing pointer movement. |
 | 2.3 | Implement lock-free tail allocation — `AtomicU64::fetch_add` for log append | TODO | 2.2 | See doc 02. CAS loop for page boundary crossing. Seal current page, allocate new page, retry. |
 | 2.4 | Implement record format — RecordInfo + key SpanByte + value SpanByte, variable-length records | TODO | 1.1, 1.2, 2.1 | See doc 06. Record = RecordInfo (8B) + key length (4B) + key data + padding + value length (4B) + value data + padding. 8-byte alignment. |
 | 2.5 | Implement page I/O — read/write pages to storage device abstraction | TODO | 2.1 | See doc 02. `IDevice` trait with `ReadAsync`/`WriteAsync`. Start with in-memory device for testing. |
@@ -201,6 +201,7 @@
 | 2026-02-18 | Use property-based tests (`proptest`) for SpanByte serialized roundtrip behavior in addition to deterministic unit tests. | Catches edge-case payload combinations while preserving explicit regression tests for layout/flag rules. |
 | 2026-02-18 | Place Phase 1 hot-path Criterion benchmarks under `tsavorite/benches` instead of workspace root. | The workspace root is virtual (no root package), so benchmark targets must live in an actual crate. |
 | 2026-02-18 | Introduce a dedicated `PageAddressSpace` helper for logical address encoding/decoding and reuse it through `PageManager`. | Keeps address math centralized and explicit for later Tail/Head pointer work in Phase 2. |
+| 2026-02-18 | Centralize region-boundary pointers in `LogAddressPointers` and expose only monotonic shift operations. | Enforces one-way address movement invariants by construction and simplifies future checkpoint/fuzzy-region logic. |
 
 ---
 
@@ -225,3 +226,4 @@
 | 7 | 2026-02-18 | 1.6 | DONE | Completed Phase 1 unit-test coverage, including proptest roundtrip checks for SpanByte and behavior tests for RecordInfo/LightEpoch/HashBucketEntry/HashBucket. |
 | 8 | 2026-02-18 | 1.7 | DONE | Added and validated Criterion benchmarks for core Phase 1 operations (`cargo bench -p tsavorite --bench phase1_hotpath --no-run`). |
 | 9 | 2026-02-18 | 2.1 | DONE | Added initial hybrid-log page manager with logical-address mapping plus allocate/flush/evict lifecycle and bounds-checked page I/O helpers. |
+| 10 | 2026-02-18 | 2.2 | DONE | Added atomic log-region pointer set (`Tail/RO/SafeRO/Head/SafeHead/Begin`) with monotonic updates and snapshot helpers. |
