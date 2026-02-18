@@ -470,6 +470,26 @@ mod tests {
             *output = new_value.clone();
             true
         }
+
+        fn single_deleter(
+            &self,
+            _key: &Self::Key,
+            _value: &mut Self::Value,
+            _delete_info: &mut crate::DeleteInfo,
+            _record_info: &mut RecordInfo,
+        ) -> bool {
+            false
+        }
+
+        fn concurrent_deleter(
+            &self,
+            _key: &Self::Key,
+            _value: &mut Self::Value,
+            _delete_info: &mut crate::DeleteInfo,
+            _record_info: &mut RecordInfo,
+        ) -> bool {
+            false
+        }
     }
 
     impl HybridLogRmwAdapter for ByteRmwFunctions {

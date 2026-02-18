@@ -22,6 +22,12 @@ pub struct RmwInfo {
     pub user_data: u8,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeleteInfo {
+    pub logical_address: u64,
+    pub user_data: u8,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WriteReason {
     Insert,
@@ -101,6 +107,22 @@ pub trait ISessionFunctions {
         new_value: &mut Self::Value,
         output: &mut Self::Output,
         rmw_info: &mut RmwInfo,
+        record_info: &mut RecordInfo,
+    ) -> bool;
+
+    fn single_deleter(
+        &self,
+        key: &Self::Key,
+        value: &mut Self::Value,
+        delete_info: &mut DeleteInfo,
+        record_info: &mut RecordInfo,
+    ) -> bool;
+
+    fn concurrent_deleter(
+        &self,
+        key: &Self::Key,
+        value: &mut Self::Value,
+        delete_info: &mut DeleteInfo,
         record_info: &mut RecordInfo,
     ) -> bool;
 }
@@ -213,6 +235,32 @@ mod tests {
             record_info.set_modified(true);
             true
         }
+
+        fn single_deleter(
+            &self,
+            _key: &Self::Key,
+            value: &mut Self::Value,
+            delete_info: &mut DeleteInfo,
+            record_info: &mut RecordInfo,
+        ) -> bool {
+            *value = 0;
+            delete_info.user_data = 5;
+            record_info.set_tombstone();
+            true
+        }
+
+        fn concurrent_deleter(
+            &self,
+            _key: &Self::Key,
+            value: &mut Self::Value,
+            delete_info: &mut DeleteInfo,
+            record_info: &mut RecordInfo,
+        ) -> bool {
+            *value = 0;
+            delete_info.user_data = 6;
+            record_info.set_tombstone();
+            true
+        }
     }
 
     #[test]
@@ -226,6 +274,7 @@ mod tests {
         let read_info = ReadInfo::default();
         let mut upsert_info = UpsertInfo::default();
         let mut rmw_info = RmwInfo::default();
+        let mut delete_info = DeleteInfo::default();
         let mut record_info = RecordInfo::default();
 
         assert!(functions.single_reader(&key, &input, &src, &mut output, &read_info));
@@ -291,5 +340,15 @@ mod tests {
         ));
         assert_eq!(dst, 113);
         assert_eq!(rmw_info.user_data, 4);
+
+        assert!(functions.single_deleter(&key, &mut dst, &mut delete_info, &mut record_info));
+        assert_eq!(dst, 0);
+        assert_eq!(delete_info.user_data, 5);
+        assert!(record_info.tombstone());
+
+        record_info.clear_tombstone();
+        assert!(functions.concurrent_deleter(&key, &mut dst, &mut delete_info, &mut record_info));
+        assert_eq!(delete_info.user_data, 6);
+        assert!(record_info.tombstone());
     }
 }

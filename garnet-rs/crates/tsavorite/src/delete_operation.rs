@@ -1,18 +1,15 @@
-//! Upsert operation path over hash index + hybrid log records.
+//! Delete operation path that materializes tombstones.
 //!
-//! See [Doc 06 Section 2.12] for mutable in-place write vs. copy-update flow.
+//! See [Doc 06 Section 2.12] for mutable in-place delete vs. tombstone append behavior.
 
 use crate::hybrid_log::{
     parse_key_span, parse_record_info, parse_record_layout, parse_value_span, write_record,
     LogAddressPointers, LogicalAddress, PageManager, PageManagerError, RecordFormatError,
 };
-use crate::{
-    FindOrCreateTagStatus, HashIndex, HashIndexError, ISessionFunctions, RecordInfo, UpsertInfo,
-    WriteReason,
-};
+use crate::{DeleteInfo, HashIndex, HashIndexError, ISessionFunctions, RecordInfo};
 use garnet_common::SpanByteError;
 
-pub trait HybridLogUpsertAdapter: ISessionFunctions {
+pub trait HybridLogDeleteAdapter: ISessionFunctions {
     fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool;
     fn key_to_record_bytes(&self, key: &Self::Key) -> Vec<u8>;
     fn value_from_record(&self, record_value: &[u8]) -> Self::Value;
@@ -20,14 +17,15 @@ pub trait HybridLogUpsertAdapter: ISessionFunctions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum UpsertOperationStatus {
-    InPlaceUpdated,
-    CopiedToTail,
-    Inserted,
+pub enum DeleteOperationStatus {
+    TombstonedInPlace,
+    AppendedTombstone,
+    NotFound,
+    RetryLater,
 }
 
 #[derive(Debug)]
-pub enum UpsertOperationError {
+pub enum DeleteOperationError {
     HashIndex(HashIndexError),
     PageManager(PageManagerError),
     RecordFormat(RecordFormatError),
@@ -40,7 +38,7 @@ pub enum UpsertOperationError {
     OperationCancelled,
 }
 
-impl core::fmt::Display for UpsertOperationError {
+impl core::fmt::Display for DeleteOperationError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::HashIndex(inner) => inner.fmt(f),
@@ -58,38 +56,38 @@ impl core::fmt::Display for UpsertOperationError {
                     record_size, page_size
                 )
             }
-            Self::OperationCancelled => write!(f, "session function cancelled upsert operation"),
+            Self::OperationCancelled => write!(f, "session function cancelled delete operation"),
         }
     }
 }
 
-impl std::error::Error for UpsertOperationError {}
+impl std::error::Error for DeleteOperationError {}
 
-impl From<HashIndexError> for UpsertOperationError {
+impl From<HashIndexError> for DeleteOperationError {
     fn from(value: HashIndexError) -> Self {
         Self::HashIndex(value)
     }
 }
 
-impl From<PageManagerError> for UpsertOperationError {
+impl From<PageManagerError> for DeleteOperationError {
     fn from(value: PageManagerError) -> Self {
         Self::PageManager(value)
     }
 }
 
-impl From<RecordFormatError> for UpsertOperationError {
+impl From<RecordFormatError> for DeleteOperationError {
     fn from(value: RecordFormatError) -> Self {
         Self::RecordFormat(value)
     }
 }
 
-impl From<SpanByteError> for UpsertOperationError {
+impl From<SpanByteError> for DeleteOperationError {
     fn from(value: SpanByteError) -> Self {
         Self::SpanByte(value)
     }
 }
 
-pub struct UpsertOperationContext<'a> {
+pub struct DeleteOperationContext<'a> {
     pub hash_index: &'a HashIndex,
     pub page_manager: &'a mut PageManager,
     pub pointers: &'a LogAddressPointers,
@@ -102,145 +100,80 @@ struct MaterializedRecord {
     allocated_size: usize,
 }
 
-pub fn upsert<F>(
-    context: &mut UpsertOperationContext<'_>,
+pub fn delete<F>(
+    context: &mut DeleteOperationContext<'_>,
     functions: &F,
     key_hash: u64,
     key: &F::Key,
-    input: &F::Input,
-    output: &mut F::Output,
-    upsert_info: &mut UpsertInfo,
-) -> Result<UpsertOperationStatus, UpsertOperationError>
+    delete_info: &mut DeleteInfo,
+) -> Result<DeleteOperationStatus, DeleteOperationError>
 where
-    F: HybridLogUpsertAdapter,
+    F: HybridLogDeleteAdapter,
     F::Value: Clone + Default,
 {
-    let key_bytes = functions.key_to_record_bytes(key);
-    let maybe_head_entry = context.hash_index.find_tag_entry(key_hash);
-    let mut previous_address = 0u64;
-    let mut matched_address = None;
-    let mut matched_record = None;
-
-    if let Some(head_entry) = maybe_head_entry {
-        previous_address = entry_address(head_entry.word);
-
-        if previous_address != 0 {
-            if let Some((address, record)) = find_matching_record_in_chain(
-                context.page_manager,
-                context.pointers.begin_address(),
-                functions,
-                key,
-                previous_address,
-            )? {
-                matched_address = Some(address);
-                matched_record = Some(record);
-            }
-        }
-    }
-
-    if let (Some(address), Some(record), Some(head_entry)) =
-        (matched_address, matched_record, maybe_head_entry)
-    {
-        if address >= context.pointers.read_only_address() {
-            let old_value = functions.value_from_record(&record.value_bytes);
-            let mut new_value = old_value.clone();
-            let mut updated_record_info = record.record_info;
-            if functions.concurrent_writer(
-                key,
-                input,
-                &old_value,
-                &mut new_value,
-                output,
-                upsert_info,
-                &mut updated_record_info,
-            ) {
-                let new_value_bytes = functions.value_to_record_bytes(&new_value);
-                if new_value_bytes.len() == record.value_bytes.len() {
-                    rewrite_record(
-                        context.page_manager,
-                        LogicalAddress(address),
-                        &key_bytes,
-                        &new_value_bytes,
-                        updated_record_info,
-                        record.allocated_size,
-                    )?;
-                    return Ok(UpsertOperationStatus::InPlaceUpdated);
-                }
-            }
-        }
-
-        let old_value = functions.value_from_record(&record.value_bytes);
-        let mut new_value = old_value.clone();
-        let mut new_record_info = RecordInfo::default();
-        new_record_info.set_valid(true);
-        new_record_info.set_previous_address(address);
-        if !functions.single_writer(
-            key,
-            input,
-            &old_value,
-            &mut new_value,
-            output,
-            upsert_info,
-            WriteReason::CopyUpdate,
-            &mut new_record_info,
-        ) {
-            return Err(UpsertOperationError::OperationCancelled);
-        }
-
-        let new_value_bytes = functions.value_to_record_bytes(&new_value);
-        let new_address = append_record(
-            context.page_manager,
-            context.pointers,
-            &key_bytes,
-            &new_value_bytes,
-            new_record_info,
-        )?;
-        let updated = context
-            .hash_index
-            .compare_exchange_entry_address(&head_entry, new_address)?;
-        if !updated {
-            return Err(UpsertOperationError::CompareExchangeConflict);
-        }
-
-        return Ok(UpsertOperationStatus::CopiedToTail);
-    }
-
-    let head_entry = if let Some(entry) = maybe_head_entry {
-        entry
-    } else {
-        let result = context
-            .hash_index
-            .find_or_create_tag(key_hash, context.pointers.begin_address())?;
-        if result.status != FindOrCreateTagStatus::Created
-            && result.status != FindOrCreateTagStatus::FoundExisting
-        {
-            return Err(UpsertOperationError::OperationCancelled);
-        }
-        context
-            .hash_index
-            .find_tag_entry(key_hash)
-            .ok_or(UpsertOperationError::OperationCancelled)?
+    let head_entry = match context.hash_index.find_tag_entry(key_hash) {
+        Some(entry) => entry,
+        None => return Ok(DeleteOperationStatus::NotFound),
     };
 
-    let src_value = F::Value::default();
-    let mut dst_value = F::Value::default();
-    let mut new_record_info = RecordInfo::default();
-    new_record_info.set_valid(true);
-    new_record_info.set_previous_address(previous_address);
-    if !functions.single_writer(
-        key,
-        input,
-        &src_value,
-        &mut dst_value,
-        output,
-        upsert_info,
-        WriteReason::Insert,
-        &mut new_record_info,
-    ) {
-        return Err(UpsertOperationError::OperationCancelled);
+    let head_address = entry_address(head_entry.word);
+    if head_address == 0 {
+        return Ok(DeleteOperationStatus::NotFound);
     }
 
-    let value_bytes = functions.value_to_record_bytes(&dst_value);
+    let (matched_address, matched_record) = match find_matching_record_in_chain(
+        context.page_manager,
+        context.pointers.begin_address(),
+        functions,
+        key,
+        head_address,
+    )? {
+        Some(found) => found,
+        None => return Ok(DeleteOperationStatus::NotFound),
+    };
+
+    if matched_record.record_info.is_closed() {
+        return Ok(DeleteOperationStatus::RetryLater);
+    }
+    if matched_record.record_info.tombstone() || matched_record.record_info.invalid() {
+        return Ok(DeleteOperationStatus::NotFound);
+    }
+
+    let key_bytes = functions.key_to_record_bytes(key);
+    if matched_address >= context.pointers.read_only_address() {
+        let mut value = functions.value_from_record(&matched_record.value_bytes);
+        let mut updated_record_info = matched_record.record_info;
+        if functions.concurrent_deleter(key, &mut value, delete_info, &mut updated_record_info) {
+            updated_record_info.set_tombstone();
+            let mut value_bytes = functions.value_to_record_bytes(&value);
+            if value_bytes.len() != matched_record.value_bytes.len() {
+                value_bytes = matched_record.value_bytes.clone();
+            }
+            rewrite_record(
+                context.page_manager,
+                LogicalAddress(matched_address),
+                &key_bytes,
+                &value_bytes,
+                updated_record_info,
+                matched_record.allocated_size,
+            )?;
+            return Ok(DeleteOperationStatus::TombstonedInPlace);
+        } else {
+            return Ok(DeleteOperationStatus::RetryLater);
+        }
+    }
+
+    let mut value = functions.value_from_record(&matched_record.value_bytes);
+    let mut new_record_info = RecordInfo::default();
+    new_record_info.set_valid(true);
+    new_record_info.set_tombstone();
+    new_record_info.set_previous_address(matched_address);
+
+    if !functions.single_deleter(key, &mut value, delete_info, &mut new_record_info) {
+        return Err(DeleteOperationError::OperationCancelled);
+    }
+
+    let value_bytes = functions.value_to_record_bytes(&value);
     let new_address = append_record(
         context.page_manager,
         context.pointers,
@@ -252,9 +185,10 @@ where
         .hash_index
         .compare_exchange_entry_address(&head_entry, new_address)?;
     if !updated {
-        return Err(UpsertOperationError::CompareExchangeConflict);
+        return Err(DeleteOperationError::CompareExchangeConflict);
     }
-    Ok(UpsertOperationStatus::Inserted)
+
+    Ok(DeleteOperationStatus::AppendedTombstone)
 }
 
 fn entry_address(word: u64) -> u64 {
@@ -267,9 +201,9 @@ fn find_matching_record_in_chain<F>(
     functions: &F,
     key: &F::Key,
     mut current_address: u64,
-) -> Result<Option<(u64, MaterializedRecord)>, UpsertOperationError>
+) -> Result<Option<(u64, MaterializedRecord)>, DeleteOperationError>
 where
-    F: HybridLogUpsertAdapter,
+    F: HybridLogDeleteAdapter,
 {
     while current_address != 0 && current_address >= begin_address {
         let record = materialize_record_at(page_manager, LogicalAddress(current_address))?;
@@ -284,7 +218,7 @@ where
 fn materialize_record_at(
     page_manager: &mut PageManager,
     logical: LogicalAddress,
-) -> Result<MaterializedRecord, UpsertOperationError> {
+) -> Result<MaterializedRecord, DeleteOperationError> {
     let page_space = page_manager.address_space();
     let (_, page_offset) = page_space.decode(logical);
     let page_offset = page_offset as usize;
@@ -308,11 +242,11 @@ fn rewrite_record(
     value_bytes: &[u8],
     record_info: RecordInfo,
     expected_allocated_size: usize,
-) -> Result<(), UpsertOperationError> {
+) -> Result<(), DeleteOperationError> {
     let mut record = vec![0u8; expected_allocated_size];
     let layout = write_record(&mut record, record_info, key_bytes, value_bytes)?;
     if layout.allocated_size != expected_allocated_size {
-        return Err(UpsertOperationError::OperationCancelled);
+        return Err(DeleteOperationError::OperationCancelled);
     }
     page_manager.write_at(address, &record)?;
     Ok(())
@@ -324,12 +258,12 @@ fn append_record(
     key_bytes: &[u8],
     value_bytes: &[u8],
     record_info: RecordInfo,
-) -> Result<u64, UpsertOperationError> {
+) -> Result<u64, DeleteOperationError> {
     let mut record = vec![0u8; 1024];
     let layout = write_record(&mut record, record_info, key_bytes, value_bytes)?;
     let allocated_size = layout.allocated_size;
     if allocated_size > page_manager.page_size() {
-        return Err(UpsertOperationError::RecordTooLarge {
+        return Err(DeleteOperationError::RecordTooLarge {
             record_size: allocated_size,
             page_size: page_manager.page_size(),
         });
@@ -344,7 +278,7 @@ fn reserve_tail_space(
     page_manager: &mut PageManager,
     pointers: &LogAddressPointers,
     allocated_size: usize,
-) -> Result<LogicalAddress, UpsertOperationError> {
+) -> Result<LogicalAddress, DeleteOperationError> {
     loop {
         let old_tail = pointers.advance_tail_by(allocated_size as u64);
         let logical = LogicalAddress(old_tail);
@@ -374,11 +308,14 @@ mod tests {
     use crate::read_operation::{
         read, HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus,
     };
-    use crate::{ReadInfo, RmwInfo};
+    use crate::{
+        upsert, DeleteInfo, HybridLogUpsertAdapter, ReadInfo, RmwInfo, UpsertInfo,
+        UpsertOperationContext, UpsertOperationStatus, WriteReason,
+    };
 
-    struct ByteUpsertFunctions;
+    struct ByteDeleteFunctions;
 
-    impl ISessionFunctions for ByteUpsertFunctions {
+    impl ISessionFunctions for ByteDeleteFunctions {
         type Key = Vec<u8>;
         type Value = Vec<u8>;
         type Input = Vec<u8>;
@@ -394,7 +331,7 @@ mod tests {
             _input: &Self::Input,
             value: &Self::Value,
             output: &mut Self::Output,
-            _read_info: &crate::ReadInfo,
+            _read_info: &ReadInfo,
         ) -> bool {
             *output = value.clone();
             true
@@ -406,7 +343,7 @@ mod tests {
             _input: &Self::Input,
             value: &Self::Value,
             output: &mut Self::Output,
-            _read_info: &crate::ReadInfo,
+            _read_info: &ReadInfo,
             _record_info: &RecordInfo,
         ) -> bool {
             *output = value.clone();
@@ -472,25 +409,27 @@ mod tests {
         fn single_deleter(
             &self,
             _key: &Self::Key,
-            _value: &mut Self::Value,
-            _delete_info: &mut crate::DeleteInfo,
+            value: &mut Self::Value,
+            _delete_info: &mut DeleteInfo,
             _record_info: &mut RecordInfo,
         ) -> bool {
-            false
+            value.clear();
+            true
         }
 
         fn concurrent_deleter(
             &self,
             _key: &Self::Key,
-            _value: &mut Self::Value,
-            _delete_info: &mut crate::DeleteInfo,
+            value: &mut Self::Value,
+            _delete_info: &mut DeleteInfo,
             _record_info: &mut RecordInfo,
         ) -> bool {
-            false
+            value.clear();
+            true
         }
     }
 
-    impl HybridLogUpsertAdapter for ByteUpsertFunctions {
+    impl HybridLogDeleteAdapter for ByteDeleteFunctions {
         fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
             requested_key.as_slice() == record_key
         }
@@ -508,7 +447,25 @@ mod tests {
         }
     }
 
-    impl HybridLogReadAdapter for ByteUpsertFunctions {
+    impl HybridLogUpsertAdapter for ByteDeleteFunctions {
+        fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
+            requested_key.as_slice() == record_key
+        }
+
+        fn key_to_record_bytes(&self, key: &Self::Key) -> Vec<u8> {
+            key.clone()
+        }
+
+        fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
+            record_value.to_vec()
+        }
+
+        fn value_to_record_bytes(&self, value: &Self::Value) -> Vec<u8> {
+            value.clone()
+        }
+    }
+
+    impl HybridLogReadAdapter for ByteDeleteFunctions {
         fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
             requested_key.as_slice() == record_key
         }
@@ -518,39 +475,70 @@ mod tests {
         }
     }
 
+    fn seed_record(
+        hash_index: &HashIndex,
+        page_manager: &mut PageManager,
+        pointers: &LogAddressPointers,
+        key_hash: u64,
+        key: &[u8],
+        value: &[u8],
+    ) {
+        let functions = ByteDeleteFunctions;
+        let mut upsert_info = UpsertInfo::default();
+        let mut output = Vec::new();
+        let mut context = UpsertOperationContext {
+            hash_index,
+            page_manager,
+            pointers,
+        };
+        let status = upsert(
+            &mut context,
+            &functions,
+            key_hash,
+            &key.to_vec(),
+            &value.to_vec(),
+            &mut output,
+            &mut upsert_info,
+        )
+        .unwrap();
+        assert!(matches!(
+            status,
+            UpsertOperationStatus::Inserted | UpsertOperationStatus::CopiedToTail
+        ));
+    }
+
     #[test]
-    fn upsert_inserts_new_record() {
+    fn delete_tombstones_in_place_in_mutable_region() {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 8).unwrap();
-        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
         page_manager.allocate_page(0).unwrap();
+        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        pointers.shift_read_only_address(0);
 
-        let functions = ByteUpsertFunctions;
+        let key_hash = (41u64 << crate::HASH_TAG_SHIFT) | 0;
+        seed_record(
+            &hash_index,
+            &mut page_manager,
+            &pointers,
+            key_hash,
+            b"key",
+            b"value",
+        );
+
+        let functions = ByteDeleteFunctions;
+        let mut delete_info = DeleteInfo::default();
         let key = b"key".to_vec();
-        let input = b"value".to_vec();
-        let mut output = Vec::new();
-        let mut upsert_info = UpsertInfo::default();
-        let key_hash = (21u64 << crate::HASH_TAG_SHIFT) | 0;
-
-        let mut context = UpsertOperationContext {
+        let mut context = DeleteOperationContext {
             hash_index: &hash_index,
             page_manager: &mut page_manager,
             pointers: &pointers,
         };
 
-        let status = upsert(
-            &mut context,
-            &functions,
-            key_hash,
-            &key,
-            &input,
-            &mut output,
-            &mut upsert_info,
-        )
-        .unwrap();
-        assert_eq!(status, UpsertOperationStatus::Inserted);
+        let status = delete(&mut context, &functions, key_hash, &key, &mut delete_info).unwrap();
+        assert_eq!(status, DeleteOperationStatus::TombstonedInPlace);
 
         let device = crate::InMemoryPageDevice::new(context.page_manager.page_size());
+        let mut output = Vec::new();
         let mut read_context = ReadOperationContext {
             hash_index: &hash_index,
             page_manager: context.page_manager,
@@ -567,104 +555,61 @@ mod tests {
             &ReadInfo::default(),
         )
         .unwrap();
-        assert!(matches!(
-            read_status,
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk
-        ));
-        assert_eq!(output, b"value");
+        assert_eq!(read_status, ReadOperationStatus::NotFound);
     }
 
     #[test]
-    fn upsert_in_place_updates_when_value_size_is_unchanged() {
+    fn delete_appends_tombstone_in_immutable_region() {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 8).unwrap();
-        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
         page_manager.allocate_page(0).unwrap();
+        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        pointers.shift_read_only_address(128);
 
-        let functions = ByteUpsertFunctions;
+        let key_hash = (42u64 << crate::HASH_TAG_SHIFT) | 0;
+        seed_record(
+            &hash_index,
+            &mut page_manager,
+            &pointers,
+            key_hash,
+            b"key",
+            b"value",
+        );
+        let before = hash_index.find_tag_address(key_hash).unwrap();
+
+        let functions = ByteDeleteFunctions;
+        let mut delete_info = DeleteInfo::default();
         let key = b"key".to_vec();
-        let key_hash = (22u64 << crate::HASH_TAG_SHIFT) | 0;
-        let mut output = Vec::new();
-        let mut upsert_info = UpsertInfo::default();
-
-        let mut context = UpsertOperationContext {
+        let mut context = DeleteOperationContext {
             hash_index: &hash_index,
             page_manager: &mut page_manager,
             pointers: &pointers,
         };
 
-        upsert(
-            &mut context,
-            &functions,
-            key_hash,
-            &key,
-            &b"abc".to_vec(),
-            &mut output,
-            &mut upsert_info,
-        )
-        .unwrap();
-        let before = hash_index.find_tag_address(key_hash).unwrap();
-
-        let status = upsert(
-            &mut context,
-            &functions,
-            key_hash,
-            &key,
-            &b"xyz".to_vec(),
-            &mut output,
-            &mut upsert_info,
-        )
-        .unwrap();
-
+        let status = delete(&mut context, &functions, key_hash, &key, &mut delete_info).unwrap();
         let after = hash_index.find_tag_address(key_hash).unwrap();
-        assert_eq!(status, UpsertOperationStatus::InPlaceUpdated);
-        assert_eq!(before, after);
-    }
-
-    #[test]
-    fn upsert_copy_updates_when_value_size_changes() {
-        let hash_index = HashIndex::with_size_bits(2).unwrap();
-        let mut page_manager = PageManager::new(8, 8).unwrap();
-        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
-        page_manager.allocate_page(0).unwrap();
-
-        let functions = ByteUpsertFunctions;
-        let key = b"key".to_vec();
-        let key_hash = (23u64 << crate::HASH_TAG_SHIFT) | 0;
-        let mut output = Vec::new();
-        let mut upsert_info = UpsertInfo::default();
-
-        let mut context = UpsertOperationContext {
-            hash_index: &hash_index,
-            page_manager: &mut page_manager,
-            pointers: &pointers,
-        };
-
-        upsert(
-            &mut context,
-            &functions,
-            key_hash,
-            &key,
-            &b"abc".to_vec(),
-            &mut output,
-            &mut upsert_info,
-        )
-        .unwrap();
-        let before = hash_index.find_tag_address(key_hash).unwrap();
-
-        let status = upsert(
-            &mut context,
-            &functions,
-            key_hash,
-            &key,
-            &b"longer-value".to_vec(),
-            &mut output,
-            &mut upsert_info,
-        )
-        .unwrap();
-        let after = hash_index.find_tag_address(key_hash).unwrap();
-
-        assert_eq!(status, UpsertOperationStatus::CopiedToTail);
+        assert_eq!(status, DeleteOperationStatus::AppendedTombstone);
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn delete_missing_key_returns_not_found() {
+        let hash_index = HashIndex::with_size_bits(2).unwrap();
+        let mut page_manager = PageManager::new(8, 8).unwrap();
+        page_manager.allocate_page(0).unwrap();
+        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+
+        let functions = ByteDeleteFunctions;
+        let mut delete_info = DeleteInfo::default();
+        let key_hash = (43u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key = b"absent".to_vec();
+        let mut context = DeleteOperationContext {
+            hash_index: &hash_index,
+            page_manager: &mut page_manager,
+            pointers: &pointers,
+        };
+
+        let status = delete(&mut context, &functions, key_hash, &key, &mut delete_info).unwrap();
+        assert_eq!(status, DeleteOperationStatus::NotFound);
     }
 }

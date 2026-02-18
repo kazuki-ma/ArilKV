@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 4 — CRUD Operations
-> **Current Iteration**: 24
+> **Current Iteration**: 25
 
 ---
 
@@ -91,7 +91,7 @@
 | 4.2 | Implement `Read` operation — hash lookup → chain traversal → reader callbacks | DONE | 3.2, 4.1 | Added `read_operation::read` with hash-entry address lookup, previous-address chain traversal, key match filtering, region-aware reader callback dispatch (`ConcurrentReader` vs `SingleReader`), closed/tombstone handling, and disk-resident page loading path. |
 | 4.3 | Implement `Upsert` operation — hash lookup → IPU or RCU → CAS into chain | DONE | 3.2, 4.1 | Added `upsert_operation::upsert` with tag-head lookup, key-chain search, mutable-region IPU (same-size fast path), tail copy-update/insert append, and hash-entry address CAS replacement. |
 | 4.4 | Implement `RMW` (Read-Modify-Write) — with fuzzy region RETRY_LATER | DONE | 4.2, 4.3 | Added `rmw_operation::rmw` with key-chain search, fuzzy-region `RetryLater` handling (`safe_read_only <= addr < read_only`), mutable-region IPU, and copy-update append + hash-head CAS fallback. |
-| 4.5 | Implement `Delete` — tombstone creation | TODO | 4.3 | See doc 06. Create tombstone record (RecordInfo.Tombstone = true). |
+| 4.5 | Implement `Delete` — tombstone creation | DONE | 4.3 | Added `delete_operation::delete` with mutable-region in-place tombstone path, immutable append-tombstone path (`previous_address` linked), and hash-head CAS update plus not-found/retry handling tests. |
 | 4.6 | Implement `TsavoriteKV<K, V>` facade — public API wrapping all operations | TODO | 4.2-4.5 | Generic over key/value types. Session management. Epoch integration. |
 | 4.7 | Unit tests for CRUD operations | TODO | 4.2-4.5 | Single-threaded correctness, concurrent read/write stress, tombstone handling, fuzzy region retry. |
 | 4.8 | Integration test: end-to-end key-value store | TODO | 4.6 | Insert N keys, read all back, delete half, verify. Concurrent version. |
@@ -216,6 +216,7 @@
 | 2026-02-18 | Introduce a `HybridLogReadAdapter` bridge trait so generic `ISessionFunctions` implementations can consume raw log bytes without coupling read-path logic to a concrete key/value type. | Keeps read traversal generic while allowing zero-copy-ish log parsing to stay inside storage-engine modules. |
 | 2026-02-18 | Implement Upsert as a two-stage path: attempt mutable in-place rewrite when size is unchanged, otherwise append a new record and CAS-swap the hash-entry head address. | Preserves core Tsavorite mutation semantics while keeping the first Rust implementation tractable before richer in-place growth/filler handling. |
 | 2026-02-18 | Model RMW as a dedicated operation module that explicitly checks the address-based fuzzy window before deciding IPU vs copy-update. | Preserves lost-update prevention semantics from Tsavorite while reusing the same append/CAS primitives introduced for Upsert. |
+| 2026-02-18 | Implement Delete with a dual path: mutable-region in-place tombstone rewrite when callback output keeps value size stable, otherwise append a tombstone record and CAS-swap hash head. | Preserves Tsavorite delete semantics while minimizing extra appends in mutable regions and retaining lock-free head update behavior in immutable regions. |
 
 ---
 
@@ -255,3 +256,4 @@
 | 22 | 2026-02-18 | 4.2 | DONE | Added initial read operation implementation with hash-index address lookup, record-chain traversal, region-based reader callback selection, and disk fallback coverage tests. |
 | 23 | 2026-02-18 | 4.3 | DONE | Added initial Upsert operation with mutable-region in-place update path, tail append copy-update path, and hash-head CAS update tests. |
 | 24 | 2026-02-18 | 4.4 | DONE | Added RMW operation implementation with fuzzy-region retry behavior, mutable in-place updater path, and immutable copy-update append path with CAS head replacement. |
+| 25 | 2026-02-18 | 4.5 | DONE | Added Delete operation with mutable in-place tombstoning, immutable tombstone append + hash-head CAS replacement, and targeted tests for in-place/append/not-found flows. |

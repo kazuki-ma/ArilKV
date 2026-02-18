@@ -1,5 +1,6 @@
 //! Tsavorite storage engine for garnet-rs.
 
+pub mod delete_operation;
 pub mod epoch;
 pub mod hash_bucket;
 pub mod hash_bucket_entry;
@@ -12,6 +13,10 @@ pub mod rmw_operation;
 pub mod session_functions;
 pub mod upsert_operation;
 
+pub use delete_operation::{
+    delete, DeleteOperationContext, DeleteOperationError, DeleteOperationStatus,
+    HybridLogDeleteAdapter,
+};
 pub use epoch::{EpochEntry, EpochGuard, LightEpoch};
 pub use hash_bucket::{
     HashBucket, EXCLUSIVE_LATCH_BIT_MASK, HASH_BUCKET_DATA_ENTRY_COUNT, HASH_BUCKET_ENTRY_COUNT,
@@ -49,7 +54,9 @@ pub use record_info::{
 pub use rmw_operation::{
     rmw, HybridLogRmwAdapter, RmwOperationContext, RmwOperationError, RmwOperationStatus,
 };
-pub use session_functions::{ISessionFunctions, ReadInfo, RmwInfo, UpsertInfo, WriteReason};
+pub use session_functions::{
+    DeleteInfo, ISessionFunctions, ReadInfo, RmwInfo, UpsertInfo, WriteReason,
+};
 pub use upsert_operation::{
     upsert, HybridLogUpsertAdapter, UpsertOperationContext, UpsertOperationError,
     UpsertOperationStatus,
