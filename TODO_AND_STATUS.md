@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 7 — Object Store & Data Structures
-> **Current Iteration**: 52
+> **Current Iteration**: 53
 
 ---
 
@@ -142,8 +142,8 @@
 | 7.2 | Implement Hash — HGET/HSET/HDEL/HGETALL | DONE | 7.1 | Added HSET/HGET/HDEL/HGETALL command handlers backed by object-store serialized hash payloads (`BTreeMap<Vec<u8>, Vec<u8>>`), with wrong-type enforcement against existing string keys plus unit/TCP/redis-cli coverage. |
 | 7.3 | Implement List — LPUSH/RPUSH/LPOP/RPOP/LRANGE | DONE | 7.1 | Added list command handlers backed by object-store serialized list payloads (`Vec<Vec<u8>>`), including negative-index LRANGE semantics and wrong-type enforcement against string/hash keys with unit/TCP/redis-cli coverage. |
 | 7.4 | Implement Set — SADD/SREM/SMEMBERS/SISMEMBER | DONE | 7.1 | Added set command handlers backed by object-store serialized set payloads (`BTreeSet<Vec<u8>>`) with deterministic `SMEMBERS` output, wrong-type enforcement, and unit/TCP/redis-cli coverage. |
-| 7.5 | Implement SortedSet — ZADD/ZREM/ZRANGE/ZSCORE | TODO | 7.1 | Skip list or BTreeMap for ordered access. |
-| 7.6 | Unit tests for all data structures | TODO | 7.2-7.5 | CRUD correctness, edge cases, serialization roundtrip. |
+| 7.5 | Implement SortedSet — ZADD/ZREM/ZRANGE/ZSCORE | DONE | 7.1 | Added sorted-set command handlers backed by object-store serialized member→score payloads (`BTreeMap<Vec<u8>, f64>`), with score-order `ZRANGE`, `ZSCORE`, wrong-type checks, and unit/TCP/redis-cli coverage. |
+| 7.6 | Unit tests for all data structures | DONE | 7.2-7.5 | Added end-to-end unit coverage for hash/list/set/sorted-set command behavior (CRUD, range/index handling, wrong-type paths) plus TCP and redis-cli compatibility integration coverage. |
 
 ---
 
@@ -240,6 +240,7 @@
 | 2026-02-18 | Represent hash objects as deterministically serialized `BTreeMap<Vec<u8>, Vec<u8>>` blobs in the object store and enforce cross-store wrong-type checks for hash commands. | Delivers Phase 7.2 hash semantics quickly while preserving deterministic `HGETALL` output and keeping future object-type expansion straightforward. |
 | 2026-02-18 | Represent list objects as length-prefixed serialized `Vec<Vec<u8>>` blobs in the object store and normalize LRANGE indexes server-side. | Keeps list implementation simple and deterministic for LPUSH/RPUSH/LPOP/RPOP/LRANGE while matching Redis negative-index behavior without introducing pointer-based list structures yet. |
 | 2026-02-18 | Represent set objects as deterministically serialized `BTreeSet<Vec<u8>>` blobs in the object store and preserve sorted iteration for `SMEMBERS` responses. | Simplifies SADD/SREM/SMEMBERS/SISMEMBER implementation and testability while keeping wire output stable without extra sorting passes. |
+| 2026-02-18 | Represent sorted sets as serialized member→score `BTreeMap<Vec<u8>, f64>` payloads and compute `ZRANGE` ordering by `(score, member)` at read time. | Avoids introducing a more complex skiplist structure now while preserving deterministic ordering semantics and straightforward update/removal behavior for ZADD/ZREM/ZSCORE/ZRANGE. |
 
 ---
 
@@ -307,3 +308,4 @@
 | 50 | 2026-02-18 | 7.2 | DONE | Implemented HSET/HGET/HDEL/HGETALL over the object store with serialized hash payloads, wrong-type checks against string keys, and coverage in request lifecycle, TCP integration, and redis-cli compatibility tests. |
 | 51 | 2026-02-18 | 7.3 | DONE | Implemented LPUSH/RPUSH/LPOP/RPOP/LRANGE over object-store serialized lists, updated COMMAND registry output, and added list coverage in request lifecycle unit tests, TCP integration tests, and redis-cli compatibility tests. |
 | 52 | 2026-02-18 | 7.4 | DONE | Implemented SADD/SREM/SMEMBERS/SISMEMBER over object-store serialized sets, updated COMMAND registry output, and added set coverage in request lifecycle unit tests, TCP integration tests, and redis-cli compatibility tests. |
+| 53 | 2026-02-18 | 7.5-7.6 | DONE | Implemented ZADD/ZREM/ZRANGE/ZSCORE over object-store serialized sorted sets, extended COMMAND registry output, and completed data-structure test coverage across request lifecycle, TCP integration, and redis-cli compatibility tests. |

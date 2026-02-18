@@ -136,6 +136,36 @@ async fn redis_cli_basic_command_compatibility() {
         ""
     );
     assert_eq!(
+        run_redis_cli(port, &["ZADD", "zkey", "2", "two", "1", "one"])
+            .await
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["ZSCORE", "zkey", "one"])
+            .await
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["ZRANGE", "zkey", "0", "-1"])
+            .await
+            .unwrap(),
+        "one\ntwo"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["ZREM", "zkey", "one", "two"])
+            .await
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["ZRANGE", "zkey", "0", "-1"])
+            .await
+            .unwrap(),
+        ""
+    );
+    assert_eq!(
         run_redis_cli(port, &["SET", "dfoo", "bar"]).await.unwrap(),
         "OK"
     );

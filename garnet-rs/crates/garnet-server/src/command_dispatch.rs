@@ -29,6 +29,10 @@ pub enum CommandId {
     Srem,
     Smembers,
     Sismember,
+    Zadd,
+    Zrem,
+    Zrange,
+    Zscore,
     Ping,
     Echo,
     Info,
@@ -115,6 +119,18 @@ fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     }
     if is_ascii_eq_9(command, b"SISMEMBER") {
         return CommandId::Sismember;
+    }
+    if is_ascii_eq_4(command, b"ZADD") {
+        return CommandId::Zadd;
+    }
+    if is_ascii_eq_4(command, b"ZREM") {
+        return CommandId::Zrem;
+    }
+    if is_ascii_eq_6(command, b"ZRANGE") {
+        return CommandId::Zrange;
+    }
+    if is_ascii_eq_6(command, b"ZSCORE") {
+        return CommandId::Zscore;
     }
     if is_ascii_eq_6(command, b"EXPIRE") {
         return CommandId::Expire;
@@ -266,6 +282,10 @@ mod tests {
         assert_eq!(dispatch_command_name(b"SREM"), CommandId::Srem);
         assert_eq!(dispatch_command_name(b"smembers"), CommandId::Smembers);
         assert_eq!(dispatch_command_name(b"SISMEMBER"), CommandId::Sismember);
+        assert_eq!(dispatch_command_name(b"zadd"), CommandId::Zadd);
+        assert_eq!(dispatch_command_name(b"ZREM"), CommandId::Zrem);
+        assert_eq!(dispatch_command_name(b"zrange"), CommandId::Zrange);
+        assert_eq!(dispatch_command_name(b"ZSCORE"), CommandId::Zscore);
     }
 
     #[test]

@@ -18,6 +18,7 @@ const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
 const HASH_OBJECT_TYPE_TAG: u8 = 3;
 const LIST_OBJECT_TYPE_TAG: u8 = 2;
 const SET_OBJECT_TYPE_TAG: u8 = 4;
+const ZSET_OBJECT_TYPE_TAG: u8 = 5;
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -102,6 +103,10 @@ impl RequestProcessor {
             CommandId::Srem => self.handle_srem(args, response_out),
             CommandId::Smembers => self.handle_smembers(args, response_out),
             CommandId::Sismember => self.handle_sismember(args, response_out),
+            CommandId::Zadd => self.handle_zadd(args, response_out),
+            CommandId::Zrem => self.handle_zrem(args, response_out),
+            CommandId::Zrange => self.handle_zrange(args, response_out),
+            CommandId::Zscore => self.handle_zscore(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -255,6 +260,36 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_set_object_payload(set);
         self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
+    }
+
+    fn load_zset_object(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
+        let object = match self.object_read(key)? {
+            Some(object) => object,
+            None => {
+                if self.key_exists(key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                return Ok(None);
+            }
+        };
+        if object.0 != ZSET_OBJECT_TYPE_TAG {
+            return Err(RequestExecutionError::WrongType);
+        }
+        deserialize_zset_object_payload(&object.1)
+            .map(Some)
+            .ok_or(RequestExecutionError::StorageFailure)
+    }
+
+    fn save_zset_object(
+        &self,
+        key: &[u8],
+        zset: &BTreeMap<Vec<u8>, f64>,
+    ) -> Result<(), RequestExecutionError> {
+        let payload = serialize_zset_object_payload(zset);
+        self.object_upsert(key, ZSET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
@@ -1185,6 +1220,183 @@ impl RequestProcessor {
         Ok(())
     }
 
+    fn handle_zadd(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 4 || ((args.len() - 2) % 2 != 0) {
+            return Err(RequestExecutionError::WrongArity {
+                command: "ZADD",
+                expected: "ZADD key score member [score member ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
+        let mut inserted = 0i64;
+
+        let mut index = 2usize;
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let score = parse_f64_ascii(unsafe { args[index].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let member = unsafe { args[index + 1].as_slice() }.to_vec();
+            if zset.insert(member, score).is_none() {
+                inserted += 1;
+            }
+            index += 2;
+        }
+
+        self.save_zset_object(&key, &zset)?;
+        append_integer(response_out, inserted);
+        Ok(())
+    }
+
+    fn handle_zrem(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "ZREM",
+                expected: "ZREM key member [member ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let mut removed = 0i64;
+        for member in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            if zset.remove(unsafe { member.as_slice() }).is_some() {
+                removed += 1;
+            }
+        }
+
+        if zset.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_zset_object(&key, &zset)?;
+        }
+        append_integer(response_out, removed);
+        Ok(())
+    }
+
+    fn handle_zrange(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "ZRANGE",
+                expected: "ZRANGE key start stop",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let mut entries: Vec<(&Vec<u8>, f64)> = zset
+            .iter()
+            .map(|(member, score)| (member, *score))
+            .collect();
+        entries.sort_by(|(lhs_member, lhs_score), (rhs_member, rhs_score)| {
+            lhs_score
+                .partial_cmp(rhs_score)
+                .expect("zset scores are finite")
+                .then_with(|| lhs_member.cmp(rhs_member))
+        });
+
+        let len = entries.len() as i64;
+        if len == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let mut normalized_start = if start < 0 { len + start } else { start };
+        let mut normalized_stop = if stop < 0 { len + stop } else { stop };
+        if normalized_start < 0 {
+            normalized_start = 0;
+        }
+        if normalized_stop < 0 || normalized_start >= len {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if normalized_stop >= len {
+            normalized_stop = len - 1;
+        }
+        if normalized_start > normalized_stop {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let count = (normalized_stop - normalized_start + 1) as usize;
+        response_out.push(b'*');
+        response_out.extend_from_slice(count.to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for index in normalized_start..=normalized_stop {
+            append_bulk_string(response_out, entries[index as usize].0);
+        }
+        Ok(())
+    }
+
+    fn handle_zscore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "ZSCORE",
+                expected: "ZSCORE key member",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member = unsafe { args[2].as_slice() };
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+
+        match zset.get(member) {
+            Some(score) => append_bulk_string(response_out, score.to_string().as_bytes()),
+            None => append_null_bulk_string(response_out),
+        }
+        Ok(())
+    }
+
     fn handle_ping(
         &self,
         args: &[ArgSlice],
@@ -1296,6 +1508,10 @@ impl RequestProcessor {
                 b"SREM",
                 b"SMEMBERS",
                 b"SISMEMBER",
+                b"ZADD",
+                b"ZREM",
+                b"ZRANGE",
+                b"ZSCORE",
                 b"PING",
                 b"ECHO",
                 b"INFO",
@@ -1486,6 +1702,7 @@ pub enum RequestExecutionError {
     StorageBusy,
     StorageFailure,
     ValueNotInteger,
+    ValueNotFloat,
 }
 
 impl RequestExecutionError {
@@ -1509,6 +1726,7 @@ impl RequestExecutionError {
             Self::ValueNotInteger => {
                 append_error(response_out, "ERR value is not an integer or out of range")
             }
+            Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
         }
     }
 }
@@ -1527,6 +1745,18 @@ fn parse_u64_ascii(input: &[u8]) -> Option<u64> {
     }
     let text = core::str::from_utf8(input).ok()?;
     text.parse::<u64>().ok()
+}
+
+fn parse_f64_ascii(input: &[u8]) -> Option<f64> {
+    if input.is_empty() {
+        return None;
+    }
+    let text = core::str::from_utf8(input).ok()?;
+    let parsed = text.parse::<f64>().ok()?;
+    if !parsed.is_finite() {
+        return None;
+    }
+    Some(parsed)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1711,6 +1941,59 @@ fn deserialize_set_object_payload(encoded: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
         return None;
     }
     Some(set)
+}
+
+fn serialize_zset_object_payload(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&(zset.len() as u32).to_le_bytes());
+    for (member, score) in zset {
+        encoded.extend_from_slice(&(member.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(member);
+        encoded.extend_from_slice(&score.to_le_bytes());
+    }
+    encoded
+}
+
+fn deserialize_zset_object_payload(encoded: &[u8]) -> Option<BTreeMap<Vec<u8>, f64>> {
+    let mut cursor = 0usize;
+
+    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
+        let end = (*cursor).checked_add(size_of::<u32>())?;
+        let bytes = encoded.get(*cursor..end)?;
+        let mut raw = [0u8; size_of::<u32>()];
+        raw.copy_from_slice(bytes);
+        *cursor = end;
+        Some(u32::from_le_bytes(raw))
+    }
+
+    fn take_f64(encoded: &[u8], cursor: &mut usize) -> Option<f64> {
+        let end = (*cursor).checked_add(size_of::<f64>())?;
+        let bytes = encoded.get(*cursor..end)?;
+        let mut raw = [0u8; size_of::<f64>()];
+        raw.copy_from_slice(bytes);
+        let value = f64::from_le_bytes(raw);
+        if !value.is_finite() {
+            return None;
+        }
+        *cursor = end;
+        Some(value)
+    }
+
+    let count = take_u32(encoded, &mut cursor)? as usize;
+    let mut zset = BTreeMap::new();
+    for _ in 0..count {
+        let member_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
+        let member_end = cursor.checked_add(member_len)?;
+        let member = encoded.get(cursor..member_end)?.to_vec();
+        cursor = member_end;
+        let score = take_f64(encoded, &mut cursor)?;
+        zset.insert(member, score);
+    }
+
+    if cursor != encoded.len() {
+        return None;
+    }
+    Some(zset)
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
@@ -2600,6 +2883,103 @@ mod tests {
         response.clear();
         let sadd = b"*3\r\n$4\r\nSADD\r\n$3\r\nkey\r\n$1\r\nv\r\n";
         let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .err()
+            .unwrap();
+        err.append_resp_error(&mut response);
+        assert_eq!(
+            response,
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
+    }
+
+    #[test]
+    fn zset_commands_roundtrip_over_object_store() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 20];
+        let mut response = Vec::new();
+
+        let zadd =
+            b"*6\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n2\r\n$3\r\ntwo\r\n$1\r\n1\r\n$3\r\none\r\n";
+        let meta = parse_resp_command_arg_slices(zadd, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":2\r\n");
+
+        response.clear();
+        let zscore = b"*3\r\n$6\r\nZSCORE\r\n$3\r\nkey\r\n$3\r\none\r\n";
+        let meta = parse_resp_command_arg_slices(zscore, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$1\r\n1\r\n");
+
+        response.clear();
+        let zrange = b"*4\r\n$6\r\nZRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
+        let meta = parse_resp_command_arg_slices(zrange, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*2\r\n$3\r\none\r\n$3\r\ntwo\r\n");
+
+        response.clear();
+        let zadd_update = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n3\r\n$3\r\none\r\n";
+        let meta = parse_resp_command_arg_slices(zadd_update, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
+
+        response.clear();
+        let zrange_after_update = b"*4\r\n$6\r\nZRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\n1\r\n";
+        let meta = parse_resp_command_arg_slices(zrange_after_update, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
+
+        response.clear();
+        let zrem = b"*4\r\n$4\r\nZREM\r\n$3\r\nkey\r\n$3\r\none\r\n$4\r\nnone\r\n";
+        let meta = parse_resp_command_arg_slices(zrem, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let zrem_last = b"*3\r\n$4\r\nZREM\r\n$3\r\nkey\r\n$3\r\ntwo\r\n";
+        let meta = parse_resp_command_arg_slices(zrem_last, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(zrange, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*0\r\n");
+    }
+
+    #[test]
+    fn zset_commands_return_wrongtype_for_string_keys() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let zadd = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\nv\r\n";
+        let meta = parse_resp_command_arg_slices(zadd, &mut args).unwrap();
         let err = processor
             .execute(&args[..meta.argument_count], &mut response)
             .err()
