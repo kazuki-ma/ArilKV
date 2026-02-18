@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-18
-> **Current Phase**: Phase 1 — Core Primitives
-> **Current Iteration**: 7
+> **Current Phase**: Phase 2 — Hybrid Log Allocator
+> **Current Iteration**: 8
 
 ---
 
@@ -47,7 +47,7 @@
 | 1.4 | Implement `HashBucket` — 64-byte cache-line-aligned bucket with 7 entries + overflow | DONE | 0.10 | Implemented `#[repr(C, align(64))] HashBucket` with 7 data entries + overflow/latch word, overflow address helpers, and size/alignment tests (`64` bytes). |
 | 1.5 | Implement `HashBucketEntry` — 8-byte packed entry (tag, address, tentative, pending) | DONE | 0.10 | Implemented atomic packed entry with tag/address/flag packing helpers, read-cache bit support, and CAS update APIs over `AtomicU64`. |
 | 1.6 | Unit tests for all Phase 1 types | DONE | 1.1-1.5 | Added size/alignment and bitfield/behavior tests across Phase 1 primitives, including `proptest` roundtrip coverage for SpanByte serialization. |
-| 1.7 | Benchmark Phase 1 hot-path operations | TODO | 1.6 | `criterion` benchmarks for RecordInfo bit ops, HashBucketEntry CAS, epoch pin/unpin. |
+| 1.7 | Benchmark Phase 1 hot-path operations | DONE | 1.6 | Added Criterion benchmark target (`phase1_hotpath`) in `tsavorite` for RecordInfo bit ops, HashBucketEntry CAS, and LightEpoch pin/unpin; benchmark target builds successfully. |
 
 ---
 
@@ -199,6 +199,7 @@
 | 2026-02-18 | Implement HashBucketEntry as `AtomicU64`-backed packed word with standalone pack/unpack helpers plus CAS entrypoint. | Keeps hot-path updates lock-free and allows direct bit-level compatibility with Tsavorite hash index encoding. |
 | 2026-02-18 | Represent HashBucket overflow entry as a single atomic word carrying both overflow address bits and latch bits. | Mirrors Tsavorite’s compact overflow+latch encoding while keeping 64-byte one-cache-line bucket size. |
 | 2026-02-18 | Use property-based tests (`proptest`) for SpanByte serialized roundtrip behavior in addition to deterministic unit tests. | Catches edge-case payload combinations while preserving explicit regression tests for layout/flag rules. |
+| 2026-02-18 | Place Phase 1 hot-path Criterion benchmarks under `tsavorite/benches` instead of workspace root. | The workspace root is virtual (no root package), so benchmark targets must live in an actual crate. |
 
 ---
 
@@ -221,3 +222,4 @@
 | 5 | 2026-02-18 | 1.5 | DONE | Added `HashBucketEntry` with 14-bit tag + 48-bit address encoding, tentative/pending/read-cache handling, and CAS-oriented APIs/tests. |
 | 6 | 2026-02-18 | 1.4 | DONE | Added 64-byte `HashBucket` layout with seven data entries, overflow/latch atomic word, and validation tests. |
 | 7 | 2026-02-18 | 1.6 | DONE | Completed Phase 1 unit-test coverage, including proptest roundtrip checks for SpanByte and behavior tests for RecordInfo/LightEpoch/HashBucketEntry/HashBucket. |
+| 8 | 2026-02-18 | 1.7 | DONE | Added and validated Criterion benchmarks for core Phase 1 operations (`cargo bench -p tsavorite --bench phase1_hotpath --no-run`). |
