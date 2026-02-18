@@ -5,6 +5,7 @@
 use crate::hash_bucket_entry::{HashBucketEntry, HashBucketEntryError, ADDRESS_BITS, ADDRESS_MASK};
 use core::array;
 use core::sync::atomic::{AtomicU64, Ordering};
+use std::thread;
 
 pub const HASH_BUCKET_ENTRY_COUNT: usize = 8;
 pub const HASH_BUCKET_DATA_ENTRY_COUNT: usize = HASH_BUCKET_ENTRY_COUNT - 1;
@@ -18,6 +19,9 @@ pub const SHARED_LATCH_BIT_MASK: u64 = ((1u64 << SHARED_LATCH_BITS) - 1) << SHAR
 pub const SHARED_LATCH_INCREMENT: u64 = 1u64 << SHARED_LATCH_BIT_OFFSET;
 pub const EXCLUSIVE_LATCH_BIT_MASK: u64 = 1u64 << EXCLUSIVE_LATCH_BIT_OFFSET;
 pub const LATCH_BIT_MASK: u64 = SHARED_LATCH_BIT_MASK | EXCLUSIVE_LATCH_BIT_MASK;
+
+pub const MAX_LOCK_SPINS: usize = 10;
+pub const MAX_READER_LOCK_DRAIN_SPINS: usize = MAX_LOCK_SPINS * 10;
 
 /// Hash bucket aligned to one cache line.
 ///
@@ -114,6 +118,139 @@ impl HashBucket {
         (self.overflow_word(ordering) & LATCH_BIT_MASK) != 0
     }
 
+    /// Attempts to acquire shared latch on this bucket.
+    pub fn try_acquire_shared_latch(&self) -> bool {
+        for _ in 0..MAX_LOCK_SPINS {
+            let expected_word = self.overflow_word(Ordering::Acquire);
+            if (expected_word & EXCLUSIVE_LATCH_BIT_MASK) == 0
+                && (expected_word & SHARED_LATCH_BIT_MASK) != SHARED_LATCH_BIT_MASK
+            {
+                let new_word = expected_word + SHARED_LATCH_INCREMENT;
+                if self
+                    .compare_exchange_overflow_word(
+                        expected_word,
+                        new_word,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    return true;
+                }
+            }
+            thread::yield_now();
+        }
+        false
+    }
+
+    /// Releases shared latch.
+    #[inline]
+    pub fn release_shared_latch(&self) {
+        self.overflow_entry_word
+            .fetch_sub(SHARED_LATCH_INCREMENT, Ordering::AcqRel);
+    }
+
+    /// Attempts to acquire exclusive latch and drain active shared latch holders.
+    pub fn try_acquire_exclusive_latch(&self) -> bool {
+        for _ in 0..MAX_LOCK_SPINS {
+            let expected_word = self.overflow_word(Ordering::Acquire);
+            if (expected_word & EXCLUSIVE_LATCH_BIT_MASK) == 0 {
+                let new_word = expected_word | EXCLUSIVE_LATCH_BIT_MASK;
+                if self
+                    .compare_exchange_overflow_word(
+                        expected_word,
+                        new_word,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    for _ in 0..MAX_READER_LOCK_DRAIN_SPINS {
+                        if (self.overflow_word(Ordering::Acquire) & SHARED_LATCH_BIT_MASK) == 0 {
+                            return true;
+                        }
+                        thread::yield_now();
+                    }
+
+                    self.release_exclusive_latch();
+                    return false;
+                }
+            }
+            thread::yield_now();
+        }
+        false
+    }
+
+    /// Promotes a shared latch to exclusive and drains remaining readers.
+    pub fn try_promote_latch(&self) -> bool {
+        for _ in 0..MAX_LOCK_SPINS {
+            let expected_word = self.overflow_word(Ordering::Acquire);
+            if (expected_word & SHARED_LATCH_BIT_MASK) == 0 {
+                return false;
+            }
+            if (expected_word & EXCLUSIVE_LATCH_BIT_MASK) == 0 {
+                let new_word = (expected_word | EXCLUSIVE_LATCH_BIT_MASK) - SHARED_LATCH_INCREMENT;
+                if self
+                    .compare_exchange_overflow_word(
+                        expected_word,
+                        new_word,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+                {
+                    for _ in 0..MAX_READER_LOCK_DRAIN_SPINS {
+                        if (self.overflow_word(Ordering::Acquire) & SHARED_LATCH_BIT_MASK) == 0 {
+                            return true;
+                        }
+                        thread::yield_now();
+                    }
+
+                    for _ in 0..MAX_LOCK_SPINS {
+                        let rollback_expected = self.overflow_word(Ordering::Acquire);
+                        let rollback_new = (rollback_expected & !EXCLUSIVE_LATCH_BIT_MASK)
+                            + SHARED_LATCH_INCREMENT;
+                        if self
+                            .compare_exchange_overflow_word(
+                                rollback_expected,
+                                rollback_new,
+                                Ordering::AcqRel,
+                                Ordering::Acquire,
+                            )
+                            .is_ok()
+                        {
+                            break;
+                        }
+                        thread::yield_now();
+                    }
+                    return false;
+                }
+            }
+            thread::yield_now();
+        }
+        false
+    }
+
+    /// Releases exclusive latch while preserving address and shared-latch bits.
+    pub fn release_exclusive_latch(&self) {
+        loop {
+            let expected_word = self.overflow_word(Ordering::Acquire);
+            let new_word = expected_word & !EXCLUSIVE_LATCH_BIT_MASK;
+            if self
+                .compare_exchange_overflow_word(
+                    expected_word,
+                    new_word,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return;
+            }
+            thread::yield_now();
+        }
+    }
+
     /// Clears all data entries and overflow/latch word.
     #[inline]
     pub fn clear(&self, ordering: Ordering) {
@@ -181,5 +318,42 @@ mod tests {
         assert_eq!(entry.address(Ordering::Acquire), 99);
         assert!(entry.tentative(Ordering::Acquire));
         assert!(!entry.pending(Ordering::Acquire));
+    }
+
+    #[test]
+    fn shared_latch_acquire_and_release() {
+        let bucket = HashBucket::default();
+        assert!(bucket.try_acquire_shared_latch());
+        assert_eq!(bucket.shared_latch_count(Ordering::Acquire), 1);
+        bucket.release_shared_latch();
+        assert_eq!(bucket.shared_latch_count(Ordering::Acquire), 0);
+    }
+
+    #[test]
+    fn exclusive_latch_acquire_and_release() {
+        let bucket = HashBucket::default();
+        assert!(bucket.try_acquire_exclusive_latch());
+        assert!(bucket.is_latched_exclusive(Ordering::Acquire));
+        bucket.release_exclusive_latch();
+        assert!(!bucket.is_latched_exclusive(Ordering::Acquire));
+    }
+
+    #[test]
+    fn shared_latch_fails_while_exclusive_latched() {
+        let bucket = HashBucket::default();
+        assert!(bucket.try_acquire_exclusive_latch());
+        assert!(!bucket.try_acquire_shared_latch());
+        bucket.release_exclusive_latch();
+    }
+
+    #[test]
+    fn promote_shared_to_exclusive() {
+        let bucket = HashBucket::default();
+        assert!(bucket.try_acquire_shared_latch());
+        assert!(bucket.try_promote_latch());
+        assert!(bucket.is_latched_exclusive(Ordering::Acquire));
+        assert_eq!(bucket.shared_latch_count(Ordering::Acquire), 0);
+        bucket.release_exclusive_latch();
+        assert!(!bucket.is_latched(Ordering::Acquire));
     }
 }
