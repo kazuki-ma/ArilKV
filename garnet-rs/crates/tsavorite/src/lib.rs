@@ -11,6 +11,7 @@ pub mod read_operation;
 pub mod record_info;
 pub mod rmw_operation;
 pub mod session_functions;
+pub mod tsavorite_kv;
 pub mod upsert_operation;
 
 pub use delete_operation::{
@@ -57,6 +58,7 @@ pub use rmw_operation::{
 pub use session_functions::{
     DeleteInfo, ISessionFunctions, ReadInfo, RmwInfo, UpsertInfo, WriteReason,
 };
+pub use tsavorite_kv::{TsavoriteKV, TsavoriteKvConfig, TsavoriteKvInitError, TsavoriteSession};
 pub use upsert_operation::{
     upsert, HybridLogUpsertAdapter, UpsertOperationContext, UpsertOperationError,
     UpsertOperationStatus,
