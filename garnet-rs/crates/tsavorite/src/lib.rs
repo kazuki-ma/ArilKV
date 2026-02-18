@@ -19,7 +19,7 @@ pub use hash_bucket_entry::{
 };
 pub use hybrid_log::{
     LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page, PageAddressSpace,
-    PageManager, PageManagerError,
+    PageManager, PageManagerError, TailAllocationStatus, TailAllocator, TailAllocatorError,
 };
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
