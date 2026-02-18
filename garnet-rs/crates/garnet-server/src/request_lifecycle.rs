@@ -67,6 +67,10 @@ impl RequestProcessor {
             CommandId::Del => self.handle_del(args, response_out),
             CommandId::Incr => self.handle_incr_decr(args, 1, response_out),
             CommandId::Decr => self.handle_incr_decr(args, -1, response_out),
+            CommandId::Expire => self.handle_expire(args, response_out),
+            CommandId::Ttl => self.handle_ttl(args, response_out),
+            CommandId::Pexpire => self.handle_pexpire(args, response_out),
+            CommandId::Pttl => self.handle_pttl(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -284,6 +288,170 @@ impl RequestProcessor {
         }
     }
 
+    fn handle_expire(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_expire_like(args, response_out, false)
+    }
+
+    fn handle_pexpire(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_expire_like(args, response_out, true)
+    }
+
+    fn handle_expire_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        milliseconds: bool,
+    ) -> Result<(), RequestExecutionError> {
+        let (command, expected) = if milliseconds {
+            ("PEXPIRE", "PEXPIRE key milliseconds")
+        } else {
+            ("EXPIRE", "EXPIRE key seconds")
+        };
+        if args.len() != 3 {
+            return Err(RequestExecutionError::WrongArity { command, expected });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let amount = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+
+        self.expire_key_if_needed(&key)?;
+        if !self.key_exists(&key)? {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        if amount <= 0 {
+            let mut store = self.store.lock().expect("store mutex poisoned");
+            let mut session = store.session(&self.functions);
+            let mut info = DeleteInfo::default();
+            let status = session
+                .delete(&key, &mut info)
+                .map_err(|_| RequestExecutionError::StorageFailure)?;
+            match status {
+                DeleteOperationStatus::TombstonedInPlace
+                | DeleteOperationStatus::AppendedTombstone => {
+                    self.expirations
+                        .lock()
+                        .expect("expiration mutex poisoned")
+                        .remove(&key);
+                    self.key_registry
+                        .lock()
+                        .expect("key registry mutex poisoned")
+                        .remove(&key);
+                    append_integer(response_out, 1);
+                    Ok(())
+                }
+                DeleteOperationStatus::NotFound => {
+                    self.expirations
+                        .lock()
+                        .expect("expiration mutex poisoned")
+                        .remove(&key);
+                    self.key_registry
+                        .lock()
+                        .expect("key registry mutex poisoned")
+                        .remove(&key);
+                    append_integer(response_out, 0);
+                    Ok(())
+                }
+                DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+            }?;
+            return Ok(());
+        }
+
+        let duration = if milliseconds {
+            Duration::from_millis(amount as u64)
+        } else {
+            Duration::from_secs(amount as u64)
+        };
+        let deadline = Instant::now()
+            .checked_add(duration)
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        self.expirations
+            .lock()
+            .expect("expiration mutex poisoned")
+            .insert(key, deadline);
+        append_integer(response_out, 1);
+        Ok(())
+    }
+
+    fn handle_ttl(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_ttl_like(args, response_out, false)
+    }
+
+    fn handle_pttl(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_ttl_like(args, response_out, true)
+    }
+
+    fn handle_ttl_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        milliseconds: bool,
+    ) -> Result<(), RequestExecutionError> {
+        let (command, expected) = if milliseconds {
+            ("PTTL", "PTTL key")
+        } else {
+            ("TTL", "TTL key")
+        };
+        if args.len() != 2 {
+            return Err(RequestExecutionError::WrongArity { command, expected });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        self.expire_key_if_needed(&key)?;
+
+        if !self.key_exists(&key)? {
+            append_integer(response_out, -2);
+            return Ok(());
+        }
+
+        let deadline = self
+            .expirations
+            .lock()
+            .expect("expiration mutex poisoned")
+            .get(&key)
+            .copied();
+        match deadline {
+            None => append_integer(response_out, -1),
+            Some(deadline) => {
+                let now = Instant::now();
+                if deadline <= now {
+                    self.expire_key_if_needed(&key)?;
+                    append_integer(response_out, -2);
+                } else {
+                    let remaining = deadline.duration_since(now);
+                    let ttl = if milliseconds {
+                        remaining.as_millis().min(i64::MAX as u128) as i64
+                    } else {
+                        remaining.as_secs().min(i64::MAX as u64) as i64
+                    };
+                    append_integer(response_out, ttl);
+                }
+            }
+        }
+        Ok(())
+    }
+
     fn handle_ping(
         &self,
         args: &[ArgSlice],
@@ -372,8 +540,8 @@ impl RequestProcessor {
         append_bulk_array(
             response_out,
             &[
-                b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"PING", b"ECHO", b"INFO", b"DBSIZE",
-                b"COMMAND",
+                b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"EXPIRE", b"TTL", b"PEXPIRE", b"PTTL",
+                b"PING", b"ECHO", b"INFO", b"DBSIZE", b"COMMAND",
             ],
         );
         Ok(())
@@ -835,6 +1003,16 @@ mod tests {
     use std::thread;
     use std::time::Duration;
 
+    fn parse_integer_response(response: &[u8]) -> i64 {
+        assert!(response.len() >= 4);
+        assert_eq!(response[0], b':');
+        assert!(response.ends_with(b"\r\n"));
+        core::str::from_utf8(&response[1..response.len() - 2])
+            .unwrap()
+            .parse::<i64>()
+            .unwrap()
+    }
+
     #[test]
     fn executes_set_then_get_roundtrip() {
         let processor = RequestProcessor::new().unwrap();
@@ -967,6 +1145,126 @@ mod tests {
     }
 
     #[test]
+    fn expire_ttl_and_pexpire_commands_work() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":-1\r\n");
+
+        response.clear();
+        let expire = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
+        let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        let remaining = parse_integer_response(&response);
+        assert!((0..=1000).contains(&remaining));
+
+        response.clear();
+        let pexpire_now = b"*3\r\n$7\r\nPEXPIRE\r\n$3\r\nkey\r\n$1\r\n0\r\n";
+        let meta = parse_resp_command_arg_slices(pexpire_now, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let ttl_after_delete = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(ttl_after_delete, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":-2\r\n");
+    }
+
+    #[test]
+    fn expire_and_ttl_on_missing_key_follow_redis_codes() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let expire = b"*3\r\n$6\r\nEXPIRE\r\n$7\r\nmissing\r\n$2\r\n10\r\n";
+        let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
+
+        response.clear();
+        let ttl = b"*2\r\n$3\r\nTTL\r\n$7\r\nmissing\r\n";
+        let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":-2\r\n");
+
+        response.clear();
+        let pexpire = b"*3\r\n$7\r\nPEXPIRE\r\n$7\r\nmissing\r\n$2\r\n10\r\n";
+        let meta = parse_resp_command_arg_slices(pexpire, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
+
+        response.clear();
+        let pttl = b"*2\r\n$4\r\nPTTL\r\n$7\r\nmissing\r\n";
+        let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":-2\r\n");
+    }
+
+    #[test]
+    fn expire_with_invalid_timeout_returns_integer_error() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let invalid = b"*3\r\n$6\r\nEXPIRE\r\n$7\r\nmissing\r\n$3\r\nbad\r\n";
+        let meta = parse_resp_command_arg_slices(invalid, &mut args).unwrap();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .err()
+            .unwrap();
+        err.append_resp_error(&mut response);
+        assert_eq!(
+            response,
+            b"-ERR value is not an integer or out of range\r\n"
+        );
+    }
+
+    #[test]
     fn info_dbsize_and_command_responses_are_generated() {
         let processor = RequestProcessor::new().unwrap();
         let mut args = [ArgSlice::EMPTY; 8];
@@ -1003,5 +1301,6 @@ mod tests {
             .unwrap();
         assert!(response.starts_with(b"*"));
         assert!(response.windows(7).any(|w| w == b"$3\r\nGET"));
+        assert!(response.windows(10).any(|w| w == b"$6\r\nEXPIRE"));
     }
 }

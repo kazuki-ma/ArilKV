@@ -27,12 +27,39 @@ async fn redis_cli_basic_command_compatibility() {
 
     wait_for_server(port).await;
     assert_eq!(run_redis_cli(port, &["PING"]).await.unwrap(), "PONG");
-    assert_eq!(run_redis_cli(port, &["SET", "foo", "bar"]).await.unwrap(), "OK");
+    assert_eq!(
+        run_redis_cli(port, &["SET", "foo", "bar"]).await.unwrap(),
+        "OK"
+    );
     assert_eq!(run_redis_cli(port, &["GET", "foo"]).await.unwrap(), "bar");
-    assert_eq!(run_redis_cli(port, &["INCR", "counter"]).await.unwrap(), "1");
-    assert_eq!(run_redis_cli(port, &["INCR", "counter"]).await.unwrap(), "2");
-    assert_eq!(run_redis_cli(port, &["DEL", "foo"]).await.unwrap(), "1");
-    assert_eq!(run_redis_cli(port, &["GET", "foo"]).await.unwrap(), "");
+    assert_eq!(
+        run_redis_cli(port, &["INCR", "counter"]).await.unwrap(),
+        "1"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["INCR", "counter"]).await.unwrap(),
+        "2"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["EXPIRE", "foo", "0"]).await.unwrap(),
+        "1"
+    );
+    assert_eq!(run_redis_cli(port, &["TTL", "foo"]).await.unwrap(), "-2");
+    assert_eq!(
+        run_redis_cli(port, &["SET", "pfoo", "bar"]).await.unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["PEXPIRE", "pfoo", "0"]).await.unwrap(),
+        "1"
+    );
+    assert_eq!(run_redis_cli(port, &["PTTL", "pfoo"]).await.unwrap(), "-2");
+    assert_eq!(
+        run_redis_cli(port, &["SET", "dfoo", "bar"]).await.unwrap(),
+        "OK"
+    );
+    assert_eq!(run_redis_cli(port, &["DEL", "dfoo"]).await.unwrap(), "1");
+    assert_eq!(run_redis_cli(port, &["GET", "dfoo"]).await.unwrap(), "");
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();

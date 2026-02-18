@@ -11,6 +11,10 @@ pub enum CommandId {
     Del,
     Incr,
     Decr,
+    Expire,
+    Ttl,
+    Pexpire,
+    Pttl,
     Ping,
     Echo,
     Info,
@@ -58,6 +62,18 @@ pub unsafe fn dispatch_from_arg_slices(args: &[ArgSlice]) -> CommandId {
 fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     if is_ascii_eq_4(command, b"DECR") {
         return CommandId::Decr;
+    }
+    if is_ascii_eq_6(command, b"EXPIRE") {
+        return CommandId::Expire;
+    }
+    if is_ascii_eq_3(command, b"TTL") {
+        return CommandId::Ttl;
+    }
+    if is_ascii_eq_7(command, b"PEXPIRE") {
+        return CommandId::Pexpire;
+    }
+    if is_ascii_eq_4(command, b"PTTL") {
+        return CommandId::Pttl;
     }
     if is_ascii_eq_4(command, b"PING") {
         return CommandId::Ping;
@@ -142,6 +158,10 @@ mod tests {
         assert_eq!(dispatch_command_name(b"dbsize"), CommandId::Dbsize);
         assert_eq!(dispatch_command_name(b"command"), CommandId::Command);
         assert_eq!(dispatch_command_name(b"DECR"), CommandId::Decr);
+        assert_eq!(dispatch_command_name(b"EXPIRE"), CommandId::Expire);
+        assert_eq!(dispatch_command_name(b"ttl"), CommandId::Ttl);
+        assert_eq!(dispatch_command_name(b"pexpire"), CommandId::Pexpire);
+        assert_eq!(dispatch_command_name(b"PTTL"), CommandId::Pttl);
     }
 
     #[test]
