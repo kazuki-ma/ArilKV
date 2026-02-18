@@ -3,6 +3,7 @@
 pub mod address_pointers;
 pub mod page_io;
 pub mod page_manager;
+pub mod page_residency;
 pub mod record_format;
 pub mod tail_allocator;
 
@@ -11,6 +12,9 @@ pub use page_io::{
     flush_page_to_device, load_page_from_device, InMemoryPageDevice, PageDevice, PageIoError,
 };
 pub use page_manager::{LogicalAddress, Page, PageAddressSpace, PageManager, PageManagerError};
+pub use page_residency::{
+    read_with_callback, shift_head_address_and_evict, PageResidencyError, ReadPathStatus,
+};
 pub use record_format::{
     parse_key_span, parse_record_info, parse_record_layout, parse_value_span, round_up,
     write_record, RecordFormatError, RecordLayout, RecordParsedLayout, RECORD_ALIGNMENT,

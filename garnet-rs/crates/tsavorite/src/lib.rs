@@ -19,11 +19,12 @@ pub use hash_bucket_entry::{
 };
 pub use hybrid_log::{
     flush_page_to_device, load_page_from_device, parse_key_span, parse_record_info,
-    parse_record_layout, parse_value_span, round_up, write_record, InMemoryPageDevice,
-    LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page, PageAddressSpace,
-    PageDevice, PageIoError, PageManager, PageManagerError, RecordFormatError, RecordLayout,
-    RecordParsedLayout, TailAllocationStatus, TailAllocator, TailAllocatorError, RECORD_ALIGNMENT,
-    RECORD_INFO_SIZE,
+    parse_record_layout, parse_value_span, read_with_callback, round_up,
+    shift_head_address_and_evict, write_record, InMemoryPageDevice, LogAddressPointers,
+    LogAddressPointersSnapshot, LogicalAddress, Page, PageAddressSpace, PageDevice, PageIoError,
+    PageManager, PageManagerError, PageResidencyError, ReadPathStatus, RecordFormatError,
+    RecordLayout, RecordParsedLayout, TailAllocationStatus, TailAllocator, TailAllocatorError,
+    RECORD_ALIGNMENT, RECORD_INFO_SIZE,
 };
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,

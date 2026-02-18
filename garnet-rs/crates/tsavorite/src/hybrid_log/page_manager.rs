@@ -199,6 +199,16 @@ impl PageManager {
         self.pages.contains_key(&page_index)
     }
 
+    #[inline]
+    pub fn oldest_page_index(&self) -> Option<u64> {
+        self.page_order.front().copied()
+    }
+
+    #[inline]
+    pub fn allocated_page_indices(&self) -> Vec<u64> {
+        self.page_order.iter().copied().collect()
+    }
+
     pub fn allocate_page(&mut self, page_index: u64) -> Result<(), PageManagerError> {
         if self.pages.contains_key(&page_index) {
             return Err(PageManagerError::PageAlreadyAllocated { page_index });
