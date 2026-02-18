@@ -9,3 +9,10 @@ tokio.workspace = true
 crossbeam-queue.workspace = true
 garnet-common = { path = "../garnet-common" }
 tsavorite = { path = "../tsavorite" }
+
+[dev-dependencies]
+criterion.workspace = true
+
+[[bench]]
+name = "redis_command_path"
+harness = false

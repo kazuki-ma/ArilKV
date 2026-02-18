@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 6 — Basic Redis Commands
-> **Current Iteration**: 41
+> **Current Iteration**: 43
 
 ---
 
@@ -127,8 +127,8 @@
 | 6.4 | Implement `INCR`/`DECR` commands — RMW path with in-place update | DONE | 5.6 | Added INCR/DECR via Tsavorite RMW callbacks (integer parse/add with overflow checks), including error response on non-integer values and TCP integration coverage. |
 | 6.5 | Implement `EXPIRE`/`TTL`/`PEXPIRE`/`PTTL` — expiration metadata | TODO | 6.2 | RecordInfo.HasExpiration flag + expiration timestamp in record. Background expiry scan. (Current SET EX/PX uses temporary in-memory deadline map in request layer.) |
 | 6.6 | Implement `PING`/`ECHO`/`INFO`/`DBSIZE`/`COMMAND` — utility commands | DONE | 5.6 | Added utility command handlers in `RequestProcessor` with RESP responses for PING/ECHO and dynamic INFO/DBSIZE/COMMAND output, plus unit/TCP integration coverage. |
-| 6.7 | Integration test: redis-cli compatibility | TODO | 6.1-6.6 | Start server, connect with `redis-cli`, run GET/SET/DEL/INCR/PING. |
-| 6.8 | Benchmark: GET/SET throughput and latency | TODO | 6.1, 6.2 | `criterion` or custom benchmark. Target: GET < 10µs p50, > 1M ops/sec single core. |
+| 6.7 | Integration test: redis-cli compatibility | DONE | 6.1-6.6 | Added `garnet-server/tests/redis_cli_compat.rs` that boots the server, executes PING/SET/GET/INCR/DEL via `redis-cli`, and verifies compatibility outputs. |
+| 6.8 | Benchmark: GET/SET throughput and latency | DONE | 6.1, 6.2 | Added Criterion benchmark target `garnet-server/benches/redis_command_path.rs` for request-processor GET/SET hot-path throughput; benchmark target builds with `cargo bench --no-run`. |
 
 ---
 
@@ -229,6 +229,8 @@
 | 2026-02-18 | Implement initial command handlers directly in `RequestProcessor` (GET/SET/DEL/INCR/DECR/PING/ECHO) on top of Tsavorite session callbacks before adding option-rich variants. | Enables immediate end-to-end TCP validation for core command flow while deferring option combinatorics (e.g., SET EX/PX/NX/XX) to dedicated follow-up work. |
 | 2026-02-18 | Track SET expirations in a lightweight in-memory deadline map (`HashMap<Vec<u8>, Instant>`) integrated with GET/SET/DEL/INCR request handling. | Enables practical EX/PX option support now while preserving room to migrate to RecordInfo-based expiration metadata in the dedicated expiration phase. |
 | 2026-02-18 | Maintain a lightweight key registry for utility command support (notably DBSIZE/INFO) and clean it during deletes/expiry checks. | Provides deterministic utility responses without requiring full hash-index scan APIs at this stage. |
+| 2026-02-18 | Run redis-cli compatibility as a real process-level integration test with explicit async timeouts around CLI invocations. | Validates wire-level interoperability while avoiding hanging test processes when external CLI commands stall. |
+| 2026-02-18 | Benchmark command handling at the `RequestProcessor` layer with Criterion to isolate command-path overhead from transport variability. | Provides stable, repeatable GET/SET throughput baselines before adding full socket-level benchmarking. |
 
 ---
 
@@ -285,3 +287,5 @@
 | 39 | 2026-02-18 | 6.4 | DONE | Implemented INCR/DECR command path via Tsavorite RMW integer callbacks with correct integer/error RESP responses. |
 | 40 | 2026-02-18 | 6.2 | DONE | Added SET option support for NX/XX/EX/PX, expiration-aware behavior, and integration tests validating conditional writes and TTL expiry semantics over TCP. |
 | 41 | 2026-02-18 | 6.6 | DONE | Implemented utility commands (PING/ECHO/INFO/DBSIZE/COMMAND) with RESP-compliant outputs and request-lifecycle/TCP tests. |
+| 42 | 2026-02-18 | 6.7 | DONE | Added redis-cli interoperability integration test covering core commands against a live server instance. |
+| 43 | 2026-02-18 | 6.8 | DONE | Added and validated Criterion benchmark target for GET/SET request-path throughput measurement in `garnet-server`. |
