@@ -7,6 +7,7 @@ pub mod hash_index;
 pub mod hybrid_log;
 pub mod overflow_bucket_allocator;
 pub mod record_info;
+pub mod session_functions;
 
 pub use epoch::{EpochEntry, EpochGuard, LightEpoch};
 pub use hash_bucket::{
@@ -39,3 +40,4 @@ pub use overflow_bucket_allocator::{
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
 };
+pub use session_functions::{ISessionFunctions, ReadInfo, RmwInfo, UpsertInfo, WriteReason};

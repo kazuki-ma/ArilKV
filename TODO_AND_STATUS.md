@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 4 — CRUD Operations
-> **Current Iteration**: 20
+> **Current Iteration**: 21
 
 ---
 
@@ -87,7 +87,7 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 4.1 | Define `ISessionFunctions` trait — generic callback interface | TODO | 2.4 | See doc 10. `Reader`, `Writer`, `Comparer` associated types. `ConcurrentReader`, `SingleReader`, `SingleWriter`, `ConcurrentWriter`, `InPlaceUpdater`, `CopyUpdater` callbacks. |
+| 4.1 | Define `ISessionFunctions` trait — generic callback interface | DONE | 2.4 | Added `session_functions` module with `ISessionFunctions` trait, operation info structs (`ReadInfo`, `UpsertInfo`, `RmwInfo`), `WriteReason`, and callback signatures for read/upsert/RMW paths. |
 | 4.2 | Implement `Read` operation — hash lookup → chain traversal → reader callbacks | TODO | 3.2, 4.1 | See doc 06 §2.12 + doc 09. Address >= SafeReadOnlyAddress → ConcurrentReader. Address >= HeadAddress but < SafeReadOnlyAddress → RETRY_LATER. Address < HeadAddress → async I/O path. |
 | 4.3 | Implement `Upsert` operation — hash lookup → IPU or RCU → CAS into chain | TODO | 3.2, 4.1 | See doc 06. Mutable region → in-place update (IPU). Read-only or not found → record copy update (RCU), append to tail, CAS hash entry. |
 | 4.4 | Implement `RMW` (Read-Modify-Write) — with fuzzy region RETRY_LATER | TODO | 4.2, 4.3 | See doc 06. Mutable → InPlaceUpdater. ReadOnly/Fuzzy → RETRY_LATER (critical: fuzzy region between ReadOnlyAddress and SafeReadOnlyAddress). OnDisk → CopyUpdater + append. |
@@ -212,6 +212,7 @@
 | 2026-02-18 | Use a dedicated `OverflowBucketAllocator` with fixed-size page chunks and a concurrent free-list (`SegQueue`) for overflow bucket reuse. | Preserves stable logical-address mapping for overflow chains while avoiding per-bucket heap allocation churn under collisions. |
 | 2026-02-18 | Implement bucket latching directly on the overflow word using bounded CAS spin loops and explicit reader-drain limits. | Mirrors Tsavorite’s transient lock semantics while preventing unbounded waits during exclusive acquisition/promotion. |
 | 2026-02-18 | Validate hash-index collision paths with multi-threaded `find_or_create_tag` tests that force overflow-chain growth and concurrent duplicate-tag races. | Provides practical contention coverage ahead of CRUD integration without yet introducing `loom` model-checking overhead. |
+| 2026-02-18 | Define `ISessionFunctions` in Rust as a trait with associated marker types (`Reader`/`Writer`/`Comparer`) plus explicit read/upsert/RMW callback contracts. | Establishes a stable generic callback surface before wiring operation pipelines in Phase 4. |
 
 ---
 
@@ -247,3 +248,4 @@
 | 18 | 2026-02-18 | 3.3 | DONE | Added fixed-page overflow allocator and wired overflow-bucket chain allocation into hash-index insertion when primary buckets are full. |
 | 19 | 2026-02-18 | 3.4 | DONE | Added transient shared/exclusive/promote latch operations on hash-bucket overflow entries with unit tests for lock-state transitions. |
 | 20 | 2026-02-18 | 3.5 | DONE | Added concurrent hash-index tests covering same-tag convergence, overflow-chain collision inserts, and post-insert lookup correctness. |
+| 21 | 2026-02-18 | 4.1 | DONE | Added the first Rust `ISessionFunctions` trait surface and operation-info structs, with a concrete test implementation validating callback invocation semantics. |
