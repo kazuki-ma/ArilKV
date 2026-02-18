@@ -267,6 +267,7 @@ dependencies = [
 name = "garnet-server"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-queue",
  "tokio",
 ]
 

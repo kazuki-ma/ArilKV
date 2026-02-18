@@ -1,5 +1,12 @@
 //! TCP server accept loop and connection handler primitives.
 
+pub mod limited_fixed_buffer_pool;
+
+pub use limited_fixed_buffer_pool::{
+    LimitedFixedBufferPool, LimitedFixedBufferPoolConfig, LimitedFixedBufferPoolError, PoolEntry,
+    ReturnStatus,
+};
+
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;

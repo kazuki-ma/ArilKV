@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 5 — Network Layer
-> **Current Iteration**: 29
+> **Current Iteration**: 30
 
 ---
 
@@ -105,7 +105,7 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 5.1 | Implement TCP accept loop and connection handler | DONE | 0.10 | Added async TCP server in `garnet-server` using `tokio::net::TcpListener`, per-connection spawned handler tasks, shutdown-aware accept loop, connection/byte metrics, and unit tests for accept+shutdown behavior. |
-| 5.2 | Implement `LimitedFixedBufferPool` — tiered pool with power-of-2 size classes | TODO | 0.10 | See doc 07 §2.5. Size classes: 256B, 512B, ..., 1MB. Pre-allocated buffers. Thread-safe checkout/return. |
+| 5.2 | Implement `LimitedFixedBufferPool` — tiered pool with power-of-2 size classes | DONE | 0.10 | Added `limited_fixed_buffer_pool` module with power-of-two level mapping, bounded per-level queues (`ArrayQueue`), secure clear-on-return behavior, overflow-drop semantics, and concurrent unit tests. |
 | 5.3 | Implement RESP protocol parser — zero-copy `&[u8]` based | TODO | 0.10 | See doc 08. Parse `*count\r\n$len\r\n...` format. Return `&[u8]` slices into input buffer. No allocation. |
 | 5.4 | Implement `ArgSlice` — 12-byte pointer+length reference to RESP argument | TODO | 5.3 | See doc 08. `ptr: *const u8` + `length: i32` = 12 bytes. Points into receive buffer. |
 | 5.5 | Implement command dispatch — `match` on command byte pattern | TODO | 5.3 | See doc 09. Fast path: match first bytes for GET/SET/DEL/INCR. Fallback: full command table lookup. |
@@ -220,6 +220,7 @@
 | 2026-02-18 | Add a `TsavoriteKV<K, V, D>` facade with `TsavoriteSession` that binds callbacks and computes key hashes internally while pinning LightEpoch per operation. | Provides a practical public API boundary above low-level operation modules without sacrificing current callback-driven semantics or epoch coordination. |
 | 2026-02-18 | Validate CRUD through both unit-level facade tests and crate-level integration tests (`tests/crud_integration.rs`) including concurrent workflows. | Improves confidence that composed read/upsert/rmw/delete behavior stays correct beyond isolated operation-module tests. |
 | 2026-02-18 | Implement the initial network server as a shutdown-aware Tokio accept loop (`run_with_shutdown`) with per-connection task spawning and lightweight connection metrics. | Delivers Phase 5.1 functionality with testable lifecycle behavior before layering RESP parsing and command dispatch in later steps. |
+| 2026-02-18 | Model `LimitedFixedBufferPool` as fixed power-of-two levels backed by bounded `crossbeam_queue::ArrayQueue<Vec<u8>>` and clear buffers before reuse. | Matches Garnet’s tiered reuse semantics while keeping checkout/return lock-free and preventing stale data leakage across connections. |
 
 ---
 
@@ -264,3 +265,4 @@
 | 27 | 2026-02-18 | 4.7 | DONE | Added facade-level CRUD unit tests covering single-thread correctness, fuzzy-region retry, tombstone behavior, and concurrent read/write stress. |
 | 28 | 2026-02-18 | 4.8 | DONE | Added end-to-end integration tests for insert/read/delete verification across N keys, including a concurrent variant. |
 | 29 | 2026-02-18 | 5.1 | DONE | Added `garnet-server` TCP accept loop + per-connection handlers with shutdown control, runtime metrics, and Tokio unit tests. |
+| 30 | 2026-02-18 | 5.2 | DONE | Added `LimitedFixedBufferPool` with tiered size classes, bounded return queues, clear-on-return security behavior, and concurrent correctness tests. |
