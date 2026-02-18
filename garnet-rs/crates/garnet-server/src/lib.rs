@@ -1,9 +1,11 @@
 //! TCP server accept loop and connection handler primitives.
 
+pub mod aof_replay;
 pub mod command_dispatch;
 pub mod limited_fixed_buffer_pool;
 pub mod request_lifecycle;
 
+pub use aof_replay::{replay_aof_file, replay_aof_operations};
 pub use command_dispatch::{
     dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args, CommandId,
 };
