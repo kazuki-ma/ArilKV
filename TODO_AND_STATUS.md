@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 5 — Network Layer
-> **Current Iteration**: 32
+> **Current Iteration**: 33
 
 ---
 
@@ -108,7 +108,7 @@
 | 5.2 | Implement `LimitedFixedBufferPool` — tiered pool with power-of-2 size classes | DONE | 0.10 | Added `limited_fixed_buffer_pool` module with power-of-two level mapping, bounded per-level queues (`ArrayQueue`), secure clear-on-return behavior, overflow-drop semantics, and concurrent unit tests. |
 | 5.3 | Implement RESP protocol parser — zero-copy `&[u8]` based | DONE | 0.10 | Added `garnet-common::resp` parser (`parse_resp_command`) for `*<n>\r\n$<len>\r\n...` frames, returning zero-copy argument slices via caller-provided output storage, with partial-frame/error handling tests. |
 | 5.4 | Implement `ArgSlice` — 12-byte pointer+length reference to RESP argument | DONE | 5.3 | Added packed 12-byte `ArgSlice` in `garnet-common` with pointer/length accessors, conversion from byte slices, unsafe view reconstruction, layout tests, and RESP parser output support (`parse_resp_command_arg_slices`). |
-| 5.5 | Implement command dispatch — `match` on command byte pattern | TODO | 5.3 | See doc 09. Fast path: match first bytes for GET/SET/DEL/INCR. Fallback: full command table lookup. |
+| 5.5 | Implement command dispatch — `match` on command byte pattern | DONE | 5.3 | Added `garnet-server::command_dispatch` with case-insensitive fast-path byte checks for GET/SET/DEL/INCR and fallback lookup for additional command names, including ArgSlice-based dispatch entrypoints and tests. |
 | 5.6 | Implement request lifecycle — parse → dispatch → storage op → response write → send | TODO | 5.1-5.5, 4.6 | See doc 09. Full pipeline from TCP receive to TCP send. |
 | 5.7 | Unit tests for RESP parser | TODO | 5.3 | Valid/invalid RESP parsing. Partial message handling. Fuzz with `cargo-fuzz`. |
 | 5.8 | Unit tests for buffer pool | TODO | 5.2 | Allocation/deallocation, pool exhaustion, size class selection. |
@@ -223,6 +223,7 @@
 | 2026-02-18 | Model `LimitedFixedBufferPool` as fixed power-of-two levels backed by bounded `crossbeam_queue::ArrayQueue<Vec<u8>>` and clear buffers before reuse. | Matches Garnet’s tiered reuse semantics while keeping checkout/return lock-free and preventing stale data leakage across connections. |
 | 2026-02-18 | Implement RESP command parsing as a zero-copy routine that writes argument `&[u8]` slices into caller-provided storage instead of allocating a vector per request. | Preserves parse-time zero-copy semantics and enables partial-frame handling without introducing heap churn in the hot receive path. |
 | 2026-02-18 | Represent `ArgSlice` as a packed 12-byte pointer+length record and expose an unsafe `as_slice` view API for caller-controlled lifetime reconstruction. | Matches the documented compact layout target while keeping unsafe boundaries explicit at the conversion point. |
+| 2026-02-18 | Implement command-name dispatch with fixed-length ASCII fast-path checks before falling back to a slower lookup branch. | Keeps hot command routing (`GET`/`SET`/`DEL`/`INCR`) branch-light while retaining extensibility for less frequent commands. |
 
 ---
 
@@ -270,3 +271,4 @@
 | 30 | 2026-02-18 | 5.2 | DONE | Added `LimitedFixedBufferPool` with tiered size classes, bounded return queues, clear-on-return security behavior, and concurrent correctness tests. |
 | 31 | 2026-02-18 | 5.3 | DONE | Added zero-copy RESP parser in `garnet-common` for array+bulk command frames with robust incomplete/invalid-input handling tests. |
 | 32 | 2026-02-18 | 5.4 | DONE | Added 12-byte `ArgSlice` representation and wired RESP parsing to produce pointer+length argument references without payload copies. |
+| 33 | 2026-02-18 | 5.5 | DONE | Added command dispatch module with hot-path byte-pattern matching and fallback command lookup, including ArgSlice-based command extraction tests. |

@@ -1,7 +1,11 @@
 //! TCP server accept loop and connection handler primitives.
 
+pub mod command_dispatch;
 pub mod limited_fixed_buffer_pool;
 
+pub use command_dispatch::{
+    dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args, CommandId,
+};
 pub use limited_fixed_buffer_pool::{
     LimitedFixedBufferPool, LimitedFixedBufferPoolConfig, LimitedFixedBufferPoolError, PoolEntry,
     ReturnStatus,
