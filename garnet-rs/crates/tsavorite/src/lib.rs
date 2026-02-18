@@ -1,9 +1,15 @@
 //! Tsavorite storage engine for garnet-rs.
 
 pub mod epoch;
+pub mod hash_bucket_entry;
 pub mod record_info;
 
 pub use epoch::{EpochEntry, EpochGuard, LightEpoch};
+pub use hash_bucket_entry::{
+    HashBucketEntry, HashBucketEntryCasError, HashBucketEntryError, ADDRESS_BITS, ADDRESS_MASK,
+    PENDING_BIT_MASK, PENDING_BIT_SHIFT, READ_CACHE_BIT_MASK, READ_CACHE_BIT_SHIFT, TAG_BITS,
+    TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
+};
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
 };
