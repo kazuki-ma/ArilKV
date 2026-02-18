@@ -8,6 +8,7 @@ pub mod hybrid_log;
 pub mod overflow_bucket_allocator;
 pub mod read_operation;
 pub mod record_info;
+pub mod rmw_operation;
 pub mod session_functions;
 pub mod upsert_operation;
 
@@ -44,6 +45,9 @@ pub use read_operation::{
 };
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
+};
+pub use rmw_operation::{
+    rmw, HybridLogRmwAdapter, RmwOperationContext, RmwOperationError, RmwOperationStatus,
 };
 pub use session_functions::{ISessionFunctions, ReadInfo, RmwInfo, UpsertInfo, WriteReason};
 pub use upsert_operation::{
