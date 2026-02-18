@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 garnet-common = { path = "../garnet-common" }
+crossbeam-queue.workspace = true
 
 [dev-dependencies]
 criterion.workspace = true

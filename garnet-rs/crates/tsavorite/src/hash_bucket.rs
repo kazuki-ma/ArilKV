@@ -113,6 +113,15 @@ impl HashBucket {
     pub fn is_latched(&self, ordering: Ordering) -> bool {
         (self.overflow_word(ordering) & LATCH_BIT_MASK) != 0
     }
+
+    /// Clears all data entries and overflow/latch word.
+    #[inline]
+    pub fn clear(&self, ordering: Ordering) {
+        for entry in &self.entries {
+            entry.store(HashBucketEntry::EMPTY_WORD, ordering);
+        }
+        self.overflow_entry_word.store(0, ordering);
+    }
 }
 
 impl Default for HashBucket {

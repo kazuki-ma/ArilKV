@@ -1,9 +1,12 @@
 //! Hash-index table structure and hash-to-bucket/tag mapping.
 //!
-//! See [Doc 03 Sections 2.1-2.3] for bucket-index and tag extraction semantics.
+//! See [Doc 03 Sections 2.1-2.7] for bucket-index, tag extraction, and overflow-chain behavior.
 
 use crate::hash_bucket::{HashBucket, HASH_BUCKET_DATA_ENTRY_COUNT};
-use crate::hash_bucket_entry::{HashBucketEntry, HashBucketEntryError};
+use crate::hash_bucket_entry::{HashBucketEntry, HashBucketEntryError, ADDRESS_MASK};
+use crate::overflow_bucket_allocator::{
+    OverflowBucketAllocator, OverflowBucketAllocatorError, OverflowBucketHandle,
+};
 use core::sync::atomic::Ordering;
 
 pub const HASH_TAG_BITS: u32 = 14;
@@ -26,6 +29,7 @@ pub enum FindOrCreateTagStatus {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FindOrCreateTagResult {
     pub bucket_index: u64,
+    pub overflow_bucket_address: Option<u64>,
     pub slot: usize,
     pub status: FindOrCreateTagStatus,
 }
@@ -33,8 +37,8 @@ pub struct FindOrCreateTagResult {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashIndexError {
     InvalidSizeBits { size_bits: u8 },
-    BucketFullNeedsOverflow { bucket_index: u64 },
     InvalidTentativeEntry(HashBucketEntryError),
+    OverflowAllocator(OverflowBucketAllocatorError),
 }
 
 impl core::fmt::Display for HashIndexError {
@@ -43,25 +47,20 @@ impl core::fmt::Display for HashIndexError {
             Self::InvalidSizeBits { size_bits } => {
                 write!(f, "invalid index size bits {} (expected 1..=30)", size_bits)
             }
-            Self::BucketFullNeedsOverflow { bucket_index } => {
-                write!(
-                    f,
-                    "bucket {} has no free entry slots; overflow allocation required",
-                    bucket_index
-                )
-            }
             Self::InvalidTentativeEntry(inner) => inner.fmt(f),
+            Self::OverflowAllocator(inner) => inner.fmt(f),
         }
     }
 }
 
 impl std::error::Error for HashIndexError {}
 
-/// Fixed-size power-of-two hash-index bucket array.
+/// Fixed-size power-of-two hash-index bucket array with overflow-bucket support.
 pub struct HashIndex {
     size_bits: u8,
     size_mask: u64,
     buckets: Box<[HashBucket]>,
+    overflow_allocator: OverflowBucketAllocator,
 }
 
 impl HashIndex {
@@ -78,6 +77,7 @@ impl HashIndex {
             size_bits,
             size_mask: (bucket_count as u64) - 1,
             buckets: buckets.into_boxed_slice(),
+            overflow_allocator: OverflowBucketAllocator::new(),
         })
     }
 
@@ -94,6 +94,11 @@ impl HashIndex {
     #[inline]
     pub fn bucket_count(&self) -> usize {
         self.buckets.len()
+    }
+
+    #[inline]
+    pub fn overflow_allocator(&self) -> &OverflowBucketAllocator {
+        &self.overflow_allocator
     }
 
     #[inline]
@@ -129,108 +134,286 @@ impl HashIndex {
     pub fn find_tag_in_primary_bucket(&self, hash: u64, ordering: Ordering) -> Option<usize> {
         let location = self.locate_hash(hash);
         let bucket = self.bucket(location.bucket_index)?;
+        self.find_tag_in_bucket(bucket, location.tag, ordering)
+    }
 
-        for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
-            let entry = bucket.entry(slot)?;
-            let word = entry.load(ordering);
-            if word == HashBucketEntry::EMPTY_WORD {
-                continue;
-            }
+    /// Finds a matching non-tentative tag, traversing overflow buckets if needed.
+    pub fn find_tag(&self, hash: u64) -> Option<usize> {
+        let location = self.locate_hash(hash);
+        let primary_bucket = self.bucket(location.bucket_index)?;
+        let mut cursor = BucketCursor::Primary(primary_bucket);
 
-            if HashBucketEntry::tag_from_word(word) == location.tag
-                && !HashBucketEntry::tentative_from_word(word)
+        loop {
+            if let Some(slot) =
+                self.find_tag_in_bucket(cursor.bucket(), location.tag, Ordering::Acquire)
             {
                 return Some(slot);
             }
+
+            let overflow_address = cursor.bucket().overflow_address(Ordering::Acquire);
+            if overflow_address == 0 {
+                return None;
+            }
+
+            cursor = BucketCursor::Overflow(self.overflow_allocator.get(overflow_address).ok()?);
         }
-
-        None
-    }
-
-    #[inline]
-    pub fn find_tag(&self, hash: u64) -> Option<usize> {
-        self.find_tag_in_primary_bucket(hash, Ordering::Acquire)
     }
 
     /// Finds an existing non-tentative tag slot or inserts a new slot via CAS.
     ///
-    /// This implementation currently operates on the primary bucket only; callers should
-    /// handle `BucketFullNeedsOverflow` by invoking overflow-bucket logic.
+    /// This includes overflow-chain traversal and overflow-bucket allocation.
     pub fn find_or_create_tag(
         &self,
         hash: u64,
         begin_address: u64,
     ) -> Result<FindOrCreateTagResult, HashIndexError> {
         let location = self.locate_hash(hash);
-        let bucket = self
+        let primary_bucket = self
             .bucket(location.bucket_index)
             .expect("bucket index derived from size_mask must be in bounds");
 
+        'restart: loop {
+            let mut first_free: Option<FreeSlot<'_>> = None;
+            let mut cursor = BucketCursor::Primary(primary_bucket);
+
+            loop {
+                match self.find_tag_or_free_slot_in_bucket(
+                    cursor.bucket(),
+                    location.tag,
+                    begin_address,
+                    Ordering::Acquire,
+                ) {
+                    FindTagOrFreeSlot::Found(slot) => {
+                        return Ok(self.make_find_or_create_result(
+                            location.bucket_index,
+                            &cursor,
+                            slot,
+                            FindOrCreateTagStatus::FoundExisting,
+                        ));
+                    }
+                    FindTagOrFreeSlot::Free(slot) => {
+                        if first_free.is_none() {
+                            first_free = Some(FreeSlot {
+                                cursor: cursor.clone(),
+                                slot,
+                            });
+                        }
+                    }
+                    FindTagOrFreeSlot::NoFree => {}
+                }
+
+                let overflow_address = cursor.bucket().overflow_address(Ordering::Acquire);
+                if overflow_address == 0 {
+                    let free_slot = if let Some(free_slot) = first_free.take() {
+                        free_slot
+                    } else {
+                        let overflow_handle = self.allocate_and_link_overflow_bucket(&cursor)?;
+                        FreeSlot {
+                            cursor: BucketCursor::Overflow(overflow_handle),
+                            slot: 0,
+                        }
+                    };
+
+                    match self.try_create_tag_in_free_slot(
+                        location.bucket_index,
+                        location.tag,
+                        &free_slot,
+                    )? {
+                        Some(result) => return Ok(result),
+                        None => continue 'restart,
+                    }
+                }
+
+                let overflow_handle = self
+                    .overflow_allocator
+                    .get(overflow_address)
+                    .map_err(HashIndexError::OverflowAllocator)?;
+                cursor = BucketCursor::Overflow(overflow_handle);
+            }
+        }
+    }
+
+    fn make_find_or_create_result(
+        &self,
+        bucket_index: u64,
+        cursor: &BucketCursor<'_>,
+        slot: usize,
+        status: FindOrCreateTagStatus,
+    ) -> FindOrCreateTagResult {
+        FindOrCreateTagResult {
+            bucket_index,
+            overflow_bucket_address: cursor.overflow_bucket_address(),
+            slot,
+            status,
+        }
+    }
+
+    fn try_create_tag_in_free_slot(
+        &self,
+        bucket_index: u64,
+        tag: u16,
+        free_slot: &FreeSlot<'_>,
+    ) -> Result<Option<FindOrCreateTagResult>, HashIndexError> {
+        let tentative_word = HashBucketEntry::pack(tag, TEMP_INVALID_ADDRESS, true, false)
+            .map_err(HashIndexError::InvalidTentativeEntry)?;
+        let entry = free_slot
+            .cursor
+            .bucket()
+            .entry(free_slot.slot)
+            .expect("free slot from scan must be valid");
+
+        if entry
+            .compare_exchange_word(
+                HashBucketEntry::EMPTY_WORD,
+                tentative_word,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_err()
+        {
+            return Ok(None);
+        }
+
+        if self.find_other_slot_for_tag_maybe_tentative_in_chain(
+            bucket_index,
+            tag,
+            free_slot.cursor.as_ptr(),
+            free_slot.slot,
+            Ordering::Acquire,
+        )? {
+            entry.store(HashBucketEntry::EMPTY_WORD, Ordering::Release);
+            return Ok(None);
+        }
+
+        let committed_word = HashBucketEntry::with_tentative(tentative_word, false);
+        entry.store(committed_word, Ordering::Release);
+        Ok(Some(self.make_find_or_create_result(
+            bucket_index,
+            &free_slot.cursor,
+            free_slot.slot,
+            FindOrCreateTagStatus::Created,
+        )))
+    }
+
+    fn find_other_slot_for_tag_maybe_tentative_in_chain(
+        &self,
+        bucket_index: u64,
+        tag: u16,
+        except_bucket_ptr: *const HashBucket,
+        except_slot: usize,
+        ordering: Ordering,
+    ) -> Result<bool, HashIndexError> {
+        let primary_bucket = self
+            .bucket(bucket_index)
+            .expect("bucket index derived from size_mask must be in bounds");
+        let mut cursor = BucketCursor::Primary(primary_bucket);
+
         loop {
-            match self.find_tag_or_free_slot_in_primary_bucket(
-                bucket,
-                location.tag,
-                begin_address,
+            for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
+                let entry = cursor
+                    .bucket()
+                    .entry(slot)
+                    .expect("slot index bounded by HASH_BUCKET_DATA_ENTRY_COUNT");
+                let word = entry.load(ordering);
+                if word == HashBucketEntry::EMPTY_WORD {
+                    continue;
+                }
+
+                if HashBucketEntry::tag_from_word(word) == tag {
+                    if cursor.as_ptr() == except_bucket_ptr && slot == except_slot {
+                        continue;
+                    }
+                    return Ok(true);
+                }
+            }
+
+            let overflow_address = cursor.bucket().overflow_address(Ordering::Acquire);
+            if overflow_address == 0 {
+                return Ok(false);
+            }
+
+            let overflow_handle = self
+                .overflow_allocator
+                .get(overflow_address)
+                .map_err(HashIndexError::OverflowAllocator)?;
+            cursor = BucketCursor::Overflow(overflow_handle);
+        }
+    }
+
+    fn allocate_and_link_overflow_bucket(
+        &self,
+        cursor: &BucketCursor<'_>,
+    ) -> Result<OverflowBucketHandle, HashIndexError> {
+        loop {
+            let current_word = cursor.bucket().overflow_word(Ordering::Acquire);
+            let current_address = current_word & ADDRESS_MASK;
+            if current_address != 0 {
+                return self
+                    .overflow_allocator
+                    .get(current_address)
+                    .map_err(HashIndexError::OverflowAllocator);
+            }
+
+            let new_address = self
+                .overflow_allocator
+                .allocate()
+                .map_err(HashIndexError::OverflowAllocator)?;
+            let new_word = (current_word & !ADDRESS_MASK) | new_address;
+
+            match cursor.bucket().compare_exchange_overflow_word(
+                current_word,
+                new_word,
+                Ordering::AcqRel,
                 Ordering::Acquire,
             ) {
-                FindTagOrFreeSlot::Found(slot) => {
-                    return Ok(FindOrCreateTagResult {
-                        bucket_index: location.bucket_index,
-                        slot,
-                        status: FindOrCreateTagStatus::FoundExisting,
-                    });
+                Ok(_) => {
+                    return self
+                        .overflow_allocator
+                        .get(new_address)
+                        .map_err(HashIndexError::OverflowAllocator);
                 }
-                FindTagOrFreeSlot::NoFree => {
-                    return Err(HashIndexError::BucketFullNeedsOverflow {
-                        bucket_index: location.bucket_index,
-                    });
-                }
-                FindTagOrFreeSlot::Free(free_slot) => {
-                    let tentative_word =
-                        HashBucketEntry::pack(location.tag, TEMP_INVALID_ADDRESS, true, false)
-                            .map_err(HashIndexError::InvalidTentativeEntry)?;
-                    let entry = bucket
-                        .entry(free_slot)
-                        .expect("free slot from scan must be valid");
+                Err(observed_word) => {
+                    self.overflow_allocator
+                        .free(new_address)
+                        .map_err(HashIndexError::OverflowAllocator)?;
 
-                    if entry
-                        .compare_exchange_word(
-                            HashBucketEntry::EMPTY_WORD,
-                            tentative_word,
-                            Ordering::AcqRel,
-                            Ordering::Acquire,
-                        )
-                        .is_err()
-                    {
-                        continue;
+                    let observed_address = observed_word & ADDRESS_MASK;
+                    if observed_address != 0 {
+                        return self
+                            .overflow_allocator
+                            .get(observed_address)
+                            .map_err(HashIndexError::OverflowAllocator);
                     }
-
-                    if self
-                        .find_other_slot_for_tag_maybe_tentative(
-                            bucket,
-                            location.tag,
-                            free_slot,
-                            Ordering::Acquire,
-                        )
-                        .is_some()
-                    {
-                        entry.store(HashBucketEntry::EMPTY_WORD, Ordering::Release);
-                        continue;
-                    }
-
-                    let committed_word = HashBucketEntry::with_tentative(tentative_word, false);
-                    entry.store(committed_word, Ordering::Release);
-                    return Ok(FindOrCreateTagResult {
-                        bucket_index: location.bucket_index,
-                        slot: free_slot,
-                        status: FindOrCreateTagStatus::Created,
-                    });
                 }
             }
         }
     }
 
-    fn find_tag_or_free_slot_in_primary_bucket(
+    fn find_tag_in_bucket(
+        &self,
+        bucket: &HashBucket,
+        tag: u16,
+        ordering: Ordering,
+    ) -> Option<usize> {
+        for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
+            let entry = bucket
+                .entry(slot)
+                .expect("slot index bounded by HASH_BUCKET_DATA_ENTRY_COUNT");
+            let word = entry.load(ordering);
+            if word == HashBucketEntry::EMPTY_WORD {
+                continue;
+            }
+
+            if HashBucketEntry::tag_from_word(word) == tag
+                && !HashBucketEntry::tentative_from_word(word)
+            {
+                return Some(slot);
+            }
+        }
+        None
+    }
+
+    fn find_tag_or_free_slot_in_bucket(
         &self,
         bucket: &HashBucket,
         tag: u16,
@@ -282,34 +465,38 @@ impl HashIndex {
             None => FindTagOrFreeSlot::NoFree,
         }
     }
+}
 
-    fn find_other_slot_for_tag_maybe_tentative(
-        &self,
-        bucket: &HashBucket,
-        tag: u16,
-        except_slot: usize,
-        ordering: Ordering,
-    ) -> Option<usize> {
-        for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
-            if slot == except_slot {
-                continue;
-            }
+#[derive(Clone)]
+enum BucketCursor<'a> {
+    Primary(&'a HashBucket),
+    Overflow(OverflowBucketHandle),
+}
 
-            let entry = bucket
-                .entry(slot)
-                .expect("slot index bounded by HASH_BUCKET_DATA_ENTRY_COUNT");
-            let word = entry.load(ordering);
-            if word == HashBucketEntry::EMPTY_WORD {
-                continue;
-            }
-
-            if HashBucketEntry::tag_from_word(word) == tag {
-                return Some(slot);
-            }
+impl<'a> BucketCursor<'a> {
+    fn bucket(&self) -> &HashBucket {
+        match self {
+            Self::Primary(bucket) => bucket,
+            Self::Overflow(handle) => handle.bucket(),
         }
-
-        None
     }
+
+    fn as_ptr(&self) -> *const HashBucket {
+        self.bucket() as *const HashBucket
+    }
+
+    fn overflow_bucket_address(&self) -> Option<u64> {
+        match self {
+            Self::Primary(_) => None,
+            Self::Overflow(handle) => Some(handle.logical_address()),
+        }
+    }
+}
+
+#[derive(Clone)]
+struct FreeSlot<'a> {
+    cursor: BucketCursor<'a>,
+    slot: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -386,11 +573,13 @@ mod tests {
 
         let created = index.find_or_create_tag(hash, 0).unwrap();
         assert_eq!(created.bucket_index, 1);
+        assert_eq!(created.overflow_bucket_address, None);
         assert_eq!(created.status, FindOrCreateTagStatus::Created);
         assert_eq!(index.find_tag(hash), Some(created.slot));
 
         let found = index.find_or_create_tag(hash, 0).unwrap();
         assert_eq!(found.bucket_index, 1);
+        assert_eq!(found.overflow_bucket_address, None);
         assert_eq!(found.slot, created.slot);
         assert_eq!(found.status, FindOrCreateTagStatus::FoundExisting);
     }
@@ -407,7 +596,10 @@ mod tests {
             let live_word =
                 HashBucketEntry::pack((slot + 10) as u16, (1000 + slot) as u64, false, false)
                     .unwrap();
-            bucket.entry(slot).unwrap().store(live_word, Ordering::Release);
+            bucket
+                .entry(slot)
+                .unwrap()
+                .store(live_word, Ordering::Release);
         }
 
         let stale_word = HashBucketEntry::pack(1, 20, false, false).unwrap();
@@ -420,26 +612,35 @@ mod tests {
         let created = index.find_or_create_tag(hash, 100).unwrap();
 
         assert_eq!(created.slot, 2);
+        assert_eq!(created.overflow_bucket_address, None);
         assert_eq!(created.status, FindOrCreateTagStatus::Created);
         assert_eq!(index.find_tag(hash), Some(2));
     }
 
     #[test]
-    fn find_or_create_returns_overflow_needed_when_primary_bucket_full() {
+    fn find_or_create_allocates_overflow_bucket_when_primary_bucket_is_full() {
         let mut index = HashIndex::with_size_bits(2).unwrap();
-        let bucket = index.bucket_mut(0).unwrap();
-
-        for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
-            let word = HashBucketEntry::pack((slot + 1) as u16, (1000 + slot) as u64, false, false)
-                .unwrap();
-            bucket.entry(slot).unwrap().store(word, Ordering::Release);
+        {
+            let bucket = index.bucket_mut(0).unwrap();
+            for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
+                let word =
+                    HashBucketEntry::pack((slot + 1) as u16, (1000 + slot) as u64, false, false)
+                        .unwrap();
+                bucket.entry(slot).unwrap().store(word, Ordering::Release);
+            }
         }
 
         let hash = (999u64 << HASH_TAG_SHIFT) | 0;
-        let err = index.find_or_create_tag(hash, 0).unwrap_err();
-        assert!(matches!(
-            err,
-            HashIndexError::BucketFullNeedsOverflow { bucket_index: 0 }
-        ));
+        let created = index.find_or_create_tag(hash, 0).unwrap();
+
+        assert_eq!(created.bucket_index, 0);
+        assert_eq!(created.status, FindOrCreateTagStatus::Created);
+        assert!(created.overflow_bucket_address.is_some());
+
+        let bucket = index.bucket(0).unwrap();
+        let overflow_address = bucket.overflow_address(Ordering::Acquire);
+        assert_eq!(created.overflow_bucket_address, Some(overflow_address));
+        assert_ne!(overflow_address, 0);
+        assert_eq!(index.find_tag(hash), Some(created.slot));
     }
 }

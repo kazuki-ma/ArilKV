@@ -5,6 +5,7 @@ pub mod hash_bucket;
 pub mod hash_bucket_entry;
 pub mod hash_index;
 pub mod hybrid_log;
+pub mod overflow_bucket_allocator;
 pub mod record_info;
 
 pub use epoch::{EpochEntry, EpochGuard, LightEpoch};
@@ -30,6 +31,10 @@ pub use hybrid_log::{
     PageManager, PageManagerError, PageResidencyError, ReadPathStatus, RecordFormatError,
     RecordLayout, RecordParsedLayout, TailAllocationStatus, TailAllocator, TailAllocatorError,
     RECORD_ALIGNMENT, RECORD_INFO_SIZE,
+};
+pub use overflow_bucket_allocator::{
+    OverflowBucketAllocator, OverflowBucketAllocatorError, OverflowBucketHandle,
+    OVERFLOW_PAGE_SIZE, OVERFLOW_PAGE_SIZE_BITS,
 };
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
