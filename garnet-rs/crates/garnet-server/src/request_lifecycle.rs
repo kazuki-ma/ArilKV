@@ -12,6 +12,8 @@ use tsavorite::{
     TsavoriteKvInitError, UpsertInfo, WriteReason,
 };
 
+const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
+
 #[derive(Debug)]
 pub enum RequestProcessorInitError {
     Tsavorite(TsavoriteKvInitError),
@@ -208,6 +210,9 @@ impl RequestProcessor {
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
+        if options.expiration.is_some() {
+            info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+        }
         session
             .upsert(&key, &value, &mut output, &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
@@ -437,7 +442,15 @@ impl RequestProcessor {
         self.expirations
             .lock()
             .expect("expiration mutex poisoned")
-            .insert(key, deadline);
+            .insert(key.clone(), deadline);
+        if !self.rewrite_existing_value_with_expiration_flag(&key, true)? {
+            self.expirations
+                .lock()
+                .expect("expiration mutex poisoned")
+                .remove(&key);
+            append_integer(response_out, 0);
+            return Ok(());
+        }
         append_integer(response_out, 1);
         Ok(())
     }
@@ -529,13 +542,23 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let removed = self
+        let removed_deadline = self
             .expirations
             .lock()
             .expect("expiration mutex poisoned")
             .remove(&key)
             .is_some();
-        append_integer(response_out, if removed { 1 } else { 0 });
+        if !removed_deadline {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        if !self.rewrite_existing_value_with_expiration_flag(&key, false)? {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        append_integer(response_out, 1);
         Ok(())
     }
 
@@ -669,6 +692,35 @@ impl RequestProcessor {
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
+            ReadOperationStatus::NotFound => Ok(false),
+            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
+    }
+
+    fn rewrite_existing_value_with_expiration_flag(
+        &self,
+        key: &[u8],
+        has_expiration: bool,
+    ) -> Result<bool, RequestExecutionError> {
+        let key_vec = key.to_vec();
+        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut session = store.session(&self.functions);
+        let mut current = Vec::new();
+        let status = session
+            .read(&key_vec, &Vec::new(), &mut current, &ReadInfo::default())
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        match status {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                let mut output = Vec::new();
+                let mut upsert_info = UpsertInfo::default();
+                if has_expiration {
+                    upsert_info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+                }
+                session
+                    .upsert(&key_vec, &current, &mut output, &mut upsert_info)
+                    .map_err(|_| RequestExecutionError::StorageFailure)?;
+                Ok(true)
+            }
             ReadOperationStatus::NotFound => Ok(false),
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
@@ -916,12 +968,17 @@ impl ISessionFunctions for KvSessionFunctions {
         _src: &Self::Value,
         dst: &mut Self::Value,
         output: &mut Self::Output,
-        _upsert_info: &mut UpsertInfo,
+        upsert_info: &mut UpsertInfo,
         _reason: WriteReason,
-        _record_info: &mut RecordInfo,
+        record_info: &mut RecordInfo,
     ) -> bool {
         *dst = input.clone();
         *output = dst.clone();
+        if (upsert_info.user_data & UPSERT_USER_DATA_HAS_EXPIRATION) != 0 {
+            record_info.set_has_expiration();
+        } else {
+            record_info.clear_has_expiration();
+        }
         true
     }
 
@@ -932,11 +989,16 @@ impl ISessionFunctions for KvSessionFunctions {
         _src: &Self::Value,
         dst: &mut Self::Value,
         output: &mut Self::Output,
-        _upsert_info: &mut UpsertInfo,
-        _record_info: &mut RecordInfo,
+        upsert_info: &mut UpsertInfo,
+        record_info: &mut RecordInfo,
     ) -> bool {
         *dst = input.clone();
         *output = dst.clone();
+        if (upsert_info.user_data & UPSERT_USER_DATA_HAS_EXPIRATION) != 0 {
+            record_info.set_has_expiration();
+        } else {
+            record_info.clear_has_expiration();
+        }
         true
     }
 
@@ -1002,6 +1064,7 @@ impl ISessionFunctions for KvSessionFunctions {
         record_info: &mut RecordInfo,
     ) -> bool {
         value.clear();
+        record_info.clear_has_expiration();
         record_info.set_tombstone();
         true
     }
@@ -1014,6 +1077,7 @@ impl ISessionFunctions for KvSessionFunctions {
         record_info: &mut RecordInfo,
     ) -> bool {
         value.clear();
+        record_info.clear_has_expiration();
         record_info.set_tombstone();
         true
     }
@@ -1098,6 +1162,43 @@ mod tests {
             .unwrap()
             .parse::<i64>()
             .unwrap()
+    }
+
+    #[test]
+    fn writers_toggle_record_has_expiration_from_upsert_user_data() {
+        let functions = KvSessionFunctions;
+        let key = b"key".to_vec();
+        let input = b"value".to_vec();
+        let src = Vec::new();
+        let mut dst = Vec::new();
+        let mut output = Vec::new();
+        let mut info = UpsertInfo::default();
+        let mut record_info = RecordInfo::default();
+
+        info.user_data = UPSERT_USER_DATA_HAS_EXPIRATION;
+        assert!(functions.single_writer(
+            &key,
+            &input,
+            &src,
+            &mut dst,
+            &mut output,
+            &mut info,
+            WriteReason::Insert,
+            &mut record_info
+        ));
+        assert!(record_info.has_expiration());
+
+        info.user_data = 0;
+        assert!(functions.concurrent_writer(
+            &key,
+            &input,
+            &src,
+            &mut dst,
+            &mut output,
+            &mut info,
+            &mut record_info
+        ));
+        assert!(!record_info.has_expiration());
     }
 
     #[test]
