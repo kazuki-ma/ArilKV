@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 4 — CRUD Operations
-> **Current Iteration**: 22
+> **Current Iteration**: 23
 
 ---
 
@@ -89,7 +89,7 @@
 |---|------|--------|------------|-------|
 | 4.1 | Define `ISessionFunctions` trait — generic callback interface | DONE | 2.4 | Added `session_functions` module with `ISessionFunctions` trait, operation info structs (`ReadInfo`, `UpsertInfo`, `RmwInfo`), `WriteReason`, and callback signatures for read/upsert/RMW paths. |
 | 4.2 | Implement `Read` operation — hash lookup → chain traversal → reader callbacks | DONE | 3.2, 4.1 | Added `read_operation::read` with hash-entry address lookup, previous-address chain traversal, key match filtering, region-aware reader callback dispatch (`ConcurrentReader` vs `SingleReader`), closed/tombstone handling, and disk-resident page loading path. |
-| 4.3 | Implement `Upsert` operation — hash lookup → IPU or RCU → CAS into chain | TODO | 3.2, 4.1 | See doc 06. Mutable region → in-place update (IPU). Read-only or not found → record copy update (RCU), append to tail, CAS hash entry. |
+| 4.3 | Implement `Upsert` operation — hash lookup → IPU or RCU → CAS into chain | DONE | 3.2, 4.1 | Added `upsert_operation::upsert` with tag-head lookup, key-chain search, mutable-region IPU (same-size fast path), tail copy-update/insert append, and hash-entry address CAS replacement. |
 | 4.4 | Implement `RMW` (Read-Modify-Write) — with fuzzy region RETRY_LATER | TODO | 4.2, 4.3 | See doc 06. Mutable → InPlaceUpdater. ReadOnly/Fuzzy → RETRY_LATER (critical: fuzzy region between ReadOnlyAddress and SafeReadOnlyAddress). OnDisk → CopyUpdater + append. |
 | 4.5 | Implement `Delete` — tombstone creation | TODO | 4.3 | See doc 06. Create tombstone record (RecordInfo.Tombstone = true). |
 | 4.6 | Implement `TsavoriteKV<K, V>` facade — public API wrapping all operations | TODO | 4.2-4.5 | Generic over key/value types. Session management. Epoch integration. |
@@ -214,6 +214,7 @@
 | 2026-02-18 | Validate hash-index collision paths with multi-threaded `find_or_create_tag` tests that force overflow-chain growth and concurrent duplicate-tag races. | Provides practical contention coverage ahead of CRUD integration without yet introducing `loom` model-checking overhead. |
 | 2026-02-18 | Define `ISessionFunctions` in Rust as a trait with associated marker types (`Reader`/`Writer`/`Comparer`) plus explicit read/upsert/RMW callback contracts. | Establishes a stable generic callback surface before wiring operation pipelines in Phase 4. |
 | 2026-02-18 | Introduce a `HybridLogReadAdapter` bridge trait so generic `ISessionFunctions` implementations can consume raw log bytes without coupling read-path logic to a concrete key/value type. | Keeps read traversal generic while allowing zero-copy-ish log parsing to stay inside storage-engine modules. |
+| 2026-02-18 | Implement Upsert as a two-stage path: attempt mutable in-place rewrite when size is unchanged, otherwise append a new record and CAS-swap the hash-entry head address. | Preserves core Tsavorite mutation semantics while keeping the first Rust implementation tractable before richer in-place growth/filler handling. |
 
 ---
 
@@ -251,3 +252,4 @@
 | 20 | 2026-02-18 | 3.5 | DONE | Added concurrent hash-index tests covering same-tag convergence, overflow-chain collision inserts, and post-insert lookup correctness. |
 | 21 | 2026-02-18 | 4.1 | DONE | Added the first Rust `ISessionFunctions` trait surface and operation-info structs, with a concrete test implementation validating callback invocation semantics. |
 | 22 | 2026-02-18 | 4.2 | DONE | Added initial read operation implementation with hash-index address lookup, record-chain traversal, region-based reader callback selection, and disk fallback coverage tests. |
+| 23 | 2026-02-18 | 4.3 | DONE | Added initial Upsert operation with mutable-region in-place update path, tail append copy-update path, and hash-head CAS update tests. |

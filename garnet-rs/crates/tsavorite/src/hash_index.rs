@@ -35,6 +35,14 @@ pub struct FindOrCreateTagResult {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashEntryLocation {
+    pub bucket_index: u64,
+    pub overflow_bucket_address: Option<u64>,
+    pub slot: usize,
+    pub word: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashIndexError {
     InvalidSizeBits { size_bits: u8 },
     InvalidTentativeEntry(HashBucketEntryError),
@@ -179,6 +187,83 @@ impl HashIndex {
 
             cursor = BucketCursor::Overflow(self.overflow_allocator.get(overflow_address).ok()?);
         }
+    }
+
+    /// Finds the matching hash entry location (bucket/slot/word).
+    pub fn find_tag_entry(&self, hash: u64) -> Option<HashEntryLocation> {
+        let location = self.locate_hash(hash);
+        let primary_bucket = self.bucket(location.bucket_index)?;
+        let mut cursor = BucketCursor::Primary(primary_bucket);
+
+        loop {
+            if let Some((slot, word)) = self.find_tag_slot_and_word_in_bucket(
+                cursor.bucket(),
+                location.tag,
+                Ordering::Acquire,
+            ) {
+                return Some(HashEntryLocation {
+                    bucket_index: location.bucket_index,
+                    overflow_bucket_address: cursor.overflow_bucket_address(),
+                    slot,
+                    word,
+                });
+            }
+
+            let overflow_address = cursor.bucket().overflow_address(Ordering::Acquire);
+            if overflow_address == 0 {
+                return None;
+            }
+
+            cursor = BucketCursor::Overflow(self.overflow_allocator.get(overflow_address).ok()?);
+        }
+    }
+
+    /// CAS-updates the address bits of an existing entry location.
+    pub fn compare_exchange_entry_address(
+        &self,
+        location: &HashEntryLocation,
+        new_address: u64,
+    ) -> Result<bool, HashIndexError> {
+        let desired_word = HashBucketEntry::with_address(location.word, new_address)
+            .map_err(HashIndexError::InvalidTentativeEntry)?;
+
+        let updated = match location.overflow_bucket_address {
+            Some(overflow_address) => {
+                let handle = self
+                    .overflow_allocator
+                    .get(overflow_address)
+                    .map_err(HashIndexError::OverflowAllocator)?;
+                let entry = handle
+                    .bucket()
+                    .entry(location.slot)
+                    .expect("slot index bounded by HASH_BUCKET_DATA_ENTRY_COUNT");
+                entry
+                    .compare_exchange_word(
+                        location.word,
+                        desired_word,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+            }
+            None => {
+                let entry = self
+                    .bucket(location.bucket_index)
+                    .expect("bucket index derived from size_mask must be in bounds")
+                    .entry(location.slot)
+                    .expect("slot index bounded by HASH_BUCKET_DATA_ENTRY_COUNT");
+                entry
+                    .compare_exchange_word(
+                        location.word,
+                        desired_word,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    )
+                    .is_ok()
+            }
+        };
+
+        Ok(updated)
     }
 
     /// Finds an existing non-tentative tag slot or inserts a new slot via CAS.
@@ -454,6 +539,30 @@ impl HashIndex {
                 && !HashBucketEntry::tentative_from_word(word)
             {
                 return Some(word);
+            }
+        }
+        None
+    }
+
+    fn find_tag_slot_and_word_in_bucket(
+        &self,
+        bucket: &HashBucket,
+        tag: u16,
+        ordering: Ordering,
+    ) -> Option<(usize, u64)> {
+        for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
+            let entry = bucket
+                .entry(slot)
+                .expect("slot index bounded by HASH_BUCKET_DATA_ENTRY_COUNT");
+            let word = entry.load(ordering);
+            if word == HashBucketEntry::EMPTY_WORD {
+                continue;
+            }
+
+            if HashBucketEntry::tag_from_word(word) == tag
+                && !HashBucketEntry::tentative_from_word(word)
+            {
+                return Some((slot, word));
             }
         }
         None
@@ -764,5 +873,23 @@ mod tests {
         assert!(!overflow_addresses.is_empty());
         let unique_addresses: HashSet<_> = overflow_addresses.iter().copied().collect();
         assert_eq!(unique_addresses.len(), overflow_addresses.len());
+    }
+
+    #[test]
+    fn compare_exchange_entry_address_updates_tag_head() {
+        let index = HashIndex::with_size_bits(2).unwrap();
+        let hash = (88u64 << HASH_TAG_SHIFT) | 1;
+        let created = index.find_or_create_tag(hash, 0).unwrap();
+
+        let entry = index.find_tag_entry(hash).unwrap();
+        assert_eq!(entry.slot, created.slot);
+        assert_eq!(
+            HashBucketEntry::address_from_word(entry.word),
+            TEMP_INVALID_ADDRESS
+        );
+
+        let updated = index.compare_exchange_entry_address(&entry, 1234).unwrap();
+        assert!(updated);
+        assert_eq!(index.find_tag_address(hash), Some(1234));
     }
 }

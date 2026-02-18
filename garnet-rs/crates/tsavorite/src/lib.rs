@@ -9,6 +9,7 @@ pub mod overflow_bucket_allocator;
 pub mod read_operation;
 pub mod record_info;
 pub mod session_functions;
+pub mod upsert_operation;
 
 pub use epoch::{EpochEntry, EpochGuard, LightEpoch};
 pub use hash_bucket::{
@@ -22,8 +23,8 @@ pub use hash_bucket_entry::{
     TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
 };
 pub use hash_index::{
-    FindOrCreateTagResult, FindOrCreateTagStatus, HashIndex, HashIndexError, HashLocation,
-    HASH_TAG_BITS, HASH_TAG_MASK, HASH_TAG_SHIFT, TEMP_INVALID_ADDRESS,
+    FindOrCreateTagResult, FindOrCreateTagStatus, HashEntryLocation, HashIndex, HashIndexError,
+    HashLocation, HASH_TAG_BITS, HASH_TAG_MASK, HASH_TAG_SHIFT, TEMP_INVALID_ADDRESS,
 };
 pub use hybrid_log::{
     flush_page_to_device, load_page_from_device, parse_key_span, parse_record_info,
@@ -45,3 +46,7 @@ pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
 };
 pub use session_functions::{ISessionFunctions, ReadInfo, RmwInfo, UpsertInfo, WriteReason};
+pub use upsert_operation::{
+    upsert, HybridLogUpsertAdapter, UpsertOperationContext, UpsertOperationError,
+    UpsertOperationStatus,
+};
