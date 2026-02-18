@@ -2,7 +2,7 @@
 
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_common::ArgSlice;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 use tsavorite::{
@@ -36,6 +36,7 @@ impl From<TsavoriteKvInitError> for RequestProcessorInitError {
 pub struct RequestProcessor {
     store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
     expirations: Mutex<HashMap<Vec<u8>, Instant>>,
+    key_registry: Mutex<HashSet<Vec<u8>>>,
     functions: KvSessionFunctions,
 }
 
@@ -44,6 +45,7 @@ impl RequestProcessor {
         Ok(Self {
             store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
             expirations: Mutex::new(HashMap::new()),
+            key_registry: Mutex::new(HashSet::new()),
             functions: KvSessionFunctions,
         })
     }
@@ -67,6 +69,9 @@ impl RequestProcessor {
             CommandId::Decr => self.handle_incr_decr(args, -1, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
+            CommandId::Info => self.handle_info(args, response_out),
+            CommandId::Dbsize => self.handle_dbsize(args, response_out),
+            CommandId::Command => self.handle_command(args, response_out),
             _ => Err(RequestExecutionError::UnknownCommand),
         }
     }
@@ -151,12 +156,16 @@ impl RequestProcessor {
         let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
         match options.expiration {
             Some(deadline) => {
-                expirations.insert(key, deadline);
+                expirations.insert(key.clone(), deadline);
             }
             None => {
                 expirations.remove(&key);
             }
         }
+        self.key_registry
+            .lock()
+            .expect("key registry mutex poisoned")
+            .insert(key);
 
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -202,6 +211,10 @@ impl RequestProcessor {
                         .lock()
                         .expect("expiration mutex poisoned")
                         .remove(&key);
+                    self.key_registry
+                        .lock()
+                        .expect("key registry mutex poisoned")
+                        .remove(&key);
                 }
                 DeleteOperationStatus::NotFound => {}
                 DeleteOperationStatus::RetryLater => {
@@ -243,6 +256,10 @@ impl RequestProcessor {
             | Ok(RmwOperationStatus::Inserted) => {
                 let parsed =
                     parse_i64_ascii(&output).ok_or(RequestExecutionError::ValueNotInteger)?;
+                self.key_registry
+                    .lock()
+                    .expect("key registry mutex poisoned")
+                    .insert(key.clone());
                 append_integer(response_out, parsed);
                 Ok(())
             }
@@ -253,6 +270,10 @@ impl RequestProcessor {
                 session
                     .upsert(&key, &input, &mut upsert_output, &mut upsert_info)
                     .map_err(|_| RequestExecutionError::StorageFailure)?;
+                self.key_registry
+                    .lock()
+                    .expect("key registry mutex poisoned")
+                    .insert(key.clone());
                 append_integer(response_out, delta);
                 Ok(())
             }
@@ -301,6 +322,87 @@ impl RequestProcessor {
         Ok(())
     }
 
+    fn handle_info(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 1 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "INFO",
+                expected: "INFO",
+            });
+        }
+
+        let dbsize = self.active_key_count()?;
+        let payload = format!(
+            "# Server\r\nredis_version:garnet-rs\r\n# Stats\r\ndbsize:{}\r\n",
+            dbsize
+        );
+        append_bulk_string(response_out, payload.as_bytes());
+        Ok(())
+    }
+
+    fn handle_dbsize(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 1 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "DBSIZE",
+                expected: "DBSIZE",
+            });
+        }
+        append_integer(response_out, self.active_key_count()?);
+        Ok(())
+    }
+
+    fn handle_command(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 1 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "COMMAND",
+                expected: "COMMAND",
+            });
+        }
+        append_bulk_array(
+            response_out,
+            &[
+                b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"PING", b"ECHO", b"INFO", b"DBSIZE",
+                b"COMMAND",
+            ],
+        );
+        Ok(())
+    }
+
+    fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
+        let keys: Vec<Vec<u8>> = self
+            .key_registry
+            .lock()
+            .expect("key registry mutex poisoned")
+            .iter()
+            .cloned()
+            .collect();
+
+        let mut count = 0i64;
+        for key in keys {
+            self.expire_key_if_needed(&key)?;
+            if self.key_exists(&key)? {
+                count += 1;
+            } else {
+                self.key_registry
+                    .lock()
+                    .expect("key registry mutex poisoned")
+                    .remove(&key);
+            }
+        }
+        Ok(count)
+    }
+
     fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         let mut store = self.store.lock().expect("store mutex poisoned");
         let mut session = store.session(&self.functions);
@@ -339,6 +441,10 @@ impl RequestProcessor {
         session
             .delete(&key.to_vec(), &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
+        self.key_registry
+            .lock()
+            .expect("key registry mutex poisoned")
+            .remove(key);
         Ok(())
     }
 }
@@ -490,6 +596,15 @@ fn append_bulk_string(response_out: &mut Vec<u8>, value: &[u8]) {
     response_out.extend_from_slice(b"\r\n");
     response_out.extend_from_slice(value);
     response_out.extend_from_slice(b"\r\n");
+}
+
+fn append_bulk_array(response_out: &mut Vec<u8>, items: &[&[u8]]) {
+    response_out.push(b'*');
+    response_out.extend_from_slice(items.len().to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for item in items {
+        append_bulk_string(response_out, item);
+    }
 }
 
 fn append_null_bulk_string(response_out: &mut Vec<u8>) {
@@ -849,5 +964,44 @@ mod tests {
             .unwrap();
         err.append_resp_error(&mut response);
         assert_eq!(response, b"-ERR invalid expire time in 'set' command\r\n");
+    }
+
+    #[test]
+    fn info_dbsize_and_command_responses_are_generated() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+
+        response.clear();
+        let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
+        let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let info = b"*1\r\n$4\r\nINFO\r\n";
+        let meta = parse_resp_command_arg_slices(info, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert!(response.starts_with(b"$"));
+        assert!(response.windows("dbsize:1".len()).any(|w| w == b"dbsize:1"));
+
+        response.clear();
+        let command = b"*1\r\n$7\r\nCOMMAND\r\n";
+        let meta = parse_resp_command_arg_slices(command, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert!(response.starts_with(b"*"));
+        assert!(response.windows(7).any(|w| w == b"$3\r\nGET"));
     }
 }
