@@ -450,6 +450,7 @@ impl<'a> SpanByteRefMut<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use proptest::prelude::*;
 
     #[test]
     fn span_byte_roundtrip_payload() {
@@ -464,6 +465,27 @@ mod tests {
 
         let parsed = SpanByteRef::parse(&bytes).unwrap();
         assert_eq!(parsed.as_slice(), [9u8, 2, 3, 4, 5]);
+    }
+
+    proptest! {
+        #[test]
+        fn span_byte_roundtrip_proptest(payload in proptest::collection::vec(any::<u8>(), 0usize..4096)) {
+            let mut bytes = vec![0u8; SPAN_BYTE_LENGTH_PREFIX_SIZE + payload.len()];
+            let mut span_byte = SpanByteRefMut::write_payload(&mut bytes, &payload).unwrap();
+
+            prop_assert_eq!(span_byte.as_slice(), payload.as_slice());
+            span_byte
+                .as_mut_slice()
+                .iter_mut()
+                .for_each(|byte| *byte = byte.wrapping_add(1));
+
+            let parsed = SpanByteRef::parse(&bytes).unwrap();
+            let expected = payload
+                .iter()
+                .map(|byte| byte.wrapping_add(1))
+                .collect::<Vec<_>>();
+            prop_assert_eq!(parsed.as_slice(), expected.as_slice());
+        }
     }
 
     #[test]
