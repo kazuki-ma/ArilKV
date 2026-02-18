@@ -3,6 +3,7 @@
 pub mod epoch;
 pub mod hash_bucket;
 pub mod hash_bucket_entry;
+pub mod hash_index;
 pub mod hybrid_log;
 pub mod record_info;
 
@@ -16,6 +17,9 @@ pub use hash_bucket_entry::{
     HashBucketEntry, HashBucketEntryCasError, HashBucketEntryError, ADDRESS_BITS, ADDRESS_MASK,
     PENDING_BIT_MASK, PENDING_BIT_SHIFT, READ_CACHE_BIT_MASK, READ_CACHE_BIT_SHIFT, TAG_BITS,
     TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
+};
+pub use hash_index::{
+    HashIndex, HashIndexError, HashLocation, HASH_TAG_BITS, HASH_TAG_MASK, HASH_TAG_SHIFT,
 };
 pub use hybrid_log::{
     flush_page_to_device, load_page_from_device, parse_key_span, parse_record_info,

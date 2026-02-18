@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-18
-> **Current Phase**: Phase 2 — Hybrid Log Allocator
-> **Current Iteration**: 15
+> **Current Phase**: Phase 3 — Hash Index
+> **Current Iteration**: 16
 
 ---
 
@@ -73,7 +73,7 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 3.1 | Implement hash index structure — power-of-2 bucket array, tag-based matching | TODO | 1.4, 1.5 | See doc 03. `num_buckets = 2^index_size_bits`. Hash → bucket_index (lower bits) + tag (upper 14 bits). |
+| 3.1 | Implement hash index structure — power-of-2 bucket array, tag-based matching | DONE | 1.4, 1.5 | Added `HashIndex` with power-of-2 bucket allocation (`size_bits`), `hash -> (bucket_index, tag)` mapping, primary-bucket tag scan, and coverage tests. |
 | 3.2 | Implement `FindTag` / `FindOrCreateTag` — CAS-based entry insertion | TODO | 3.1 | See doc 03. Scan bucket entries, match tag. CAS for tentative insert. Overflow chain traversal. |
 | 3.3 | Implement overflow bucket allocation — fixed-page allocator for overflow chains | TODO | 3.1 | See doc 03. Pre-allocated overflow page pool. Thread-local free lists for lock-free allocation. |
 | 3.4 | Implement transient S/X locking — shared/exclusive latch on bucket overflow entry | TODO | 3.1 | See doc 03 §transient locking. Lock word in overflow pointer slot. Readers take S, writers take X. |
@@ -207,6 +207,7 @@
 | 2026-02-18 | Model page-device interaction as synchronous trait calls with async-compatible method names (`read_async`/`write_async`) in Phase 2. | Keeps early allocator logic deterministic/testable while preserving an API shape that can later map to actual async I/O backends. |
 | 2026-02-18 | Implement the on-disk read path as a callback-based helper (`read_with_callback`) that synchronously ensures residency before invoking the completion callback. | Preserves the future async completion shape while keeping Phase 2 tests deterministic and easy to validate. |
 | 2026-02-18 | Stress-test `TailAllocator` with multi-threaded allocation loops that tolerate `RetryNow` and assert unique logical addresses. | Validates lock-free reservation semantics under contention without introducing unstable timing-dependent assertions. |
+| 2026-02-18 | Start hash-index implementation with a fixed-size `HashIndex` table (`Box<[HashBucket]>`) and explicit hash split helpers before CAS insertion logic. | Establishes deterministic bucket/tag addressing invariants first, reducing complexity when adding concurrent `FindOrCreateTag` flows in the next step. |
 
 ---
 
@@ -237,3 +238,4 @@
 | 13 | 2026-02-18 | 2.5 | DONE | Added page I/O abstraction (`PageDevice`), in-memory device implementation, and flush/load helper flow with roundtrip and error-path tests. |
 | 14 | 2026-02-18 | 2.6 | DONE | Added head-shift eviction helper with flush-before-evict behavior and an `address < HeadAddress` disk fallback read path with callback completion semantics. |
 | 15 | 2026-02-18 | 2.7 | DONE | Expanded hybrid-log allocator tests with multi-page allocation integrity and concurrent tail-allocation stress uniqueness checks. |
+| 16 | 2026-02-18 | 3.1 | DONE | Added initial hash-index structure (`HashIndex`) with power-of-two bucket array, bucket/tag extraction, and primary-bucket non-tentative tag matching tests. |
