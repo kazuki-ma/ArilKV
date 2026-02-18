@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-18
-> **Current Phase**: Phase 4 — CRUD Operations
-> **Current Iteration**: 28
+> **Current Phase**: Phase 5 — Network Layer
+> **Current Iteration**: 29
 
 ---
 
@@ -104,7 +104,7 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 5.1 | Implement TCP accept loop and connection handler | TODO | 0.10 | See doc 07. tokio-based TCP listener. Per-connection task. |
+| 5.1 | Implement TCP accept loop and connection handler | DONE | 0.10 | Added async TCP server in `garnet-server` using `tokio::net::TcpListener`, per-connection spawned handler tasks, shutdown-aware accept loop, connection/byte metrics, and unit tests for accept+shutdown behavior. |
 | 5.2 | Implement `LimitedFixedBufferPool` — tiered pool with power-of-2 size classes | TODO | 0.10 | See doc 07 §2.5. Size classes: 256B, 512B, ..., 1MB. Pre-allocated buffers. Thread-safe checkout/return. |
 | 5.3 | Implement RESP protocol parser — zero-copy `&[u8]` based | TODO | 0.10 | See doc 08. Parse `*count\r\n$len\r\n...` format. Return `&[u8]` slices into input buffer. No allocation. |
 | 5.4 | Implement `ArgSlice` — 12-byte pointer+length reference to RESP argument | TODO | 5.3 | See doc 08. `ptr: *const u8` + `length: i32` = 12 bytes. Points into receive buffer. |
@@ -219,6 +219,7 @@
 | 2026-02-18 | Implement Delete with a dual path: mutable-region in-place tombstone rewrite when callback output keeps value size stable, otherwise append a tombstone record and CAS-swap hash head. | Preserves Tsavorite delete semantics while minimizing extra appends in mutable regions and retaining lock-free head update behavior in immutable regions. |
 | 2026-02-18 | Add a `TsavoriteKV<K, V, D>` facade with `TsavoriteSession` that binds callbacks and computes key hashes internally while pinning LightEpoch per operation. | Provides a practical public API boundary above low-level operation modules without sacrificing current callback-driven semantics or epoch coordination. |
 | 2026-02-18 | Validate CRUD through both unit-level facade tests and crate-level integration tests (`tests/crud_integration.rs`) including concurrent workflows. | Improves confidence that composed read/upsert/rmw/delete behavior stays correct beyond isolated operation-module tests. |
+| 2026-02-18 | Implement the initial network server as a shutdown-aware Tokio accept loop (`run_with_shutdown`) with per-connection task spawning and lightweight connection metrics. | Delivers Phase 5.1 functionality with testable lifecycle behavior before layering RESP parsing and command dispatch in later steps. |
 
 ---
 
@@ -262,3 +263,4 @@
 | 26 | 2026-02-18 | 4.6 | DONE | Added generic `TsavoriteKV<K, V, D>` + `TsavoriteSession` facade with epoch pin integration and operation wrappers for read/upsert/rmw/delete. |
 | 27 | 2026-02-18 | 4.7 | DONE | Added facade-level CRUD unit tests covering single-thread correctness, fuzzy-region retry, tombstone behavior, and concurrent read/write stress. |
 | 28 | 2026-02-18 | 4.8 | DONE | Added end-to-end integration tests for insert/read/delete verification across N keys, including a concurrent variant. |
+| 29 | 2026-02-18 | 5.1 | DONE | Added `garnet-server` TCP accept loop + per-connection handlers with shutdown control, runtime metrics, and Tokio unit tests. |

@@ -1,1 +1,223 @@
-//! Server components for garnet-rs.
+//! TCP server accept loop and connection handler primitives.
+
+use std::future::Future;
+use std::io;
+use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::Arc;
+use tokio::io::AsyncReadExt;
+use tokio::net::{TcpListener, TcpStream};
+use tokio::task::JoinSet;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ServerConfig {
+    pub bind_addr: SocketAddr,
+    pub read_buffer_size: usize,
+}
+
+impl Default for ServerConfig {
+    fn default() -> Self {
+        Self {
+            bind_addr: "127.0.0.1:6379"
+                .parse()
+                .expect("default bind address must parse"),
+            read_buffer_size: 8 * 1024,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct ServerMetrics {
+    accepted_connections: AtomicU64,
+    active_connections: AtomicU64,
+    closed_connections: AtomicU64,
+    bytes_received: AtomicU64,
+}
+
+impl ServerMetrics {
+    #[inline]
+    pub fn accepted_connections(&self) -> u64 {
+        self.accepted_connections.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn active_connections(&self) -> u64 {
+        self.active_connections.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn closed_connections(&self) -> u64 {
+        self.closed_connections.load(Ordering::Relaxed)
+    }
+
+    #[inline]
+    pub fn bytes_received(&self) -> u64 {
+        self.bytes_received.load(Ordering::Relaxed)
+    }
+}
+
+pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
+    run_with_shutdown(config, metrics, std::future::pending::<()>()).await
+}
+
+pub async fn run_with_shutdown<F>(
+    config: ServerConfig,
+    metrics: Arc<ServerMetrics>,
+    shutdown: F,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+{
+    let listener = TcpListener::bind(config.bind_addr).await?;
+    run_listener_with_shutdown(listener, config.read_buffer_size, metrics, shutdown).await
+}
+
+pub async fn run_listener_with_shutdown<F>(
+    listener: TcpListener,
+    read_buffer_size: usize,
+    metrics: Arc<ServerMetrics>,
+    shutdown: F,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+{
+    let mut tasks = JoinSet::new();
+    tokio::pin!(shutdown);
+
+    loop {
+        tokio::select! {
+            _ = &mut shutdown => {
+                break;
+            }
+            accept_result = listener.accept() => {
+                let (stream, _) = accept_result?;
+                metrics.accepted_connections.fetch_add(1, Ordering::Relaxed);
+                metrics.active_connections.fetch_add(1, Ordering::Relaxed);
+
+                let task_metrics = Arc::clone(&metrics);
+                tasks.spawn(async move {
+                    let _ = handle_connection(stream, read_buffer_size, task_metrics).await;
+                });
+            }
+        }
+    }
+
+    tasks.abort_all();
+    while tasks.join_next().await.is_some() {}
+    Ok(())
+}
+
+async fn handle_connection(
+    mut stream: TcpStream,
+    read_buffer_size: usize,
+    metrics: Arc<ServerMetrics>,
+) -> io::Result<()> {
+    let _lifecycle = ConnectionLifecycle { metrics: &metrics };
+    let mut buffer = vec![0u8; read_buffer_size.max(1)];
+
+    loop {
+        let bytes_read = stream.read(&mut buffer).await?;
+        if bytes_read == 0 {
+            return Ok(());
+        }
+        metrics
+            .bytes_received
+            .fetch_add(bytes_read as u64, Ordering::Relaxed);
+    }
+}
+
+struct ConnectionLifecycle<'a> {
+    metrics: &'a ServerMetrics,
+}
+
+impl Drop for ConnectionLifecycle<'_> {
+    fn drop(&mut self) {
+        self.metrics
+            .active_connections
+            .fetch_sub(1, Ordering::Relaxed);
+        self.metrics
+            .closed_connections
+            .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::AsyncWriteExt;
+    use tokio::sync::oneshot;
+    use tokio::time::{sleep, Duration, Instant};
+
+    #[tokio::test]
+    async fn accept_loop_spawns_connection_handlers() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let metrics = Arc::new(ServerMetrics::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_metrics = Arc::clone(&metrics);
+        let server = tokio::spawn(async move {
+            run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let mut client1 = TcpStream::connect(addr).await.unwrap();
+        client1.write_all(b"PING").await.unwrap();
+        drop(client1);
+
+        let mut client2 = TcpStream::connect(addr).await.unwrap();
+        client2.write_all(b"PONG").await.unwrap();
+        drop(client2);
+
+        wait_until(
+            || metrics.closed_connections() >= 2 && metrics.bytes_received() >= 8,
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+
+        assert_eq!(metrics.accepted_connections(), 2);
+        assert_eq!(metrics.active_connections(), 0);
+        assert_eq!(metrics.closed_connections(), 2);
+        assert!(metrics.bytes_received() >= 8);
+    }
+
+    #[tokio::test]
+    async fn shutdown_signal_stops_accept_loop() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let metrics = Arc::new(ServerMetrics::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let server_metrics = Arc::clone(&metrics);
+        let server = tokio::spawn(async move {
+            run_listener_with_shutdown(listener, 512, server_metrics, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let _ = shutdown_tx.send(());
+        let joined = tokio::time::timeout(Duration::from_secs(1), server).await;
+        assert!(joined.is_ok());
+        assert_eq!(metrics.accepted_connections(), 0);
+    }
+
+    async fn wait_until<P>(mut predicate: P, timeout: Duration)
+    where
+        P: FnMut() -> bool,
+    {
+        let deadline = Instant::now() + timeout;
+        loop {
+            if predicate() || Instant::now() >= deadline {
+                break;
+            }
+            sleep(Duration::from_millis(10)).await;
+        }
+    }
+}
