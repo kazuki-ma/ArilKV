@@ -18,8 +18,11 @@ pub use hash_bucket_entry::{
     TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
 };
 pub use hybrid_log::{
-    LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page, PageAddressSpace,
-    PageManager, PageManagerError, TailAllocationStatus, TailAllocator, TailAllocatorError,
+    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, round_up,
+    write_record, LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page,
+    PageAddressSpace, PageManager, PageManagerError, RecordFormatError, RecordLayout,
+    RecordParsedLayout, TailAllocationStatus, TailAllocator, TailAllocatorError, RECORD_ALIGNMENT,
+    RECORD_INFO_SIZE,
 };
 pub use record_info::{
     RecordInfo, PREVIOUS_ADDRESS_BITS, PREVIOUS_ADDRESS_MASK, RECORD_INFO_LENGTH,
