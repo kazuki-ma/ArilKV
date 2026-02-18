@@ -25,6 +25,10 @@ pub enum CommandId {
     Lpop,
     Rpop,
     Lrange,
+    Sadd,
+    Srem,
+    Smembers,
+    Sismember,
     Ping,
     Echo,
     Info,
@@ -99,6 +103,18 @@ fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     }
     if is_ascii_eq_6(command, b"LRANGE") {
         return CommandId::Lrange;
+    }
+    if is_ascii_eq_4(command, b"SADD") {
+        return CommandId::Sadd;
+    }
+    if is_ascii_eq_4(command, b"SREM") {
+        return CommandId::Srem;
+    }
+    if is_ascii_eq_8(command, b"SMEMBERS") {
+        return CommandId::Smembers;
+    }
+    if is_ascii_eq_9(command, b"SISMEMBER") {
+        return CommandId::Sismember;
     }
     if is_ascii_eq_6(command, b"EXPIRE") {
         return CommandId::Expire;
@@ -186,6 +202,31 @@ fn is_ascii_eq_7(input: &[u8], expected_upper: &[u8; 7]) -> bool {
         && ascii_upper(input[6]) == expected_upper[6]
 }
 
+fn is_ascii_eq_8(input: &[u8], expected_upper: &[u8; 8]) -> bool {
+    input.len() == 8
+        && ascii_upper(input[0]) == expected_upper[0]
+        && ascii_upper(input[1]) == expected_upper[1]
+        && ascii_upper(input[2]) == expected_upper[2]
+        && ascii_upper(input[3]) == expected_upper[3]
+        && ascii_upper(input[4]) == expected_upper[4]
+        && ascii_upper(input[5]) == expected_upper[5]
+        && ascii_upper(input[6]) == expected_upper[6]
+        && ascii_upper(input[7]) == expected_upper[7]
+}
+
+fn is_ascii_eq_9(input: &[u8], expected_upper: &[u8; 9]) -> bool {
+    input.len() == 9
+        && ascii_upper(input[0]) == expected_upper[0]
+        && ascii_upper(input[1]) == expected_upper[1]
+        && ascii_upper(input[2]) == expected_upper[2]
+        && ascii_upper(input[3]) == expected_upper[3]
+        && ascii_upper(input[4]) == expected_upper[4]
+        && ascii_upper(input[5]) == expected_upper[5]
+        && ascii_upper(input[6]) == expected_upper[6]
+        && ascii_upper(input[7]) == expected_upper[7]
+        && ascii_upper(input[8]) == expected_upper[8]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +262,10 @@ mod tests {
         assert_eq!(dispatch_command_name(b"lpop"), CommandId::Lpop);
         assert_eq!(dispatch_command_name(b"RPOP"), CommandId::Rpop);
         assert_eq!(dispatch_command_name(b"lrange"), CommandId::Lrange);
+        assert_eq!(dispatch_command_name(b"sadd"), CommandId::Sadd);
+        assert_eq!(dispatch_command_name(b"SREM"), CommandId::Srem);
+        assert_eq!(dispatch_command_name(b"smembers"), CommandId::Smembers);
+        assert_eq!(dispatch_command_name(b"SISMEMBER"), CommandId::Sismember);
     }
 
     #[test]

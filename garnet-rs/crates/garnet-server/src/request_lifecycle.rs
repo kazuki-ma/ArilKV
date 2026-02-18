@@ -2,7 +2,7 @@
 
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_common::ArgSlice;
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -17,6 +17,7 @@ const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
 const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
 const HASH_OBJECT_TYPE_TAG: u8 = 3;
 const LIST_OBJECT_TYPE_TAG: u8 = 2;
+const SET_OBJECT_TYPE_TAG: u8 = 4;
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -97,6 +98,10 @@ impl RequestProcessor {
             CommandId::Lpop => self.handle_lpop(args, response_out),
             CommandId::Rpop => self.handle_rpop(args, response_out),
             CommandId::Lrange => self.handle_lrange(args, response_out),
+            CommandId::Sadd => self.handle_sadd(args, response_out),
+            CommandId::Srem => self.handle_srem(args, response_out),
+            CommandId::Smembers => self.handle_smembers(args, response_out),
+            CommandId::Sismember => self.handle_sismember(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -220,6 +225,36 @@ impl RequestProcessor {
     fn save_list_object(&self, key: &[u8], list: &[Vec<u8>]) -> Result<(), RequestExecutionError> {
         let payload = serialize_list_object_payload(list);
         self.object_upsert(key, LIST_OBJECT_TYPE_TAG, &payload)
+    }
+
+    fn load_set_object(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<BTreeSet<Vec<u8>>>, RequestExecutionError> {
+        let object = match self.object_read(key)? {
+            Some(object) => object,
+            None => {
+                if self.key_exists(key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                return Ok(None);
+            }
+        };
+        if object.0 != SET_OBJECT_TYPE_TAG {
+            return Err(RequestExecutionError::WrongType);
+        }
+        deserialize_set_object_payload(&object.1)
+            .map(Some)
+            .ok_or(RequestExecutionError::StorageFailure)
+    }
+
+    fn save_set_object(
+        &self,
+        key: &[u8],
+        set: &BTreeSet<Vec<u8>>,
+    ) -> Result<(), RequestExecutionError> {
+        let payload = serialize_set_object_payload(set);
+        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
@@ -1027,6 +1062,129 @@ impl RequestProcessor {
         Ok(())
     }
 
+    fn handle_sadd(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "SADD",
+                expected: "SADD key member [member ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut set = self.load_set_object(&key)?.unwrap_or_default();
+        let mut inserted = 0i64;
+        for member in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            if set.insert(unsafe { member.as_slice() }.to_vec()) {
+                inserted += 1;
+            }
+        }
+        self.save_set_object(&key, &set)?;
+        append_integer(response_out, inserted);
+        Ok(())
+    }
+
+    fn handle_srem(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "SREM",
+                expected: "SREM key member [member ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut set = match self.load_set_object(&key)? {
+            Some(set) => set,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        let mut removed = 0i64;
+        for member in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            if set.remove(unsafe { member.as_slice() }) {
+                removed += 1;
+            }
+        }
+
+        if set.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_set_object(&key, &set)?;
+        }
+        append_integer(response_out, removed);
+        Ok(())
+    }
+
+    fn handle_smembers(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "SMEMBERS",
+                expected: "SMEMBERS key",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let set = match self.load_set_object(&key)? {
+            Some(set) => set,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        response_out.push(b'*');
+        response_out.extend_from_slice(set.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for member in &set {
+            append_bulk_string(response_out, member);
+        }
+        Ok(())
+    }
+
+    fn handle_sismember(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "SISMEMBER",
+                expected: "SISMEMBER key member",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member = unsafe { args[2].as_slice() };
+        let set = match self.load_set_object(&key)? {
+            Some(set) => set,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        append_integer(response_out, if set.contains(member) { 1 } else { 0 });
+        Ok(())
+    }
+
     fn handle_ping(
         &self,
         args: &[ArgSlice],
@@ -1115,9 +1273,34 @@ impl RequestProcessor {
         append_bulk_array(
             response_out,
             &[
-                b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"EXPIRE", b"TTL", b"PEXPIRE", b"PTTL",
-                b"PERSIST", b"HSET", b"HGET", b"HDEL", b"HGETALL", b"LPUSH", b"RPUSH", b"LPOP",
-                b"RPOP", b"LRANGE", b"PING", b"ECHO", b"INFO", b"DBSIZE", b"COMMAND",
+                b"GET",
+                b"SET",
+                b"DEL",
+                b"INCR",
+                b"DECR",
+                b"EXPIRE",
+                b"TTL",
+                b"PEXPIRE",
+                b"PTTL",
+                b"PERSIST",
+                b"HSET",
+                b"HGET",
+                b"HDEL",
+                b"HGETALL",
+                b"LPUSH",
+                b"RPUSH",
+                b"LPOP",
+                b"RPOP",
+                b"LRANGE",
+                b"SADD",
+                b"SREM",
+                b"SMEMBERS",
+                b"SISMEMBER",
+                b"PING",
+                b"ECHO",
+                b"INFO",
+                b"DBSIZE",
+                b"COMMAND",
             ],
         );
         Ok(())
@@ -1490,6 +1673,44 @@ fn deserialize_list_object_payload(encoded: &[u8]) -> Option<Vec<Vec<u8>>> {
         return None;
     }
     Some(list)
+}
+
+fn serialize_set_object_payload(set: &BTreeSet<Vec<u8>>) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&(set.len() as u32).to_le_bytes());
+    for member in set {
+        encoded.extend_from_slice(&(member.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(member);
+    }
+    encoded
+}
+
+fn deserialize_set_object_payload(encoded: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
+    let mut cursor = 0usize;
+
+    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
+        let end = (*cursor).checked_add(size_of::<u32>())?;
+        let bytes = encoded.get(*cursor..end)?;
+        let mut raw = [0u8; size_of::<u32>()];
+        raw.copy_from_slice(bytes);
+        *cursor = end;
+        Some(u32::from_le_bytes(raw))
+    }
+
+    let count = take_u32(encoded, &mut cursor)? as usize;
+    let mut set = BTreeSet::new();
+    for _ in 0..count {
+        let member_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
+        let member_end = cursor.checked_add(member_len)?;
+        let member = encoded.get(cursor..member_end)?.to_vec();
+        cursor = member_end;
+        set.insert(member);
+    }
+
+    if cursor != encoded.len() {
+        return None;
+    }
+    Some(set)
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
@@ -2284,6 +2505,101 @@ mod tests {
         response.clear();
         let lpush = b"*3\r\n$5\r\nLPUSH\r\n$3\r\nkey\r\n$1\r\nv\r\n";
         let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .err()
+            .unwrap();
+        err.append_resp_error(&mut response);
+        assert_eq!(
+            response,
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
+    }
+
+    #[test]
+    fn set_commands_roundtrip_over_object_store() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let sadd = b"*5\r\n$4\r\nSADD\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nb\r\n";
+        let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":2\r\n");
+
+        response.clear();
+        let sismember_yes = b"*3\r\n$9\r\nSISMEMBER\r\n$3\r\nkey\r\n$1\r\nb\r\n";
+        let meta = parse_resp_command_arg_slices(sismember_yes, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let sismember_no = b"*3\r\n$9\r\nSISMEMBER\r\n$3\r\nkey\r\n$1\r\nz\r\n";
+        let meta = parse_resp_command_arg_slices(sismember_no, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
+
+        response.clear();
+        let smembers = b"*2\r\n$8\r\nSMEMBERS\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(smembers, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*2\r\n$1\r\na\r\n$1\r\nb\r\n");
+
+        response.clear();
+        let srem = b"*4\r\n$4\r\nSREM\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nx\r\n";
+        let meta = parse_resp_command_arg_slices(srem, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(smembers, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*1\r\n$1\r\nb\r\n");
+
+        response.clear();
+        let srem_last = b"*3\r\n$4\r\nSREM\r\n$3\r\nkey\r\n$1\r\nb\r\n";
+        let meta = parse_resp_command_arg_slices(srem_last, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(smembers, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*0\r\n");
+    }
+
+    #[test]
+    fn set_commands_return_wrongtype_for_string_keys() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let sadd = b"*3\r\n$4\r\nSADD\r\n$3\r\nkey\r\n$1\r\nv\r\n";
+        let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
         let err = processor
             .execute(&args[..meta.argument_count], &mut response)
             .err()
