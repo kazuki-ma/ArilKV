@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 1 — Core Primitives
-> **Current Iteration**: 2
+> **Current Iteration**: 3
 
 ---
 
@@ -42,7 +42,7 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 1.1 | Implement `SpanByte` — variable-length byte sequence with 4-byte length prefix | DONE | 0.10 | Implemented in `garnet-common` as `SpanByte` packed header + `SpanByteRef`/`SpanByteRefMut` zero-copy views with safe `as_slice()` / `as_mut_slice()` wrappers and header bit validation. |
-| 1.2 | Implement `RecordInfo` — 64-bit packed bitfield | TODO | 0.10 | See doc 06 §2.1. 9 flag bits (Valid, Tombstone, Dirty, Sealed, Filler, InNewVersion, HasETag, HasExpiration, SkipOnScan) + previous address (48 bits). `assert_eq!(size_of::<RecordInfo>(), 8)`. Bit-manipulation methods. |
+| 1.2 | Implement `RecordInfo` — 64-bit packed bitfield | DONE | 0.10 | Implemented as `#[repr(C)]` 8-byte packed header in `tsavorite` with previous-address masking, flag accessors/mutators, closed/scan semantics, and size/bitfield unit tests. |
 | 1.3 | Implement `LightEpoch` — epoch protection with cache-line-padded table | TODO | 0.10 | See doc 04. `#[repr(C, align(64))]` for EpochEntry. Per-thread acquire/release. Drain callbacks. Guard-based API: `let guard = epoch.pin()`. `assert_eq!(align_of::<EpochEntry>(), 64)`. |
 | 1.4 | Implement `HashBucket` — 64-byte cache-line-aligned bucket with 7 entries + overflow | TODO | 0.10 | See doc 03. `#[repr(C, align(64))]`. 7 × `HashBucketEntry` (8 bytes each) + 1 overflow pointer (8 bytes) = 64 bytes. `assert_eq!(size_of::<HashBucket>(), 64)`. |
 | 1.5 | Implement `HashBucketEntry` — 8-byte packed entry (tag, address, tentative, pending) | TODO | 0.10 | See doc 03. Tag (14 bits) + Address (48 bits, including ReadCache bit at position 47) + Tentative (1 bit) + Pending (1 bit). CAS operations via `AtomicU64`. |
@@ -194,6 +194,7 @@
 | 2026-02-18 | Use a pure virtual workspace at `garnet-rs/Cargo.toml` with five member crates and placeholder sources. | Keeps Phase 0 scaffolding minimal while enabling immediate workspace-wide `cargo check`/`cargo test`. |
 | 2026-02-18 | Pin `rust-toolchain.toml` to `stable` with `rustfmt` and `clippy`. | Matches Phase 0 requirement and keeps early iterations portable before Linux-specific `io_uring` decisions are needed. |
 | 2026-02-18 | Model SpanByte as a packed 4-byte `#[repr(C)]` header plus borrowed serialized views (`SpanByteRef`, `SpanByteRefMut`) instead of a pointer-bearing struct. | Preserves on-disk/in-log layout semantics while avoiding unsafe pointer ownership in early Rust scaffolding. |
+| 2026-02-18 | Keep RecordInfo’s canonical Tsavorite bit layout (including `Modified`/`VectorSet`) and place `HasExpiration` in a reclaimed leftover bit for planned Garnet metadata. | Preserves C# parity for existing bits while satisfying planned expiration flag support from the tracker. |
 
 ---
 
@@ -211,3 +212,4 @@
 |-----------|------|---------------|---------|-------|
 | 1 | 2026-02-18 | 0.1-0.10 | DONE | Phase 0 scaffolding completed; workspace compiles/tests cleanly and is ready for Phase 1 (`SpanByte`). |
 | 2 | 2026-02-18 | 1.1 | DONE | Added SpanByte header parsing/serialization, metadata-bit handling, safe payload slice wrappers, and unit tests in `garnet-common`. |
+| 3 | 2026-02-18 | 1.2 | DONE | Added 8-byte `RecordInfo` with bitfield APIs and tests (`size_of == 8`, previous-address masking, lifecycle flag behavior). |
