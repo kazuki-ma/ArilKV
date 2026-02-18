@@ -19,7 +19,8 @@ pub use hash_bucket_entry::{
     TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
 };
 pub use hash_index::{
-    HashIndex, HashIndexError, HashLocation, HASH_TAG_BITS, HASH_TAG_MASK, HASH_TAG_SHIFT,
+    FindOrCreateTagResult, FindOrCreateTagStatus, HashIndex, HashIndexError, HashLocation,
+    HASH_TAG_BITS, HASH_TAG_MASK, HASH_TAG_SHIFT, TEMP_INVALID_ADDRESS,
 };
 pub use hybrid_log::{
     flush_page_to_device, load_page_from_device, parse_key_span, parse_record_info,

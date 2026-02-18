@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 3 — Hash Index
-> **Current Iteration**: 16
+> **Current Iteration**: 17
 
 ---
 
@@ -74,7 +74,7 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 3.1 | Implement hash index structure — power-of-2 bucket array, tag-based matching | DONE | 1.4, 1.5 | Added `HashIndex` with power-of-2 bucket allocation (`size_bits`), `hash -> (bucket_index, tag)` mapping, primary-bucket tag scan, and coverage tests. |
-| 3.2 | Implement `FindTag` / `FindOrCreateTag` — CAS-based entry insertion | TODO | 3.1 | See doc 03. Scan bucket entries, match tag. CAS for tentative insert. Overflow chain traversal. |
+| 3.2 | Implement `FindTag` / `FindOrCreateTag` — CAS-based entry insertion | DONE | 3.1 | Added `HashIndex::find_tag` and CAS-based `find_or_create_tag` with tentative-slot install, duplicate-slot check, truncated-entry reclaim, and explicit `BucketFullNeedsOverflow` handoff for overflow path. |
 | 3.3 | Implement overflow bucket allocation — fixed-page allocator for overflow chains | TODO | 3.1 | See doc 03. Pre-allocated overflow page pool. Thread-local free lists for lock-free allocation. |
 | 3.4 | Implement transient S/X locking — shared/exclusive latch on bucket overflow entry | TODO | 3.1 | See doc 03 §transient locking. Lock word in overflow pointer slot. Readers take S, writers take X. |
 | 3.5 | Unit tests for hash index | TODO | 3.1-3.4 | Concurrent insert/lookup, overflow chain correctness, tag collision handling. Use `loom` for concurrency testing. |
@@ -208,6 +208,7 @@
 | 2026-02-18 | Implement the on-disk read path as a callback-based helper (`read_with_callback`) that synchronously ensures residency before invoking the completion callback. | Preserves the future async completion shape while keeping Phase 2 tests deterministic and easy to validate. |
 | 2026-02-18 | Stress-test `TailAllocator` with multi-threaded allocation loops that tolerate `RetryNow` and assert unique logical addresses. | Validates lock-free reservation semantics under contention without introducing unstable timing-dependent assertions. |
 | 2026-02-18 | Start hash-index implementation with a fixed-size `HashIndex` table (`Box<[HashBucket]>`) and explicit hash split helpers before CAS insertion logic. | Establishes deterministic bucket/tag addressing invariants first, reducing complexity when adding concurrent `FindOrCreateTag` flows in the next step. |
+| 2026-02-18 | Keep `FindOrCreateTag` scoped to primary-bucket CAS insertion for now and return an explicit `BucketFullNeedsOverflow` signal when no free slot exists. | Allows validation of tentative-insert correctness immediately while isolating overflow allocator complexity into task 3.3. |
 
 ---
 
@@ -239,3 +240,4 @@
 | 14 | 2026-02-18 | 2.6 | DONE | Added head-shift eviction helper with flush-before-evict behavior and an `address < HeadAddress` disk fallback read path with callback completion semantics. |
 | 15 | 2026-02-18 | 2.7 | DONE | Expanded hybrid-log allocator tests with multi-page allocation integrity and concurrent tail-allocation stress uniqueness checks. |
 | 16 | 2026-02-18 | 3.1 | DONE | Added initial hash-index structure (`HashIndex`) with power-of-two bucket array, bucket/tag extraction, and primary-bucket non-tentative tag matching tests. |
+| 17 | 2026-02-18 | 3.2 | DONE | Added `FindTag`/`FindOrCreateTag` behavior on primary buckets using CAS tentative insertion, duplicate-slot resolution, and stale-entry reclamation tests. |
