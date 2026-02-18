@@ -1,5 +1,6 @@
 //! Tsavorite storage engine for garnet-rs.
 
+pub mod checkpoint_state_machine;
 pub mod delete_operation;
 pub mod epoch;
 pub mod hash_bucket;
@@ -14,6 +15,10 @@ pub mod session_functions;
 pub mod tsavorite_kv;
 pub mod upsert_operation;
 
+pub use checkpoint_state_machine::{
+    CheckpointMode, CheckpointPhase, CheckpointState, CheckpointStateMachine,
+    CheckpointTransitionError,
+};
 pub use delete_operation::{
     delete, DeleteOperationContext, DeleteOperationError, DeleteOperationStatus,
     HybridLogDeleteAdapter,

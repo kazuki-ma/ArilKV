@@ -2,6 +2,9 @@
 //!
 //! This wraps hash-index + hybrid-log operation modules into a single store/session API.
 
+use crate::checkpoint_state_machine::{
+    CheckpointMode, CheckpointState, CheckpointStateMachine, CheckpointTransitionError,
+};
 use crate::delete_operation::{
     DeleteOperationContext, DeleteOperationError, DeleteOperationStatus,
 };
@@ -91,6 +94,7 @@ where
     pointers: LogAddressPointers,
     device: D,
     epoch: LightEpoch,
+    checkpoint_state: CheckpointStateMachine,
     _marker: PhantomData<(K, V)>,
 }
 
@@ -131,6 +135,7 @@ where
             pointers: LogAddressPointers::new(config.initial_logical_address),
             device,
             epoch: LightEpoch::new(),
+            checkpoint_state: CheckpointStateMachine::new(),
             _marker: PhantomData,
         })
     }
@@ -158,6 +163,53 @@ where
     #[inline]
     pub fn bump_epoch(&self) -> u64 {
         self.epoch.bump_current_epoch()
+    }
+
+    #[inline]
+    pub fn checkpoint_state(&self) -> CheckpointState {
+        self.checkpoint_state.state()
+    }
+
+    #[inline]
+    pub fn checkpoint_begin(
+        &mut self,
+        mode: CheckpointMode,
+    ) -> Result<u64, CheckpointTransitionError> {
+        self.checkpoint_state.begin(mode)
+    }
+
+    #[inline]
+    pub fn checkpoint_mark_in_progress(
+        &mut self,
+        token: u64,
+    ) -> Result<(), CheckpointTransitionError> {
+        self.checkpoint_state.mark_in_progress(token)
+    }
+
+    #[inline]
+    pub fn checkpoint_mark_wait_flush(
+        &mut self,
+        token: u64,
+    ) -> Result<(), CheckpointTransitionError> {
+        self.checkpoint_state.mark_wait_flush(token)
+    }
+
+    #[inline]
+    pub fn checkpoint_mark_persistence_callback(
+        &mut self,
+        token: u64,
+    ) -> Result<(), CheckpointTransitionError> {
+        self.checkpoint_state.mark_persistence_callback(token)
+    }
+
+    #[inline]
+    pub fn checkpoint_complete(&mut self, token: u64) -> Result<(), CheckpointTransitionError> {
+        self.checkpoint_state.complete(token)
+    }
+
+    #[inline]
+    pub fn checkpoint_abort(&mut self, token: u64) -> Result<(), CheckpointTransitionError> {
+        self.checkpoint_state.abort(token)
     }
 
     #[inline]
@@ -644,6 +696,24 @@ mod tests {
                 .unwrap();
             assert_eq!(status, RmwOperationStatus::RetryLater);
         }
+    }
+
+    #[test]
+    fn checkpoint_state_machine_transitions_via_kv_facade() {
+        let mut store = TsavoriteKV::<Vec<u8>, Vec<u8>>::new(test_config()).unwrap();
+        let token = store.checkpoint_begin(CheckpointMode::FoldOver).unwrap();
+        assert_eq!(
+            store.checkpoint_state(),
+            CheckpointState::Prepare {
+                token,
+                mode: CheckpointMode::FoldOver,
+            }
+        );
+        store.checkpoint_mark_in_progress(token).unwrap();
+        store.checkpoint_mark_wait_flush(token).unwrap();
+        store.checkpoint_mark_persistence_callback(token).unwrap();
+        store.checkpoint_complete(token).unwrap();
+        assert_eq!(store.checkpoint_state(), CheckpointState::Rest);
     }
 
     #[test]
