@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 2 — Hybrid Log Allocator
-> **Current Iteration**: 8
+> **Current Iteration**: 9
 
 ---
 
@@ -57,7 +57,7 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 2.1 | Implement page management — allocate/flush/evict pages, logical address space (page + offset) | TODO | 1.6 | See doc 02. Page = contiguous byte buffer. LogicalAddress = page_index << page_size_bits | offset. |
+| 2.1 | Implement page management — allocate/flush/evict pages, logical address space (page + offset) | DONE | 1.6 | Added `hybrid_log::PageManager` and `PageAddressSpace` with logical address encode/decode, page allocation, flush/eviction checks, and page-local read/write APIs plus lifecycle tests. |
 | 2.2 | Implement log address pointers — TailAddress, ReadOnlyAddress, SafeReadOnlyAddress, HeadAddress, SafeHeadAddress, BeginAddress | TODO | 2.1 | See doc 02. AtomicU64 for each. Monotonically increasing. Fuzzy region between ReadOnly and SafeReadOnly. |
 | 2.3 | Implement lock-free tail allocation — `AtomicU64::fetch_add` for log append | TODO | 2.2 | See doc 02. CAS loop for page boundary crossing. Seal current page, allocate new page, retry. |
 | 2.4 | Implement record format — RecordInfo + key SpanByte + value SpanByte, variable-length records | TODO | 1.1, 1.2, 2.1 | See doc 06. Record = RecordInfo (8B) + key length (4B) + key data + padding + value length (4B) + value data + padding. 8-byte alignment. |
@@ -200,6 +200,7 @@
 | 2026-02-18 | Represent HashBucket overflow entry as a single atomic word carrying both overflow address bits and latch bits. | Mirrors Tsavorite’s compact overflow+latch encoding while keeping 64-byte one-cache-line bucket size. |
 | 2026-02-18 | Use property-based tests (`proptest`) for SpanByte serialized roundtrip behavior in addition to deterministic unit tests. | Catches edge-case payload combinations while preserving explicit regression tests for layout/flag rules. |
 | 2026-02-18 | Place Phase 1 hot-path Criterion benchmarks under `tsavorite/benches` instead of workspace root. | The workspace root is virtual (no root package), so benchmark targets must live in an actual crate. |
+| 2026-02-18 | Introduce a dedicated `PageAddressSpace` helper for logical address encoding/decoding and reuse it through `PageManager`. | Keeps address math centralized and explicit for later Tail/Head pointer work in Phase 2. |
 
 ---
 
@@ -223,3 +224,4 @@
 | 6 | 2026-02-18 | 1.4 | DONE | Added 64-byte `HashBucket` layout with seven data entries, overflow/latch atomic word, and validation tests. |
 | 7 | 2026-02-18 | 1.6 | DONE | Completed Phase 1 unit-test coverage, including proptest roundtrip checks for SpanByte and behavior tests for RecordInfo/LightEpoch/HashBucketEntry/HashBucket. |
 | 8 | 2026-02-18 | 1.7 | DONE | Added and validated Criterion benchmarks for core Phase 1 operations (`cargo bench -p tsavorite --bench phase1_hotpath --no-run`). |
+| 9 | 2026-02-18 | 2.1 | DONE | Added initial hybrid-log page manager with logical-address mapping plus allocate/flush/evict lifecycle and bounds-checked page I/O helpers. |
