@@ -2,7 +2,7 @@
 
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_common::ArgSlice;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -15,6 +15,7 @@ use tsavorite::{
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
 const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
+const HASH_OBJECT_TYPE_TAG: u8 = 3;
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -86,6 +87,10 @@ impl RequestProcessor {
             CommandId::Pexpire => self.handle_pexpire(args, response_out),
             CommandId::Pttl => self.handle_pttl(args, response_out),
             CommandId::Persist => self.handle_persist(args, response_out),
+            CommandId::Hset => self.handle_hset(args, response_out),
+            CommandId::Hget => self.handle_hget(args, response_out),
+            CommandId::Hdel => self.handle_hdel(args, response_out),
+            CommandId::Hgetall => self.handle_hgetall(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -156,6 +161,36 @@ impl RequestProcessor {
             DeleteOperationStatus::NotFound => Ok(false),
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
+    }
+
+    fn load_hash_object(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<BTreeMap<Vec<u8>, Vec<u8>>>, RequestExecutionError> {
+        let object = match self.object_read(key)? {
+            Some(object) => object,
+            None => {
+                if self.key_exists(key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                return Ok(None);
+            }
+        };
+        if object.0 != HASH_OBJECT_TYPE_TAG {
+            return Err(RequestExecutionError::WrongType);
+        }
+        deserialize_hash_object_payload(&object.1)
+            .map(Some)
+            .ok_or(RequestExecutionError::StorageFailure)
+    }
+
+    fn save_hash_object(
+        &self,
+        key: &[u8],
+        hash: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), RequestExecutionError> {
+        let payload = serialize_hash_object_payload(hash);
+        self.object_upsert(key, HASH_OBJECT_TYPE_TAG, &payload)
     }
 
     pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
@@ -641,6 +676,143 @@ impl RequestProcessor {
         Ok(())
     }
 
+    fn handle_hset(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 4 || ((args.len() - 2) % 2 != 0) {
+            return Err(RequestExecutionError::WrongArity {
+                command: "HSET",
+                expected: "HSET key field value [field value ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
+        let mut inserted = 0i64;
+
+        let mut index = 2usize;
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let field = unsafe { args[index].as_slice() }.to_vec();
+            // SAFETY: caller guarantees argument backing memory validity.
+            let value = unsafe { args[index + 1].as_slice() }.to_vec();
+            if hash.insert(field, value).is_none() {
+                inserted += 1;
+            }
+            index += 2;
+        }
+
+        self.save_hash_object(&key, &hash)?;
+        append_integer(response_out, inserted);
+        Ok(())
+    }
+
+    fn handle_hget(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "HGET",
+                expected: "HGET key field",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let field = unsafe { args[2].as_slice() };
+        let hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+
+        match hash.get(field) {
+            Some(value) => append_bulk_string(response_out, value),
+            None => append_null_bulk_string(response_out),
+        }
+        Ok(())
+    }
+
+    fn handle_hdel(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "HDEL",
+                expected: "HDEL key field [field ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let mut removed = 0i64;
+        for field in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            if hash.remove(unsafe { field.as_slice() }).is_some() {
+                removed += 1;
+            }
+        }
+
+        if hash.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_hash_object(&key, &hash)?;
+        }
+        append_integer(response_out, removed);
+        Ok(())
+    }
+
+    fn handle_hgetall(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "HGETALL",
+                expected: "HGETALL key",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let pair_count = hash.len().saturating_mul(2);
+        response_out.push(b'*');
+        response_out.extend_from_slice(pair_count.to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (field, value) in &hash {
+            append_bulk_string(response_out, field);
+            append_bulk_string(response_out, value);
+        }
+        Ok(())
+    }
+
     fn handle_ping(
         &self,
         args: &[ArgSlice],
@@ -730,7 +902,8 @@ impl RequestProcessor {
             response_out,
             &[
                 b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"EXPIRE", b"TTL", b"PEXPIRE", b"PTTL",
-                b"PERSIST", b"PING", b"ECHO", b"INFO", b"DBSIZE", b"COMMAND",
+                b"PERSIST", b"HSET", b"HGET", b"HDEL", b"HGETALL", b"PING", b"ECHO", b"INFO",
+                b"DBSIZE", b"COMMAND",
             ],
         );
         Ok(())
@@ -912,6 +1085,7 @@ pub enum RequestExecutionError {
     UnknownCommand,
     SyntaxError,
     InvalidExpireTime,
+    WrongType,
     StorageBusy,
     StorageFailure,
     ValueNotInteger,
@@ -929,6 +1103,10 @@ impl RequestExecutionError {
             Self::InvalidExpireTime => {
                 append_error(response_out, "ERR invalid expire time in 'set' command")
             }
+            Self::WrongType => append_error(
+                response_out,
+                "WRONGTYPE Operation against a key holding the wrong kind of value",
+            ),
             Self::StorageBusy => append_error(response_out, "ERR storage busy, retry later"),
             Self::StorageFailure => append_error(response_out, "ERR internal storage failure"),
             Self::ValueNotInteger => {
@@ -1014,6 +1192,52 @@ fn encode_object_value(object_type: u8, payload: &[u8]) -> Vec<u8> {
 fn decode_object_value(encoded: &[u8]) -> Option<(u8, Vec<u8>)> {
     let (&object_type, payload) = encoded.split_first()?;
     Some((object_type, payload.to_vec()))
+}
+
+fn serialize_hash_object_payload(hash: &BTreeMap<Vec<u8>, Vec<u8>>) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&(hash.len() as u32).to_le_bytes());
+    for (field, value) in hash {
+        encoded.extend_from_slice(&(field.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(field);
+        encoded.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(value);
+    }
+    encoded
+}
+
+fn deserialize_hash_object_payload(encoded: &[u8]) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let mut cursor = 0usize;
+
+    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
+        let end = (*cursor).checked_add(size_of::<u32>())?;
+        let bytes = encoded.get(*cursor..end)?;
+        let mut raw = [0u8; size_of::<u32>()];
+        raw.copy_from_slice(bytes);
+        *cursor = end;
+        Some(u32::from_le_bytes(raw))
+    }
+
+    let count = take_u32(encoded, &mut cursor)? as usize;
+    let mut hash = BTreeMap::new();
+    for _ in 0..count {
+        let field_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
+        let field_end = cursor.checked_add(field_len)?;
+        let field = encoded.get(cursor..field_end)?.to_vec();
+        cursor = field_end;
+
+        let value_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
+        let value_end = cursor.checked_add(value_len)?;
+        let value = encoded.get(cursor..value_end)?.to_vec();
+        cursor = value_end;
+
+        hash.insert(field, value);
+    }
+
+    if cursor != encoded.len() {
+        return None;
+    }
+    Some(hash)
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
@@ -1608,6 +1832,105 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b"$3\r\nstr\r\n");
+    }
+
+    #[test]
+    fn hash_commands_roundtrip_over_object_store() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let hset1 = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$6\r\nfield1\r\n$2\r\nv1\r\n";
+        let meta = parse_resp_command_arg_slices(hset1, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let hset2 = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$6\r\nfield1\r\n$2\r\nv2\r\n";
+        let meta = parse_resp_command_arg_slices(hset2, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":0\r\n");
+
+        response.clear();
+        let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$6\r\nfield1\r\n";
+        let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$2\r\nv2\r\n");
+
+        response.clear();
+        let hset3 = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$6\r\nfield2\r\n$2\r\nv3\r\n";
+        let meta = parse_resp_command_arg_slices(hset3, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let hgetall = b"*2\r\n$7\r\nHGETALL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(hgetall, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(
+            response,
+            b"*4\r\n$6\r\nfield1\r\n$2\r\nv2\r\n$6\r\nfield2\r\n$2\r\nv3\r\n"
+        );
+
+        response.clear();
+        let hdel = b"*4\r\n$4\r\nHDEL\r\n$3\r\nkey\r\n$6\r\nfield1\r\n$6\r\nfield9\r\n";
+        let meta = parse_resp_command_arg_slices(hdel, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let hdel_last = b"*3\r\n$4\r\nHDEL\r\n$3\r\nkey\r\n$6\r\nfield2\r\n";
+        let meta = parse_resp_command_arg_slices(hdel_last, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(hgetall, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*0\r\n");
+    }
+
+    #[test]
+    fn hash_commands_return_wrongtype_for_string_keys() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
+        let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .err()
+            .unwrap();
+        err.append_resp_error(&mut response);
+        assert_eq!(
+            response,
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
     }
 
     #[test]

@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 7 — Object Store & Data Structures
-> **Current Iteration**: 49
+> **Current Iteration**: 50
 
 ---
 
@@ -139,7 +139,7 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 7.1 | Implement object store — second `TsavoriteKV` instance for complex types | DONE | 4.6 | Added a dedicated `object_store` TsavoriteKV in `RequestProcessor` with object-specific session functions and helper APIs (`object_upsert`/`object_read`/`object_delete`) using serialized payload format `[type_tag|data]`. |
-| 7.2 | Implement Hash — HGET/HSET/HDEL/HGETALL | TODO | 7.1 | Internal HashMap per key. RMW for mutations. |
+| 7.2 | Implement Hash — HGET/HSET/HDEL/HGETALL | DONE | 7.1 | Added HSET/HGET/HDEL/HGETALL command handlers backed by object-store serialized hash payloads (`BTreeMap<Vec<u8>, Vec<u8>>`), with wrong-type enforcement against existing string keys plus unit/TCP/redis-cli coverage. |
 | 7.3 | Implement List — LPUSH/RPUSH/LPOP/RPOP/LRANGE | TODO | 7.1 | VecDeque or doubly-linked list. |
 | 7.4 | Implement Set — SADD/SREM/SMEMBERS/SISMEMBER | TODO | 7.1 | Internal HashSet per key. |
 | 7.5 | Implement SortedSet — ZADD/ZREM/ZRANGE/ZSCORE | TODO | 7.1 | Skip list or BTreeMap for ordered access. |
@@ -237,6 +237,7 @@
 | 2026-02-18 | Use `UpsertInfo.user_data` as a lightweight control bit to set/clear `RecordInfo.HasExpiration` in main-store writer callbacks, and rewrite existing values on EXPIRE/PERSIST to synchronize the flag. | Moves expiration metadata ownership into record headers incrementally without yet changing value serialization for embedded expiration timestamps. |
 | 2026-02-18 | Store per-record expiration timestamp as an 8-byte unix-millis prefix inside the value payload and centralize encode/decode helpers in `request_lifecycle`. | Provides a concrete in-record expiration timestamp representation compatible with current callback APIs while preserving TTL semantics across read/update flows. |
 | 2026-02-18 | Introduce a separate `ObjectSessionFunctions` implementation and second TsavoriteKV instance for object payload storage, with serialized object framing `[type_tag|payload]`. | Establishes the dual-store architecture foundation required for upcoming hash/list/set/sorted-set command work in Phase 7. |
+| 2026-02-18 | Represent hash objects as deterministically serialized `BTreeMap<Vec<u8>, Vec<u8>>` blobs in the object store and enforce cross-store wrong-type checks for hash commands. | Delivers Phase 7.2 hash semantics quickly while preserving deterministic `HGETALL` output and keeping future object-type expansion straightforward. |
 
 ---
 
@@ -301,3 +302,4 @@
 | 47 | 2026-02-18 | 6.5 | IN_PROGRESS | Wired `RecordInfo.HasExpiration` updates through writer callbacks (`UpsertInfo.user_data`), added EXPIRE/PERSIST flag synchronization rewrites, and added callback-level flag propagation tests; in-record expiration timestamp persistence remains outstanding. |
 | 48 | 2026-02-18 | 6.5 | DONE | Added in-record expiration timestamp encoding (`u64` unix-millis prefix), reader/updater metadata decode paths, and SET/EXPIRE/PERSIST rewrite integration; expiration metadata task is complete for current architecture. |
 | 49 | 2026-02-18 | 7.1 | DONE | Added second TsavoriteKV object store with dedicated callbacks, typed object serialization helpers, and isolation tests validating separation from main string store. |
+| 50 | 2026-02-18 | 7.2 | DONE | Implemented HSET/HGET/HDEL/HGETALL over the object store with serialized hash payloads, wrong-type checks against string keys, and coverage in request lifecycle, TCP integration, and redis-cli compatibility tests. |

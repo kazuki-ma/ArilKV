@@ -388,6 +388,36 @@ mod tests {
         .await;
         send_and_expect(
             &mut client,
+            b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$6\r\nfield1\r\n$2\r\nv1\r\n",
+            b":1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$4\r\nHGET\r\n$4\r\nhkey\r\n$6\r\nfield1\r\n",
+            b"$2\r\nv1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$7\r\nHGETALL\r\n$4\r\nhkey\r\n",
+            b"*2\r\n$6\r\nfield1\r\n$2\r\nv1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$4\r\nHDEL\r\n$4\r\nhkey\r\n$6\r\nfield1\r\n",
+            b":1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$7\r\nHGETALL\r\n$4\r\nhkey\r\n",
+            b"*0\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
             b"*2\r\n$4\r\nINCR\r\n$7\r\ncounter\r\n",
             b":1\r\n",
         )
@@ -404,7 +434,7 @@ mod tests {
         send_and_expect(
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
-            b"*15\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
+            b"*19\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
         )
         .await;
 

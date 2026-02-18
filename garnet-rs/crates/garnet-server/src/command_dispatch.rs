@@ -16,6 +16,10 @@ pub enum CommandId {
     Pexpire,
     Pttl,
     Persist,
+    Hset,
+    Hget,
+    Hdel,
+    Hgetall,
     Ping,
     Echo,
     Info,
@@ -63,6 +67,18 @@ pub unsafe fn dispatch_from_arg_slices(args: &[ArgSlice]) -> CommandId {
 fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     if is_ascii_eq_4(command, b"DECR") {
         return CommandId::Decr;
+    }
+    if is_ascii_eq_4(command, b"HSET") {
+        return CommandId::Hset;
+    }
+    if is_ascii_eq_4(command, b"HGET") {
+        return CommandId::Hget;
+    }
+    if is_ascii_eq_4(command, b"HDEL") {
+        return CommandId::Hdel;
+    }
+    if is_ascii_eq_7(command, b"HGETALL") {
+        return CommandId::Hgetall;
     }
     if is_ascii_eq_6(command, b"EXPIRE") {
         return CommandId::Expire;
@@ -167,6 +183,10 @@ mod tests {
         assert_eq!(dispatch_command_name(b"pexpire"), CommandId::Pexpire);
         assert_eq!(dispatch_command_name(b"PTTL"), CommandId::Pttl);
         assert_eq!(dispatch_command_name(b"persist"), CommandId::Persist);
+        assert_eq!(dispatch_command_name(b"hset"), CommandId::Hset);
+        assert_eq!(dispatch_command_name(b"HGET"), CommandId::Hget);
+        assert_eq!(dispatch_command_name(b"hdel"), CommandId::Hdel);
+        assert_eq!(dispatch_command_name(b"HGETALL"), CommandId::Hgetall);
     }
 
     #[test]

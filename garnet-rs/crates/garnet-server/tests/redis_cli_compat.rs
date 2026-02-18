@@ -77,6 +77,24 @@ async fn redis_cli_basic_command_compatibility() {
         "-1"
     );
     assert_eq!(
+        run_redis_cli(port, &["HSET", "hkey", "field1", "v1"])
+            .await
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["HGET", "hkey", "field1"])
+            .await
+            .unwrap(),
+        "v1"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["HDEL", "hkey", "field1"])
+            .await
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
         run_redis_cli(port, &["SET", "dfoo", "bar"]).await.unwrap(),
         "OK"
     );
