@@ -213,6 +213,8 @@ impl TailAllocator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn allocates_within_single_page() {
@@ -263,5 +265,77 @@ mod tests {
 
         let err = allocator.try_allocate(1024).unwrap_err();
         assert!(matches!(err, TailAllocatorError::RecordTooLarge { .. }));
+    }
+
+    #[test]
+    fn allocates_many_records_without_overlap() {
+        let allocator = TailAllocator::new(8, 96, 0).unwrap();
+        let record_size = 48usize;
+        let mut addresses = Vec::new();
+
+        while addresses.len() < 100 {
+            match allocator.try_allocate(record_size).unwrap() {
+                TailAllocationStatus::Success(address) => addresses.push(address.raw()),
+                TailAllocationStatus::RetryNow => {}
+                TailAllocationStatus::RetryLater => panic!("unexpected RetryLater"),
+            }
+        }
+
+        let mut unique = addresses.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), addresses.len());
+
+        for address in unique {
+            let offset = address & ((allocator.page_size() as u64) - 1);
+            assert!(offset + record_size as u64 <= allocator.page_size() as u64);
+        }
+
+        assert!(allocator.is_page_sealed(0));
+    }
+
+    #[test]
+    fn concurrent_allocation_stress_produces_unique_addresses() {
+        let allocator = Arc::new(TailAllocator::new(8, 256, 0).unwrap());
+        let thread_count = 4usize;
+        let per_thread_successes = 200usize;
+        let record_size = 16usize;
+
+        let mut handles = Vec::new();
+        for _ in 0..thread_count {
+            let allocator = Arc::clone(&allocator);
+            handles.push(thread::spawn(move || {
+                let mut addresses = Vec::with_capacity(per_thread_successes);
+                let mut attempts = 0usize;
+                while addresses.len() < per_thread_successes {
+                    attempts += 1;
+                    assert!(attempts < per_thread_successes * 200);
+
+                    match allocator.try_allocate(record_size).unwrap() {
+                        TailAllocationStatus::Success(address) => addresses.push(address.raw()),
+                        TailAllocationStatus::RetryNow => thread::yield_now(),
+                        TailAllocationStatus::RetryLater => panic!("unexpected RetryLater"),
+                    }
+                }
+                addresses
+            }));
+        }
+
+        let mut all_addresses = Vec::with_capacity(thread_count * per_thread_successes);
+        for handle in handles {
+            all_addresses.extend(handle.join().expect("allocator thread panicked"));
+        }
+
+        assert_eq!(all_addresses.len(), thread_count * per_thread_successes);
+
+        let mut unique = all_addresses.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), all_addresses.len());
+
+        for address in unique {
+            let offset = address & ((allocator.page_size() as u64) - 1);
+            assert!(offset + record_size as u64 <= allocator.page_size() as u64);
+        }
     }
 }

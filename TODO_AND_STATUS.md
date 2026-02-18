@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 2 — Hybrid Log Allocator
-> **Current Iteration**: 14
+> **Current Iteration**: 15
 
 ---
 
@@ -63,7 +63,7 @@
 | 2.4 | Implement record format — RecordInfo + key SpanByte + value SpanByte, variable-length records | DONE | 1.1, 1.2, 2.1 | Added `hybrid_log::record_format` with size/layout computation, aligned serialization (`write_record`), and parse helpers for RecordInfo/key/value SpanByte views. |
 | 2.5 | Implement page I/O — read/write pages to storage device abstraction | DONE | 2.1 | Added `PageDevice` trait (`read_async`/`write_async`), `InMemoryPageDevice`, and `flush_page_to_device` / `load_page_from_device` helpers with roundtrip + error-path tests. |
 | 2.6 | Implement page eviction and read-from-disk path | DONE | 2.2, 2.5 | Added `page_residency` helpers for monotonic `HeadAddress` shift + flush/evict, plus disk fallback read path (`read_with_callback`) that loads pages when `address < HeadAddress`. |
-| 2.7 | Unit tests for hybrid log allocator | TODO | 2.1-2.6 | Allocation correctness, page boundary crossing, concurrent allocation stress test. |
+| 2.7 | Unit tests for hybrid log allocator | DONE | 2.1-2.6 | Added allocator stress coverage: multi-page non-overlap checks and concurrent `TailAllocator` allocation uniqueness tests, alongside page residency read/eviction tests from 2.6. |
 
 ---
 
@@ -206,6 +206,7 @@
 | 2026-02-18 | Depend on `garnet-common` from `tsavorite` for SpanByte parsing/serialization in record layout helpers. | Avoids duplicate length-prefix parsing logic and keeps SpanByte wire-format semantics centralized. |
 | 2026-02-18 | Model page-device interaction as synchronous trait calls with async-compatible method names (`read_async`/`write_async`) in Phase 2. | Keeps early allocator logic deterministic/testable while preserving an API shape that can later map to actual async I/O backends. |
 | 2026-02-18 | Implement the on-disk read path as a callback-based helper (`read_with_callback`) that synchronously ensures residency before invoking the completion callback. | Preserves the future async completion shape while keeping Phase 2 tests deterministic and easy to validate. |
+| 2026-02-18 | Stress-test `TailAllocator` with multi-threaded allocation loops that tolerate `RetryNow` and assert unique logical addresses. | Validates lock-free reservation semantics under contention without introducing unstable timing-dependent assertions. |
 
 ---
 
@@ -235,3 +236,4 @@
 | 12 | 2026-02-18 | 2.4 | DONE | Added record layout math and serialization/parsing for `RecordInfo + SpanByte key + SpanByte value` with 8-byte alignment guarantees. |
 | 13 | 2026-02-18 | 2.5 | DONE | Added page I/O abstraction (`PageDevice`), in-memory device implementation, and flush/load helper flow with roundtrip and error-path tests. |
 | 14 | 2026-02-18 | 2.6 | DONE | Added head-shift eviction helper with flush-before-evict behavior and an `address < HeadAddress` disk fallback read path with callback completion semantics. |
+| 15 | 2026-02-18 | 2.7 | DONE | Expanded hybrid-log allocator tests with multi-page allocation integrity and concurrent tail-allocation stress uniqueness checks. |
