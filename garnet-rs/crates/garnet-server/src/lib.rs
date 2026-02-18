@@ -2,6 +2,7 @@
 
 pub mod command_dispatch;
 pub mod limited_fixed_buffer_pool;
+pub mod request_lifecycle;
 
 pub use command_dispatch::{
     dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args, CommandId,
@@ -10,13 +11,15 @@ pub use limited_fixed_buffer_pool::{
     LimitedFixedBufferPool, LimitedFixedBufferPoolConfig, LimitedFixedBufferPoolError, PoolEntry,
     ReturnStatus,
 };
+pub use request_lifecycle::{RequestExecutionError, RequestProcessor, RequestProcessorInitError};
 
+use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
@@ -92,6 +95,12 @@ pub async fn run_listener_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    let processor = Arc::new(RequestProcessor::new().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("request processor initialization failed: {err}"),
+        )
+    })?);
     let mut tasks = JoinSet::new();
     tokio::pin!(shutdown);
 
@@ -106,8 +115,11 @@ where
                 metrics.active_connections.fetch_add(1, Ordering::Relaxed);
 
                 let task_metrics = Arc::clone(&metrics);
+                let task_processor = Arc::clone(&processor);
                 tasks.spawn(async move {
-                    let _ = handle_connection(stream, read_buffer_size, task_metrics).await;
+                    let _ =
+                        handle_connection(stream, read_buffer_size, task_metrics, task_processor)
+                            .await;
                 });
             }
         }
@@ -122,18 +134,53 @@ async fn handle_connection(
     mut stream: TcpStream,
     read_buffer_size: usize,
     metrics: Arc<ServerMetrics>,
+    processor: Arc<RequestProcessor>,
 ) -> io::Result<()> {
     let _lifecycle = ConnectionLifecycle { metrics: &metrics };
-    let mut buffer = vec![0u8; read_buffer_size.max(1)];
+    let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
+    let mut receive_buffer = Vec::with_capacity(read_buffer_size.max(1));
+    let mut responses = Vec::with_capacity(read_buffer_size.max(1));
+    let mut args = [ArgSlice::EMPTY; 64];
 
     loop {
-        let bytes_read = stream.read(&mut buffer).await?;
+        let bytes_read = stream.read(&mut read_buffer).await?;
         if bytes_read == 0 {
             return Ok(());
         }
         metrics
             .bytes_received
             .fetch_add(bytes_read as u64, Ordering::Relaxed);
+
+        receive_buffer.extend_from_slice(&read_buffer[..bytes_read]);
+        let mut consumed = 0usize;
+        responses.clear();
+
+        loop {
+            match parse_resp_command_arg_slices(&receive_buffer[consumed..], &mut args) {
+                Ok(meta) => {
+                    if let Err(error) =
+                        processor.execute(&args[..meta.argument_count], &mut responses)
+                    {
+                        error.append_resp_error(&mut responses);
+                    }
+                    consumed += meta.bytes_consumed;
+                }
+                Err(RespParseError::Incomplete) => break,
+                Err(_) => {
+                    responses.extend_from_slice(b"-ERR protocol error\r\n");
+                    stream.write_all(&responses).await?;
+                    return Ok(());
+                }
+            }
+        }
+
+        if consumed > 0 {
+            receive_buffer.drain(..consumed);
+        }
+
+        if !responses.is_empty() {
+            stream.write_all(&responses).await?;
+        }
     }
 }
 

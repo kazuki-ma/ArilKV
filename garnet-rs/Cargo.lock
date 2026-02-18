@@ -270,6 +270,7 @@ dependencies = [
  "crossbeam-queue",
  "garnet-common",
  "tokio",
+ "tsavorite",
 ]
 
 [[package]]
