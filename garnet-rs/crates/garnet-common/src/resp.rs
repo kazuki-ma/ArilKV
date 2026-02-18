@@ -3,6 +3,8 @@
 //! This parser focuses on command frames of shape:
 //! `*<n>\r\n$<len>\r\n<arg>\r\n...`, and returns zero-copy argument slices.
 
+use crate::{ArgSlice, ArgSliceError};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RespCommandMeta {
     pub argument_count: usize,
@@ -19,6 +21,7 @@ pub enum RespParseError {
     InvalidCrlf { position: usize },
     NegativeArrayLength { length: i64 },
     NegativeBulkLength { length: i64 },
+    ArgumentLengthOverflow { length: usize },
     ArgumentCapacityExceeded { required: usize, capacity: usize },
 }
 
@@ -47,6 +50,11 @@ impl core::fmt::Display for RespParseError {
             Self::NegativeBulkLength { length } => {
                 write!(f, "negative RESP bulk-string length {}", length)
             }
+            Self::ArgumentLengthOverflow { length } => write!(
+                f,
+                "RESP argument length {} exceeds ArgSlice capacity",
+                length
+            ),
             Self::ArgumentCapacityExceeded { required, capacity } => write!(
                 f,
                 "RESP argument capacity exceeded: required {}, capacity {}",
@@ -62,6 +70,34 @@ pub fn parse_resp_command<'a>(
     input: &'a [u8],
     args_out: &mut [&'a [u8]],
 ) -> Result<RespCommandMeta, RespParseError> {
+    parse_resp_command_with(input, args_out.len(), |slot, arg| {
+        args_out[slot] = arg;
+        Ok(())
+    })
+}
+
+pub fn parse_resp_command_arg_slices(
+    input: &[u8],
+    args_out: &mut [ArgSlice],
+) -> Result<RespCommandMeta, RespParseError> {
+    parse_resp_command_with(input, args_out.len(), |slot, arg| {
+        args_out[slot] = ArgSlice::from_slice(arg).map_err(|error| match error {
+            ArgSliceError::LengthOverflow { length } => {
+                RespParseError::ArgumentLengthOverflow { length }
+            }
+        })?;
+        Ok(())
+    })
+}
+
+fn parse_resp_command_with<'a, F>(
+    input: &'a [u8],
+    capacity: usize,
+    mut on_argument: F,
+) -> Result<RespCommandMeta, RespParseError>
+where
+    F: FnMut(usize, &'a [u8]) -> Result<(), RespParseError>,
+{
     if input.is_empty() {
         return Err(RespParseError::Incomplete);
     }
@@ -77,10 +113,10 @@ pub fn parse_resp_command<'a>(
         return Err(RespParseError::NegativeArrayLength { length: array_len });
     }
     let argument_count = array_len as usize;
-    if argument_count > args_out.len() {
+    if argument_count > capacity {
         return Err(RespParseError::ArgumentCapacityExceeded {
             required: argument_count,
-            capacity: args_out.len(),
+            capacity,
         });
     }
 
@@ -113,7 +149,7 @@ pub fn parse_resp_command<'a>(
             return Err(RespParseError::Incomplete);
         }
 
-        args_out[slot] = &input[cursor..payload_end];
+        on_argument(slot, &input[cursor..payload_end])?;
         if input[payload_end] != b'\r' || input[payload_end + 1] != b'\n' {
             return Err(RespParseError::InvalidCrlf {
                 position: payload_end,
@@ -190,6 +226,20 @@ mod tests {
         assert_eq!(meta.bytes_consumed, frame.len());
         assert_eq!(args[0], b"GET");
         assert_eq!(args[1], b"key");
+    }
+
+    #[test]
+    fn parses_resp_command_into_arg_slices() {
+        let frame = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let mut args = [ArgSlice::EMPTY; 2];
+
+        let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+        assert_eq!(meta.argument_count, 2);
+        assert_eq!(meta.bytes_consumed, frame.len());
+        // SAFETY: `frame` lives until the end of this scope.
+        assert_eq!(unsafe { args[0].as_slice() }, b"GET");
+        // SAFETY: `frame` lives until the end of this scope.
+        assert_eq!(unsafe { args[1].as_slice() }, b"key");
     }
 
     #[test]
