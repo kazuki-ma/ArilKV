@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-18
-> **Current Phase**: Phase 3 — Hash Index
-> **Current Iteration**: 19
+> **Current Phase**: Phase 4 — CRUD Operations
+> **Current Iteration**: 20
 
 ---
 
@@ -77,7 +77,7 @@
 | 3.2 | Implement `FindTag` / `FindOrCreateTag` — CAS-based entry insertion | DONE | 3.1 | Added `HashIndex::find_tag` and CAS-based `find_or_create_tag` with tentative-slot install, duplicate-slot check, truncated-entry reclaim, and explicit `BucketFullNeedsOverflow` handoff for overflow path. |
 | 3.3 | Implement overflow bucket allocation — fixed-page allocator for overflow chains | DONE | 3.1 | Added `OverflowBucketAllocator` with 64K-bucket fixed pages, lock-free free-list reuse (`SegQueue`), and integrated overflow-chain allocation/linking in `HashIndex::find_or_create_tag`. |
 | 3.4 | Implement transient S/X locking — shared/exclusive latch on bucket overflow entry | DONE | 3.1 | Added `HashBucket` transient latch APIs: `try_acquire_shared_latch`, `try_acquire_exclusive_latch`, `try_promote_latch`, and corresponding release operations with bounded spin/drain behavior. |
-| 3.5 | Unit tests for hash index | TODO | 3.1-3.4 | Concurrent insert/lookup, overflow chain correctness, tag collision handling. Use `loom` for concurrency testing. |
+| 3.5 | Unit tests for hash index | DONE | 3.1-3.4 | Added concurrent same-tag/different-tag insertion tests, overflow-chain reachability checks, and collision-path regression coverage for `find_or_create_tag` + `find_tag`. |
 
 ---
 
@@ -211,6 +211,7 @@
 | 2026-02-18 | Keep `FindOrCreateTag` scoped to primary-bucket CAS insertion for now and return an explicit `BucketFullNeedsOverflow` signal when no free slot exists. | Allows validation of tentative-insert correctness immediately while isolating overflow allocator complexity into task 3.3. |
 | 2026-02-18 | Use a dedicated `OverflowBucketAllocator` with fixed-size page chunks and a concurrent free-list (`SegQueue`) for overflow bucket reuse. | Preserves stable logical-address mapping for overflow chains while avoiding per-bucket heap allocation churn under collisions. |
 | 2026-02-18 | Implement bucket latching directly on the overflow word using bounded CAS spin loops and explicit reader-drain limits. | Mirrors Tsavorite’s transient lock semantics while preventing unbounded waits during exclusive acquisition/promotion. |
+| 2026-02-18 | Validate hash-index collision paths with multi-threaded `find_or_create_tag` tests that force overflow-chain growth and concurrent duplicate-tag races. | Provides practical contention coverage ahead of CRUD integration without yet introducing `loom` model-checking overhead. |
 
 ---
 
@@ -245,3 +246,4 @@
 | 17 | 2026-02-18 | 3.2 | DONE | Added `FindTag`/`FindOrCreateTag` behavior on primary buckets using CAS tentative insertion, duplicate-slot resolution, and stale-entry reclamation tests. |
 | 18 | 2026-02-18 | 3.3 | DONE | Added fixed-page overflow allocator and wired overflow-bucket chain allocation into hash-index insertion when primary buckets are full. |
 | 19 | 2026-02-18 | 3.4 | DONE | Added transient shared/exclusive/promote latch operations on hash-bucket overflow entries with unit tests for lock-state transitions. |
+| 20 | 2026-02-18 | 3.5 | DONE | Added concurrent hash-index tests covering same-tag convergence, overflow-chain collision inserts, and post-insert lookup correctness. |

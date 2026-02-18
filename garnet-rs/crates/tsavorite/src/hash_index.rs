@@ -510,6 +510,9 @@ enum FindTagOrFreeSlot {
 mod tests {
     use super::*;
     use crate::HashBucketEntry;
+    use std::collections::HashSet;
+    use std::sync::Arc;
+    use std::thread;
 
     #[test]
     fn initializes_power_of_two_bucket_array() {
@@ -642,5 +645,78 @@ mod tests {
         assert_eq!(created.overflow_bucket_address, Some(overflow_address));
         assert_ne!(overflow_address, 0);
         assert_eq!(index.find_tag(hash), Some(created.slot));
+    }
+
+    #[test]
+    fn concurrent_find_or_create_for_same_tag_converges_on_single_slot() {
+        let index = Arc::new(HashIndex::with_size_bits(4).unwrap());
+        let hash = (77u64 << HASH_TAG_SHIFT) | 3;
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let index = Arc::clone(&index);
+            handles.push(thread::spawn(move || {
+                index.find_or_create_tag(hash, 0).unwrap()
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            results.push(handle.join().expect("worker thread panicked"));
+        }
+
+        let created_count = results
+            .iter()
+            .filter(|result| result.status == FindOrCreateTagStatus::Created)
+            .count();
+        assert_eq!(created_count, 1);
+
+        let unique_slots: HashSet<_> = results.iter().map(|result| result.slot).collect();
+        assert_eq!(unique_slots.len(), 1);
+        assert_eq!(index.find_tag(hash), Some(results[0].slot));
+    }
+
+    #[test]
+    fn concurrent_colliding_tags_allocate_overflow_chain_and_remain_findable() {
+        let index = Arc::new(HashIndex::with_size_bits(2).unwrap());
+        let tags: Vec<u16> = (1..=40).collect();
+
+        let mut handles = Vec::new();
+        for tag in tags.iter().copied() {
+            let index = Arc::clone(&index);
+            handles.push(thread::spawn(move || {
+                let hash = ((tag as u64) << HASH_TAG_SHIFT) | 0;
+                index.find_or_create_tag(hash, 0).unwrap()
+            }));
+        }
+
+        for handle in handles {
+            handle.join().expect("worker thread panicked");
+        }
+
+        for tag in tags {
+            let hash = ((tag as u64) << HASH_TAG_SHIFT) | 0;
+            assert!(
+                index.find_tag(hash).is_some(),
+                "tag {} missing from collision chain",
+                tag
+            );
+        }
+
+        let mut overflow_addresses = Vec::new();
+        let mut current = index.bucket(0).unwrap().overflow_address(Ordering::Acquire);
+        while current != 0 {
+            overflow_addresses.push(current);
+            current = index
+                .overflow_allocator()
+                .get(current)
+                .unwrap()
+                .bucket()
+                .overflow_address(Ordering::Acquire);
+        }
+
+        assert!(!overflow_addresses.is_empty());
+        let unique_addresses: HashSet<_> = overflow_addresses.iter().copied().collect();
+        assert_eq!(unique_addresses.len(), overflow_addresses.len());
     }
 }
