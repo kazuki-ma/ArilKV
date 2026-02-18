@@ -16,6 +16,7 @@ use tsavorite::{
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
 const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
 const HASH_OBJECT_TYPE_TAG: u8 = 3;
+const LIST_OBJECT_TYPE_TAG: u8 = 2;
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -91,6 +92,11 @@ impl RequestProcessor {
             CommandId::Hget => self.handle_hget(args, response_out),
             CommandId::Hdel => self.handle_hdel(args, response_out),
             CommandId::Hgetall => self.handle_hgetall(args, response_out),
+            CommandId::Lpush => self.handle_lpush(args, response_out),
+            CommandId::Rpush => self.handle_rpush(args, response_out),
+            CommandId::Lpop => self.handle_lpop(args, response_out),
+            CommandId::Rpop => self.handle_rpop(args, response_out),
+            CommandId::Lrange => self.handle_lrange(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -191,6 +197,29 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_hash_object_payload(hash);
         self.object_upsert(key, HASH_OBJECT_TYPE_TAG, &payload)
+    }
+
+    fn load_list_object(&self, key: &[u8]) -> Result<Option<Vec<Vec<u8>>>, RequestExecutionError> {
+        let object = match self.object_read(key)? {
+            Some(object) => object,
+            None => {
+                if self.key_exists(key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                return Ok(None);
+            }
+        };
+        if object.0 != LIST_OBJECT_TYPE_TAG {
+            return Err(RequestExecutionError::WrongType);
+        }
+        deserialize_list_object_payload(&object.1)
+            .map(Some)
+            .ok_or(RequestExecutionError::StorageFailure)
+    }
+
+    fn save_list_object(&self, key: &[u8], list: &[Vec<u8>]) -> Result<(), RequestExecutionError> {
+        let payload = serialize_list_object_payload(list);
+        self.object_upsert(key, LIST_OBJECT_TYPE_TAG, &payload)
     }
 
     pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
@@ -813,6 +842,191 @@ impl RequestProcessor {
         Ok(())
     }
 
+    fn handle_lpush(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "LPUSH",
+                expected: "LPUSH key value [value ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut list = self.load_list_object(&key)?.unwrap_or_default();
+        for value in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            list.insert(0, unsafe { value.as_slice() }.to_vec());
+        }
+        self.save_list_object(&key, &list)?;
+        append_integer(response_out, list.len() as i64);
+        Ok(())
+    }
+
+    fn handle_rpush(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "RPUSH",
+                expected: "RPUSH key value [value ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut list = self.load_list_object(&key)?.unwrap_or_default();
+        for value in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            list.push(unsafe { value.as_slice() }.to_vec());
+        }
+        self.save_list_object(&key, &list)?;
+        append_integer(response_out, list.len() as i64);
+        Ok(())
+    }
+
+    fn handle_lpop(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "LPOP",
+                expected: "LPOP key",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut list = match self.load_list_object(&key)? {
+            Some(list) => list,
+            None => {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+        if list.is_empty() {
+            let _ = self.object_delete(&key)?;
+            append_null_bulk_string(response_out);
+            return Ok(());
+        }
+
+        let value = list.remove(0);
+        if list.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_list_object(&key, &list)?;
+        }
+        append_bulk_string(response_out, &value);
+        Ok(())
+    }
+
+    fn handle_rpop(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "RPOP",
+                expected: "RPOP key",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut list = match self.load_list_object(&key)? {
+            Some(list) => list,
+            None => {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+        let value = match list.pop() {
+            Some(value) => value,
+            None => {
+                let _ = self.object_delete(&key)?;
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+
+        if list.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_list_object(&key, &list)?;
+        }
+        append_bulk_string(response_out, &value);
+        Ok(())
+    }
+
+    fn handle_lrange(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "LRANGE",
+                expected: "LRANGE key start stop",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let list = match self.load_list_object(&key)? {
+            Some(list) => list,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let len = list.len() as i64;
+        if len == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let mut normalized_start = if start < 0 { len + start } else { start };
+        let mut normalized_stop = if stop < 0 { len + stop } else { stop };
+        if normalized_start < 0 {
+            normalized_start = 0;
+        }
+        if normalized_stop < 0 || normalized_start >= len {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if normalized_stop >= len {
+            normalized_stop = len - 1;
+        }
+        if normalized_start > normalized_stop {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let count = (normalized_stop - normalized_start + 1) as usize;
+        response_out.push(b'*');
+        response_out.extend_from_slice(count.to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for index in normalized_start..=normalized_stop {
+            append_bulk_string(response_out, &list[index as usize]);
+        }
+        Ok(())
+    }
+
     fn handle_ping(
         &self,
         args: &[ArgSlice],
@@ -902,8 +1116,8 @@ impl RequestProcessor {
             response_out,
             &[
                 b"GET", b"SET", b"DEL", b"INCR", b"DECR", b"EXPIRE", b"TTL", b"PEXPIRE", b"PTTL",
-                b"PERSIST", b"HSET", b"HGET", b"HDEL", b"HGETALL", b"PING", b"ECHO", b"INFO",
-                b"DBSIZE", b"COMMAND",
+                b"PERSIST", b"HSET", b"HGET", b"HDEL", b"HGETALL", b"LPUSH", b"RPUSH", b"LPOP",
+                b"RPOP", b"LRANGE", b"PING", b"ECHO", b"INFO", b"DBSIZE", b"COMMAND",
             ],
         );
         Ok(())
@@ -1238,6 +1452,44 @@ fn deserialize_hash_object_payload(encoded: &[u8]) -> Option<BTreeMap<Vec<u8>, V
         return None;
     }
     Some(hash)
+}
+
+fn serialize_list_object_payload(list: &[Vec<u8>]) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&(list.len() as u32).to_le_bytes());
+    for value in list {
+        encoded.extend_from_slice(&(value.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(value);
+    }
+    encoded
+}
+
+fn deserialize_list_object_payload(encoded: &[u8]) -> Option<Vec<Vec<u8>>> {
+    let mut cursor = 0usize;
+
+    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
+        let end = (*cursor).checked_add(size_of::<u32>())?;
+        let bytes = encoded.get(*cursor..end)?;
+        let mut raw = [0u8; size_of::<u32>()];
+        raw.copy_from_slice(bytes);
+        *cursor = end;
+        Some(u32::from_le_bytes(raw))
+    }
+
+    let count = take_u32(encoded, &mut cursor)? as usize;
+    let mut list = Vec::with_capacity(count);
+    for _ in 0..count {
+        let value_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
+        let value_end = cursor.checked_add(value_len)?;
+        let value = encoded.get(cursor..value_end)?.to_vec();
+        cursor = value_end;
+        list.push(value);
+    }
+
+    if cursor != encoded.len() {
+        return None;
+    }
+    Some(list)
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
@@ -1922,6 +2174,116 @@ mod tests {
         response.clear();
         let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
         let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .err()
+            .unwrap();
+        err.append_resp_error(&mut response);
+        assert_eq!(
+            response,
+            b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+        );
+    }
+
+    #[test]
+    fn list_commands_roundtrip_over_object_store() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let lpush = b"*4\r\n$5\r\nLPUSH\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n";
+        let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":2\r\n");
+
+        response.clear();
+        let rpush = b"*3\r\n$5\r\nRPUSH\r\n$3\r\nkey\r\n$1\r\nc\r\n";
+        let meta = parse_resp_command_arg_slices(rpush, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":3\r\n");
+
+        response.clear();
+        let lrange_all = b"*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
+        let meta = parse_resp_command_arg_slices(lrange_all, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*3\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n");
+
+        response.clear();
+        let lpop = b"*2\r\n$4\r\nLPOP\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(lpop, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$1\r\nb\r\n");
+
+        response.clear();
+        let rpop = b"*2\r\n$4\r\nRPOP\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(rpop, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$1\r\nc\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(lpop, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$1\r\na\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(lpop, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+    }
+
+    #[test]
+    fn lrange_supports_negative_indexes() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let rpush =
+            b"*6\r\n$5\r\nRPUSH\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n";
+        let meta = parse_resp_command_arg_slices(rpush, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":4\r\n");
+
+        response.clear();
+        let lrange = b"*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$2\r\n-3\r\n$2\r\n-2\r\n";
+        let meta = parse_resp_command_arg_slices(lrange, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n");
+    }
+
+    #[test]
+    fn list_commands_return_wrongtype_for_string_keys() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let lpush = b"*3\r\n$5\r\nLPUSH\r\n$3\r\nkey\r\n$1\r\nv\r\n";
+        let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
         let err = processor
             .execute(&args[..meta.argument_count], &mut response)
             .err()

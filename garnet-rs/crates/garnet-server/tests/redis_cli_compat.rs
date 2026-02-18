@@ -95,6 +95,21 @@ async fn redis_cli_basic_command_compatibility() {
         "1"
     );
     assert_eq!(
+        run_redis_cli(port, &["LPUSH", "lkey", "a", "b"])
+            .await
+            .unwrap(),
+        "2"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["LRANGE", "lkey", "0", "-1"])
+            .await
+            .unwrap(),
+        "b\na"
+    );
+    assert_eq!(run_redis_cli(port, &["RPOP", "lkey"]).await.unwrap(), "a");
+    assert_eq!(run_redis_cli(port, &["LPOP", "lkey"]).await.unwrap(), "b");
+    assert_eq!(run_redis_cli(port, &["LPOP", "lkey"]).await.unwrap(), "");
+    assert_eq!(
         run_redis_cli(port, &["SET", "dfoo", "bar"]).await.unwrap(),
         "OK"
     );

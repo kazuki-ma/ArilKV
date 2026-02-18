@@ -20,6 +20,11 @@ pub enum CommandId {
     Hget,
     Hdel,
     Hgetall,
+    Lpush,
+    Rpush,
+    Lpop,
+    Rpop,
+    Lrange,
     Ping,
     Echo,
     Info,
@@ -80,6 +85,21 @@ fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     if is_ascii_eq_7(command, b"HGETALL") {
         return CommandId::Hgetall;
     }
+    if is_ascii_eq_5(command, b"LPUSH") {
+        return CommandId::Lpush;
+    }
+    if is_ascii_eq_5(command, b"RPUSH") {
+        return CommandId::Rpush;
+    }
+    if is_ascii_eq_4(command, b"LPOP") {
+        return CommandId::Lpop;
+    }
+    if is_ascii_eq_4(command, b"RPOP") {
+        return CommandId::Rpop;
+    }
+    if is_ascii_eq_6(command, b"LRANGE") {
+        return CommandId::Lrange;
+    }
     if is_ascii_eq_6(command, b"EXPIRE") {
         return CommandId::Expire;
     }
@@ -136,6 +156,15 @@ fn is_ascii_eq_4(input: &[u8], expected_upper: &[u8; 4]) -> bool {
         && ascii_upper(input[3]) == expected_upper[3]
 }
 
+fn is_ascii_eq_5(input: &[u8], expected_upper: &[u8; 5]) -> bool {
+    input.len() == 5
+        && ascii_upper(input[0]) == expected_upper[0]
+        && ascii_upper(input[1]) == expected_upper[1]
+        && ascii_upper(input[2]) == expected_upper[2]
+        && ascii_upper(input[3]) == expected_upper[3]
+        && ascii_upper(input[4]) == expected_upper[4]
+}
+
 fn is_ascii_eq_6(input: &[u8], expected_upper: &[u8; 6]) -> bool {
     input.len() == 6
         && ascii_upper(input[0]) == expected_upper[0]
@@ -187,6 +216,11 @@ mod tests {
         assert_eq!(dispatch_command_name(b"HGET"), CommandId::Hget);
         assert_eq!(dispatch_command_name(b"hdel"), CommandId::Hdel);
         assert_eq!(dispatch_command_name(b"HGETALL"), CommandId::Hgetall);
+        assert_eq!(dispatch_command_name(b"lpush"), CommandId::Lpush);
+        assert_eq!(dispatch_command_name(b"RPUSH"), CommandId::Rpush);
+        assert_eq!(dispatch_command_name(b"lpop"), CommandId::Lpop);
+        assert_eq!(dispatch_command_name(b"RPOP"), CommandId::Rpop);
+        assert_eq!(dispatch_command_name(b"lrange"), CommandId::Lrange);
     }
 
     #[test]
