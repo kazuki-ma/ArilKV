@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 1 — Core Primitives
-> **Current Iteration**: 5
+> **Current Iteration**: 6
 
 ---
 
@@ -44,7 +44,7 @@
 | 1.1 | Implement `SpanByte` — variable-length byte sequence with 4-byte length prefix | DONE | 0.10 | Implemented in `garnet-common` as `SpanByte` packed header + `SpanByteRef`/`SpanByteRefMut` zero-copy views with safe `as_slice()` / `as_mut_slice()` wrappers and header bit validation. |
 | 1.2 | Implement `RecordInfo` — 64-bit packed bitfield | DONE | 0.10 | Implemented as `#[repr(C)]` 8-byte packed header in `tsavorite` with previous-address masking, flag accessors/mutators, closed/scan semantics, and size/bitfield unit tests. |
 | 1.3 | Implement `LightEpoch` — epoch protection with cache-line-padded table | DONE | 0.10 | Implemented `LightEpoch` with `#[repr(C, align(64))] EpochEntry`, per-thread pin/unpin guard API, global/safe epoch tracking, and deferred drain callbacks. |
-| 1.4 | Implement `HashBucket` — 64-byte cache-line-aligned bucket with 7 entries + overflow | TODO | 0.10 | See doc 03. `#[repr(C, align(64))]`. 7 × `HashBucketEntry` (8 bytes each) + 1 overflow pointer (8 bytes) = 64 bytes. `assert_eq!(size_of::<HashBucket>(), 64)`. |
+| 1.4 | Implement `HashBucket` — 64-byte cache-line-aligned bucket with 7 entries + overflow | DONE | 0.10 | Implemented `#[repr(C, align(64))] HashBucket` with 7 data entries + overflow/latch word, overflow address helpers, and size/alignment tests (`64` bytes). |
 | 1.5 | Implement `HashBucketEntry` — 8-byte packed entry (tag, address, tentative, pending) | DONE | 0.10 | Implemented atomic packed entry with tag/address/flag packing helpers, read-cache bit support, and CAS update APIs over `AtomicU64`. |
 | 1.6 | Unit tests for all Phase 1 types | TODO | 1.1-1.5 | Size/alignment assertions, bit manipulation roundtrip tests, epoch acquire/release correctness. Use `proptest` for SpanByte serialization. |
 | 1.7 | Benchmark Phase 1 hot-path operations | TODO | 1.6 | `criterion` benchmarks for RecordInfo bit ops, HashBucketEntry CAS, epoch pin/unpin. |
@@ -197,6 +197,7 @@
 | 2026-02-18 | Keep RecordInfo’s canonical Tsavorite bit layout (including `Modified`/`VectorSet`) and place `HasExpiration` in a reclaimed leftover bit for planned Garnet metadata. | Preserves C# parity for existing bits while satisfying planned expiration flag support from the tracker. |
 | 2026-02-18 | Implement LightEpoch with thread-local slot/depth bookkeeping and RAII `EpochGuard` instead of explicit suspend/resume API on callers. | Matches Rust ownership ergonomics (`let guard = epoch.pin()`) while retaining cache-line-padded entry table and deferred drain semantics. |
 | 2026-02-18 | Implement HashBucketEntry as `AtomicU64`-backed packed word with standalone pack/unpack helpers plus CAS entrypoint. | Keeps hot-path updates lock-free and allows direct bit-level compatibility with Tsavorite hash index encoding. |
+| 2026-02-18 | Represent HashBucket overflow entry as a single atomic word carrying both overflow address bits and latch bits. | Mirrors Tsavorite’s compact overflow+latch encoding while keeping 64-byte one-cache-line bucket size. |
 
 ---
 
@@ -217,3 +218,4 @@
 | 3 | 2026-02-18 | 1.2 | DONE | Added 8-byte `RecordInfo` with bitfield APIs and tests (`size_of == 8`, previous-address masking, lifecycle flag behavior). |
 | 4 | 2026-02-18 | 1.3 | DONE | Added `LightEpoch` and `EpochGuard` with 64-byte aligned epoch entries, per-thread pin/unpin behavior, and drain callback execution. |
 | 5 | 2026-02-18 | 1.5 | DONE | Added `HashBucketEntry` with 14-bit tag + 48-bit address encoding, tentative/pending/read-cache handling, and CAS-oriented APIs/tests. |
+| 6 | 2026-02-18 | 1.4 | DONE | Added 64-byte `HashBucket` layout with seven data entries, overflow/latch atomic word, and validation tests. |
