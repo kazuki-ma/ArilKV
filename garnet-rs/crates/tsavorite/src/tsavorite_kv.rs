@@ -95,6 +95,7 @@ where
     device: D,
     epoch: LightEpoch,
     checkpoint_state: CheckpointStateMachine,
+    checkpoint_wait_flush_epoch: Option<(u64, u64)>,
     _marker: PhantomData<(K, V)>,
 }
 
@@ -136,6 +137,7 @@ where
             device,
             epoch: LightEpoch::new(),
             checkpoint_state: CheckpointStateMachine::new(),
+            checkpoint_wait_flush_epoch: None,
             _marker: PhantomData,
         })
     }
@@ -175,7 +177,10 @@ where
         &mut self,
         mode: CheckpointMode,
     ) -> Result<u64, CheckpointTransitionError> {
-        self.checkpoint_state.begin(mode)
+        let token = self.checkpoint_state.begin(mode)?;
+        let barrier_epoch = self.epoch.bump_current_epoch();
+        self.checkpoint_wait_flush_epoch = Some((token, barrier_epoch));
+        Ok(token)
     }
 
     #[inline]
@@ -195,6 +200,28 @@ where
     }
 
     #[inline]
+    pub fn checkpoint_try_mark_wait_flush(
+        &mut self,
+        token: u64,
+    ) -> Result<bool, CheckpointTransitionError> {
+        let Some((expected_token, barrier_epoch)) = self.checkpoint_wait_flush_epoch else {
+            self.checkpoint_state.mark_wait_flush(token)?;
+            return Ok(true);
+        };
+        if expected_token != token {
+            return Err(CheckpointTransitionError::TokenMismatch {
+                expected: expected_token,
+                actual: token,
+            });
+        }
+        if self.epoch.safe_to_reclaim_epoch() < barrier_epoch {
+            return Ok(false);
+        }
+        self.checkpoint_state.mark_wait_flush(token)?;
+        Ok(true)
+    }
+
+    #[inline]
     pub fn checkpoint_mark_persistence_callback(
         &mut self,
         token: u64,
@@ -204,12 +231,16 @@ where
 
     #[inline]
     pub fn checkpoint_complete(&mut self, token: u64) -> Result<(), CheckpointTransitionError> {
-        self.checkpoint_state.complete(token)
+        self.checkpoint_state.complete(token)?;
+        self.checkpoint_wait_flush_epoch = None;
+        Ok(())
     }
 
     #[inline]
     pub fn checkpoint_abort(&mut self, token: u64) -> Result<(), CheckpointTransitionError> {
-        self.checkpoint_state.abort(token)
+        self.checkpoint_state.abort(token)?;
+        self.checkpoint_wait_flush_epoch = None;
+        Ok(())
     }
 
     #[inline]
@@ -714,6 +745,16 @@ mod tests {
         store.checkpoint_mark_persistence_callback(token).unwrap();
         store.checkpoint_complete(token).unwrap();
         assert_eq!(store.checkpoint_state(), CheckpointState::Rest);
+    }
+
+    #[test]
+    fn checkpoint_wait_flush_can_be_gated_by_safe_epoch() {
+        let mut store = TsavoriteKV::<Vec<u8>, Vec<u8>>::new(test_config()).unwrap();
+        let token = store.checkpoint_begin(CheckpointMode::Snapshot).unwrap();
+        store.checkpoint_mark_in_progress(token).unwrap();
+        assert!(!store.checkpoint_try_mark_wait_flush(token).unwrap());
+        store.bump_epoch();
+        assert!(store.checkpoint_try_mark_wait_flush(token).unwrap());
     }
 
     #[test]
