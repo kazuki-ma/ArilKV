@@ -1,11 +1,15 @@
 //! Hybrid log components.
 
 pub mod address_pointers;
+pub mod page_io;
 pub mod page_manager;
 pub mod record_format;
 pub mod tail_allocator;
 
 pub use address_pointers::{LogAddressPointers, LogAddressPointersSnapshot};
+pub use page_io::{
+    flush_page_to_device, load_page_from_device, InMemoryPageDevice, PageDevice, PageIoError,
+};
 pub use page_manager::{LogicalAddress, Page, PageAddressSpace, PageManager, PageManagerError};
 pub use record_format::{
     parse_key_span, parse_record_info, parse_record_layout, parse_value_span, round_up,

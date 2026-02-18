@@ -18,9 +18,10 @@ pub use hash_bucket_entry::{
     TAG_MASK, TAG_POSITION_MASK, TAG_SHIFT, TENTATIVE_BIT_MASK, TENTATIVE_BIT_SHIFT,
 };
 pub use hybrid_log::{
-    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, round_up,
-    write_record, LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page,
-    PageAddressSpace, PageManager, PageManagerError, RecordFormatError, RecordLayout,
+    flush_page_to_device, load_page_from_device, parse_key_span, parse_record_info,
+    parse_record_layout, parse_value_span, round_up, write_record, InMemoryPageDevice,
+    LogAddressPointers, LogAddressPointersSnapshot, LogicalAddress, Page, PageAddressSpace,
+    PageDevice, PageIoError, PageManager, PageManagerError, RecordFormatError, RecordLayout,
     RecordParsedLayout, TailAllocationStatus, TailAllocator, TailAllocatorError, RECORD_ALIGNMENT,
     RECORD_INFO_SIZE,
 };

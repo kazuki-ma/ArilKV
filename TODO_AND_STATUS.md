@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 2 — Hybrid Log Allocator
-> **Current Iteration**: 12
+> **Current Iteration**: 13
 
 ---
 
@@ -61,7 +61,7 @@
 | 2.2 | Implement log address pointers — TailAddress, ReadOnlyAddress, SafeReadOnlyAddress, HeadAddress, SafeHeadAddress, BeginAddress | DONE | 2.1 | Added `LogAddressPointers` with `AtomicU64` fields for all six pointers, monotonic shift APIs, tail `fetch_add`, and snapshot/test coverage for non-regressing pointer movement. |
 | 2.3 | Implement lock-free tail allocation — `AtomicU64::fetch_add` for log append | DONE | 2.2 | Added `TailAllocator` with fetch-add reservation fast path, page-turn handling (`RetryNow`/`RetryLater`), sealed-page tracking, and page preallocation for next/next+1 pages. |
 | 2.4 | Implement record format — RecordInfo + key SpanByte + value SpanByte, variable-length records | DONE | 1.1, 1.2, 2.1 | Added `hybrid_log::record_format` with size/layout computation, aligned serialization (`write_record`), and parse helpers for RecordInfo/key/value SpanByte views. |
-| 2.5 | Implement page I/O — read/write pages to storage device abstraction | TODO | 2.1 | See doc 02. `IDevice` trait with `ReadAsync`/`WriteAsync`. Start with in-memory device for testing. |
+| 2.5 | Implement page I/O — read/write pages to storage device abstraction | DONE | 2.1 | Added `PageDevice` trait (`read_async`/`write_async`), `InMemoryPageDevice`, and `flush_page_to_device` / `load_page_from_device` helpers with roundtrip + error-path tests. |
 | 2.6 | Implement page eviction and read-from-disk path | TODO | 2.2, 2.5 | See doc 02. When address < HeadAddress, page is on disk. Async read + callback. |
 | 2.7 | Unit tests for hybrid log allocator | TODO | 2.1-2.6 | Allocation correctness, page boundary crossing, concurrent allocation stress test. |
 
@@ -204,6 +204,7 @@
 | 2026-02-18 | Centralize region-boundary pointers in `LogAddressPointers` and expose only monotonic shift operations. | Enforces one-way address movement invariants by construction and simplifies future checkpoint/fuzzy-region logic. |
 | 2026-02-18 | Use a `TryLock`-gated page-turn path in `TailAllocator` and return `RetryNow` when another thread is currently handling boundary crossing. | Preserves lock-free fast path while avoiding blocking contention in boundary-turn slow path. |
 | 2026-02-18 | Depend on `garnet-common` from `tsavorite` for SpanByte parsing/serialization in record layout helpers. | Avoids duplicate length-prefix parsing logic and keeps SpanByte wire-format semantics centralized. |
+| 2026-02-18 | Model page-device interaction as synchronous trait calls with async-compatible method names (`read_async`/`write_async`) in Phase 2. | Keeps early allocator logic deterministic/testable while preserving an API shape that can later map to actual async I/O backends. |
 
 ---
 
@@ -231,3 +232,4 @@
 | 10 | 2026-02-18 | 2.2 | DONE | Added atomic log-region pointer set (`Tail/RO/SafeRO/Head/SafeHead/Begin`) with monotonic updates and snapshot helpers. |
 | 11 | 2026-02-18 | 2.3 | DONE | Added lock-free style tail allocation with retry statuses, page-turn sealing, and boundary-crossing tests. |
 | 12 | 2026-02-18 | 2.4 | DONE | Added record layout math and serialization/parsing for `RecordInfo + SpanByte key + SpanByte value` with 8-byte alignment guarantees. |
+| 13 | 2026-02-18 | 2.5 | DONE | Added page I/O abstraction (`PageDevice`), in-memory device implementation, and flush/load helper flow with roundtrip and error-path tests. |

@@ -127,6 +127,11 @@ impl Page {
     }
 
     #[inline]
+    pub(crate) fn bytes_mut_for_load(&mut self) -> &mut [u8] {
+        &mut self.bytes
+    }
+
+    #[inline]
     pub const fn is_dirty(&self) -> bool {
         self.dirty
     }
@@ -138,6 +143,12 @@ impl Page {
 
     #[inline]
     fn mark_flushed(&mut self) {
+        self.flushed = true;
+        self.dirty = false;
+    }
+
+    #[inline]
+    pub(crate) fn mark_clean_loaded(&mut self) {
         self.flushed = true;
         self.dirty = false;
     }
