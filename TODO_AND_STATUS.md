@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 8 — Checkpointing & AOF
-> **Current Iteration**: 55
+> **Current Iteration**: 56
 
 ---
 
@@ -154,8 +154,8 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 8.1 | Implement checkpoint state machine — fold-over and snapshot modes | DONE | 4.6, 1.3 | Added `checkpoint_state_machine` module with fold-over/snapshot modes, tokenized REST→PREPARE→IN_PROGRESS→WAIT_FLUSH→PERSISTENCE_CALLBACK→REST transitions, transition validation, TsavoriteKV facade APIs, and safe-epoch-gated wait-flush progression tests. |
-| 8.2 | Implement AOF writer — append-only log with TsavoriteLog | TODO | 2.5 | See doc 14. Sequential log. Each entry: header + serialized operation. Flush policy (every N ops or every M ms). |
-| 8.3 | Implement AOF replay — recovery from AOF | TODO | 8.2 | See doc 14. Read AOF entries, replay operations against store. Idempotency handling. |
+| 8.2 | Implement AOF writer — append-only log with TsavoriteLog | DONE | 2.5 | Added `aof_log` module with append-only writer (`AofWriter`) using length-prefixed operation records and configurable flush-by-operation-count policy, plus sync and unit coverage. |
+| 8.3 | Implement AOF replay — recovery from AOF | IN_PROGRESS | 8.2 | Added `AofReader::replay_all_tolerant` for length-prefixed AOF record replay with truncated-tail tolerance; integration that replays parsed operations into live store state is pending. |
 | 8.4 | Implement checkpoint + AOF coordination | TODO | 8.1, 8.2 | See doc 14. Checkpoint truncates AOF. Recovery = restore checkpoint + replay AOF tail. |
 | 8.5 | Integration test: crash recovery | TODO | 8.4 | Insert data → checkpoint → more inserts → simulate crash → recover → verify all data. |
 
@@ -243,6 +243,7 @@
 | 2026-02-18 | Represent sorted sets as serialized member→score `BTreeMap<Vec<u8>, f64>` payloads and compute `ZRANGE` ordering by `(score, member)` at read time. | Avoids introducing a more complex skiplist structure now while preserving deterministic ordering semantics and straightforward update/removal behavior for ZADD/ZREM/ZSCORE/ZRANGE. |
 | 2026-02-18 | Introduce a standalone checkpoint state-machine module with explicit phase transitions and token validation, then expose thin transition APIs on `TsavoriteKV`. | Establishes a testable checkpoint-control foundation first, decoupled from full persistence execution; epoch/safe-epoch gating can layer onto the same state transitions next. |
 | 2026-02-18 | Gate checkpoint transition from `IN_PROGRESS` to `WAIT_FLUSH` using `LightEpoch::safe_to_reclaim_epoch` compared against a begin-time barrier epoch. | Preserves explicit checkpoint phase semantics while ensuring wait-flush only proceeds once earlier epoch-protected operations are reclaim-safe. |
+| 2026-02-18 | Store AOF records as little-endian `u32` length prefix + raw operation payload and replay them with truncated-tail tolerance. | Keeps writer/reader format simple and sequential while allowing safe recovery from partially-written final records after crashes. |
 
 ---
 
@@ -313,3 +314,4 @@
 | 53 | 2026-02-18 | 7.5-7.6 | DONE | Implemented ZADD/ZREM/ZRANGE/ZSCORE over object-store serialized sorted sets, extended COMMAND registry output, and completed data-structure test coverage across request lifecycle, TCP integration, and redis-cli compatibility tests. |
 | 54 | 2026-02-18 | 8.1 | IN_PROGRESS | Added checkpoint state-machine core (phase transitions + mode/token validation), integrated facade methods on `TsavoriteKV`, and added module/facade tests; epoch-based coordination for transition gating is pending. |
 | 55 | 2026-02-18 | 8.1 | DONE | Added `safe_to_reclaim_epoch`-based wait-flush gating in `TsavoriteKV` checkpoint APIs with regression tests, completing the checkpoint state-machine milestone for fold-over/snapshot modes. |
+| 56 | 2026-02-18 | 8.2-8.3 | IN_PROGRESS | Added append-only AOF writer with flush policy (`AofWriter`) and tolerant replay reader (`AofReader`) plus roundtrip/truncation tests; store-operation replay integration remains for full 8.3 completion. |

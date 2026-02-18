@@ -1,5 +1,6 @@
 //! Tsavorite storage engine for garnet-rs.
 
+pub mod aof_log;
 pub mod checkpoint_state_machine;
 pub mod delete_operation;
 pub mod epoch;
@@ -15,6 +16,7 @@ pub mod session_functions;
 pub mod tsavorite_kv;
 pub mod upsert_operation;
 
+pub use aof_log::{AofReader, AofWriter, AofWriterConfig};
 pub use checkpoint_state_machine::{
     CheckpointMode, CheckpointPhase, CheckpointState, CheckpointStateMachine,
     CheckpointTransitionError,
