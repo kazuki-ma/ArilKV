@@ -45,18 +45,22 @@ impl From<TsavoriteKvInitError> for RequestProcessorInitError {
 
 pub struct RequestProcessor {
     store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
+    object_store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
     expirations: Mutex<HashMap<Vec<u8>, Instant>>,
     key_registry: Mutex<HashSet<Vec<u8>>>,
     functions: KvSessionFunctions,
+    object_functions: ObjectSessionFunctions,
 }
 
 impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
         Ok(Self {
             store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
+            object_store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
             expirations: Mutex::new(HashMap::new()),
             key_registry: Mutex::new(HashSet::new()),
             functions: KvSessionFunctions,
+            object_functions: ObjectSessionFunctions,
         })
     }
 
@@ -88,6 +92,69 @@ impl RequestProcessor {
             CommandId::Dbsize => self.handle_dbsize(args, response_out),
             CommandId::Command => self.handle_command(args, response_out),
             _ => Err(RequestExecutionError::UnknownCommand),
+        }
+    }
+
+    pub fn object_upsert(
+        &self,
+        key: &[u8],
+        object_type: u8,
+        payload: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        let key = key.to_vec();
+        let value = encode_object_value(object_type, payload);
+        let mut store = self
+            .object_store
+            .lock()
+            .expect("object store mutex poisoned");
+        let mut session = store.session(&self.object_functions);
+        let mut output = Vec::new();
+        let mut info = UpsertInfo::default();
+        session
+            .upsert(&key, &value, &mut output, &mut info)
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        Ok(())
+    }
+
+    pub fn object_read(&self, key: &[u8]) -> Result<Option<(u8, Vec<u8>)>, RequestExecutionError> {
+        let key = key.to_vec();
+        let mut store = self
+            .object_store
+            .lock()
+            .expect("object store mutex poisoned");
+        let mut session = store.session(&self.object_functions);
+        let mut output = Vec::new();
+        let status = session
+            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        match status {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                decode_object_value(&output)
+                    .map(Some)
+                    .ok_or(RequestExecutionError::StorageFailure)
+            }
+            ReadOperationStatus::NotFound => Ok(None),
+            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
+    }
+
+    pub fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        let key = key.to_vec();
+        let mut store = self
+            .object_store
+            .lock()
+            .expect("object store mutex poisoned");
+        let mut session = store.session(&self.object_functions);
+        let mut info = DeleteInfo::default();
+        let status = session
+            .delete(&key, &mut info)
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        match status {
+            DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+                Ok(true)
+            }
+            DeleteOperationStatus::NotFound => Ok(false),
+            DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
@@ -937,6 +1004,18 @@ fn encode_stored_value(user_value: &[u8], expiration_unix_millis: Option<u64>) -
     stored
 }
 
+fn encode_object_value(object_type: u8, payload: &[u8]) -> Vec<u8> {
+    let mut value = Vec::with_capacity(1 + payload.len());
+    value.push(object_type);
+    value.extend_from_slice(payload);
+    value
+}
+
+fn decode_object_value(encoded: &[u8]) -> Option<(u8, Vec<u8>)> {
+    let (&object_type, payload) = encoded.split_first()?;
+    Some((object_type, payload.to_vec()))
+}
+
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
     if input.len() != expected_upper.len() {
         return false;
@@ -1229,6 +1308,192 @@ impl HybridLogDeleteAdapter for KvSessionFunctions {
     }
 }
 
+struct ObjectSessionFunctions;
+
+impl ISessionFunctions for ObjectSessionFunctions {
+    type Key = Vec<u8>;
+    type Value = Vec<u8>;
+    type Input = Vec<u8>;
+    type Output = Vec<u8>;
+    type Context = ();
+    type Reader = ();
+    type Writer = ();
+    type Comparer = ();
+
+    fn single_reader(
+        &self,
+        _key: &Self::Key,
+        _input: &Self::Input,
+        value: &Self::Value,
+        output: &mut Self::Output,
+        _read_info: &ReadInfo,
+    ) -> bool {
+        *output = value.clone();
+        true
+    }
+
+    fn concurrent_reader(
+        &self,
+        _key: &Self::Key,
+        _input: &Self::Input,
+        value: &Self::Value,
+        output: &mut Self::Output,
+        _read_info: &ReadInfo,
+        _record_info: &RecordInfo,
+    ) -> bool {
+        *output = value.clone();
+        true
+    }
+
+    fn single_writer(
+        &self,
+        _key: &Self::Key,
+        input: &Self::Input,
+        _src: &Self::Value,
+        dst: &mut Self::Value,
+        output: &mut Self::Output,
+        _upsert_info: &mut UpsertInfo,
+        _reason: WriteReason,
+        _record_info: &mut RecordInfo,
+    ) -> bool {
+        *dst = input.clone();
+        *output = dst.clone();
+        true
+    }
+
+    fn concurrent_writer(
+        &self,
+        _key: &Self::Key,
+        input: &Self::Input,
+        _src: &Self::Value,
+        dst: &mut Self::Value,
+        output: &mut Self::Output,
+        _upsert_info: &mut UpsertInfo,
+        _record_info: &mut RecordInfo,
+    ) -> bool {
+        *dst = input.clone();
+        *output = dst.clone();
+        true
+    }
+
+    fn in_place_updater(
+        &self,
+        _key: &Self::Key,
+        input: &Self::Input,
+        value: &mut Self::Value,
+        output: &mut Self::Output,
+        _rmw_info: &mut RmwInfo,
+        _record_info: &mut RecordInfo,
+    ) -> bool {
+        *value = input.clone();
+        *output = value.clone();
+        true
+    }
+
+    fn copy_updater(
+        &self,
+        _key: &Self::Key,
+        input: &Self::Input,
+        _old_value: &Self::Value,
+        new_value: &mut Self::Value,
+        output: &mut Self::Output,
+        _rmw_info: &mut RmwInfo,
+        _record_info: &mut RecordInfo,
+    ) -> bool {
+        *new_value = input.clone();
+        *output = new_value.clone();
+        true
+    }
+
+    fn single_deleter(
+        &self,
+        _key: &Self::Key,
+        value: &mut Self::Value,
+        _delete_info: &mut DeleteInfo,
+        record_info: &mut RecordInfo,
+    ) -> bool {
+        value.clear();
+        record_info.set_tombstone();
+        true
+    }
+
+    fn concurrent_deleter(
+        &self,
+        _key: &Self::Key,
+        value: &mut Self::Value,
+        _delete_info: &mut DeleteInfo,
+        record_info: &mut RecordInfo,
+    ) -> bool {
+        value.clear();
+        record_info.set_tombstone();
+        true
+    }
+}
+
+impl HybridLogReadAdapter for ObjectSessionFunctions {
+    fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
+        requested_key.as_slice() == record_key
+    }
+
+    fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
+        record_value.to_vec()
+    }
+}
+
+impl HybridLogUpsertAdapter for ObjectSessionFunctions {
+    fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
+        requested_key.as_slice() == record_key
+    }
+
+    fn key_to_record_bytes(&self, key: &Self::Key) -> Vec<u8> {
+        key.clone()
+    }
+
+    fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
+        record_value.to_vec()
+    }
+
+    fn value_to_record_bytes(&self, value: &Self::Value) -> Vec<u8> {
+        value.clone()
+    }
+}
+
+impl HybridLogRmwAdapter for ObjectSessionFunctions {
+    fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
+        requested_key.as_slice() == record_key
+    }
+
+    fn key_to_record_bytes(&self, key: &Self::Key) -> Vec<u8> {
+        key.clone()
+    }
+
+    fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
+        record_value.to_vec()
+    }
+
+    fn value_to_record_bytes(&self, value: &Self::Value) -> Vec<u8> {
+        value.clone()
+    }
+}
+
+impl HybridLogDeleteAdapter for ObjectSessionFunctions {
+    fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
+        requested_key.as_slice() == record_key
+    }
+
+    fn key_to_record_bytes(&self, key: &Self::Key) -> Vec<u8> {
+        key.clone()
+    }
+
+    fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
+        record_value.to_vec()
+    }
+
+    fn value_to_record_bytes(&self, value: &Self::Value) -> Vec<u8> {
+        value.clone()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1302,6 +1567,47 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b"$5\r\nvalue\r\n");
+    }
+
+    #[test]
+    fn object_store_roundtrip_is_isolated_from_main_store() {
+        let processor = RequestProcessor::new().unwrap();
+
+        processor.object_upsert(b"obj", 3, b"payload").unwrap();
+        let (object_type, payload) = processor.object_read(b"obj").unwrap().unwrap();
+        assert_eq!(object_type, 3);
+        assert_eq!(payload, b"payload");
+
+        let mut args = [ArgSlice::EMPTY; 3];
+        let mut response = Vec::new();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nobj\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nobj\r\n$3\r\nstr\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let (object_type, payload) = processor.object_read(b"obj").unwrap().unwrap();
+        assert_eq!(object_type, 3);
+        assert_eq!(payload, b"payload");
+
+        assert!(processor.object_delete(b"obj").unwrap());
+        assert!(processor.object_read(b"obj").unwrap().is_none());
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$3\r\nstr\r\n");
     }
 
     #[test]
