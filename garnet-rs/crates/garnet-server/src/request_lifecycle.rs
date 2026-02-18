@@ -3,8 +3,9 @@
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_common::ArgSlice;
 use std::collections::{HashMap, HashSet};
+use std::mem::size_of;
 use std::sync::Mutex;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
     DeleteInfo, DeleteOperationStatus, HybridLogDeleteAdapter, HybridLogReadAdapter,
     HybridLogRmwAdapter, HybridLogUpsertAdapter, ISessionFunctions, ReadInfo, ReadOperationStatus,
@@ -13,6 +14,13 @@ use tsavorite::{
 };
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
+const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
+
+#[derive(Debug, Clone, Copy)]
+struct ExpirationMetadata {
+    deadline: Instant,
+    unix_millis: u64,
+}
 
 #[derive(Debug)]
 pub enum RequestProcessorInitError {
@@ -210,19 +218,23 @@ impl RequestProcessor {
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
+        let stored_value = encode_stored_value(
+            &value,
+            options.expiration.map(|expiration| expiration.unix_millis),
+        );
         if options.expiration.is_some() {
             info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
         }
         session
-            .upsert(&key, &value, &mut output, &mut info)
+            .upsert(&key, &stored_value, &mut output, &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
         drop(session);
         drop(store);
 
         let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
         match options.expiration {
-            Some(deadline) => {
-                expirations.insert(key.clone(), deadline);
+            Some(expiration) => {
+                expirations.insert(key.clone(), expiration.deadline);
             }
             None => {
                 expirations.remove(&key);
@@ -333,8 +345,9 @@ impl RequestProcessor {
             Ok(RmwOperationStatus::NotFound) => {
                 let mut upsert_info = UpsertInfo::default();
                 let mut upsert_output = Vec::new();
+                let stored_value = encode_stored_value(&input, None);
                 session
-                    .upsert(&key, &input, &mut upsert_output, &mut upsert_info)
+                    .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
                     .map_err(|_| RequestExecutionError::StorageFailure)?;
                 self.key_registry
                     .lock()
@@ -436,14 +449,13 @@ impl RequestProcessor {
         } else {
             Duration::from_secs(amount as u64)
         };
-        let deadline = Instant::now()
-            .checked_add(duration)
+        let expiration = expiration_metadata_from_duration(duration)
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         self.expirations
             .lock()
             .expect("expiration mutex poisoned")
-            .insert(key.clone(), deadline);
-        if !self.rewrite_existing_value_with_expiration_flag(&key, true)? {
+            .insert(key.clone(), expiration.deadline);
+        if !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))? {
             self.expirations
                 .lock()
                 .expect("expiration mutex poisoned")
@@ -553,7 +565,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if !self.rewrite_existing_value_with_expiration_flag(&key, false)? {
+        if !self.rewrite_existing_value_expiration(&key, None)? {
             append_integer(response_out, 0);
             return Ok(());
         }
@@ -697,10 +709,10 @@ impl RequestProcessor {
         }
     }
 
-    fn rewrite_existing_value_with_expiration_flag(
+    fn rewrite_existing_value_expiration(
         &self,
         key: &[u8],
-        has_expiration: bool,
+        expiration_unix_millis: Option<u64>,
     ) -> Result<bool, RequestExecutionError> {
         let key_vec = key.to_vec();
         let mut store = self.store.lock().expect("store mutex poisoned");
@@ -713,11 +725,12 @@ impl RequestProcessor {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
                 let mut output = Vec::new();
                 let mut upsert_info = UpsertInfo::default();
-                if has_expiration {
+                if expiration_unix_millis.is_some() {
                     upsert_info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
                 }
+                let stored_value = encode_stored_value(&current, expiration_unix_millis);
                 session
-                    .upsert(&key_vec, &current, &mut output, &mut upsert_info)
+                    .upsert(&key_vec, &stored_value, &mut output, &mut upsert_info)
                     .map_err(|_| RequestExecutionError::StorageFailure)?;
                 Ok(true)
             }
@@ -760,7 +773,7 @@ impl RequestProcessor {
 struct SetOptions {
     only_if_absent: bool,
     only_if_present: bool,
-    expiration: Option<Instant>,
+    expiration: Option<ExpirationMetadata>,
 }
 
 fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionError> {
@@ -810,8 +823,7 @@ fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionEr
                 Duration::from_millis(amount)
             };
             options.expiration = Some(
-                Instant::now()
-                    .checked_add(duration)
+                expiration_metadata_from_duration(duration)
                     .ok_or(RequestExecutionError::InvalidExpireTime)?,
             );
             index += 2;
@@ -873,6 +885,56 @@ fn parse_u64_ascii(input: &[u8]) -> Option<u64> {
     }
     let text = core::str::from_utf8(input).ok()?;
     text.parse::<u64>().ok()
+}
+
+#[derive(Debug, Clone, Copy)]
+struct DecodedStoredValue<'a> {
+    expiration_unix_millis: Option<u64>,
+    user_value: &'a [u8],
+}
+
+fn current_unix_time_millis() -> Option<u64> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+    u64::try_from(now.as_millis()).ok()
+}
+
+fn expiration_metadata_from_duration(duration: Duration) -> Option<ExpirationMetadata> {
+    let deadline = Instant::now().checked_add(duration)?;
+    let now_millis = u128::from(current_unix_time_millis()?);
+    let expiration_millis = now_millis.checked_add(duration.as_millis())?;
+    let unix_millis = u64::try_from(expiration_millis).ok()?;
+    Some(ExpirationMetadata {
+        deadline,
+        unix_millis,
+    })
+}
+
+fn decode_stored_value(stored: &[u8]) -> DecodedStoredValue<'_> {
+    if stored.len() < VALUE_EXPIRATION_PREFIX_LEN {
+        return DecodedStoredValue {
+            expiration_unix_millis: None,
+            user_value: stored,
+        };
+    }
+
+    let mut metadata = [0u8; VALUE_EXPIRATION_PREFIX_LEN];
+    metadata.copy_from_slice(&stored[..VALUE_EXPIRATION_PREFIX_LEN]);
+    let expiration_millis = u64::from_le_bytes(metadata);
+    DecodedStoredValue {
+        expiration_unix_millis: if expiration_millis == 0 {
+            None
+        } else {
+            Some(expiration_millis)
+        },
+        user_value: &stored[VALUE_EXPIRATION_PREFIX_LEN..],
+    }
+}
+
+fn encode_stored_value(user_value: &[u8], expiration_unix_millis: Option<u64>) -> Vec<u8> {
+    let mut stored = Vec::with_capacity(VALUE_EXPIRATION_PREFIX_LEN + user_value.len());
+    stored.extend_from_slice(&expiration_unix_millis.unwrap_or(0).to_le_bytes());
+    stored.extend_from_slice(user_value);
+    stored
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
@@ -944,7 +1006,15 @@ impl ISessionFunctions for KvSessionFunctions {
         output: &mut Self::Output,
         _read_info: &ReadInfo,
     ) -> bool {
-        *output = value.clone();
+        let decoded = decode_stored_value(value);
+        if let Some(expiration) = decoded.expiration_unix_millis {
+            if let Some(now) = current_unix_time_millis() {
+                if now >= expiration {
+                    return false;
+                }
+            }
+        }
+        *output = decoded.user_value.to_vec();
         true
     }
 
@@ -957,7 +1027,15 @@ impl ISessionFunctions for KvSessionFunctions {
         _read_info: &ReadInfo,
         _record_info: &RecordInfo,
     ) -> bool {
-        *output = value.clone();
+        let decoded = decode_stored_value(value);
+        if let Some(expiration) = decoded.expiration_unix_millis {
+            if let Some(now) = current_unix_time_millis() {
+                if now >= expiration {
+                    return false;
+                }
+            }
+        }
+        *output = decoded.user_value.to_vec();
         true
     }
 
@@ -1011,7 +1089,8 @@ impl ISessionFunctions for KvSessionFunctions {
         _rmw_info: &mut RmwInfo,
         _record_info: &mut RecordInfo,
     ) -> bool {
-        let current = parse_i64_ascii(value).unwrap_or(0);
+        let decoded = decode_stored_value(value);
+        let current = parse_i64_ascii(decoded.user_value).unwrap_or(0);
         let delta = match parse_i64_ascii(input) {
             Some(v) => v,
             None => return false,
@@ -1020,8 +1099,9 @@ impl ISessionFunctions for KvSessionFunctions {
             Some(v) => v,
             None => return false,
         };
-        *value = next.to_string().into_bytes();
-        *output = value.clone();
+        let next_bytes = next.to_string().into_bytes();
+        *value = encode_stored_value(&next_bytes, decoded.expiration_unix_millis);
+        *output = next_bytes;
         true
     }
 
@@ -1035,10 +1115,11 @@ impl ISessionFunctions for KvSessionFunctions {
         _rmw_info: &mut RmwInfo,
         _record_info: &mut RecordInfo,
     ) -> bool {
-        let current = if old_value.is_empty() {
+        let decoded = decode_stored_value(old_value);
+        let current = if decoded.user_value.is_empty() {
             0
         } else {
-            match parse_i64_ascii(old_value) {
+            match parse_i64_ascii(decoded.user_value) {
                 Some(v) => v,
                 None => return false,
             }
@@ -1051,8 +1132,9 @@ impl ISessionFunctions for KvSessionFunctions {
             Some(v) => v,
             None => return false,
         };
-        *new_value = next.to_string().into_bytes();
-        *output = new_value.clone();
+        let next_bytes = next.to_string().into_bytes();
+        *new_value = encode_stored_value(&next_bytes, decoded.expiration_unix_millis);
+        *output = next_bytes;
         true
     }
 

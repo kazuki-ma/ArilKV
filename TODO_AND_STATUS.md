@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 6 — Basic Redis Commands
-> **Current Iteration**: 47
+> **Current Iteration**: 48
 
 ---
 
@@ -125,7 +125,7 @@
 | 6.2 | Implement `SET` command — upsert path | DONE | 5.6 | Extended SET path with option parsing for `NX`/`XX` and `EX`/`PX`, conditional write behavior (`$-1` on unmet condition), expiration bookkeeping, and invalid option/expire-time error handling. |
 | 6.3 | Implement `DEL` command — delete path | DONE | 5.6 | Added DEL execution path with tombstone-backed delete calls and integer reply count (`:n\r\n`) over TCP request lifecycle. |
 | 6.4 | Implement `INCR`/`DECR` commands — RMW path with in-place update | DONE | 5.6 | Added INCR/DECR via Tsavorite RMW callbacks (integer parse/add with overflow checks), including error response on non-integer values and TCP integration coverage. |
-| 6.5 | Implement `EXPIRE`/`TTL`/`PEXPIRE`/`PTTL` — expiration metadata | IN_PROGRESS | 6.2 | Added EXPIRE/TTL/PEXPIRE/PTTL plus PERSIST command handling over the existing in-memory deadline map, including missing-key/immediate-expire semantics and a periodic background expiry scan task; write paths now propagate `RecordInfo.HasExpiration` via upsert user-data rewrites, while in-record expiration timestamp persistence is still pending. |
+| 6.5 | Implement `EXPIRE`/`TTL`/`PEXPIRE`/`PTTL` — expiration metadata | DONE | 6.2 | Added EXPIRE/TTL/PEXPIRE/PTTL/PERSIST handling, periodic background expiry sweep, `RecordInfo.HasExpiration` propagation on write paths, and in-record expiration timestamp storage via value-prefix metadata (`u64` unix-millis) with reader/updater decode/encode flow. |
 | 6.6 | Implement `PING`/`ECHO`/`INFO`/`DBSIZE`/`COMMAND` — utility commands | DONE | 5.6 | Added utility command handlers in `RequestProcessor` with RESP responses for PING/ECHO and dynamic INFO/DBSIZE/COMMAND output, plus unit/TCP integration coverage. |
 | 6.7 | Integration test: redis-cli compatibility | DONE | 6.1-6.6 | Added `garnet-server/tests/redis_cli_compat.rs` that boots the server, executes PING/SET/GET/INCR/DEL via `redis-cli`, and verifies compatibility outputs. |
 | 6.8 | Benchmark: GET/SET throughput and latency | DONE | 6.1, 6.2 | Added Criterion benchmark target `garnet-server/benches/redis_command_path.rs` for request-processor GET/SET hot-path throughput; benchmark target builds with `cargo bench --no-run`. |
@@ -235,6 +235,7 @@
 | 2026-02-18 | Run a lightweight periodic expiration sweep (`expire_stale_keys`) in a background Tokio task alongside the accept loop. | Reduces reliance on pure lazy-expiration access paths while preserving the current request-layer deadline map architecture. |
 | 2026-02-18 | Add `PERSIST` command support to remove per-key expiration deadlines and surface TTL state transitions (`-1` after persistence). | Completes the practical deadline-lifecycle control path for in-memory expiration management while 6.5 metadata migration remains open. |
 | 2026-02-18 | Use `UpsertInfo.user_data` as a lightweight control bit to set/clear `RecordInfo.HasExpiration` in main-store writer callbacks, and rewrite existing values on EXPIRE/PERSIST to synchronize the flag. | Moves expiration metadata ownership into record headers incrementally without yet changing value serialization for embedded expiration timestamps. |
+| 2026-02-18 | Store per-record expiration timestamp as an 8-byte unix-millis prefix inside the value payload and centralize encode/decode helpers in `request_lifecycle`. | Provides a concrete in-record expiration timestamp representation compatible with current callback APIs while preserving TTL semantics across read/update flows. |
 
 ---
 
@@ -297,3 +298,4 @@
 | 45 | 2026-02-18 | 6.5 | IN_PROGRESS | Added `RequestProcessor::expire_stale_keys` plus a periodic server-side expiration sweep task and unit coverage for scan-based eviction; RecordInfo-backed expiration metadata integration remains outstanding. |
 | 46 | 2026-02-18 | 6.5 | IN_PROGRESS | Added PERSIST command dispatch/handling plus unit/TCP/redis-cli coverage and updated COMMAND output; RecordInfo-backed expiration metadata integration remains outstanding. |
 | 47 | 2026-02-18 | 6.5 | IN_PROGRESS | Wired `RecordInfo.HasExpiration` updates through writer callbacks (`UpsertInfo.user_data`), added EXPIRE/PERSIST flag synchronization rewrites, and added callback-level flag propagation tests; in-record expiration timestamp persistence remains outstanding. |
+| 48 | 2026-02-18 | 6.5 | DONE | Added in-record expiration timestamp encoding (`u64` unix-millis prefix), reader/updater metadata decode paths, and SET/EXPIRE/PERSIST rewrite integration; expiration metadata task is complete for current architecture. |
