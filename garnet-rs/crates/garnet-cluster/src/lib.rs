@@ -1547,6 +1547,11 @@ impl FailoverCoordinator {
         &self.handled_failed_primaries
     }
 
+    pub fn has_handled_failed_primary(&self, failed_primary_node_id: &str) -> bool {
+        self.handled_failed_primaries
+            .contains(failed_primary_node_id)
+    }
+
     pub fn execute_for_failed_primary(
         &mut self,
         config_store: &ClusterConfigStore,
@@ -1568,6 +1573,111 @@ impl FailoverCoordinator {
         self.handled_failed_primaries
             .insert(failed_primary_node_id.to_owned());
         Ok(Some(plan))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FailoverControllerError<E> {
+    Replication(ReplicationSyncError<E>),
+    Config(ClusterConfigError),
+}
+
+impl<E: fmt::Display> fmt::Display for FailoverControllerError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Replication(error) => write!(f, "{error}"),
+            Self::Config(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for FailoverControllerError<E> {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailoverControllerOutcome {
+    pub synchronized_replicas: Vec<(u16, ReplicationSyncOutcome)>,
+    pub failover_plan: Option<FailoverPlan>,
+}
+
+#[derive(Debug, Default)]
+pub struct ClusterFailoverController {
+    coordinator: FailoverCoordinator,
+}
+
+impl ClusterFailoverController {
+    pub fn new() -> Self {
+        Self {
+            coordinator: FailoverCoordinator::new(),
+        }
+    }
+
+    pub fn coordinator(&self) -> &FailoverCoordinator {
+        &self.coordinator
+    }
+
+    pub fn handle_failed_primary<T: ReplicationTransport>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        replication_manager: &mut ReplicationManager,
+        failed_primary_node_id: &str,
+        transport: &mut T,
+    ) -> Result<FailoverControllerOutcome, FailoverControllerError<T::Error>> {
+        if self
+            .coordinator
+            .has_handled_failed_primary(failed_primary_node_id)
+        {
+            return Ok(FailoverControllerOutcome {
+                synchronized_replicas: Vec::new(),
+                failover_plan: None,
+            });
+        }
+
+        let current = config_store.load();
+        let synchronized_replicas = replication_manager
+            .sync_replicas_of_primary(current.as_ref(), failed_primary_node_id, transport)
+            .map_err(FailoverControllerError::Replication)?;
+        let failover_plan = self
+            .coordinator
+            .execute_for_failed_primary(config_store, replication_manager, failed_primary_node_id)
+            .map_err(FailoverControllerError::Config)?;
+
+        Ok(FailoverControllerOutcome {
+            synchronized_replicas,
+            failover_plan,
+        })
+    }
+
+    pub async fn handle_failed_primary_async<T: AsyncReplicationTransport>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        replication_manager: &mut ReplicationManager,
+        failed_primary_node_id: &str,
+        transport: &mut T,
+    ) -> Result<FailoverControllerOutcome, FailoverControllerError<T::Error>> {
+        if self
+            .coordinator
+            .has_handled_failed_primary(failed_primary_node_id)
+        {
+            return Ok(FailoverControllerOutcome {
+                synchronized_replicas: Vec::new(),
+                failover_plan: None,
+            });
+        }
+
+        let current = config_store.load();
+        let synchronized_replicas = replication_manager
+            .sync_replicas_of_primary_async(current.as_ref(), failed_primary_node_id, transport)
+            .await
+            .map_err(FailoverControllerError::Replication)?;
+        let failover_plan = self
+            .coordinator
+            .execute_for_failed_primary(config_store, replication_manager, failed_primary_node_id)
+            .map_err(FailoverControllerError::Config)?;
+
+        Ok(FailoverControllerOutcome {
+            synchronized_replicas,
+            failover_plan,
+        })
     }
 }
 
@@ -3381,6 +3491,113 @@ mod tests {
             .unwrap();
         assert!(outcome.is_none());
         assert!(coordinator.handled_failed_primaries().is_empty());
+    }
+
+    #[test]
+    fn cluster_failover_controller_syncs_replicas_and_publishes_once() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap()
+            .set_slot_state(452, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(config);
+
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+        let mut controller = ClusterFailoverController::new();
+
+        let first = controller
+            .handle_failed_primary(&store, &mut manager, "local-node", &mut transport)
+            .unwrap();
+        assert_eq!(first.synchronized_replicas.len(), 2);
+        assert_eq!(
+            first.failover_plan.as_ref().map(|plan| plan.promoted_worker_id),
+            Some(replica_a)
+        );
+        assert_eq!(store.load().slot_assigned_owner(452).unwrap(), replica_a);
+        assert_eq!(transport.checkpoints, vec![(replica_a, 9), (replica_b, 9)]);
+        assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
+
+        transport.checkpoints.clear();
+        transport.streams.clear();
+        let second = controller
+            .handle_failed_primary(&store, &mut manager, "local-node", &mut transport)
+            .unwrap();
+        assert!(second.failover_plan.is_none());
+        assert!(second.synchronized_replicas.is_empty());
+        assert!(transport.checkpoints.is_empty());
+        assert!(transport.streams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn cluster_failover_controller_async_syncs_and_publishes() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap()
+            .set_slot_state(453, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(config);
+
+        let mut manager = ReplicationManager::new(Some(7), 700, 900).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+        let mut controller = ClusterFailoverController::new();
+
+        let outcome = controller
+            .handle_failed_primary_async(&store, &mut manager, "local-node", &mut transport)
+            .await
+            .unwrap();
+        assert_eq!(outcome.synchronized_replicas.len(), 2);
+        assert_eq!(
+            outcome.failover_plan.as_ref().map(|plan| plan.promoted_worker_id),
+            Some(replica_a)
+        );
+        assert_eq!(store.load().slot_assigned_owner(453).unwrap(), replica_a);
+        assert_eq!(transport.checkpoints, vec![(replica_a, 7), (replica_b, 7)]);
+        assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
     }
 
     #[test]
