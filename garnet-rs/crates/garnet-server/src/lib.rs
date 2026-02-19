@@ -2470,6 +2470,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cluster_manager_failover_and_detected_migration_runner_propagates_migration_errors() {
+        let source_store = Arc::new(ClusterConfigStore::new(ClusterConfig::new_local(
+            "node-1",
+            "127.0.0.1",
+            8501,
+        )));
+        let target_config = ClusterConfig::new_local("node-2", "127.0.0.1", 8502);
+        let (target_config, _node1_id_in_2) = target_config
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8501,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        let target_store = Arc::new(ClusterConfigStore::new(target_config));
+        let source_processor = RequestProcessor::new().unwrap();
+        let target_processor = RequestProcessor::new().unwrap();
+
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            InMemoryGossipTransport::new(Arc::clone(&source_store)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1_000);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let result = run_cluster_manager_with_config_updates_failover_and_detected_migrations(
+            &mut manager,
+            &source_store,
+            &target_store,
+            &source_processor,
+            &target_processor,
+            updates_rx,
+            &mut failure_detector,
+            &mut failover_controller,
+            &mut replication_manager,
+            &mut replication_transport,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            tokio::time::sleep(Duration::from_millis(50)),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ClusterManagerFailoverMigrationError::Migration(
+                LiveSlotMigrationError::MissingSourcePeerNode(node_id)
+            )) if node_id == "node-2"
+        ));
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_failover_and_detected_migration_runner_propagates_failover_errors() {
+        let slot = 860u16;
+        let mut source_config = ClusterConfig::new_local("node-1", "127.0.0.1", 8601)
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap()
+            .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
+            .unwrap();
+        let (source_config_next, node2_id_in_1) = source_config
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8602,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        source_config = source_config_next
+            .set_slot_state(slot, node2_id_in_1, SlotState::Stable)
+            .unwrap();
+
+        let mut target_config = ClusterConfig::new_local("node-2", "127.0.0.1", 8602);
+        let (target_config_next, node1_id_in_2) = target_config
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8601,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        target_config = target_config_next
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let source_store = Arc::new(ClusterConfigStore::new(source_config));
+        let target_store = Arc::new(ClusterConfigStore::new(target_config));
+        let source_processor = RequestProcessor::new().unwrap();
+        let target_processor = RequestProcessor::new().unwrap();
+
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(vec![GossipNode::new(node2_id_in_1, 0)], 1),
+            InMemoryGossipTransport::new(Arc::clone(&source_store)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let (repl_tx, repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        drop(repl_rx);
+        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let result = run_cluster_manager_with_config_updates_failover_and_detected_migrations(
+            &mut manager,
+            &source_store,
+            &target_store,
+            &source_processor,
+            &target_processor,
+            updates_rx,
+            &mut failure_detector,
+            &mut failover_controller,
+            &mut replication_manager,
+            &mut replication_transport,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            tokio::time::sleep(Duration::from_millis(50)),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ClusterManagerFailoverMigrationError::Failover(
+                garnet_cluster::FailoverControllerError::Replication(
+                    garnet_cluster::ReplicationSyncError::Transport(
+                        garnet_cluster::ChannelReplicationTransportError::ChannelClosed
+                    )
+                )
+            ))
+        ));
+    }
+
+    #[tokio::test]
     async fn cluster_live_slot_migration_transfers_data_and_updates_redirections() {
         let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr1 = listener1.local_addr().unwrap();
