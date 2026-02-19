@@ -315,6 +315,30 @@ impl ClusterConfig {
         Ok(next)
     }
 
+    pub fn begin_slot_migration_to(
+        &self,
+        slot: u16,
+        target_worker_id: u16,
+    ) -> Result<Self, ClusterConfigError> {
+        self.set_slot_state(slot, target_worker_id, SlotState::Migrating)
+    }
+
+    pub fn begin_slot_import_from(
+        &self,
+        slot: u16,
+        source_worker_id: u16,
+    ) -> Result<Self, ClusterConfigError> {
+        self.set_slot_state(slot, source_worker_id, SlotState::Importing)
+    }
+
+    pub fn finalize_slot_migration(
+        &self,
+        slot: u16,
+        new_owner_worker_id: u16,
+    ) -> Result<Self, ClusterConfigError> {
+        self.set_slot_state(slot, new_owner_worker_id, SlotState::Stable)
+    }
+
     pub fn set_local_worker_role(&self, role: WorkerRole) -> Result<Self, ClusterConfigError> {
         let mut next = self.clone();
         let local = next
@@ -2584,6 +2608,45 @@ mod tests {
         assert_eq!(config.slot_state(42).unwrap(), SlotState::Offline);
         assert_eq!(updated.slot_state(42).unwrap(), SlotState::Stable);
         assert_eq!(updated.slot_owner(42).unwrap(), LOCAL_WORKER_ID);
+    }
+
+    #[test]
+    fn slot_migration_helpers_set_expected_slot_states() {
+        let config = base_config();
+        let (config, remote_id) = config
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+
+        let migrating = config.begin_slot_migration_to(42, remote_id).unwrap();
+        assert_eq!(migrating.slot_state(42).unwrap(), SlotState::Migrating);
+        assert_eq!(migrating.slot_assigned_owner(42).unwrap(), remote_id);
+        assert_eq!(migrating.slot_owner(42).unwrap(), LOCAL_WORKER_ID);
+
+        let importing = config.begin_slot_import_from(42, remote_id).unwrap();
+        assert_eq!(importing.slot_state(42).unwrap(), SlotState::Importing);
+        assert_eq!(importing.slot_assigned_owner(42).unwrap(), remote_id);
+
+        let finalized = migrating.finalize_slot_migration(42, remote_id).unwrap();
+        assert_eq!(finalized.slot_state(42).unwrap(), SlotState::Stable);
+        assert_eq!(finalized.slot_assigned_owner(42).unwrap(), remote_id);
+        assert_eq!(finalized.slot_owner(42).unwrap(), remote_id);
+    }
+
+    #[test]
+    fn slot_migration_helpers_reject_unknown_worker() {
+        let config = base_config();
+        assert!(matches!(
+            config.begin_slot_migration_to(42, 99),
+            Err(ClusterConfigError::WorkerNotFound(99))
+        ));
+        assert!(matches!(
+            config.begin_slot_import_from(42, 99),
+            Err(ClusterConfigError::WorkerNotFound(99))
+        ));
+        assert!(matches!(
+            config.finalize_slot_migration(42, 99),
+            Err(ClusterConfigError::WorkerNotFound(99))
+        ));
     }
 
     #[test]

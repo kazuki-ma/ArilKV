@@ -1908,14 +1908,14 @@ mod tests {
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot, node2_id_in_1, SlotState::Migrating)
+            .begin_slot_migration_to(slot, node2_id_in_1)
             .unwrap();
         store1.publish(migration_source);
         let migration_target = store2
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot, node1_id_in_2, SlotState::Importing)
+            .begin_slot_import_from(slot, node1_id_in_2)
             .unwrap();
         store2.publish(migration_target);
 
@@ -1939,14 +1939,14 @@ mod tests {
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot, node2_id_in_1, SlotState::Stable)
+            .finalize_slot_migration(slot, node2_id_in_1)
             .unwrap();
         store1.publish(finalized_source);
         let finalized_target = store2
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .finalize_slot_migration(slot, LOCAL_WORKER_ID)
             .unwrap();
         store2.publish(finalized_target);
 
