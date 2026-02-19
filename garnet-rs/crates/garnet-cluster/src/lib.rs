@@ -5,6 +5,7 @@
 
 use std::fmt;
 use std::future::Future;
+use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
@@ -403,6 +404,155 @@ impl ClusterConfigStore {
         let previous = write_guard.clone();
         *write_guard = Arc::new(next);
         previous
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicationError {
+    InvalidAofWindow {
+        replay_start_offset: u64,
+        tail_offset: u64,
+    },
+}
+
+impl fmt::Display for ReplicationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidAofWindow {
+                replay_start_offset,
+                tail_offset,
+            } => write!(
+                f,
+                "invalid AOF replay window: start offset {replay_start_offset} is greater than tail offset {tail_offset}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ReplicationError {}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicationSyncMode {
+    Full,
+    Incremental,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicationSyncPlan {
+    pub mode: ReplicationSyncMode,
+    pub checkpoint_id: Option<u64>,
+    pub aof_start_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicaProgress {
+    pub worker_id: u16,
+    pub acknowledged_offset: u64,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReplicationManager {
+    checkpoint_id: Option<u64>,
+    aof_replay_start_offset: u64,
+    aof_tail_offset: u64,
+    replica_offsets: BTreeMap<u16, u64>,
+}
+
+impl ReplicationManager {
+    pub fn new(
+        checkpoint_id: Option<u64>,
+        aof_replay_start_offset: u64,
+        aof_tail_offset: u64,
+    ) -> Result<Self, ReplicationError> {
+        if aof_replay_start_offset > aof_tail_offset {
+            return Err(ReplicationError::InvalidAofWindow {
+                replay_start_offset: aof_replay_start_offset,
+                tail_offset: aof_tail_offset,
+            });
+        }
+        Ok(Self {
+            checkpoint_id,
+            aof_replay_start_offset,
+            aof_tail_offset,
+            replica_offsets: BTreeMap::new(),
+        })
+    }
+
+    pub fn checkpoint_id(&self) -> Option<u64> {
+        self.checkpoint_id
+    }
+
+    pub fn aof_replay_start_offset(&self) -> u64 {
+        self.aof_replay_start_offset
+    }
+
+    pub fn aof_tail_offset(&self) -> u64 {
+        self.aof_tail_offset
+    }
+
+    pub fn update_recovery_window(
+        &mut self,
+        checkpoint_id: Option<u64>,
+        aof_replay_start_offset: u64,
+        aof_tail_offset: u64,
+    ) -> Result<(), ReplicationError> {
+        if aof_replay_start_offset > aof_tail_offset {
+            return Err(ReplicationError::InvalidAofWindow {
+                replay_start_offset: aof_replay_start_offset,
+                tail_offset: aof_tail_offset,
+            });
+        }
+        self.checkpoint_id = checkpoint_id;
+        self.aof_replay_start_offset = aof_replay_start_offset;
+        self.aof_tail_offset = aof_tail_offset;
+        Ok(())
+    }
+
+    pub fn set_aof_tail_offset(&mut self, aof_tail_offset: u64) -> Result<(), ReplicationError> {
+        if self.aof_replay_start_offset > aof_tail_offset {
+            return Err(ReplicationError::InvalidAofWindow {
+                replay_start_offset: self.aof_replay_start_offset,
+                tail_offset: aof_tail_offset,
+            });
+        }
+        self.aof_tail_offset = aof_tail_offset;
+        Ok(())
+    }
+
+    pub fn record_replica_offset(&mut self, worker_id: u16, acknowledged_offset: u64) {
+        self.replica_offsets.insert(worker_id, acknowledged_offset);
+    }
+
+    pub fn replica_offset(&self, worker_id: u16) -> Option<u64> {
+        self.replica_offsets.get(&worker_id).copied()
+    }
+
+    pub fn best_replica_candidate(&self) -> Option<ReplicaProgress> {
+        self.replica_offsets
+            .iter()
+            .max_by_key(|(worker_id, offset)| (*offset, std::cmp::Reverse(**worker_id)))
+            .map(|(worker_id, offset)| ReplicaProgress {
+                worker_id: *worker_id,
+                acknowledged_offset: *offset,
+            })
+    }
+
+    pub fn plan_sync(&self, replica_offset: Option<u64>) -> ReplicationSyncPlan {
+        if let Some(offset) = replica_offset {
+            if offset >= self.aof_replay_start_offset && offset <= self.aof_tail_offset {
+                return ReplicationSyncPlan {
+                    mode: ReplicationSyncMode::Incremental,
+                    checkpoint_id: None,
+                    aof_start_offset: offset,
+                };
+            }
+        }
+
+        ReplicationSyncPlan {
+            mode: ReplicationSyncMode::Full,
+            checkpoint_id: self.checkpoint_id,
+            aof_start_offset: self.aof_replay_start_offset,
+        }
     }
 }
 
@@ -819,6 +969,76 @@ mod tests {
         assert_eq!(before.slot_state(11).unwrap(), SlotState::Offline);
         assert_eq!(previous.slot_state(11).unwrap(), SlotState::Offline);
         assert_eq!(after.slot_state(11).unwrap(), SlotState::Stable);
+    }
+
+    #[test]
+    fn replication_manager_selects_incremental_when_replica_offset_is_in_window() {
+        let manager = ReplicationManager::new(Some(99), 1_000, 2_000).unwrap();
+        let plan = manager.plan_sync(Some(1_500));
+        assert_eq!(plan.mode, ReplicationSyncMode::Incremental);
+        assert_eq!(plan.checkpoint_id, None);
+        assert_eq!(plan.aof_start_offset, 1_500);
+    }
+
+    #[test]
+    fn replication_manager_selects_full_when_replica_offset_is_stale() {
+        let manager = ReplicationManager::new(Some(55), 5_000, 8_000).unwrap();
+        let plan = manager.plan_sync(Some(4_999));
+        assert_eq!(plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(plan.checkpoint_id, Some(55));
+        assert_eq!(plan.aof_start_offset, 5_000);
+    }
+
+    #[test]
+    fn replication_manager_selects_full_when_replica_offset_is_unknown() {
+        let manager = ReplicationManager::new(Some(12), 100, 200).unwrap();
+        let plan = manager.plan_sync(None);
+        assert_eq!(plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(plan.checkpoint_id, Some(12));
+        assert_eq!(plan.aof_start_offset, 100);
+    }
+
+    #[test]
+    fn replication_manager_rejects_invalid_recovery_window() {
+        let result = ReplicationManager::new(Some(1), 10, 9);
+        assert!(matches!(
+            result,
+            Err(ReplicationError::InvalidAofWindow {
+                replay_start_offset: 10,
+                tail_offset: 9,
+            })
+        ));
+    }
+
+    #[test]
+    fn replication_manager_tracks_best_replica_by_highest_offset_then_lowest_id() {
+        let mut manager = ReplicationManager::new(None, 0, 10_000).unwrap();
+        manager.record_replica_offset(7, 8_000);
+        manager.record_replica_offset(2, 9_000);
+        manager.record_replica_offset(5, 9_000);
+
+        assert_eq!(
+            manager.best_replica_candidate(),
+            Some(ReplicaProgress {
+                worker_id: 2,
+                acknowledged_offset: 9_000,
+            })
+        );
+    }
+
+    #[test]
+    fn replication_manager_updates_recovery_window_and_tail() {
+        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        manager
+            .update_recovery_window(Some(2), 150, 400)
+            .expect("window update should succeed");
+        manager
+            .set_aof_tail_offset(450)
+            .expect("tail advance should succeed");
+
+        assert_eq!(manager.checkpoint_id(), Some(2));
+        assert_eq!(manager.aof_replay_start_offset(), 150);
+        assert_eq!(manager.aof_tail_offset(), 450);
     }
 
     #[test]
