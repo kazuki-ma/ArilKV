@@ -15,7 +15,7 @@ pub use limited_fixed_buffer_pool::{
 };
 pub use request_lifecycle::{RequestExecutionError, RequestProcessor, RequestProcessorInitError};
 
-use garnet_cluster::ClusterConfigStore;
+use garnet_cluster::{redis_hash_slot, ClusterConfigStore};
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
 use std::future::Future;
 use std::io;
@@ -199,20 +199,12 @@ async fn handle_connection(
                     let frame_end = consumed + meta.bytes_consumed;
                     // SAFETY: `args` refers to the still-live `receive_buffer` backing bytes.
                     let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                    if let (Some(cluster_store), Some(key)) = (
-                        cluster_config.as_ref(),
-                        command_primary_key(&args[..meta.argument_count], command),
-                    ) {
-                        if let Some(redirection_error) = cluster_store
-                            .load()
-                            .redirection_error_for_key(key)
-                            .map_err(|error| {
-                                io::Error::new(
-                                    io::ErrorKind::Other,
-                                    format!("cluster error: {error}"),
-                                )
-                            })?
-                        {
+                    if let Some(cluster_store) = cluster_config.as_ref() {
+                        if let Some(redirection_error) = cluster_error_for_command(
+                            cluster_store,
+                            &args[..meta.argument_count],
+                            command,
+                        )? {
                             append_error_line(&mut responses, redirection_error.as_bytes());
                             consumed += meta.bytes_consumed;
                             continue;
@@ -419,46 +411,92 @@ fn append_error_line(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(b"\r\n");
 }
 
-fn command_primary_key<'a>(args: &'a [ArgSlice], command: CommandId) -> Option<&'a [u8]> {
+fn cluster_error_for_command(
+    cluster_store: &ClusterConfigStore,
+    args: &[ArgSlice],
+    command: CommandId,
+) -> io::Result<Option<String>> {
     if args.len() < 2 {
-        return None;
+        return Ok(None);
     }
-    let uses_first_key = matches!(
-        command,
-        CommandId::Get
-            | CommandId::Set
-            | CommandId::Del
-            | CommandId::Incr
-            | CommandId::Decr
-            | CommandId::Expire
-            | CommandId::Ttl
-            | CommandId::Pexpire
-            | CommandId::Pttl
-            | CommandId::Persist
-            | CommandId::Hset
-            | CommandId::Hget
-            | CommandId::Hdel
-            | CommandId::Hgetall
-            | CommandId::Lpush
-            | CommandId::Rpush
-            | CommandId::Lpop
-            | CommandId::Rpop
-            | CommandId::Lrange
-            | CommandId::Sadd
-            | CommandId::Srem
-            | CommandId::Smembers
-            | CommandId::Sismember
-            | CommandId::Zadd
-            | CommandId::Zrem
-            | CommandId::Zrange
-            | CommandId::Zscore
-            | CommandId::Watch
-    );
-    if !uses_first_key {
-        return None;
+
+    match command {
+        CommandId::Del | CommandId::Watch => {
+            let config = cluster_store.load();
+            let mut first_slot = None;
+            for arg in &args[1..] {
+                // SAFETY: argument slices reference the current request frame.
+                let key = unsafe { arg.as_slice() };
+                let slot = redis_hash_slot(key);
+
+                if let Some(existing) = first_slot {
+                    if slot != existing {
+                        return Ok(Some(
+                            "CROSSSLOT Keys in request don't hash to the same slot".to_string(),
+                        ));
+                    }
+                } else {
+                    first_slot = Some(slot);
+                }
+
+                if let Some(redirection_error) =
+                    config.redirection_error_for_slot(slot).map_err(|error| {
+                        io::Error::new(io::ErrorKind::Other, format!("cluster error: {error}"))
+                    })?
+                {
+                    return Ok(Some(redirection_error));
+                }
+            }
+            Ok(None)
+        }
+        _ => {
+            let uses_first_key = matches!(
+                command,
+                CommandId::Get
+                    | CommandId::Set
+                    | CommandId::Incr
+                    | CommandId::Decr
+                    | CommandId::Expire
+                    | CommandId::Ttl
+                    | CommandId::Pexpire
+                    | CommandId::Pttl
+                    | CommandId::Persist
+                    | CommandId::Hset
+                    | CommandId::Hget
+                    | CommandId::Hdel
+                    | CommandId::Hgetall
+                    | CommandId::Lpush
+                    | CommandId::Rpush
+                    | CommandId::Lpop
+                    | CommandId::Rpop
+                    | CommandId::Lrange
+                    | CommandId::Sadd
+                    | CommandId::Srem
+                    | CommandId::Smembers
+                    | CommandId::Sismember
+                    | CommandId::Zadd
+                    | CommandId::Zrem
+                    | CommandId::Zrange
+                    | CommandId::Zscore
+            );
+            if !uses_first_key {
+                return Ok(None);
+            }
+
+            // SAFETY: argument slices reference the current request frame.
+            let key = unsafe { args[1].as_slice() };
+            let error = cluster_store
+                .load()
+                .redirection_error_for_key(key)
+                .map_err(|cluster_error| {
+                    io::Error::new(
+                        io::ErrorKind::Other,
+                        format!("cluster error: {cluster_error}"),
+                    )
+                })?;
+            Ok(error)
+        }
     }
-    // SAFETY: caller ensures argument references are valid during frame processing.
-    Some(unsafe { args[1].as_slice() })
 }
 
 struct ConnectionLifecycle<'a> {
@@ -994,6 +1032,12 @@ mod tests {
             &mut client,
             b"*2\r\n$3\r\nGET\r\n$8\r\nremote-k\r\n",
             expected_moved.as_bytes(),
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nDEL\r\n$7\r\nlocal-k\r\n$8\r\nremote-k\r\n",
+            b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
         )
         .await;
 
