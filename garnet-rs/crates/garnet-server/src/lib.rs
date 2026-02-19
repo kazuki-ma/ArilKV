@@ -19,10 +19,11 @@ pub use request_lifecycle::{
 };
 
 use garnet_cluster::{
-    redis_hash_slot, ClusterConfigError, ClusterConfigStore, SlotRouteDecision, LOCAL_WORKER_ID,
+    redis_hash_slot, ClusterConfigError, ClusterConfigStore, SlotRouteDecision, SlotState,
+    LOCAL_WORKER_ID,
 };
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
-use std::collections::VecDeque;
+use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
@@ -165,6 +166,26 @@ fn resolve_migration_peer_ids(
         .map(|worker| worker.id)
         .ok_or_else(|| LiveSlotMigrationError::MissingTargetPeerNode(source_local_node_id))?;
     Ok((target_worker_id_in_source, source_worker_id_in_target))
+}
+
+pub fn detect_live_slot_migration_slots(
+    source_store: &ClusterConfigStore,
+    target_store: &ClusterConfigStore,
+) -> Result<Vec<u16>, LiveSlotMigrationError> {
+    let (target_worker_id_in_source, source_worker_id_in_target) =
+        resolve_migration_peer_ids(source_store, target_store)?;
+    let source_snapshot = source_store.load();
+    let target_snapshot = target_store.load();
+    let source_migrating = source_snapshot
+        .slots_assigned_to_worker_in_state(target_worker_id_in_source, SlotState::Migrating)?;
+    let target_importing: HashSet<u16> = target_snapshot
+        .slots_assigned_to_worker_in_state(source_worker_id_in_target, SlotState::Importing)?
+        .into_iter()
+        .collect();
+    Ok(source_migrating
+        .into_iter()
+        .filter(|slot| target_importing.contains(slot))
+        .collect())
 }
 
 pub fn execute_live_slot_migration_step(
@@ -392,6 +413,32 @@ where
         slots: reports,
         interrupted: false,
     })
+}
+
+pub async fn run_detected_live_slot_migrations_until_complete<F>(
+    source_store: &ClusterConfigStore,
+    target_store: &ClusterConfigStore,
+    source_processor: &RequestProcessor,
+    target_processor: &RequestProcessor,
+    max_keys_per_step: usize,
+    step_interval: std::time::Duration,
+    shutdown: F,
+) -> Result<LiveSlotMigrationsRunReport, LiveSlotMigrationError>
+where
+    F: Future<Output = ()>,
+{
+    let slots = detect_live_slot_migration_slots(source_store, target_store)?;
+    run_live_slot_migrations_until_complete(
+        source_store,
+        target_store,
+        source_processor,
+        target_processor,
+        &slots,
+        max_keys_per_step,
+        step_interval,
+        shutdown,
+    )
+    .await
 }
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
@@ -3129,6 +3176,241 @@ mod tests {
         let get = encode_resp_command(&[b"GET", &key]);
         assert_eq!(execute_processor_frame(&source, &get), b"$5\r\nvalue\r\n");
         assert_eq!(execute_processor_frame(&target, &get), b"$-1\r\n");
+    }
+
+    #[test]
+    fn detect_live_slot_migration_slots_intersects_migrating_and_importing() {
+        let slot_a = 510u16;
+        let slot_b = 511u16;
+        let slot_c = 512u16;
+        let slot_d = 513u16;
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 7901);
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                7902,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .begin_slot_migration_to(slot_a, node2_id_in_1)
+            .unwrap()
+            .begin_slot_migration_to(slot_b, node2_id_in_1)
+            .unwrap()
+            .set_slot_state(slot_c, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 7902);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                7901,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .begin_slot_import_from(slot_a, node1_id_in_2)
+            .unwrap()
+            .set_slot_state(slot_b, node1_id_in_2, SlotState::Stable)
+            .unwrap()
+            .begin_slot_import_from(slot_d, node1_id_in_2)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let slots = detect_live_slot_migration_slots(&store1, &store2).unwrap();
+        assert_eq!(slots, vec![slot_a]);
+    }
+
+    #[tokio::test]
+    async fn run_detected_live_slot_migrations_until_complete_executes_detected_slots() {
+        let key_a = b"{detected-a}k".to_vec();
+        let key_b = b"{detected-b}k".to_vec();
+        let key_c = b"{detected-c}k".to_vec();
+        let slot_a = redis_hash_slot(&key_a);
+        let slot_b = redis_hash_slot(&key_b);
+        let slot_c = redis_hash_slot(&key_c);
+        assert_ne!(slot_a, slot_b);
+        assert_ne!(slot_a, slot_c);
+        assert_ne!(slot_b, slot_c);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 8001);
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8002,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .begin_slot_migration_to(slot_a, node2_id_in_1)
+            .unwrap()
+            .begin_slot_migration_to(slot_b, node2_id_in_1)
+            .unwrap()
+            .set_slot_state(slot_c, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8002);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8001,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .begin_slot_import_from(slot_a, node1_id_in_2)
+            .unwrap()
+            .begin_slot_import_from(slot_b, node1_id_in_2)
+            .unwrap()
+            .set_slot_state(slot_c, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"SET", &key_a, b"va"])),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"SET", &key_b, b"vb"])),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"SET", &key_c, b"vc"])),
+            b"+OK\r\n"
+        );
+
+        let report = run_detected_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            1,
+            Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.interrupted);
+        assert_eq!(report.slots.len(), 2);
+        let migrated_slots: HashSet<u16> = report.slots.iter().map(|slot| slot.slot).collect();
+        assert_eq!(migrated_slots, HashSet::from([slot_a, slot_b]));
+        for slot_report in report.slots {
+            assert_eq!(slot_report.batches, 1);
+            assert_eq!(slot_report.moved_keys, 1);
+            assert!(slot_report.finalized);
+        }
+
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"GET", &key_a])),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"GET", &key_b])),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&target, &encode_resp_command(&[b"GET", &key_a])),
+            b"$2\r\nva\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&target, &encode_resp_command(&[b"GET", &key_b])),
+            b"$2\r\nvb\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"GET", &key_c])),
+            b"$2\r\nvc\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&target, &encode_resp_command(&[b"GET", &key_c])),
+            b"$-1\r\n"
+        );
+
+        for slot in [slot_a, slot_b] {
+            assert_eq!(store1.load().slot_state(slot).unwrap(), SlotState::Stable);
+            assert_eq!(store2.load().slot_state(slot).unwrap(), SlotState::Stable);
+            assert_eq!(
+                store1.load().slot_assigned_owner(slot).unwrap(),
+                node2_id_in_1
+            );
+            assert_eq!(
+                store2.load().slot_assigned_owner(slot).unwrap(),
+                LOCAL_WORKER_ID
+            );
+        }
+        assert_eq!(
+            store1.load().slot_assigned_owner(slot_c).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(
+            store2.load().slot_assigned_owner(slot_c).unwrap(),
+            node1_id_in_2
+        );
+    }
+
+    #[tokio::test]
+    async fn run_detected_live_slot_migrations_until_complete_noop_when_no_detected_slots() {
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 8101);
+        let (next1, _node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8102,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(901, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8102);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8101,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(901, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        let report = run_detected_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            1,
+            Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.interrupted);
+        assert!(report.slots.is_empty());
+        assert_eq!(
+            store1.load().slot_assigned_owner(901).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(
+            store2.load().slot_assigned_owner(901).unwrap(),
+            node1_id_in_2
+        );
     }
 
     async fn wait_until<P>(mut predicate: P, timeout: Duration)

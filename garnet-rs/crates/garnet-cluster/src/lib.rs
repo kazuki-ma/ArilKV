@@ -222,6 +222,33 @@ impl ClusterConfig {
         Ok(self.slot(slot)?.assigned_worker_id())
     }
 
+    pub fn slots_in_state(&self, state: SlotState) -> Vec<u16> {
+        self.slot_map
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, entry)| (entry.state() == state).then_some(slot as u16))
+            .collect()
+    }
+
+    pub fn slots_assigned_to_worker_in_state(
+        &self,
+        worker_id: u16,
+        state: SlotState,
+    ) -> Result<Vec<u16>, ClusterConfigError> {
+        if self.worker(worker_id).is_none() {
+            return Err(ClusterConfigError::WorkerNotFound(worker_id));
+        }
+        Ok(self
+            .slot_map
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, entry)| {
+                (entry.assigned_worker_id() == worker_id && entry.state() == state)
+                    .then_some(slot as u16)
+            })
+            .collect())
+    }
+
     pub fn is_local_slot(&self, slot: u16) -> Result<bool, ClusterConfigError> {
         Ok(self.slot(slot)?.is_local())
     }
@@ -2645,6 +2672,58 @@ mod tests {
         ));
         assert!(matches!(
             config.finalize_slot_migration(42, 99),
+            Err(ClusterConfigError::WorkerNotFound(99))
+        ));
+    }
+
+    #[test]
+    fn slots_in_state_lists_matching_slots() {
+        let config = base_config();
+        let (config, remote_id) = config
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+        let config = config
+            .set_slot_state(11, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(12, remote_id, SlotState::Migrating)
+            .unwrap()
+            .set_slot_state(13, remote_id, SlotState::Importing)
+            .unwrap();
+
+        assert_eq!(config.slots_in_state(SlotState::Stable), vec![11]);
+        assert_eq!(config.slots_in_state(SlotState::Migrating), vec![12]);
+        assert_eq!(config.slots_in_state(SlotState::Importing), vec![13]);
+    }
+
+    #[test]
+    fn slots_assigned_to_worker_in_state_filters_by_owner_and_state() {
+        let config = base_config();
+        let (config, remote_id) = config
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+        let config = config
+            .set_slot_state(21, remote_id, SlotState::Migrating)
+            .unwrap()
+            .set_slot_state(22, remote_id, SlotState::Migrating)
+            .unwrap()
+            .set_slot_state(23, remote_id, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(24, LOCAL_WORKER_ID, SlotState::Migrating)
+            .unwrap();
+
+        assert_eq!(
+            config
+                .slots_assigned_to_worker_in_state(remote_id, SlotState::Migrating)
+                .unwrap(),
+            vec![21, 22]
+        );
+    }
+
+    #[test]
+    fn slots_assigned_to_worker_in_state_rejects_unknown_worker() {
+        let config = base_config();
+        assert!(matches!(
+            config.slots_assigned_to_worker_in_state(99, SlotState::Stable),
             Err(ClusterConfigError::WorkerNotFound(99))
         ));
     }
