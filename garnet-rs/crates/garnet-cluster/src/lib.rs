@@ -1679,6 +1679,71 @@ impl ClusterFailoverController {
             failover_plan,
         })
     }
+
+    pub fn handle_failed_workers<T: ReplicationTransport>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        replication_manager: &mut ReplicationManager,
+        failed_worker_ids: &[u16],
+        transport: &mut T,
+    ) -> Result<Vec<(u16, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
+        let mut failed_primaries = Vec::new();
+        {
+            let snapshot = config_store.load();
+            for worker_id in failed_worker_ids.iter().copied() {
+                let Some(worker) = snapshot.worker(worker_id) else {
+                    continue;
+                };
+                if worker.role != WorkerRole::Primary {
+                    continue;
+                }
+                failed_primaries.push((worker_id, worker.node_id.clone()));
+            }
+        }
+
+        let mut outcomes = Vec::new();
+        for (worker_id, node_id) in failed_primaries {
+            let outcome =
+                self.handle_failed_primary(config_store, replication_manager, &node_id, transport)?;
+            if outcome.failover_plan.is_some() || !outcome.synchronized_replicas.is_empty() {
+                outcomes.push((worker_id, outcome));
+            }
+        }
+        Ok(outcomes)
+    }
+
+    pub async fn handle_failed_workers_async<T: AsyncReplicationTransport>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        replication_manager: &mut ReplicationManager,
+        failed_worker_ids: &[u16],
+        transport: &mut T,
+    ) -> Result<Vec<(u16, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
+        let mut failed_primaries = Vec::new();
+        {
+            let snapshot = config_store.load();
+            for worker_id in failed_worker_ids.iter().copied() {
+                let Some(worker) = snapshot.worker(worker_id) else {
+                    continue;
+                };
+                if worker.role != WorkerRole::Primary {
+                    continue;
+                }
+                failed_primaries.push((worker_id, worker.node_id.clone()));
+            }
+        }
+
+        let mut outcomes = Vec::new();
+        for (worker_id, node_id) in failed_primaries {
+            let outcome = self
+                .handle_failed_primary_async(config_store, replication_manager, &node_id, transport)
+                .await?;
+            if outcome.failover_plan.is_some() || !outcome.synchronized_replicas.is_empty() {
+                outcomes.push((worker_id, outcome));
+            }
+        }
+        Ok(outcomes)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -3673,6 +3738,88 @@ mod tests {
         assert_eq!(store.load().slot_assigned_owner(453).unwrap(), replica_a);
         assert_eq!(transport.checkpoints, vec![(replica_a, 7), (replica_b, 7)]);
         assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
+    }
+
+    #[test]
+    fn cluster_failover_controller_handles_failed_worker_ids_for_primaries_only() {
+        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let (config, failed_primary_id) = config
+            .add_worker(Worker::new(
+                "node-2",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
+            .unwrap()
+            .set_slot_state(454, failed_primary_id, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(config);
+
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+        let mut controller = ClusterFailoverController::new();
+
+        let outcomes = controller
+            .handle_failed_workers(
+                &store,
+                &mut manager,
+                &[LOCAL_WORKER_ID, failed_primary_id],
+                &mut transport,
+            )
+            .unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].0, failed_primary_id);
+        assert_eq!(store.load().slot_assigned_owner(454).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            outcomes[0]
+                .1
+                .failover_plan
+                .as_ref()
+                .map(|plan| plan.promoted_worker_id),
+            Some(LOCAL_WORKER_ID)
+        );
+    }
+
+    #[tokio::test]
+    async fn cluster_failover_controller_handles_failed_worker_ids_async() {
+        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let (config, failed_primary_id) = config
+            .add_worker(Worker::new(
+                "node-2",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
+            .unwrap()
+            .set_slot_state(455, failed_primary_id, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(config);
+
+        let mut manager = ReplicationManager::new(Some(5), 300, 900).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+        let mut controller = ClusterFailoverController::new();
+
+        let outcomes = controller
+            .handle_failed_workers_async(&store, &mut manager, &[failed_primary_id], &mut transport)
+            .await
+            .unwrap();
+        assert_eq!(outcomes.len(), 1);
+        assert_eq!(outcomes[0].0, failed_primary_id);
+        assert_eq!(store.load().slot_assigned_owner(455).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(transport.checkpoints, vec![(LOCAL_WORKER_ID, 5)]);
+        assert_eq!(transport.streams, vec![(LOCAL_WORKER_ID, 300)]);
     }
 
     #[test]
