@@ -3,9 +3,11 @@
 //! This module provides immutable-style copy-on-write cluster configuration
 //! structures with Redis-compatible 16,384 hash slots.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
-use std::collections::BTreeMap;
+use std::io::Write;
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -795,6 +797,128 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
     }
 }
 
+#[derive(Debug)]
+pub struct FileReplicationTransport {
+    root: PathBuf,
+    stream_result: u64,
+}
+
+impl FileReplicationTransport {
+    pub fn new(root: impl Into<PathBuf>, stream_result: u64) -> Self {
+        Self {
+            root: root.into(),
+            stream_result,
+        }
+    }
+
+    pub fn stream_result(&self) -> u64 {
+        self.stream_result
+    }
+
+    pub fn set_stream_result(&mut self, stream_result: u64) {
+        self.stream_result = stream_result;
+    }
+
+    fn checkpoint_path(&self, worker_id: u16) -> PathBuf {
+        self.root.join(format!("worker-{worker_id}.checkpoint"))
+    }
+
+    fn aof_path(&self, worker_id: u16) -> PathBuf {
+        self.root.join(format!("worker-{worker_id}.aof"))
+    }
+
+    fn ensure_root_dir(&self) -> Result<(), FileReplicationTransportError> {
+        std::fs::create_dir_all(&self.root).map_err(FileReplicationTransportError::Io)
+    }
+
+    fn write_checkpoint(
+        &self,
+        worker_id: u16,
+        checkpoint_id: u64,
+    ) -> Result<(), FileReplicationTransportError> {
+        self.ensure_root_dir()?;
+        std::fs::write(self.checkpoint_path(worker_id), format!("{checkpoint_id}\n"))
+            .map_err(FileReplicationTransportError::Io)
+    }
+
+    fn append_aof_start_offset(
+        &self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Result<(), FileReplicationTransportError> {
+        self.ensure_root_dir()?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.aof_path(worker_id))
+            .map_err(FileReplicationTransportError::Io)?;
+        writeln!(file, "{start_offset}").map_err(FileReplicationTransportError::Io)
+    }
+}
+
+#[derive(Debug)]
+pub enum FileReplicationTransportError {
+    Io(std::io::Error),
+}
+
+impl fmt::Display for FileReplicationTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for FileReplicationTransportError {}
+
+impl ReplicationTransport for FileReplicationTransport {
+    type Error = FileReplicationTransportError;
+
+    fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error> {
+        self.write_checkpoint(worker_id, checkpoint_id)
+    }
+
+    fn stream_aof_from_offset(
+        &mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Result<u64, Self::Error> {
+        self.append_aof_start_offset(worker_id, start_offset)?;
+        Ok(self.stream_result)
+    }
+}
+
+impl AsyncReplicationTransport for FileReplicationTransport {
+    type Error = FileReplicationTransportError;
+    type CheckpointFut<'a>
+        = std::future::Ready<Result<(), Self::Error>>
+    where
+        Self: 'a;
+    type StreamFut<'a>
+        = std::future::Ready<Result<u64, Self::Error>>
+    where
+        Self: 'a;
+
+    fn send_checkpoint<'a>(
+        &'a mut self,
+        worker_id: u16,
+        checkpoint_id: u64,
+    ) -> Self::CheckpointFut<'a> {
+        std::future::ready(self.write_checkpoint(worker_id, checkpoint_id))
+    }
+
+    fn stream_aof_from_offset<'a>(
+        &'a mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Self::StreamFut<'a> {
+        std::future::ready(
+            self.append_aof_start_offset(worker_id, start_offset)
+                .map(|_| self.stream_result),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReplicationManager {
     checkpoint_id: Option<u64>,
@@ -1522,9 +1646,23 @@ fn next_rng(state: &mut u64) -> u64 {
 mod tests {
     use super::*;
     use std::mem::size_of;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     fn base_config() -> ClusterConfig {
         ClusterConfig::new_local("local-node", "127.0.0.1", 6379)
+    }
+
+    fn unique_temp_dir(prefix: &str) -> std::path::PathBuf {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock should be after epoch")
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "garnet-cluster-{prefix}-{}-{now}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&path).expect("temp directory should be creatable");
+        path
     }
 
     #[test]
@@ -2179,6 +2317,58 @@ mod tests {
                 ChannelReplicationTransportError::ChannelClosed
             ))
         ));
+    }
+
+    #[test]
+    fn file_replication_transport_writes_checkpoint_and_stream_offsets() {
+        let dir = unique_temp_dir("file-transport-sync");
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = FileReplicationTransport::new(&dir, 900);
+
+        let outcome = manager
+            .execute_sync(4, Some(400), &mut transport)
+            .expect("full sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(outcome.streamed_until_offset, 900);
+
+        let checkpoint =
+            std::fs::read_to_string(dir.join("worker-4.checkpoint")).expect("checkpoint exists");
+        assert_eq!(checkpoint, "9\n");
+        let aof_log = std::fs::read_to_string(dir.join("worker-4.aof")).expect("aof log exists");
+        assert_eq!(aof_log, "500\n");
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn file_replication_transport_supports_async_full_then_incremental_sync() {
+        let dir = unique_temp_dir("file-transport-async");
+        let mut manager = ReplicationManager::new(Some(11), 700, 900).unwrap();
+        let mut transport = FileReplicationTransport::new(&dir, 900);
+
+        let first = manager
+            .execute_sync_for_worker_async(6, &mut transport)
+            .await
+            .expect("first sync should succeed");
+        assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(first.plan.aof_start_offset, 700);
+
+        manager.set_aof_tail_offset(960).unwrap();
+        transport.set_stream_result(960);
+        let second = manager
+            .execute_sync_for_worker_async(6, &mut transport)
+            .await
+            .expect("second sync should succeed");
+        assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
+        assert_eq!(second.plan.aof_start_offset, 900);
+
+        let checkpoint =
+            std::fs::read_to_string(dir.join("worker-6.checkpoint")).expect("checkpoint exists");
+        assert_eq!(checkpoint, "11\n");
+        let aof_log = std::fs::read_to_string(dir.join("worker-6.aof")).expect("aof log exists");
+        assert_eq!(aof_log, "700\n900\n");
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[tokio::test]
