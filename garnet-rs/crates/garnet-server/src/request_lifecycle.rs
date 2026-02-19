@@ -5,14 +5,15 @@ use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
-    DeleteInfo, DeleteOperationStatus, HybridLogDeleteAdapter, HybridLogReadAdapter,
-    HybridLogRmwAdapter, HybridLogUpsertAdapter, ISessionFunctions, ReadInfo, ReadOperationStatus,
+    DeleteInfo, DeleteOperationError, DeleteOperationStatus, HybridLogDeleteAdapter,
+    HybridLogReadAdapter, HybridLogRmwAdapter, HybridLogUpsertAdapter, ISessionFunctions,
+    PageManagerError, PageResidencyError, ReadInfo, ReadOperationError, ReadOperationStatus,
     RecordInfo, RmwInfo, RmwOperationError, RmwOperationStatus, TsavoriteKV, TsavoriteKvConfig,
-    TsavoriteKvInitError, UpsertInfo, WriteReason,
+    TsavoriteKvInitError, UpsertInfo, UpsertOperationError, WriteReason,
 };
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
@@ -23,6 +24,13 @@ const SET_OBJECT_TYPE_TAG: u8 = 4;
 const ZSET_OBJECT_TYPE_TAG: u8 = 5;
 const WATCH_VERSION_MAP_SIZE: usize = 1024;
 const WATCH_VERSION_MAP_MASK: usize = WATCH_VERSION_MAP_SIZE - 1;
+const GARNET_HASH_INDEX_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS";
+const GARNET_PAGE_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_PAGE_SIZE_BITS";
+const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES";
+const GARNET_LOG_STORAGE_FAILURES_ENV: &str = "GARNET_LOG_STORAGE_FAILURES";
+const STORAGE_FAILURE_LOG_LIMIT: usize = 64;
+static STORAGE_FAILURE_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
+static STORAGE_FAILURE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -77,9 +85,10 @@ pub struct RequestProcessor {
 
 impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
+        let store_config = tsavorite_config_from_env();
         Ok(Self {
-            store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
-            object_store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
+            store: Mutex::new(TsavoriteKV::new(store_config)?),
+            object_store: Mutex::new(TsavoriteKV::new(store_config)?),
             expirations: Mutex::new(HashMap::new()),
             key_registry: Mutex::new(HashSet::new()),
             object_key_registry: Mutex::new(HashSet::new()),
@@ -167,7 +176,7 @@ impl RequestProcessor {
         let mut info = UpsertInfo::default();
         session
             .upsert(&key, &value, &mut output, &mut info)
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_upsert_error)?;
         self.object_key_registry
             .lock()
             .expect("object key registry mutex poisoned")
@@ -186,12 +195,12 @@ impl RequestProcessor {
         let mut output = Vec::new();
         let status = session
             .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                decode_object_value(&output)
-                    .map(Some)
-                    .ok_or(RequestExecutionError::StorageFailure)
+                decode_object_value(&output).map(Some).ok_or_else(|| {
+                    storage_failure("object_read", "failed to decode object value payload")
+                })
             }
             ReadOperationStatus::NotFound => Ok(None),
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -206,9 +215,7 @@ impl RequestProcessor {
             .expect("object store mutex poisoned");
         let mut session = store.session(&self.object_functions);
         let mut info = DeleteInfo::default();
-        let status = session
-            .delete(&key, &mut info)
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
                 self.object_key_registry
@@ -373,7 +380,9 @@ impl RequestProcessor {
         }
         deserialize_hash_object_payload(&object.1)
             .map(Some)
-            .ok_or(RequestExecutionError::StorageFailure)
+            .ok_or_else(|| {
+                storage_failure("load_hash_object", "failed to deserialize hash payload")
+            })
     }
 
     fn save_hash_object(
@@ -400,7 +409,9 @@ impl RequestProcessor {
         }
         deserialize_list_object_payload(&object.1)
             .map(Some)
-            .ok_or(RequestExecutionError::StorageFailure)
+            .ok_or_else(|| {
+                storage_failure("load_list_object", "failed to deserialize list payload")
+            })
     }
 
     fn save_list_object(&self, key: &[u8], list: &[Vec<u8>]) -> Result<(), RequestExecutionError> {
@@ -426,7 +437,7 @@ impl RequestProcessor {
         }
         deserialize_set_object_payload(&object.1)
             .map(Some)
-            .ok_or(RequestExecutionError::StorageFailure)
+            .ok_or_else(|| storage_failure("load_set_object", "failed to deserialize set payload"))
     }
 
     fn save_set_object(
@@ -456,7 +467,9 @@ impl RequestProcessor {
         }
         deserialize_zset_object_payload(&object.1)
             .map(Some)
-            .ok_or(RequestExecutionError::StorageFailure)
+            .ok_or_else(|| {
+                storage_failure("load_zset_object", "failed to deserialize zset payload")
+            })
     }
 
     fn save_zset_object(
@@ -495,9 +508,7 @@ impl RequestProcessor {
                 let mut store = self.store.lock().expect("store mutex poisoned");
                 let mut session = store.session(&self.functions);
                 let mut info = DeleteInfo::default();
-                session
-                    .delete(&key, &mut info)
-                    .map_err(|_| RequestExecutionError::StorageFailure)?
+                session.delete(&key, &mut info).map_err(map_delete_error)?
             };
 
             self.expirations
@@ -546,7 +557,7 @@ impl RequestProcessor {
         let mut output = Vec::new();
         let status = session
             .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_read_error)?;
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
@@ -605,7 +616,7 @@ impl RequestProcessor {
         }
         session
             .upsert(&key, &stored_value, &mut output, &mut info)
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_upsert_error)?;
         drop(session);
         drop(store);
 
@@ -657,9 +668,7 @@ impl RequestProcessor {
         let mut session = store.session(&self.functions);
         for key in keys {
             let mut info = DeleteInfo::default();
-            let status = session
-                .delete(&key, &mut info)
-                .map_err(|_| RequestExecutionError::StorageFailure)?;
+            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
@@ -729,7 +738,7 @@ impl RequestProcessor {
                 let stored_value = encode_stored_value(&input, None);
                 session
                     .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
-                    .map_err(|_| RequestExecutionError::StorageFailure)?;
+                    .map_err(map_upsert_error)?;
                 self.key_registry
                     .lock()
                     .expect("key registry mutex poisoned")
@@ -741,7 +750,7 @@ impl RequestProcessor {
             Err(RmwOperationError::OperationCancelled) => {
                 Err(RequestExecutionError::ValueNotInteger)
             }
-            Err(_) => Err(RequestExecutionError::StorageFailure),
+            Err(error) => Err(map_rmw_error(error)),
         }
     }
 
@@ -792,9 +801,7 @@ impl RequestProcessor {
             let mut store = self.store.lock().expect("store mutex poisoned");
             let mut session = store.session(&self.functions);
             let mut info = DeleteInfo::default();
-            let status = session
-                .delete(&key, &mut info)
-                .map_err(|_| RequestExecutionError::StorageFailure)?;
+            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
@@ -1763,7 +1770,7 @@ impl RequestProcessor {
                 &mut output,
                 &ReadInfo::default(),
             )
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
                 Ok(Some(output))
@@ -1780,7 +1787,7 @@ impl RequestProcessor {
         let key_vec = key.to_vec();
         let status = session
             .read(&key_vec, &Vec::new(), &mut output, &ReadInfo::default())
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_read_error)?;
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
@@ -1803,7 +1810,7 @@ impl RequestProcessor {
                 &mut output,
                 &ReadInfo::default(),
             )
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_read_error)?;
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
@@ -1828,7 +1835,7 @@ impl RequestProcessor {
         let stored_value = encode_stored_value(user_value, expiration_unix_millis);
         session
             .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_upsert_error)?;
         drop(session);
         drop(store);
 
@@ -1855,7 +1862,7 @@ impl RequestProcessor {
         let mut info = DeleteInfo::default();
         let status = session
             .delete(&key.to_vec(), &mut info)
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_delete_error)?;
 
         match status {
             DeleteOperationStatus::TombstonedInPlace
@@ -1906,7 +1913,7 @@ impl RequestProcessor {
         let mut current = Vec::new();
         let status = session
             .read(&key_vec, &Vec::new(), &mut current, &ReadInfo::default())
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
                 let mut output = Vec::new();
@@ -1917,7 +1924,7 @@ impl RequestProcessor {
                 let stored_value = encode_stored_value(&current, expiration_unix_millis);
                 session
                     .upsert(&key_vec, &stored_value, &mut output, &mut upsert_info)
-                    .map_err(|_| RequestExecutionError::StorageFailure)?;
+                    .map_err(map_upsert_error)?;
                 Ok(true)
             }
             ReadOperationStatus::NotFound => Ok(false),
@@ -1946,7 +1953,7 @@ impl RequestProcessor {
         let mut info = DeleteInfo::default();
         let status = session
             .delete(&key.to_vec(), &mut info)
-            .map_err(|_| RequestExecutionError::StorageFailure)?;
+            .map_err(map_delete_error)?;
         if matches!(
             status,
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone
@@ -1964,6 +1971,34 @@ impl RequestProcessor {
         let slot = watch_version_slot(key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
     }
+}
+
+fn tsavorite_config_from_env() -> TsavoriteKvConfig {
+    let mut config = TsavoriteKvConfig::default();
+    if let Some(bits) = parse_env_u8(GARNET_HASH_INDEX_SIZE_BITS_ENV) {
+        if (1..=30).contains(&bits) {
+            config.hash_index_size_bits = bits;
+        }
+    }
+    if let Some(bits) = parse_env_u8(GARNET_PAGE_SIZE_BITS_ENV) {
+        if (1..=30).contains(&bits) {
+            config.page_size_bits = bits;
+        }
+    }
+    if let Some(max_pages) = parse_env_usize(GARNET_MAX_IN_MEMORY_PAGES_ENV) {
+        if max_pages > 0 {
+            config.max_in_memory_pages = max_pages;
+        }
+    }
+    config
+}
+
+fn parse_env_u8(key: &str) -> Option<u8> {
+    std::env::var(key).ok()?.parse::<u8>().ok()
+}
+
+fn parse_env_usize(key: &str) -> Option<usize> {
+    std::env::var(key).ok()?.parse::<usize>().ok()
 }
 
 fn watch_version_slot(key: &[u8]) -> usize {
@@ -2054,6 +2089,7 @@ pub enum RequestExecutionError {
     InvalidExpireTime,
     WrongType,
     StorageBusy,
+    StorageCapacityExceeded,
     StorageFailure,
     ValueNotInteger,
     ValueNotFloat,
@@ -2076,12 +2112,97 @@ impl RequestExecutionError {
                 "WRONGTYPE Operation against a key holding the wrong kind of value",
             ),
             Self::StorageBusy => append_error(response_out, "ERR storage busy, retry later"),
+            Self::StorageCapacityExceeded => append_error(
+                response_out,
+                "ERR storage capacity exceeded (increase max in-memory pages)",
+            ),
             Self::StorageFailure => append_error(response_out, "ERR internal storage failure"),
             Self::ValueNotInteger => {
                 append_error(response_out, "ERR value is not an integer or out of range")
             }
             Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
         }
+    }
+}
+
+fn storage_failure_logging_enabled() -> bool {
+    *STORAGE_FAILURE_LOG_ENABLED.get_or_init(|| {
+        std::env::var(GARNET_LOG_STORAGE_FAILURES_ENV)
+            .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE"))
+            .unwrap_or(true)
+    })
+}
+
+fn log_storage_failure(context: &str, detail: &str) {
+    if !storage_failure_logging_enabled() {
+        return;
+    }
+
+    let count = STORAGE_FAILURE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
+    if count >= STORAGE_FAILURE_LOG_LIMIT {
+        if count == STORAGE_FAILURE_LOG_LIMIT {
+            eprintln!(
+                "garnet-server storage failure logging suppressed after {} entries",
+                STORAGE_FAILURE_LOG_LIMIT
+            );
+        }
+        return;
+    }
+
+    let backtrace = std::backtrace::Backtrace::force_capture();
+    eprintln!(
+        "garnet-server storage failure [{}]: {}\nbacktrace:\n{}",
+        context, detail, backtrace
+    );
+}
+
+fn storage_failure(context: &str, detail: &str) -> RequestExecutionError {
+    log_storage_failure(context, detail);
+    RequestExecutionError::StorageFailure
+}
+
+fn map_read_error(error: ReadOperationError) -> RequestExecutionError {
+    match error {
+        ReadOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
+            RequestExecutionError::StorageCapacityExceeded
+        }
+        ReadOperationError::PageResidency(PageResidencyError::PageManager(
+            PageManagerError::BufferFull { .. },
+        )) => RequestExecutionError::StorageCapacityExceeded,
+        ReadOperationError::PageResidency(PageResidencyError::NoEvictablePage { .. }) => {
+            RequestExecutionError::StorageBusy
+        }
+        other => storage_failure("read", &format!("{other:?}")),
+    }
+}
+
+fn map_upsert_error(error: UpsertOperationError) -> RequestExecutionError {
+    match error {
+        UpsertOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
+            RequestExecutionError::StorageCapacityExceeded
+        }
+        UpsertOperationError::CompareExchangeConflict => RequestExecutionError::StorageBusy,
+        other => storage_failure("upsert", &format!("{other:?}")),
+    }
+}
+
+fn map_delete_error(error: DeleteOperationError) -> RequestExecutionError {
+    match error {
+        DeleteOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
+            RequestExecutionError::StorageCapacityExceeded
+        }
+        DeleteOperationError::CompareExchangeConflict => RequestExecutionError::StorageBusy,
+        other => storage_failure("delete", &format!("{other:?}")),
+    }
+}
+
+fn map_rmw_error(error: RmwOperationError) -> RequestExecutionError {
+    match error {
+        RmwOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
+            RequestExecutionError::StorageCapacityExceeded
+        }
+        RmwOperationError::CompareExchangeConflict => RequestExecutionError::StorageBusy,
+        other => storage_failure("rmw", &format!("{other:?}")),
     }
 }
 
@@ -2922,6 +3043,37 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b"$5\r\nvalue\r\n");
+    }
+
+    #[test]
+    fn set_and_get_supports_1kb_payload_without_storage_failure() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 3];
+        let value = vec![b'x'; 1024];
+
+        let mut frame_set =
+            format!("*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n${}\r\n", value.len()).into_bytes();
+        frame_set.extend_from_slice(&value);
+        frame_set.extend_from_slice(b"\r\n");
+
+        let meta = parse_resp_command_arg_slices(&frame_set, &mut args).unwrap();
+        let mut response = Vec::new();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let frame_get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(frame_get, &mut args).unwrap();
+        response.clear();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+
+        let mut expected = format!("${}\r\n", value.len()).into_bytes();
+        expected.extend_from_slice(&value);
+        expected.extend_from_slice(b"\r\n");
+        assert_eq!(response, expected);
     }
 
     #[test]
@@ -3971,5 +4123,53 @@ mod tests {
         assert!(response.starts_with(b"*"));
         assert!(response.windows(7).any(|w| w == b"$3\r\nGET"));
         assert!(response.windows(10).any(|w| w == b"$6\r\nEXPIRE"));
+    }
+
+    #[test]
+    fn storage_error_mapping_marks_buffer_full_as_capacity_exceeded() {
+        let read = map_read_error(ReadOperationError::PageManager(
+            PageManagerError::BufferFull {
+                max_in_memory_pages: 64,
+            },
+        ));
+        let upsert = map_upsert_error(UpsertOperationError::PageManager(
+            PageManagerError::BufferFull {
+                max_in_memory_pages: 64,
+            },
+        ));
+        let delete = map_delete_error(DeleteOperationError::PageManager(
+            PageManagerError::BufferFull {
+                max_in_memory_pages: 64,
+            },
+        ));
+        let rmw = map_rmw_error(RmwOperationError::PageManager(
+            PageManagerError::BufferFull {
+                max_in_memory_pages: 64,
+            },
+        ));
+        assert_eq!(read, RequestExecutionError::StorageCapacityExceeded);
+        assert_eq!(upsert, RequestExecutionError::StorageCapacityExceeded);
+        assert_eq!(delete, RequestExecutionError::StorageCapacityExceeded);
+        assert_eq!(rmw, RequestExecutionError::StorageCapacityExceeded);
+    }
+
+    #[test]
+    fn read_error_mapping_marks_no_evictable_page_as_busy() {
+        let mapped = map_read_error(ReadOperationError::PageResidency(
+            PageResidencyError::NoEvictablePage {
+                requested_page_index: 42,
+            },
+        ));
+        assert_eq!(mapped, RequestExecutionError::StorageBusy);
+    }
+
+    #[test]
+    fn storage_capacity_exceeded_formats_distinct_resp_error() {
+        let mut response = Vec::new();
+        RequestExecutionError::StorageCapacityExceeded.append_resp_error(&mut response);
+        assert_eq!(
+            response,
+            b"-ERR storage capacity exceeded (increase max in-memory pages)\r\n"
+        );
     }
 }

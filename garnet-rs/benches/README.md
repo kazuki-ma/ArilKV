@@ -41,6 +41,11 @@ Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark config
 
 `cache_benchmarks_garnet_wrapper.sh` adapts .NET Garnet CLI flags to the current Rust server.
 
+The wrapper maps `cache-benchmarks` `--memory` into
+`GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES` and `--index` into
+`GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS` automatically, so high-volume SET
+warmups do not hit tiny default capacities.
+
 ### Minimal run (single benchmark)
 
 ```bash
@@ -59,3 +64,7 @@ JSON
 ```
 
 `./bench` writes `bench.json` with `sets`/`gets` throughput and latency metrics.
+
+If capacity is too small you will now see:
+
+`-ERR storage capacity exceeded (increase max in-memory pages)`

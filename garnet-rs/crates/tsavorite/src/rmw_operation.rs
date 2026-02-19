@@ -5,6 +5,7 @@
 use crate::hybrid_log::{
     parse_key_span, parse_record_info, parse_record_layout, parse_value_span, write_record,
     LogAddressPointers, LogicalAddress, PageManager, PageManagerError, RecordFormatError,
+    RecordLayout,
 };
 use crate::{HashIndex, HashIndexError, ISessionFunctions, RecordInfo, RmwInfo};
 use garnet_common::SpanByteError;
@@ -325,8 +326,7 @@ fn append_record(
     value_bytes: &[u8],
     record_info: RecordInfo,
 ) -> Result<u64, RmwOperationError> {
-    let mut record = vec![0u8; 1024];
-    let layout = write_record(&mut record, record_info, key_bytes, value_bytes)?;
+    let layout = RecordLayout::for_payload_lengths(key_bytes.len(), value_bytes.len())?;
     let allocated_size = layout.allocated_size;
     if allocated_size > page_manager.page_size() {
         return Err(RmwOperationError::RecordTooLarge {
@@ -335,8 +335,10 @@ fn append_record(
         });
     }
 
+    let mut record = vec![0u8; allocated_size];
+    write_record(&mut record, record_info, key_bytes, value_bytes)?;
     let address = reserve_tail_space(page_manager, pointers, allocated_size)?;
-    page_manager.write_at(address, &record[..allocated_size])?;
+    page_manager.write_at(address, &record)?;
     Ok(address.raw())
 }
 

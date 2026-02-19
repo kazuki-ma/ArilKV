@@ -174,8 +174,9 @@ impl PageManager {
         Ok(Self {
             address_space: PageAddressSpace::new(page_size_bits)?,
             max_in_memory_pages,
-            pages: HashMap::with_capacity(max_in_memory_pages),
-            page_order: VecDeque::with_capacity(max_in_memory_pages),
+            // Keep startup allocation bounded even when callers set very large max pages.
+            pages: HashMap::with_capacity(max_in_memory_pages.min(4096)),
+            page_order: VecDeque::with_capacity(max_in_memory_pages.min(4096)),
         })
     }
 
