@@ -1233,6 +1233,37 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
         }
         reports
     }
+
+    pub async fn run_with_config_updates<F>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        mut updates: tokio::sync::mpsc::UnboundedReceiver<ClusterConfig>,
+        shutdown: F,
+    ) -> Vec<GossipRoundReport>
+    where
+        F: Future<Output = ()>,
+    {
+        let mut interval = tokio::time::interval(self.gossip_delay);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        let mut reports = Vec::new();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break,
+                _ = interval.tick() => {
+                    reports.push(self.engine.run_once().await);
+                }
+                update = updates.recv() => {
+                    if let Some(incoming) = update {
+                        let _ = config_store.merge_publish(&incoming);
+                    }
+                }
+            }
+        }
+        reports
+    }
 }
 
 fn sample_random_unique_indices(
@@ -2064,6 +2095,46 @@ mod tests {
             .await;
         assert!(reports.len() >= 2);
         assert!(reports.len() <= 3);
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_merges_incoming_config_updates() {
+        let base = base_config();
+        let worker2 = Worker::new("node-b", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (base, worker2_id) = base.add_worker(worker2).unwrap();
+        let worker3 = Worker::new("node-a", "10.0.0.3", 6381, WorkerRole::Primary);
+        let (base, worker3_id) = base.add_worker(worker3).unwrap();
+
+        let current = base
+            .set_worker_config_epoch(worker2_id, 1)
+            .unwrap()
+            .set_slot_state(303, worker2_id, SlotState::Stable)
+            .unwrap();
+        let incoming = base
+            .set_worker_config_epoch(worker3_id, 2)
+            .unwrap()
+            .set_slot_state(303, worker3_id, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(current);
+
+        let nodes = vec![GossipNode::new(1, 0)];
+        let coordinator = GossipCoordinator::new(nodes, 1);
+        let transport = AsyncMockTransport {
+            fail_on_worker: None,
+            calls: Vec::new(),
+        };
+        let engine = AsyncGossipEngine::new(coordinator, transport, 100, 0);
+        let mut manager = ClusterManager::new(engine, std::time::Duration::from_millis(5));
+
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        tx.send(incoming).unwrap();
+        drop(tx);
+
+        let reports = manager
+            .run_with_config_updates(&store, rx, tokio::time::sleep(std::time::Duration::from_millis(12)))
+            .await;
+        assert!(reports.len() >= 2);
+        assert_eq!(store.load().slot_assigned_owner(303).unwrap(), worker3_id);
     }
 
     #[test]
