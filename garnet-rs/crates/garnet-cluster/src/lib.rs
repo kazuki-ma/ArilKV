@@ -137,6 +137,14 @@ pub enum ClusterConfigError {
     MissingLocalWorker,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SlotRouteDecision {
+    Local,
+    Moved { slot: u16, worker_id: u16 },
+    Ask { slot: u16, worker_id: u16 },
+    Unbound { slot: u16 },
+}
+
 impl fmt::Display for ClusterConfigError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
@@ -206,6 +214,52 @@ impl ClusterConfig {
         Ok(self.slot(slot)?.is_local())
     }
 
+    pub fn route_for_slot(&self, slot: u16) -> Result<SlotRouteDecision, ClusterConfigError> {
+        let entry = self.slot(slot)?;
+        let assigned_owner = entry.assigned_worker_id();
+        let decision = match entry.state() {
+            SlotState::Stable => {
+                if entry.is_local() {
+                    SlotRouteDecision::Local
+                } else {
+                    SlotRouteDecision::Moved {
+                        slot,
+                        worker_id: assigned_owner,
+                    }
+                }
+            }
+            SlotState::Migrating | SlotState::Importing => {
+                if assigned_owner == LOCAL_WORKER_ID {
+                    SlotRouteDecision::Local
+                } else {
+                    SlotRouteDecision::Ask {
+                        slot,
+                        worker_id: assigned_owner,
+                    }
+                }
+            }
+            SlotState::Offline | SlotState::Fail | SlotState::Invalid => {
+                SlotRouteDecision::Unbound { slot }
+            }
+            SlotState::Node => {
+                if assigned_owner == LOCAL_WORKER_ID {
+                    SlotRouteDecision::Local
+                } else {
+                    SlotRouteDecision::Moved {
+                        slot,
+                        worker_id: assigned_owner,
+                    }
+                }
+            }
+        };
+        Ok(decision)
+    }
+
+    pub fn route_for_key(&self, key: &[u8]) -> Result<SlotRouteDecision, ClusterConfigError> {
+        let slot = redis_hash_slot(key);
+        self.route_for_slot(slot)
+    }
+
     pub fn set_slot_state(
         &self,
         slot: u16,
@@ -250,6 +304,36 @@ impl ClusterConfig {
         }
         Ok(slot_index)
     }
+}
+
+pub fn redis_hash_slot(key: &[u8]) -> u16 {
+    let hash_key = extract_hash_tag(key).unwrap_or(key);
+    crc16_xmodem(hash_key) % (HASH_SLOT_COUNT as u16)
+}
+
+fn extract_hash_tag(key: &[u8]) -> Option<&[u8]> {
+    let start = key.iter().position(|byte| *byte == b'{')?;
+    let tail = &key[start + 1..];
+    let end_offset = tail.iter().position(|byte| *byte == b'}')?;
+    if end_offset == 0 {
+        return None;
+    }
+    Some(&tail[..end_offset])
+}
+
+fn crc16_xmodem(input: &[u8]) -> u16 {
+    let mut crc = 0u16;
+    for byte in input {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            if (crc & 0x8000) != 0 {
+                crc = (crc << 1) ^ 0x1021;
+            } else {
+                crc <<= 1;
+            }
+        }
+    }
+    crc
 }
 
 #[derive(Debug)]
@@ -661,5 +745,66 @@ mod tests {
         assert!(report.attempted_worker_ids.contains(&20));
         assert!(report.failure_count >= 1);
         assert!(report.success_count >= 1);
+    }
+
+    #[test]
+    fn redis_hash_slot_uses_crc16_xmodem() {
+        assert_eq!(crc16_xmodem(b"123456789"), 0x31C3);
+        let slot = redis_hash_slot(b"123456789");
+        assert_eq!(slot, 12_739);
+    }
+
+    #[test]
+    fn redis_hash_slot_honors_hash_tags() {
+        let a = redis_hash_slot(b"{user1000}.following");
+        let b = redis_hash_slot(b"{user1000}.followers");
+        let c = redis_hash_slot(b"user1000.following");
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn stable_remote_slot_routes_to_moved() {
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let updated = with_remote
+            .set_slot_state(120, remote_id, SlotState::Stable)
+            .unwrap();
+        assert_eq!(
+            updated.route_for_slot(120).unwrap(),
+            SlotRouteDecision::Moved {
+                slot: 120,
+                worker_id: remote_id,
+            }
+        );
+    }
+
+    #[test]
+    fn migrating_remote_slot_routes_to_ask() {
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let updated = with_remote
+            .set_slot_state(121, remote_id, SlotState::Migrating)
+            .unwrap();
+        assert_eq!(
+            updated.route_for_slot(121).unwrap(),
+            SlotRouteDecision::Ask {
+                slot: 121,
+                worker_id: remote_id,
+            }
+        );
+    }
+
+    #[test]
+    fn local_stable_slot_routes_locally() {
+        let config = base_config()
+            .set_slot_state(122, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        assert_eq!(
+            config.route_for_slot(122).unwrap(),
+            SlotRouteDecision::Local
+        );
     }
 }
