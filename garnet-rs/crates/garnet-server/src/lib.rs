@@ -669,8 +669,8 @@ impl Drop for ConnectionLifecycle<'_> {
 mod tests {
     use super::*;
     use garnet_cluster::{
-        redis_hash_slot, ClusterConfig, ClusterConfigStore, SlotState, Worker, WorkerRole,
-        LOCAL_WORKER_ID,
+        redis_hash_slot, ClusterConfig, ClusterConfigStore, ReplicationManager, SlotState,
+        Worker, WorkerRole, LOCAL_WORKER_ID,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot;
@@ -1503,26 +1503,51 @@ mod tests {
         send_and_expect(&mut node2, &get_key1, moved_to_node1.as_bytes()).await;
         send_and_expect(&mut node3, &get_key1, moved_to_node1.as_bytes()).await;
 
-        let next1 = store1
+        let mut replication1 = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        let mut replication2 = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        let mut replication3 = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        replication1.record_replica_offset(node3_id_in_1, 1_950);
+        replication2.record_replica_offset(node3_id_in_2, 1_950);
+        replication3.record_replica_offset(LOCAL_WORKER_ID, 1_950);
+
+        let failover_input1 = store1
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot2, node3_id_in_1, SlotState::Stable)
+            .set_worker_replica_of(node3_id_in_1, "node-2")
             .unwrap();
+        let (plan1, next1) = replication1
+            .execute_failover(&failover_input1, "node-2")
+            .unwrap()
+            .expect("node-1 config should elect node-3");
+        assert_eq!(plan1.promoted_worker_id, node3_id_in_1);
         store1.publish(next1);
-        let next2 = store2
+
+        let failover_input2 = store2
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot2, node3_id_in_2, SlotState::Stable)
+            .set_worker_replica_of(node3_id_in_2, "node-2")
             .unwrap();
+        let (plan2, next2) = replication2
+            .execute_failover(&failover_input2, "node-2")
+            .unwrap()
+            .expect("node-2 config should elect node-3");
+        assert_eq!(plan2.promoted_worker_id, node3_id_in_2);
         store2.publish(next2);
-        let next3 = store3
+
+        let failover_input3 = store3
             .load()
             .as_ref()
             .clone()
-            .take_over_slots_from_primary(node2_id_in_3)
+            .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
             .unwrap();
+        let (plan3, next3) = replication3
+            .execute_failover(&failover_input3, "node-2")
+            .unwrap()
+            .expect("node-3 config should elect local node");
+        assert_eq!(plan3.failed_primary_worker_id, node2_id_in_3);
+        assert_eq!(plan3.promoted_worker_id, LOCAL_WORKER_ID);
         store3.publish(next3);
 
         let moved_to_node3_after_failover =

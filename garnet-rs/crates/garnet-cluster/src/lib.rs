@@ -337,6 +337,35 @@ impl ClusterConfig {
         Ok(next)
     }
 
+    pub fn set_worker_replica_of(
+        &self,
+        worker_id: u16,
+        primary_node_id: impl Into<String>,
+    ) -> Result<Self, ClusterConfigError> {
+        let mut next = self.clone();
+        let worker = next
+            .workers
+            .get_mut(worker_id as usize)
+            .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
+        worker.role = WorkerRole::Replica;
+        worker.replica_of_node_id = Some(primary_node_id.into());
+        Ok(next)
+    }
+
+    pub fn set_worker_replication_offset(
+        &self,
+        worker_id: u16,
+        replication_offset: u64,
+    ) -> Result<Self, ClusterConfigError> {
+        let mut next = self.clone();
+        let worker = next
+            .workers
+            .get_mut(worker_id as usize)
+            .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
+        worker.replication_offset = replication_offset;
+        Ok(next)
+    }
+
     pub fn add_worker(&self, mut worker: Worker) -> Result<(Self, u16), ClusterConfigError> {
         let worker_id = u16::try_from(self.workers.len())
             .map_err(|_| ClusterConfigError::WorkerCapacityExceeded)?;
@@ -367,6 +396,60 @@ impl ClusterConfig {
             .ok_or(ClusterConfigError::MissingLocalWorker)?;
         local.role = WorkerRole::Primary;
         local.replica_of_node_id = None;
+        Ok(next)
+    }
+
+    pub fn apply_failover_plan(&self, plan: &FailoverPlan) -> Result<Self, ClusterConfigError> {
+        if self.worker(plan.failed_primary_worker_id).is_none() {
+            return Err(ClusterConfigError::WorkerNotFound(
+                plan.failed_primary_worker_id,
+            ));
+        }
+        if self.worker(plan.promoted_worker_id).is_none() {
+            return Err(ClusterConfigError::WorkerNotFound(plan.promoted_worker_id));
+        }
+
+        let mut next = self.clone();
+        let failed_primary_node_id =
+            next.workers[plan.failed_primary_worker_id as usize].node_id.clone();
+        let promoted_node_id = next.workers[plan.promoted_worker_id as usize].node_id.clone();
+
+        for slot in next.slot_map.iter_mut() {
+            if slot.assigned_worker_id() == plan.failed_primary_worker_id {
+                *slot = HashSlot::new(plan.promoted_worker_id, SlotState::Stable);
+            }
+        }
+
+        let next_epoch = next
+            .workers
+            .iter()
+            .map(|worker| worker.config_epoch)
+            .max()
+            .unwrap_or(0)
+            .saturating_add(1);
+
+        for worker in next.workers.iter_mut() {
+            if worker.id == plan.promoted_worker_id {
+                worker.role = WorkerRole::Primary;
+                worker.replica_of_node_id = None;
+                worker.replication_offset = plan.promoted_replication_offset;
+                worker.config_epoch = next_epoch;
+                continue;
+            }
+
+            if worker.id == plan.failed_primary_worker_id {
+                worker.role = WorkerRole::Replica;
+                worker.replica_of_node_id = Some(promoted_node_id.clone());
+                continue;
+            }
+
+            if worker.role == WorkerRole::Replica
+                && worker.replica_of_node_id.as_deref() == Some(failed_primary_node_id.as_str())
+            {
+                worker.replica_of_node_id = Some(promoted_node_id.clone());
+            }
+        }
+
         Ok(next)
     }
 
@@ -569,6 +652,13 @@ pub struct ReplicationSyncPlan {
 pub struct ReplicaProgress {
     pub worker_id: u16,
     pub acknowledged_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailoverPlan {
+    pub failed_primary_worker_id: u16,
+    pub promoted_worker_id: u16,
+    pub promoted_replication_offset: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -885,6 +975,61 @@ impl ReplicationManager {
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         self.execute_sync_async(worker_id, self.replica_offset(worker_id), transport)
             .await
+    }
+
+    pub fn plan_failover(
+        &self,
+        config: &ClusterConfig,
+        failed_primary_node_id: &str,
+    ) -> Option<FailoverPlan> {
+        let failed_primary = config
+            .workers()
+            .iter()
+            .find(|worker| {
+                worker.role == WorkerRole::Primary && worker.node_id == failed_primary_node_id
+            })?;
+
+        let mut best: Option<(u64, u16)> = None;
+        for worker in config.workers().iter() {
+            if worker.role != WorkerRole::Replica {
+                continue;
+            }
+            if worker.replica_of_node_id.as_deref() != Some(failed_primary_node_id) {
+                continue;
+            }
+
+            let offset = self
+                .replica_offset(worker.id)
+                .unwrap_or(worker.replication_offset);
+            match best {
+                None => best = Some((offset, worker.id)),
+                Some((best_offset, best_worker_id)) => {
+                    if offset > best_offset || (offset == best_offset && worker.id < best_worker_id)
+                    {
+                        best = Some((offset, worker.id));
+                    }
+                }
+            }
+        }
+
+        let (promoted_replication_offset, promoted_worker_id) = best?;
+        Some(FailoverPlan {
+            failed_primary_worker_id: failed_primary.id,
+            promoted_worker_id,
+            promoted_replication_offset,
+        })
+    }
+
+    pub fn execute_failover(
+        &self,
+        config: &ClusterConfig,
+        failed_primary_node_id: &str,
+    ) -> Result<Option<(FailoverPlan, ClusterConfig)>, ClusterConfigError> {
+        let Some(plan) = self.plan_failover(config, failed_primary_node_id) else {
+            return Ok(None);
+        };
+        let updated = config.apply_failover_plan(&plan)?;
+        Ok(Some((plan, updated)))
     }
 }
 
@@ -1468,6 +1613,86 @@ mod tests {
     }
 
     #[test]
+    fn apply_failover_plan_reassigns_slots_and_updates_roles() {
+        let config = base_config();
+        let (config, failed_primary_id) = config
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+        let (config, promoted_replica_id) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, follower_replica_id) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.4",
+                6382,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(promoted_replica_id, "node-2")
+            .unwrap()
+            .set_worker_replica_of(follower_replica_id, "node-2")
+            .unwrap()
+            .set_worker_config_epoch(failed_primary_id, 3)
+            .unwrap()
+            .set_worker_config_epoch(promoted_replica_id, 2)
+            .unwrap()
+            .set_worker_config_epoch(follower_replica_id, 1)
+            .unwrap()
+            .set_slot_state(300, failed_primary_id, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(301, failed_primary_id, SlotState::Importing)
+            .unwrap()
+            .set_slot_state(302, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let updated = config
+            .apply_failover_plan(&FailoverPlan {
+                failed_primary_worker_id: failed_primary_id,
+                promoted_worker_id: promoted_replica_id,
+                promoted_replication_offset: 888,
+            })
+            .unwrap();
+
+        assert_eq!(updated.slot_assigned_owner(300).unwrap(), promoted_replica_id);
+        assert_eq!(updated.slot_assigned_owner(301).unwrap(), promoted_replica_id);
+        assert_eq!(updated.slot_state(300).unwrap(), SlotState::Stable);
+        assert_eq!(updated.slot_state(301).unwrap(), SlotState::Stable);
+        assert_eq!(updated.slot_assigned_owner(302).unwrap(), LOCAL_WORKER_ID);
+
+        let promoted = updated.worker(promoted_replica_id).unwrap();
+        assert_eq!(promoted.role, WorkerRole::Primary);
+        assert_eq!(promoted.replica_of_node_id, None);
+        assert_eq!(promoted.replication_offset, 888);
+        assert!(promoted.config_epoch > 3);
+
+        let failed = updated.worker(failed_primary_id).unwrap();
+        assert_eq!(failed.role, WorkerRole::Replica);
+        assert_eq!(failed.replica_of_node_id.as_deref(), Some("replica-a"));
+
+        let follower = updated.worker(follower_replica_id).unwrap();
+        assert_eq!(follower.role, WorkerRole::Replica);
+        assert_eq!(follower.replica_of_node_id.as_deref(), Some("replica-a"));
+    }
+
+    #[test]
+    fn apply_failover_plan_rejects_unknown_worker_ids() {
+        let config = base_config();
+        let result = config.apply_failover_plan(&FailoverPlan {
+            failed_primary_worker_id: 99,
+            promoted_worker_id: LOCAL_WORKER_ID,
+            promoted_replication_offset: 0,
+        });
+        assert!(matches!(result, Err(ClusterConfigError::WorkerNotFound(99))));
+    }
+
+    #[test]
     fn config_store_publish_keeps_snapshot_isolation() {
         let config = base_config();
         let store = ClusterConfigStore::new(config.clone());
@@ -1997,6 +2222,179 @@ mod tests {
             })
         );
         assert_eq!(manager.replica_offset(9), Some(2_100));
+    }
+
+    #[test]
+    fn failover_plan_selects_replica_with_highest_runtime_offset() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap();
+
+        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        manager.record_replica_offset(replica_a, 150);
+        manager.record_replica_offset(replica_b, 180);
+
+        let plan = manager.plan_failover(&config, "local-node").unwrap();
+        assert_eq!(plan.failed_primary_worker_id, LOCAL_WORKER_ID);
+        assert_eq!(plan.promoted_worker_id, replica_b);
+        assert_eq!(plan.promoted_replication_offset, 180);
+    }
+
+    #[test]
+    fn failover_plan_breaks_offset_ties_by_smallest_worker_id() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap();
+
+        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        manager.record_replica_offset(replica_a, 190);
+        manager.record_replica_offset(replica_b, 190);
+
+        let plan = manager.plan_failover(&config, "local-node").unwrap();
+        assert_eq!(plan.promoted_worker_id, replica_a);
+        assert_eq!(plan.promoted_replication_offset, 190);
+    }
+
+    #[test]
+    fn failover_plan_uses_config_replication_offset_when_runtime_offset_missing() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replication_offset(replica_a, 777)
+            .unwrap();
+
+        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let plan = manager.plan_failover(&config, "local-node").unwrap();
+        assert_eq!(plan.promoted_worker_id, replica_a);
+        assert_eq!(plan.promoted_replication_offset, 777);
+    }
+
+    #[test]
+    fn failover_plan_returns_none_without_eligible_replicas() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "some-other-primary")
+            .unwrap();
+        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+
+        assert!(manager.plan_failover(&config, "local-node").is_none());
+        assert!(manager.plan_failover(&config, "unknown-primary").is_none());
+    }
+
+    #[test]
+    fn execute_failover_applies_selected_plan_to_config() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap()
+            .set_slot_state(450, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        manager.record_replica_offset(replica_a, 170);
+        manager.record_replica_offset(replica_b, 190);
+
+        let (plan, updated) = manager
+            .execute_failover(&config, "local-node")
+            .unwrap()
+            .expect("failover should be elected");
+
+        assert_eq!(plan.promoted_worker_id, replica_b);
+        assert_eq!(updated.slot_assigned_owner(450).unwrap(), replica_b);
+        assert_eq!(updated.slot_state(450).unwrap(), SlotState::Stable);
+        assert_eq!(updated.worker(replica_b).unwrap().role, WorkerRole::Primary);
+        assert_eq!(updated.worker(replica_b).unwrap().replica_of_node_id, None);
+        assert_eq!(updated.worker(replica_b).unwrap().replication_offset, 190);
+        assert_eq!(updated.worker(LOCAL_WORKER_ID).unwrap().role, WorkerRole::Replica);
+        assert_eq!(
+            updated
+                .worker(LOCAL_WORKER_ID)
+                .unwrap()
+                .replica_of_node_id
+                .as_deref(),
+            Some("replica-b")
+        );
+    }
+
+    #[test]
+    fn execute_failover_returns_none_when_no_candidate_exists() {
+        let config = base_config();
+        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let outcome = manager.execute_failover(&config, "local-node").unwrap();
+        assert!(outcome.is_none());
     }
 
     #[test]
