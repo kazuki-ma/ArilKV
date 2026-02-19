@@ -508,7 +508,7 @@ fn cluster_error_for_command(
     asking_allowed: bool,
 ) -> io::Result<(Option<String>, bool)> {
     if args.len() < 2 {
-        return Ok((None, false));
+        return Ok((None, asking_allowed));
     }
 
     match command {
@@ -576,7 +576,7 @@ fn cluster_error_for_command(
                     | CommandId::Zscore
             );
             if !uses_first_key {
-                return Ok((None, false));
+                return Ok((None, asking_allowed));
             }
 
             // SAFETY: argument slices reference the current request frame.
@@ -589,7 +589,7 @@ fn cluster_error_for_command(
                     format!("cluster error: {cluster_error}"),
                 )
             })?;
-            Ok((error, true))
+            Ok((error, asking_allowed))
         }
     }
 }
@@ -1237,6 +1237,14 @@ mod tests {
             &mut client,
             b"*3\r\n$5\r\nWATCH\r\n$7\r\nlocal-k\r\n$8\r\nremote-k\r\n",
             b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$6\r\nASKING\r\n", b"+OK\r\n").await;
+        send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$5\r\nask-k\r\n",
+            expected_ask.as_bytes(),
         )
         .await;
         send_and_expect(&mut client, b"*1\r\n$6\r\nASKING\r\n", b"+OK\r\n").await;
