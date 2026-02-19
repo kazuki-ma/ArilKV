@@ -554,6 +554,52 @@ impl GossipCoordinator {
     }
 }
 
+#[derive(Debug)]
+pub struct GossipEngine<T: GossipTransport> {
+    coordinator: GossipCoordinator,
+    transport: T,
+    sample_percent: usize,
+    tick: u64,
+}
+
+impl<T: GossipTransport> GossipEngine<T> {
+    pub fn new(
+        coordinator: GossipCoordinator,
+        transport: T,
+        sample_percent: usize,
+        initial_tick: u64,
+    ) -> Self {
+        Self {
+            coordinator,
+            transport,
+            sample_percent,
+            tick: initial_tick,
+        }
+    }
+
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    pub fn coordinator(&self) -> &GossipCoordinator {
+        &self.coordinator
+    }
+
+    pub fn run_once(&mut self) -> GossipRoundReport {
+        self.tick = self.tick.saturating_add(1);
+        self.coordinator
+            .run_round(self.sample_percent, self.tick, &mut self.transport)
+    }
+
+    pub fn run_for_rounds(&mut self, rounds: usize) -> Vec<GossipRoundReport> {
+        (0..rounds).map(|_| self.run_once()).collect()
+    }
+
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+}
+
 fn sample_random_unique_indices(
     node_count: usize,
     max_count: usize,
@@ -743,12 +789,14 @@ mod tests {
     #[derive(Default)]
     struct MockTransport {
         fail_on_worker: Option<u16>,
+        calls: Vec<u16>,
     }
 
     impl GossipTransport for MockTransport {
         type Error = ();
 
         fn try_gossip(&mut self, worker_id: u16) -> Result<(), Self::Error> {
+            self.calls.push(worker_id);
             if self.fail_on_worker == Some(worker_id) {
                 Err(())
             } else {
@@ -778,12 +826,44 @@ mod tests {
         let mut coordinator = GossipCoordinator::new(nodes, 3);
         let mut transport = MockTransport {
             fail_on_worker: Some(20),
+            calls: Vec::new(),
         };
 
         let report = coordinator.run_round(100, 100, &mut transport);
         assert!(report.attempted_worker_ids.contains(&20));
         assert!(report.failure_count >= 1);
         assert!(report.success_count >= 1);
+    }
+
+    #[test]
+    fn gossip_engine_advances_tick_and_runs_rounds() {
+        let nodes = vec![GossipNode::new(1, 0), GossipNode::new(2, 0)];
+        let coordinator = GossipCoordinator::new(nodes, 2);
+        let transport = MockTransport {
+            fail_on_worker: None,
+            calls: Vec::new(),
+        };
+        let mut engine = GossipEngine::new(coordinator, transport, 100, 10);
+
+        let reports = engine.run_for_rounds(2);
+        assert_eq!(engine.tick(), 12);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].failure_count, 0);
+        assert_eq!(reports[1].failure_count, 0);
+    }
+
+    #[test]
+    fn gossip_engine_exposes_transport_state_after_round() {
+        let nodes = vec![GossipNode::new(1, 0)];
+        let coordinator = GossipCoordinator::new(nodes, 1);
+        let transport = MockTransport {
+            fail_on_worker: None,
+            calls: Vec::new(),
+        };
+        let mut engine = GossipEngine::new(coordinator, transport, 100, 0);
+        let _ = engine.run_once();
+
+        assert_eq!(engine.transport().calls, vec![1]);
     }
 
     #[test]

@@ -180,10 +180,10 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 10.1 | Implement cluster config — 16384 hash slots, immutable copy-on-write config | DONE | 6.6 | Added `garnet-cluster` cluster-config primitives: 16,384-slot map, 3-byte `HashSlot` representation (`[u16 worker_id | u8 state]`), worker table with reserved/local IDs, copy-on-write mutation APIs (`set_slot_state`, `add_worker`, `set_local_worker_role`), and snapshot-safe publish/load wrapper (`ClusterConfigStore`). |
-| 10.2 | Implement gossip protocol — failure-budget sampling | IN_PROGRESS | 10.1 | Added `garnet-cluster` sampling core + `GossipCoordinator` wrapper with pluggable transport (`GossipTransport`) and deterministic randomized sampling helper. Failure-budget behavior and coordinator transport-result handling are unit-tested; async cluster-manager/network integration is pending. |
+| 10.2 | Implement gossip protocol — failure-budget sampling | IN_PROGRESS | 10.1 | Added `garnet-cluster` sampling core + `GossipCoordinator` wrapper with pluggable transport (`GossipTransport`) and deterministic randomized sampling helper. Added `GossipEngine` stateful round runner (tick progression + transport ownership) with unit coverage; async cluster-manager/network integration is pending. |
 | 10.3 | Implement replication — primary-replica sync via checkpoint + AOF | TODO | 8.4, 10.1 | See doc 13 + 14. Full sync = send checkpoint + AOF tail. Incremental = stream AOF. |
 | 10.4 | Implement slot migration — MOVED/ASK redirections | IN_PROGRESS | 10.1 | Added key→slot hashing (`CRC16/XMODEM` with hash-tag handling), slot-route decision helpers (`Local`/`Moved`/`Ask`/`Unbound`), RESP-ready redirection string helpers, and `garnet-server` cluster-routing hooks (`run_with_cluster`, `run_with_shutdown_and_cluster_config`, `run_listener_with_shutdown_and_cluster`) that return MOVED/ASK/CLUSTERDOWN before command execution. Added CROSSSLOT validation for multi-key DEL/WATCH and ASKING one-shot bypass for ASK routes, plus cluster-aware transaction slot consistency checks (`CROSSSLOT` during queueing -> `EXECABORT` on EXEC). |
-| 10.5 | Integration test: multi-node cluster | TODO | 10.1-10.4 | Start 3 nodes, verify slot routing, test failover. |
+| 10.5 | Integration test: multi-node cluster | IN_PROGRESS | 10.1-10.4 | Added a 3-node `garnet-server` integration test that verifies cross-node MOVED routing and simulated failover redirection updates via runtime cluster-config publish. Automatic failover election and replication-integrated ownership transfer remain TODO. |
 
 ---
 
@@ -261,6 +261,8 @@
 | 2026-02-19 | Implement ASKING as a one-shot bypass for ASK routes in cluster pre-dispatch validation. | Aligns server behavior with Redis cluster migration flow where clients issue ASKING before retrying an ASK-redirection command on the target node. |
 | 2026-02-19 | Enforce single-slot consistency across queued commands in MULTI when cluster routing is enabled. | Prevents cross-slot transactions from executing by marking the transaction aborted on conflicting queued slots and returning `EXECABORT` on EXEC. |
 | 2026-02-19 | Expand cluster-routing integration tests to include `WATCH CROSSSLOT` and `CLUSTERDOWN` (unbound slot) paths. | Improves confidence that slot-routing behavior handles non-local key edge cases beyond basic MOVED/ASK happy paths. |
+| 2026-02-19 | Add `GossipEngine` as a stateful wrapper around `GossipCoordinator` + transport. | Provides a reusable per-node gossip runner that tracks logical ticks and round execution state before async network loop wiring. |
+| 2026-02-19 | Validate multi-node routing/failover behavior with per-node cluster-config snapshots and runtime config publish updates. | Exercises realistic 3-node MOVED semantics and ownership changes without blocking on full election/replication implementation. |
 
 ---
 
@@ -350,3 +352,5 @@
 | 72 | 2026-02-19 | 10.4 | IN_PROGRESS | Added `ASKING` command dispatch and one-shot ASK bypass in server cluster routing checks, with integration coverage for ASK reply, ASKING retry success, and reset-on-next-command behavior. |
 | 73 | 2026-02-19 | 10.4 | IN_PROGRESS | Added cluster-aware MULTI slot consistency checks: conflicting queued key slots now return `CROSSSLOT` during queueing and `EXECABORT` at EXEC, with integration test coverage. |
 | 74 | 2026-02-19 | 10.4 | IN_PROGRESS | Extended cluster integration coverage with WATCH multi-key CROSSSLOT rejection and unbound-slot CLUSTERDOWN response paths. |
+| 75 | 2026-02-19 | 10.2 | IN_PROGRESS | Added `GossipEngine` (stateful ticked round runner over coordinator+transport) and unit tests for tick advancement and transport-call visibility across rounds. |
+| 76 | 2026-02-19 | 10.5 | IN_PROGRESS | Added a 3-node cluster integration test that validates MOVED routing across nodes and failover-like slot-owner redirection changes after runtime config publish. |

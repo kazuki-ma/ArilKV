@@ -1301,6 +1301,249 @@ mod tests {
         server.await.unwrap();
     }
 
+    #[tokio::test]
+    async fn cluster_multi_node_slot_routing_and_failover_updates_redirections() {
+        let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+        let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr2 = listener2.local_addr().unwrap();
+        let listener3 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr3 = listener3.local_addr().unwrap();
+
+        let key1 = b"node1-key".to_vec();
+        let slot1 = redis_hash_slot(&key1);
+        let mut key2 = b"node2-key".to_vec();
+        let mut slot2 = redis_hash_slot(&key2);
+        while slot2 == slot1 {
+            key2.push(b'x');
+            slot2 = redis_hash_slot(&key2);
+        }
+        let mut key3 = b"node3-key".to_vec();
+        let mut slot3 = redis_hash_slot(&key3);
+        while slot3 == slot1 || slot3 == slot2 {
+            key3.push(b'x');
+            slot3 = redis_hash_slot(&key3);
+        }
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", addr1.port());
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                addr2.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1;
+        let (next1, node3_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-3",
+                "127.0.0.1",
+                addr3.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1;
+        config1 = config1
+            .set_slot_state(slot1, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        config1 = config1
+            .set_slot_state(slot2, node2_id_in_1, SlotState::Stable)
+            .unwrap();
+        config1 = config1
+            .set_slot_state(slot3, node3_id_in_1, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", addr2.port());
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                addr1.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2;
+        let (next2, node3_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-3",
+                "127.0.0.1",
+                addr3.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2;
+        config2 = config2
+            .set_slot_state(slot1, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+        config2 = config2
+            .set_slot_state(slot2, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        config2 = config2
+            .set_slot_state(slot3, node3_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let mut config3 = ClusterConfig::new_local("node-3", "127.0.0.1", addr3.port());
+        let (next3, node1_id_in_3) = config3
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                addr1.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config3 = next3;
+        let (next3, node2_id_in_3) = config3
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                addr2.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config3 = next3;
+        config3 = config3
+            .set_slot_state(slot1, node1_id_in_3, SlotState::Stable)
+            .unwrap();
+        config3 = config3
+            .set_slot_state(slot2, node2_id_in_3, SlotState::Stable)
+            .unwrap();
+        config3 = config3
+            .set_slot_state(slot3, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store2 = Arc::new(ClusterConfigStore::new(config2));
+        let store3 = Arc::new(ClusterConfigStore::new(config3));
+
+        let (shutdown1_tx, shutdown1_rx) = oneshot::channel::<()>();
+        let (shutdown2_tx, shutdown2_rx) = oneshot::channel::<()>();
+        let (shutdown3_tx, shutdown3_rx) = oneshot::channel::<()>();
+
+        let server1_metrics = Arc::new(ServerMetrics::default());
+        let server1_cluster = Arc::clone(&store1);
+        let server1 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                listener1,
+                1024,
+                server1_metrics,
+                async move {
+                    let _ = shutdown1_rx.await;
+                },
+                Some(server1_cluster),
+            )
+            .await
+            .unwrap();
+        });
+
+        let server2_metrics = Arc::new(ServerMetrics::default());
+        let server2_cluster = Arc::clone(&store2);
+        let server2 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                listener2,
+                1024,
+                server2_metrics,
+                async move {
+                    let _ = shutdown2_rx.await;
+                },
+                Some(server2_cluster),
+            )
+            .await
+            .unwrap();
+        });
+
+        let server3_metrics = Arc::new(ServerMetrics::default());
+        let server3_cluster = Arc::clone(&store3);
+        let server3 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                listener3,
+                1024,
+                server3_metrics,
+                async move {
+                    let _ = shutdown3_rx.await;
+                },
+                Some(server3_cluster),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut node1 = TcpStream::connect(addr1).await.unwrap();
+        let mut node2 = TcpStream::connect(addr2).await.unwrap();
+        let mut node3 = TcpStream::connect(addr3).await.unwrap();
+
+        let set_key1 = encode_resp_command(&[b"SET", &key1, b"v1"]);
+        let get_key1 = encode_resp_command(&[b"GET", &key1]);
+        let set_key2 = encode_resp_command(&[b"SET", &key2, b"v2"]);
+        let get_key2 = encode_resp_command(&[b"GET", &key2]);
+        let set_key3 = encode_resp_command(&[b"SET", &key3, b"v3"]);
+        let get_key3 = encode_resp_command(&[b"GET", &key3]);
+
+        send_and_expect(&mut node1, &set_key1, b"+OK\r\n").await;
+        send_and_expect(&mut node1, &get_key1, b"$2\r\nv1\r\n").await;
+        send_and_expect(&mut node2, &set_key2, b"+OK\r\n").await;
+        send_and_expect(&mut node2, &get_key2, b"$2\r\nv2\r\n").await;
+        send_and_expect(&mut node3, &set_key3, b"+OK\r\n").await;
+        send_and_expect(&mut node3, &get_key3, b"$2\r\nv3\r\n").await;
+
+        let moved_to_node1 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot1, addr1.port());
+        let moved_to_node2 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot2, addr2.port());
+        let moved_to_node3 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot3, addr3.port());
+
+        send_and_expect(&mut node1, &get_key2, moved_to_node2.as_bytes()).await;
+        send_and_expect(&mut node1, &get_key3, moved_to_node3.as_bytes()).await;
+        send_and_expect(&mut node2, &get_key1, moved_to_node1.as_bytes()).await;
+        send_and_expect(&mut node3, &get_key1, moved_to_node1.as_bytes()).await;
+
+        let next1 = store1
+            .load()
+            .as_ref()
+            .clone()
+            .set_slot_state(slot2, node3_id_in_1, SlotState::Stable)
+            .unwrap();
+        store1.publish(next1);
+        let next2 = store2
+            .load()
+            .as_ref()
+            .clone()
+            .set_slot_state(slot2, node3_id_in_2, SlotState::Stable)
+            .unwrap();
+        store2.publish(next2);
+        let next3 = store3
+            .load()
+            .as_ref()
+            .clone()
+            .set_slot_state(slot2, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        store3.publish(next3);
+
+        let moved_to_node3_after_failover =
+            format!("-MOVED {} 127.0.0.1:{}\r\n", slot2, addr3.port());
+        send_and_expect(
+            &mut node1,
+            &get_key2,
+            moved_to_node3_after_failover.as_bytes(),
+        )
+        .await;
+        send_and_expect(
+            &mut node2,
+            &get_key2,
+            moved_to_node3_after_failover.as_bytes(),
+        )
+        .await;
+        send_and_expect(&mut node3, &get_key2, b"$-1\r\n").await;
+        let set_key2_failover = encode_resp_command(&[b"SET", &key2, b"v2f"]);
+        send_and_expect(&mut node3, &set_key2_failover, b"+OK\r\n").await;
+        send_and_expect(&mut node3, &get_key2, b"$3\r\nv2f\r\n").await;
+
+        let _ = shutdown1_tx.send(());
+        let _ = shutdown2_tx.send(());
+        let _ = shutdown3_tx.send(());
+        server1.await.unwrap();
+        server2.await.unwrap();
+        server3.await.unwrap();
+    }
+
     async fn wait_until<P>(mut predicate: P, timeout: Duration)
     where
         P: FnMut() -> bool,
@@ -1323,5 +1566,16 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(actual, expected_response);
+    }
+
+    fn encode_resp_command(parts: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+        for part in parts {
+            out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+            out.extend_from_slice(part);
+            out.extend_from_slice(b"\r\n");
+        }
+        out
     }
 }
