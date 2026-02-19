@@ -22,6 +22,7 @@ use garnet_cluster::{
     redis_hash_slot, ClusterConfigError, ClusterConfigStore, SlotRouteDecision, LOCAL_WORKER_ID,
 };
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
+use std::collections::VecDeque;
 use std::future::Future;
 use std::io;
 use std::net::SocketAddr;
@@ -126,6 +127,20 @@ pub struct LiveSlotMigrationRunReport {
     pub batches: usize,
     pub moved_keys: usize,
     pub finalized: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LiveSlotMigrationSlotReport {
+    pub slot: u16,
+    pub batches: usize,
+    pub moved_keys: usize,
+    pub finalized: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveSlotMigrationsRunReport {
+    pub slots: Vec<LiveSlotMigrationSlotReport>,
+    pub interrupted: bool,
 }
 
 fn resolve_migration_peer_ids(
@@ -291,6 +306,92 @@ where
             }
         }
     }
+}
+
+pub async fn run_live_slot_migrations_until_complete<F>(
+    source_store: &ClusterConfigStore,
+    target_store: &ClusterConfigStore,
+    source_processor: &RequestProcessor,
+    target_processor: &RequestProcessor,
+    slots: &[u16],
+    max_keys_per_step: usize,
+    step_interval: std::time::Duration,
+    shutdown: F,
+) -> Result<LiveSlotMigrationsRunReport, LiveSlotMigrationError>
+where
+    F: Future<Output = ()>,
+{
+    let mut unique_slots = Vec::new();
+    for slot in slots {
+        if !unique_slots.contains(slot) {
+            unique_slots.push(*slot);
+        }
+    }
+
+    let mut reports: Vec<LiveSlotMigrationSlotReport> = unique_slots
+        .iter()
+        .map(|slot| LiveSlotMigrationSlotReport {
+            slot: *slot,
+            batches: 0,
+            moved_keys: 0,
+            finalized: false,
+        })
+        .collect();
+    if reports.is_empty() {
+        return Ok(LiveSlotMigrationsRunReport {
+            slots: reports,
+            interrupted: false,
+        });
+    }
+    if max_keys_per_step == 0 {
+        return Ok(LiveSlotMigrationsRunReport {
+            slots: reports,
+            interrupted: true,
+        });
+    }
+
+    let mut pending_indices: VecDeque<usize> = (0..reports.len()).collect();
+    let mut interval = tokio::time::interval(step_interval);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(shutdown);
+
+    while !pending_indices.is_empty() {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => {
+                return Ok(LiveSlotMigrationsRunReport {
+                    slots: reports,
+                    interrupted: true,
+                });
+            }
+            _ = interval.tick() => {
+                let report_index = pending_indices
+                    .pop_front()
+                    .expect("pending queue must be non-empty while loop is active");
+                let slot = reports[report_index].slot;
+                let step = execute_live_slot_migration_step(
+                    source_store,
+                    target_store,
+                    source_processor,
+                    target_processor,
+                    slot,
+                    max_keys_per_step,
+                )?;
+                let report = &mut reports[report_index];
+                report.batches += 1;
+                report.moved_keys += step.moved_keys;
+                report.finalized = step.finalized;
+                if !step.finalized {
+                    pending_indices.push_back(report_index);
+                }
+            }
+        }
+    }
+
+    Ok(LiveSlotMigrationsRunReport {
+        slots: reports,
+        interrupted: false,
+    })
 }
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
@@ -2665,6 +2766,215 @@ mod tests {
                 moved_keys: 0,
                 finalized: false,
             }
+        );
+        let get = encode_resp_command(&[b"GET", &key]);
+        assert_eq!(execute_processor_frame(&source, &get), b"$5\r\nvalue\r\n");
+        assert_eq!(execute_processor_frame(&target, &get), b"$-1\r\n");
+        assert_eq!(store1.load().slot_state(slot).unwrap(), SlotState::Stable);
+        assert_eq!(
+            store1.load().slot_assigned_owner(slot).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(store2.load().slot_state(slot).unwrap(), SlotState::Stable);
+        assert_eq!(
+            store2.load().slot_assigned_owner(slot).unwrap(),
+            node1_id_in_2
+        );
+    }
+
+    #[tokio::test]
+    async fn run_live_slot_migrations_until_complete_round_robins_slots() {
+        let key_a1 = b"{multi-a}one".to_vec();
+        let key_a2 = b"{multi-a}two".to_vec();
+        let slot_a = redis_hash_slot(&key_a1);
+        let mut key_b1 = b"{multi-b}one".to_vec();
+        while redis_hash_slot(&key_b1) == slot_a {
+            key_b1.push(b'x');
+        }
+        let key_b2 = [key_b1.as_slice(), b"-two".as_slice()].concat();
+        let slot_b = redis_hash_slot(&key_b1);
+        assert_ne!(slot_a, slot_b);
+        assert_eq!(slot_a, redis_hash_slot(&key_a2));
+        assert_eq!(slot_b, redis_hash_slot(&key_b2));
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 7501);
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                7502,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot_a, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(slot_b, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 7502);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                7501,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot_a, node1_id_in_2, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(slot_b, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        let set_a1 = encode_resp_command(&[b"SET", &key_a1, b"a1"]);
+        let set_a2 = encode_resp_command(&[b"SET", &key_a2, b"a2"]);
+        let set_b1 = encode_resp_command(&[b"SET", &key_b1, b"b1"]);
+        let set_b2 = encode_resp_command(&[b"SET", &key_b2, b"b2"]);
+        assert_eq!(execute_processor_frame(&source, &set_a1), b"+OK\r\n");
+        assert_eq!(execute_processor_frame(&source, &set_a2), b"+OK\r\n");
+        assert_eq!(execute_processor_frame(&source, &set_b1), b"+OK\r\n");
+        assert_eq!(execute_processor_frame(&source, &set_b2), b"+OK\r\n");
+
+        let report = run_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            &[slot_a, slot_b],
+            1,
+            Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap();
+
+        assert!(!report.interrupted);
+        assert_eq!(report.slots.len(), 2);
+        let report_a = report
+            .slots
+            .iter()
+            .find(|slot_report| slot_report.slot == slot_a)
+            .unwrap();
+        let report_b = report
+            .slots
+            .iter()
+            .find(|slot_report| slot_report.slot == slot_b)
+            .unwrap();
+        assert_eq!(
+            *report_a,
+            LiveSlotMigrationSlotReport {
+                slot: slot_a,
+                batches: 2,
+                moved_keys: 2,
+                finalized: true,
+            }
+        );
+        assert_eq!(
+            *report_b,
+            LiveSlotMigrationSlotReport {
+                slot: slot_b,
+                batches: 2,
+                moved_keys: 2,
+                finalized: true,
+            }
+        );
+
+        let get_a1 = encode_resp_command(&[b"GET", &key_a1]);
+        let get_a2 = encode_resp_command(&[b"GET", &key_a2]);
+        let get_b1 = encode_resp_command(&[b"GET", &key_b1]);
+        let get_b2 = encode_resp_command(&[b"GET", &key_b2]);
+        assert_eq!(execute_processor_frame(&source, &get_a1), b"$-1\r\n");
+        assert_eq!(execute_processor_frame(&source, &get_a2), b"$-1\r\n");
+        assert_eq!(execute_processor_frame(&source, &get_b1), b"$-1\r\n");
+        assert_eq!(execute_processor_frame(&source, &get_b2), b"$-1\r\n");
+        assert_eq!(execute_processor_frame(&target, &get_a1), b"$2\r\na1\r\n");
+        assert_eq!(execute_processor_frame(&target, &get_a2), b"$2\r\na2\r\n");
+        assert_eq!(execute_processor_frame(&target, &get_b1), b"$2\r\nb1\r\n");
+        assert_eq!(execute_processor_frame(&target, &get_b2), b"$2\r\nb2\r\n");
+        assert_eq!(
+            store1.load().slot_assigned_owner(slot_a).unwrap(),
+            node2_id_in_1
+        );
+        assert_eq!(
+            store1.load().slot_assigned_owner(slot_b).unwrap(),
+            node2_id_in_1
+        );
+        assert_eq!(
+            store2.load().slot_assigned_owner(slot_a).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(
+            store2.load().slot_assigned_owner(slot_b).unwrap(),
+            LOCAL_WORKER_ID
+        );
+    }
+
+    #[tokio::test]
+    async fn run_live_slot_migrations_until_complete_honors_shutdown() {
+        let key = b"{multi-shutdown}k".to_vec();
+        let slot = redis_hash_slot(&key);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 7601);
+        let (next1, _node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                7602,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 7602);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                7601,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        let set = encode_resp_command(&[b"SET", &key, b"value"]);
+        assert_eq!(execute_processor_frame(&source, &set), b"+OK\r\n");
+
+        let report = run_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            &[slot],
+            1,
+            Duration::from_millis(1),
+            std::future::ready(()),
+        )
+        .await
+        .unwrap();
+        assert!(report.interrupted);
+        assert_eq!(
+            report.slots,
+            vec![LiveSlotMigrationSlotReport {
+                slot,
+                batches: 0,
+                moved_keys: 0,
+                finalized: false,
+            }]
         );
         let get = encode_resp_command(&[b"GET", &key]);
         assert_eq!(execute_processor_frame(&source, &get), b"$5\r\nvalue\r\n");
