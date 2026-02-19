@@ -15,6 +15,7 @@ pub use limited_fixed_buffer_pool::{
 };
 pub use request_lifecycle::{RequestExecutionError, RequestProcessor, RequestProcessorInitError};
 
+use garnet_cluster::ClusterConfigStore;
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
 use std::future::Future;
 use std::io;
@@ -97,6 +98,20 @@ pub async fn run_listener_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    run_listener_with_shutdown_and_cluster(listener, read_buffer_size, metrics, shutdown, None)
+        .await
+}
+
+pub async fn run_listener_with_shutdown_and_cluster<F>(
+    listener: TcpListener,
+    read_buffer_size: usize,
+    metrics: Arc<ServerMetrics>,
+    shutdown: F,
+    cluster_config: Option<Arc<ClusterConfigStore>>,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+{
     let processor = Arc::new(RequestProcessor::new().map_err(|err| {
         io::Error::new(
             io::ErrorKind::Other,
@@ -127,10 +142,17 @@ where
 
                 let task_metrics = Arc::clone(&metrics);
                 let task_processor = Arc::clone(&processor);
+                let task_cluster = cluster_config.clone();
                 tasks.spawn(async move {
                     let _ =
-                        handle_connection(stream, read_buffer_size, task_metrics, task_processor)
-                            .await;
+                        handle_connection(
+                            stream,
+                            read_buffer_size,
+                            task_metrics,
+                            task_processor,
+                            task_cluster,
+                        )
+                        .await;
                 });
             }
         }
@@ -148,6 +170,7 @@ async fn handle_connection(
     read_buffer_size: usize,
     metrics: Arc<ServerMetrics>,
     processor: Arc<RequestProcessor>,
+    cluster_config: Option<Arc<ClusterConfigStore>>,
 ) -> io::Result<()> {
     let _lifecycle = ConnectionLifecycle { metrics: &metrics };
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
@@ -176,6 +199,25 @@ async fn handle_connection(
                     let frame_end = consumed + meta.bytes_consumed;
                     // SAFETY: `args` refers to the still-live `receive_buffer` backing bytes.
                     let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                    if let (Some(cluster_store), Some(key)) = (
+                        cluster_config.as_ref(),
+                        command_primary_key(&args[..meta.argument_count], command),
+                    ) {
+                        if let Some(redirection_error) = cluster_store
+                            .load()
+                            .redirection_error_for_key(key)
+                            .map_err(|error| {
+                                io::Error::new(
+                                    io::ErrorKind::Other,
+                                    format!("cluster error: {error}"),
+                                )
+                            })?
+                        {
+                            append_error_line(&mut responses, redirection_error.as_bytes());
+                            consumed += meta.bytes_consumed;
+                            continue;
+                        }
+                    }
                     if transaction.in_multi {
                         match command {
                             CommandId::Exec => {
@@ -371,6 +413,54 @@ fn append_simple_string(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(b"\r\n");
 }
 
+fn append_error_line(output: &mut Vec<u8>, value: &[u8]) {
+    output.push(b'-');
+    output.extend_from_slice(value);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn command_primary_key<'a>(args: &'a [ArgSlice], command: CommandId) -> Option<&'a [u8]> {
+    if args.len() < 2 {
+        return None;
+    }
+    let uses_first_key = matches!(
+        command,
+        CommandId::Get
+            | CommandId::Set
+            | CommandId::Del
+            | CommandId::Incr
+            | CommandId::Decr
+            | CommandId::Expire
+            | CommandId::Ttl
+            | CommandId::Pexpire
+            | CommandId::Pttl
+            | CommandId::Persist
+            | CommandId::Hset
+            | CommandId::Hget
+            | CommandId::Hdel
+            | CommandId::Hgetall
+            | CommandId::Lpush
+            | CommandId::Rpush
+            | CommandId::Lpop
+            | CommandId::Rpop
+            | CommandId::Lrange
+            | CommandId::Sadd
+            | CommandId::Srem
+            | CommandId::Smembers
+            | CommandId::Sismember
+            | CommandId::Zadd
+            | CommandId::Zrem
+            | CommandId::Zrange
+            | CommandId::Zscore
+            | CommandId::Watch
+    );
+    if !uses_first_key {
+        return None;
+    }
+    // SAFETY: caller ensures argument references are valid during frame processing.
+    Some(unsafe { args[1].as_slice() })
+}
+
 struct ConnectionLifecycle<'a> {
     metrics: &'a ServerMetrics,
 }
@@ -389,6 +479,10 @@ impl Drop for ConnectionLifecycle<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use garnet_cluster::{
+        redis_hash_slot, ClusterConfig, ClusterConfigStore, SlotState, Worker, WorkerRole,
+        LOCAL_WORKER_ID,
+    };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot;
     use tokio::time::{sleep, Duration, Instant};
@@ -833,6 +927,73 @@ mod tests {
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
             b"*37\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
+        )
+        .await;
+
+        let _ = shutdown_tx.send(());
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cluster_routing_returns_moved_for_remote_slots() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let metrics = Arc::new(ServerMetrics::default());
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+        let mut cluster_config = ClusterConfig::new_local("local", "127.0.0.1", 6379);
+        let remote_worker = Worker::new("remote", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = cluster_config.add_worker(remote_worker).unwrap();
+        cluster_config = with_remote;
+
+        let local_key = b"local-k";
+        let local_slot = redis_hash_slot(local_key);
+        cluster_config = cluster_config
+            .set_slot_state(local_slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let remote_key = b"remote-k";
+        let remote_slot = redis_hash_slot(remote_key);
+        cluster_config = cluster_config
+            .set_slot_state(remote_slot, remote_id, SlotState::Stable)
+            .unwrap();
+        let cluster_store = Arc::new(ClusterConfigStore::new(cluster_config));
+
+        let server_metrics = Arc::clone(&metrics);
+        let server_cluster = Arc::clone(&cluster_store);
+        let server = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                listener,
+                1024,
+                server_metrics,
+                async move {
+                    let _ = shutdown_rx.await;
+                },
+                Some(server_cluster),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$7\r\nlocal-k\r\n$2\r\nok\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$7\r\nlocal-k\r\n",
+            b"$2\r\nok\r\n",
+        )
+        .await;
+
+        let expected_moved = format!("-MOVED {} 10.0.0.2:6380\r\n", remote_slot);
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$8\r\nremote-k\r\n",
+            expected_moved.as_bytes(),
         )
         .await;
 

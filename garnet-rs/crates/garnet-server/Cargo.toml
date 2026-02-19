@@ -8,6 +8,7 @@ license.workspace = true
 tokio.workspace = true
 crossbeam-queue.workspace = true
 garnet-common = { path = "../garnet-common" }
+garnet-cluster = { path = "../garnet-cluster" }
 tsavorite = { path = "../tsavorite" }
 
 [dev-dependencies]
