@@ -323,6 +323,20 @@ impl ClusterConfig {
         Ok(next)
     }
 
+    pub fn set_worker_config_epoch(
+        &self,
+        worker_id: u16,
+        config_epoch: u64,
+    ) -> Result<Self, ClusterConfigError> {
+        let mut next = self.clone();
+        let worker = next
+            .workers
+            .get_mut(worker_id as usize)
+            .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
+        worker.config_epoch = config_epoch;
+        Ok(next)
+    }
+
     pub fn add_worker(&self, mut worker: Worker) -> Result<(Self, u16), ClusterConfigError> {
         let worker_id = u16::try_from(self.workers.len())
             .map_err(|_| ClusterConfigError::WorkerCapacityExceeded)?;
@@ -356,6 +370,38 @@ impl ClusterConfig {
         Ok(next)
     }
 
+    pub fn merge_from(&self, incoming: &Self) -> Self {
+        let mut next = self.clone();
+
+        for incoming_worker in &incoming.workers {
+            let worker_index = incoming_worker.id as usize;
+            if worker_index >= next.workers.len() {
+                next.workers.push(incoming_worker.clone());
+                continue;
+            }
+
+            let existing = &next.workers[worker_index];
+            let should_replace = incoming_worker.config_epoch > existing.config_epoch
+                || (incoming_worker.config_epoch == existing.config_epoch
+                    && !incoming_worker.node_id.is_empty()
+                    && (existing.node_id.is_empty()
+                        || incoming_worker.node_id < existing.node_id));
+            if should_replace {
+                next.workers[worker_index] = incoming_worker.clone();
+            }
+        }
+
+        for (index, slot) in next.slot_map.iter_mut().enumerate() {
+            let local_slot = self.slot_map[index];
+            let incoming_slot = incoming.slot_map[index];
+            if should_prefer_incoming_slot(self, local_slot, incoming, incoming_slot) {
+                *slot = incoming_slot;
+            }
+        }
+
+        next
+    }
+
     fn slot_index(slot: u16) -> Result<usize, ClusterConfigError> {
         let slot_index = slot as usize;
         if slot_index >= HASH_SLOT_COUNT {
@@ -370,6 +416,25 @@ impl ClusterConfig {
             .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
         Ok(worker.endpoint())
     }
+}
+
+fn should_prefer_incoming_slot(
+    local_config: &ClusterConfig,
+    local_slot: HashSlot,
+    incoming_config: &ClusterConfig,
+    incoming_slot: HashSlot,
+) -> bool {
+    let local_claim = slot_claim_key(local_config, local_slot);
+    let incoming_claim = slot_claim_key(incoming_config, incoming_slot);
+    incoming_claim.0 > local_claim.0
+        || (incoming_claim.0 == local_claim.0 && incoming_claim.1 < local_claim.1)
+}
+
+fn slot_claim_key(config: &ClusterConfig, slot: HashSlot) -> (u64, &str) {
+    config
+        .worker(slot.assigned_worker_id())
+        .map(|worker| (worker.config_epoch, worker.node_id.as_str()))
+        .unwrap_or((0, ""))
 }
 
 pub fn redis_hash_slot(key: &[u8]) -> u16 {
@@ -429,6 +494,16 @@ impl ClusterConfigStore {
         let previous = write_guard.clone();
         *write_guard = Arc::new(next);
         previous
+    }
+
+    pub fn merge_publish(&self, incoming: &ClusterConfig) -> Arc<ClusterConfig> {
+        let mut write_guard = self
+            .current
+            .write()
+            .expect("cluster config store write lock poisoned");
+        let merged = write_guard.merge_from(incoming);
+        *write_guard = Arc::new(merged);
+        write_guard.clone()
     }
 }
 
@@ -1297,6 +1372,91 @@ mod tests {
         assert_eq!(before.slot_state(11).unwrap(), SlotState::Offline);
         assert_eq!(previous.slot_state(11).unwrap(), SlotState::Offline);
         assert_eq!(after.slot_state(11).unwrap(), SlotState::Stable);
+    }
+
+    #[test]
+    fn merge_from_prefers_higher_epoch_slot_claims() {
+        let base = base_config();
+        let worker2 = Worker::new("node-b", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (base, worker2_id) = base.add_worker(worker2).unwrap();
+        let worker3 = Worker::new("node-c", "10.0.0.3", 6381, WorkerRole::Primary);
+        let (base, worker3_id) = base.add_worker(worker3).unwrap();
+        let base = base
+            .set_worker_config_epoch(worker2_id, 1)
+            .unwrap()
+            .set_worker_config_epoch(worker3_id, 1)
+            .unwrap()
+            .set_slot_state(200, worker2_id, SlotState::Stable)
+            .unwrap();
+
+        let incoming = base
+            .set_worker_config_epoch(worker3_id, 2)
+            .unwrap()
+            .set_slot_state(200, worker3_id, SlotState::Stable)
+            .unwrap();
+        let merged = base.merge_from(&incoming);
+
+        assert_eq!(merged.slot_assigned_owner(200).unwrap(), worker3_id);
+    }
+
+    #[test]
+    fn merge_from_breaks_epoch_ties_by_node_id() {
+        let base = base_config();
+        let worker2 = Worker::new("node-z", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (base, worker2_id) = base.add_worker(worker2).unwrap();
+        let worker3 = Worker::new("node-a", "10.0.0.3", 6381, WorkerRole::Primary);
+        let (base, worker3_id) = base.add_worker(worker3).unwrap();
+        let base = base
+            .set_worker_config_epoch(worker2_id, 7)
+            .unwrap()
+            .set_worker_config_epoch(worker3_id, 7)
+            .unwrap()
+            .set_slot_state(201, worker2_id, SlotState::Stable)
+            .unwrap();
+
+        let incoming = base
+            .set_slot_state(201, worker3_id, SlotState::Stable)
+            .unwrap();
+        let merged = base.merge_from(&incoming);
+
+        assert_eq!(merged.slot_assigned_owner(201).unwrap(), worker3_id);
+    }
+
+    #[test]
+    fn merge_from_includes_workers_from_incoming_snapshot() {
+        let base = base_config();
+        let worker2 = Worker::new("node-b", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (base, _) = base.add_worker(worker2).unwrap();
+
+        let worker3 = Worker::new("node-c", "10.0.0.3", 6381, WorkerRole::Primary);
+        let (incoming, worker3_id) = base.add_worker(worker3).unwrap();
+        let merged = base.merge_from(&incoming);
+
+        assert_eq!(merged.worker(worker3_id).unwrap().node_id, "node-c");
+    }
+
+    #[test]
+    fn config_store_merge_publish_applies_merged_slot_assignment() {
+        let base = base_config();
+        let worker2 = Worker::new("node-b", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (base, worker2_id) = base.add_worker(worker2).unwrap();
+        let worker3 = Worker::new("node-c", "10.0.0.3", 6381, WorkerRole::Primary);
+        let (base, worker3_id) = base.add_worker(worker3).unwrap();
+
+        let current = base
+            .set_worker_config_epoch(worker2_id, 1)
+            .unwrap()
+            .set_slot_state(202, worker2_id, SlotState::Stable)
+            .unwrap();
+        let incoming = base
+            .set_worker_config_epoch(worker3_id, 2)
+            .unwrap()
+            .set_slot_state(202, worker3_id, SlotState::Stable)
+            .unwrap();
+
+        let store = ClusterConfigStore::new(current);
+        let merged = store.merge_publish(&incoming);
+        assert_eq!(merged.slot_assigned_owner(202).unwrap(), worker3_id);
     }
 
     #[test]
