@@ -2657,6 +2657,60 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_listener_with_cluster_control_plane_propagates_control_plane_errors() {
+        let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+
+        let source_config = ClusterConfig::new_local("node-1", "127.0.0.1", addr1.port());
+        let target_config = ClusterConfig::new_local("node-2", "127.0.0.1", 8752);
+        let source_store = Arc::new(ClusterConfigStore::new(source_config));
+        let target_store = ClusterConfigStore::new(target_config);
+        let target_processor = RequestProcessor::new().unwrap();
+
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            InMemoryGossipTransport::new(Arc::clone(&source_store)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1_000);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let result = run_listener_with_cluster_control_plane(
+            listener1,
+            1024,
+            Arc::new(ServerMetrics::default()),
+            Arc::clone(&source_store),
+            &mut manager,
+            &target_store,
+            &target_processor,
+            updates_rx,
+            &mut failure_detector,
+            &mut failover_controller,
+            &mut replication_manager,
+            &mut replication_transport,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            tokio::time::sleep(Duration::from_secs(1)),
+        )
+        .await;
+        assert!(matches!(
+            result,
+            Err(ClusteredServerRunError::ControlPlane(
+                ClusterManagerFailoverMigrationError::Migration(
+                    LiveSlotMigrationError::MissingSourcePeerNode(node_id)
+                )
+            )) if node_id == "node-2"
+        ));
+    }
+
+    #[tokio::test]
     async fn run_with_cluster_control_plane_binds_and_serves_requests() {
         let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr1 = probe.local_addr().unwrap();
