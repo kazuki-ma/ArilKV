@@ -1705,6 +1705,8 @@ pub enum GossipSendResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GossipRoundReport {
     pub attempted_worker_ids: Vec<u16>,
+    pub successful_worker_ids: Vec<u16>,
+    pub failed_worker_ids: Vec<u16>,
     pub success_count: usize,
     pub failure_count: usize,
     pub remaining_failure_budget: usize,
@@ -1717,6 +1719,71 @@ pub fn calculate_gossip_failure_budget(node_count: usize, sample_percent: usize)
     let bounded_percent = sample_percent.min(100);
     let sampled = (node_count * bounded_percent).div_ceil(100);
     sampled.max(1)
+}
+
+#[derive(Debug, Clone)]
+pub struct FailureDetector {
+    failure_threshold: usize,
+    consecutive_failures: BTreeMap<u16, usize>,
+    failed_workers: BTreeSet<u16>,
+}
+
+impl FailureDetector {
+    pub fn new(failure_threshold: usize) -> Self {
+        Self {
+            failure_threshold: failure_threshold.max(1),
+            consecutive_failures: BTreeMap::new(),
+            failed_workers: BTreeSet::new(),
+        }
+    }
+
+    pub fn failure_threshold(&self) -> usize {
+        self.failure_threshold
+    }
+
+    pub fn failed_workers(&self) -> &BTreeSet<u16> {
+        &self.failed_workers
+    }
+
+    pub fn consecutive_failures(&self, worker_id: u16) -> usize {
+        self.consecutive_failures
+            .get(&worker_id)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn is_failed(&self, worker_id: u16) -> bool {
+        self.failed_workers.contains(&worker_id)
+    }
+
+    pub fn clear_worker(&mut self, worker_id: u16) {
+        self.consecutive_failures.remove(&worker_id);
+        self.failed_workers.remove(&worker_id);
+    }
+
+    pub fn record_report(&mut self, report: &GossipRoundReport) -> Vec<u16> {
+        let failed_in_round = report
+            .failed_worker_ids
+            .iter()
+            .copied()
+            .collect::<BTreeSet<_>>();
+        let mut newly_failed = Vec::new();
+
+        for worker_id in report.attempted_worker_ids.iter().copied() {
+            if failed_in_round.contains(&worker_id) {
+                let entry = self.consecutive_failures.entry(worker_id).or_insert(0);
+                *entry = entry.saturating_add(1);
+                if *entry >= self.failure_threshold && self.failed_workers.insert(worker_id) {
+                    newly_failed.push(worker_id);
+                }
+            } else {
+                self.consecutive_failures.insert(worker_id, 0);
+                self.failed_workers.remove(&worker_id);
+            }
+        }
+
+        newly_failed
+    }
 }
 
 pub fn run_gossip_sample_round<Selector, Attempt>(
@@ -1734,6 +1801,8 @@ where
     let mut failure_budget = calculate_gossip_failure_budget(nodes.len(), sample_percent);
     let mut report = GossipRoundReport {
         attempted_worker_ids: Vec::new(),
+        successful_worker_ids: Vec::new(),
+        failed_worker_ids: Vec::new(),
         success_count: 0,
         failure_count: 0,
         remaining_failure_budget: failure_budget,
@@ -1757,6 +1826,7 @@ where
         match attempt(node) {
             GossipSendResult::Success => {
                 node.last_gossip_tick = round_start_tick;
+                report.successful_worker_ids.push(node.worker_id);
                 report.success_count += 1;
             }
             GossipSendResult::Failure => {
@@ -1765,6 +1835,7 @@ where
                 // as non-stale so it is not retried in this round.
                 node.last_gossip_tick = round_start_tick;
                 failure_budget -= 1;
+                report.failed_worker_ids.push(node.worker_id);
                 report.failure_count += 1;
             }
         }
@@ -2029,6 +2100,8 @@ impl GossipCoordinator {
         let mut failure_budget = calculate_gossip_failure_budget(self.nodes.len(), sample_percent);
         let mut report = GossipRoundReport {
             attempted_worker_ids: Vec::new(),
+            successful_worker_ids: Vec::new(),
+            failed_worker_ids: Vec::new(),
             success_count: 0,
             failure_count: 0,
             remaining_failure_budget: failure_budget,
@@ -2057,11 +2130,13 @@ impl GossipCoordinator {
             match transport.try_gossip(node.worker_id).await {
                 Ok(()) => {
                     node.last_gossip_tick = round_start_tick;
+                    report.successful_worker_ids.push(node.worker_id);
                     report.success_count += 1;
                 }
                 Err(_) => {
                     node.last_gossip_tick = round_start_tick;
                     failure_budget -= 1;
+                    report.failed_worker_ids.push(node.worker_id);
                     report.failure_count += 1;
                 }
             }
@@ -3676,6 +3751,84 @@ mod tests {
         assert_eq!(report.attempted_worker_ids, vec![2, 3, 1]);
         assert_eq!(report.failure_count, 3);
         assert_eq!(report.success_count, 0);
+    }
+
+    #[test]
+    fn failure_detector_marks_worker_failed_after_threshold() {
+        let mut detector = FailureDetector::new(2);
+        let report = GossipRoundReport {
+            attempted_worker_ids: vec![7],
+            successful_worker_ids: Vec::new(),
+            failed_worker_ids: vec![7],
+            success_count: 0,
+            failure_count: 1,
+            remaining_failure_budget: 0,
+        };
+
+        assert!(detector.record_report(&report).is_empty());
+        assert_eq!(detector.consecutive_failures(7), 1);
+        assert!(!detector.is_failed(7));
+
+        let newly_failed = detector.record_report(&report);
+        assert_eq!(newly_failed, vec![7]);
+        assert_eq!(detector.consecutive_failures(7), 2);
+        assert!(detector.is_failed(7));
+    }
+
+    #[test]
+    fn failure_detector_clears_failure_state_on_successful_probe() {
+        let mut detector = FailureDetector::new(2);
+        let fail_report = GossipRoundReport {
+            attempted_worker_ids: vec![8],
+            successful_worker_ids: Vec::new(),
+            failed_worker_ids: vec![8],
+            success_count: 0,
+            failure_count: 1,
+            remaining_failure_budget: 0,
+        };
+        let success_report = GossipRoundReport {
+            attempted_worker_ids: vec![8],
+            successful_worker_ids: vec![8],
+            failed_worker_ids: Vec::new(),
+            success_count: 1,
+            failure_count: 0,
+            remaining_failure_budget: 1,
+        };
+
+        let _ = detector.record_report(&fail_report);
+        let _ = detector.record_report(&fail_report);
+        assert!(detector.is_failed(8));
+
+        let newly_failed = detector.record_report(&success_report);
+        assert!(newly_failed.is_empty());
+        assert!(!detector.is_failed(8));
+        assert_eq!(detector.consecutive_failures(8), 0);
+    }
+
+    #[test]
+    fn failure_detector_tracks_multiple_workers_independently() {
+        let mut detector = FailureDetector::new(3);
+        let mixed_report = GossipRoundReport {
+            attempted_worker_ids: vec![2, 3],
+            successful_worker_ids: vec![3],
+            failed_worker_ids: vec![2],
+            success_count: 1,
+            failure_count: 1,
+            remaining_failure_budget: 1,
+        };
+
+        for _ in 0..2 {
+            let _ = detector.record_report(&mixed_report);
+        }
+        assert_eq!(detector.consecutive_failures(2), 2);
+        assert_eq!(detector.consecutive_failures(3), 0);
+        assert!(!detector.is_failed(2));
+        assert!(!detector.is_failed(3));
+
+        let newly_failed = detector.record_report(&mixed_report);
+        assert_eq!(newly_failed, vec![2]);
+        assert!(detector.is_failed(2));
+        assert!(!detector.is_failed(3));
     }
 
     #[derive(Default)]
