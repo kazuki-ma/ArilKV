@@ -669,8 +669,10 @@ impl Drop for ConnectionLifecycle<'_> {
 mod tests {
     use super::*;
     use garnet_cluster::{
-        redis_hash_slot, ClusterConfig, ClusterConfigStore, FailoverCoordinator,
-        ReplicationManager, SlotState, Worker, WorkerRole, LOCAL_WORKER_ID,
+        redis_hash_slot, AsyncGossipEngine, ChannelReplicationTransport, ClusterConfig,
+        ClusterConfigStore, ClusterFailoverController, ClusterManager, FailureDetector,
+        FailoverCoordinator, GossipCoordinator, GossipNode, InMemoryGossipTransport,
+        ReplicationEvent, ReplicationManager, SlotState, Worker, WorkerRole, LOCAL_WORKER_ID,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::sync::oneshot;
@@ -1577,6 +1579,208 @@ mod tests {
         let _ = shutdown3_tx.send(());
         server1.await.unwrap();
         server2.await.unwrap();
+        server3.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_failover_loop_updates_server_redirections() {
+        let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+        let listener3 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr3 = listener3.local_addr().unwrap();
+        let listener2_for_port = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr2 = listener2_for_port.local_addr().unwrap();
+
+        let key2 = b"node2-key".to_vec();
+        let slot2 = redis_hash_slot(&key2);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", addr1.port());
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                addr2.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1;
+        let (next1, node3_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-3",
+                "127.0.0.1",
+                addr3.port(),
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        config1 = next1;
+        config1 = config1
+            .set_worker_replica_of(node3_id_in_1, "node-2")
+            .unwrap()
+            .set_slot_state(slot2, node2_id_in_1, SlotState::Stable)
+            .unwrap();
+
+        let mut config3 = ClusterConfig::new_local("node-3", "127.0.0.1", addr3.port())
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap()
+            .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
+            .unwrap();
+        let (next3, node1_id_in_3) = config3
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                addr1.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config3 = next3;
+        let (next3, node2_id_in_3) = config3
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                addr2.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config3 = next3;
+        config3 = config3
+            .set_slot_state(slot2, node2_id_in_3, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(redis_hash_slot(b"node1-anchor"), node1_id_in_3, SlotState::Stable)
+            .unwrap();
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store3 = Arc::new(ClusterConfigStore::new(config3));
+
+        let (shutdown1_tx, shutdown1_rx) = oneshot::channel::<()>();
+        let (shutdown3_tx, shutdown3_rx) = oneshot::channel::<()>();
+
+        let server1_metrics = Arc::new(ServerMetrics::default());
+        let server1_cluster = Arc::clone(&store1);
+        let server1 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                listener1,
+                1024,
+                server1_metrics,
+                async move {
+                    let _ = shutdown1_rx.await;
+                },
+                Some(server1_cluster),
+            )
+            .await
+            .unwrap();
+        });
+
+        let server3_metrics = Arc::new(ServerMetrics::default());
+        let server3_cluster = Arc::clone(&store3);
+        let server3 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster(
+                listener3,
+                1024,
+                server3_metrics,
+                async move {
+                    let _ = shutdown3_rx.await;
+                },
+                Some(server3_cluster),
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut node1 = TcpStream::connect(addr1).await.unwrap();
+        let mut node3 = TcpStream::connect(addr3).await.unwrap();
+        let get_key2 = encode_resp_command(&[b"GET", &key2]);
+        let moved_to_node2 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot2, addr2.port());
+        send_and_expect(&mut node1, &get_key2, moved_to_node2.as_bytes()).await;
+        send_and_expect(&mut node3, &get_key2, moved_to_node2.as_bytes()).await;
+
+        let gossip_nodes1 = vec![GossipNode::new(node2_id_in_1, 0)];
+        let gossip_nodes3 = vec![GossipNode::new(node2_id_in_3, 0)];
+        let gossip_engine1 = AsyncGossipEngine::new(
+            GossipCoordinator::new(gossip_nodes1, 1),
+            InMemoryGossipTransport::new(Arc::clone(&store1)),
+            100,
+            0,
+        );
+        let gossip_engine3 = AsyncGossipEngine::new(
+            GossipCoordinator::new(gossip_nodes3, 1),
+            InMemoryGossipTransport::new(Arc::clone(&store3)),
+            100,
+            0,
+        );
+        let mut manager1 = ClusterManager::new(gossip_engine1, Duration::from_millis(5));
+        let mut manager3 = ClusterManager::new(gossip_engine3, Duration::from_millis(5));
+
+        let mut detector1 = FailureDetector::new(1);
+        let mut detector3 = FailureDetector::new(1);
+        let mut controller1 = ClusterFailoverController::new();
+        let mut controller3 = ClusterFailoverController::new();
+        let mut replication1 = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let mut replication3 = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        replication1.record_replica_offset(node3_id_in_1, 1_950);
+        replication3.record_replica_offset(LOCAL_WORKER_ID, 1_950);
+
+        let (repl1_tx, mut repl1_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let (repl3_tx, mut repl3_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut repl_transport1 = ChannelReplicationTransport::new(repl1_tx, 1_980);
+        let mut repl_transport3 = ChannelReplicationTransport::new(repl3_tx, 1_980);
+        let (_updates1_tx, updates1_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+        let (_updates3_tx, updates3_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let reports1 = manager1
+            .run_with_config_updates_and_failover(
+                &store1,
+                updates1_rx,
+                &mut detector1,
+                &mut controller1,
+                &mut replication1,
+                &mut repl_transport1,
+                tokio::time::sleep(Duration::from_millis(20)),
+            )
+            .await
+            .unwrap();
+        let reports3 = manager3
+            .run_with_config_updates_and_failover(
+                &store3,
+                updates3_rx,
+                &mut detector3,
+                &mut controller3,
+                &mut replication3,
+                &mut repl_transport3,
+                tokio::time::sleep(Duration::from_millis(20)),
+            )
+            .await
+            .unwrap();
+        assert!(reports1
+            .iter()
+            .any(|report| report.failed_worker_ids.contains(&node2_id_in_1)));
+        assert!(reports3
+            .iter()
+            .any(|report| report.failed_worker_ids.contains(&node2_id_in_3)));
+        assert_eq!(
+            repl1_rx.recv().await,
+            Some(ReplicationEvent::Checkpoint {
+                worker_id: node3_id_in_1,
+                checkpoint_id: 7,
+            })
+        );
+        assert_eq!(
+            repl3_rx.recv().await,
+            Some(ReplicationEvent::Checkpoint {
+                worker_id: LOCAL_WORKER_ID,
+                checkpoint_id: 7,
+            })
+        );
+
+        let moved_to_node3 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot2, addr3.port());
+        send_and_expect(&mut node1, &get_key2, moved_to_node3.as_bytes()).await;
+        send_and_expect(&mut node3, &get_key2, b"$-1\r\n").await;
+        let set_key2 = encode_resp_command(&[b"SET", &key2, b"v2-after-failover"]);
+        send_and_expect(&mut node3, &set_key2, b"+OK\r\n").await;
+        send_and_expect(&mut node3, &get_key2, b"$17\r\nv2-after-failover\r\n").await;
+
+        let _ = shutdown1_tx.send(());
+        let _ = shutdown3_tx.send(());
+        server1.await.unwrap();
         server3.await.unwrap();
     }
 
