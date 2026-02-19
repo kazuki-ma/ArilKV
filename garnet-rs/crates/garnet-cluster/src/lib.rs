@@ -1391,6 +1391,20 @@ impl ReplicationManager {
         self.execute_sync(worker_id, self.replica_offset(worker_id), transport)
     }
 
+    pub fn sync_replicas_of_primary<T: ReplicationTransport>(
+        &mut self,
+        config: &ClusterConfig,
+        primary_node_id: &str,
+        transport: &mut T,
+    ) -> Result<Vec<(u16, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
+        let mut outcomes = Vec::new();
+        for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
+            let outcome = self.execute_sync_for_worker(worker_id, transport)?;
+            outcomes.push((worker_id, outcome));
+        }
+        Ok(outcomes)
+    }
+
     pub async fn execute_sync_async<T: AsyncReplicationTransport>(
         &mut self,
         worker_id: u16,
@@ -1429,6 +1443,36 @@ impl ReplicationManager {
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         self.execute_sync_async(worker_id, self.replica_offset(worker_id), transport)
             .await
+    }
+
+    pub async fn sync_replicas_of_primary_async<T: AsyncReplicationTransport>(
+        &mut self,
+        config: &ClusterConfig,
+        primary_node_id: &str,
+        transport: &mut T,
+    ) -> Result<Vec<(u16, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
+        let mut outcomes = Vec::new();
+        for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
+            let outcome = self.execute_sync_for_worker_async(worker_id, transport).await?;
+            outcomes.push((worker_id, outcome));
+        }
+        Ok(outcomes)
+    }
+
+    pub fn replica_worker_ids_for_primary(
+        &self,
+        config: &ClusterConfig,
+        primary_node_id: &str,
+    ) -> Vec<u16> {
+        let mut worker_ids = config
+            .workers()
+            .iter()
+            .filter(|worker| worker.role == WorkerRole::Replica)
+            .filter(|worker| worker.replica_of_node_id.as_deref() == Some(primary_node_id))
+            .map(|worker| worker.id)
+            .collect::<Vec<_>>();
+        worker_ids.sort_unstable();
+        worker_ids
     }
 
     pub fn plan_failover(
@@ -2623,6 +2667,60 @@ mod tests {
         assert_eq!(manager.replica_offset(4), Some(940));
     }
 
+    #[test]
+    fn replication_manager_sync_replicas_of_primary_targets_matching_replicas() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_other) = config
+            .add_worker(Worker::new(
+                "replica-other",
+                "10.0.0.4",
+                6382,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_other, "different-primary")
+            .unwrap();
+
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+        let outcomes = manager
+            .sync_replicas_of_primary(&config, "local-node", &mut transport)
+            .expect("matching replicas should sync");
+
+        assert_eq!(outcomes.len(), 2);
+        assert_eq!(outcomes[0].0, replica_a);
+        assert_eq!(outcomes[1].0, replica_b);
+        assert_eq!(transport.checkpoints, vec![(replica_a, 9), (replica_b, 9)]);
+        assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
+        assert_eq!(manager.replica_offset(replica_a), Some(900));
+        assert_eq!(manager.replica_offset(replica_b), Some(900));
+        assert_eq!(manager.replica_offset(replica_other), None);
+    }
+
     #[derive(Default)]
     struct AsyncMockReplicationTransport {
         checkpoints: Vec<(u16, u64)>,
@@ -2952,6 +3050,62 @@ mod tests {
             })
         );
         assert_eq!(manager.replica_offset(9), Some(2_100));
+    }
+
+    #[tokio::test]
+    async fn replication_manager_sync_replicas_of_primary_async_reuses_tracked_offsets() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap();
+
+        let mut manager = ReplicationManager::new(Some(11), 700, 900).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+        let first = manager
+            .sync_replicas_of_primary_async(&config, "local-node", &mut transport)
+            .await
+            .expect("initial full sync should succeed");
+        assert_eq!(first.len(), 2);
+        assert_eq!(transport.checkpoints, vec![(replica_a, 11), (replica_b, 11)]);
+        assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
+
+        manager.set_aof_tail_offset(960).unwrap();
+        transport.checkpoints.clear();
+        transport.streams.clear();
+        transport.stream_result = 960;
+        let second = manager
+            .sync_replicas_of_primary_async(&config, "local-node", &mut transport)
+            .await
+            .expect("follow-up incremental sync should succeed");
+        assert_eq!(second.len(), 2);
+        assert!(second
+            .iter()
+            .all(|(_, outcome)| outcome.plan.mode == ReplicationSyncMode::Incremental));
+        assert!(transport.checkpoints.is_empty());
+        assert_eq!(transport.streams, vec![(replica_a, 900), (replica_b, 900)]);
+        assert_eq!(manager.replica_offset(replica_a), Some(960));
+        assert_eq!(manager.replica_offset(replica_b), Some(960));
     }
 
     #[test]
