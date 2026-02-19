@@ -144,6 +144,46 @@ pub struct LiveSlotMigrationsRunReport {
     pub interrupted: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct ClusterManagerFailoverMigrationRunReport {
+    pub failover_report: garnet_cluster::ClusterManagerFailoverRunReport,
+    pub migration_reports: Vec<LiveSlotMigrationsRunReport>,
+}
+
+#[derive(Debug)]
+pub enum ClusterManagerFailoverMigrationError<E> {
+    Failover(garnet_cluster::FailoverControllerError<E>),
+    Migration(LiveSlotMigrationError),
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for ClusterManagerFailoverMigrationError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Failover(error) => write!(f, "{error}"),
+            Self::Migration(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: core::fmt::Display + core::fmt::Debug> std::error::Error
+    for ClusterManagerFailoverMigrationError<E>
+{
+}
+
+impl<E> From<garnet_cluster::FailoverControllerError<E>>
+    for ClusterManagerFailoverMigrationError<E>
+{
+    fn from(value: garnet_cluster::FailoverControllerError<E>) -> Self {
+        Self::Failover(value)
+    }
+}
+
+impl<E> From<LiveSlotMigrationError> for ClusterManagerFailoverMigrationError<E> {
+    fn from(value: LiveSlotMigrationError) -> Self {
+        Self::Migration(value)
+    }
+}
+
 fn resolve_migration_peer_ids(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
@@ -487,6 +527,84 @@ where
             }
         }
     }
+}
+
+async fn wait_for_watch_shutdown(mut shutdown: tokio::sync::watch::Receiver<bool>) {
+    if *shutdown.borrow() {
+        return;
+    }
+    loop {
+        if shutdown.changed().await.is_err() || *shutdown.borrow() {
+            return;
+        }
+    }
+}
+
+pub async fn run_cluster_manager_with_config_updates_failover_and_detected_migrations<F, T, R>(
+    manager: &mut garnet_cluster::ClusterManager<T>,
+    source_store: &ClusterConfigStore,
+    target_store: &ClusterConfigStore,
+    source_processor: &RequestProcessor,
+    target_processor: &RequestProcessor,
+    updates: tokio::sync::mpsc::UnboundedReceiver<garnet_cluster::ClusterConfig>,
+    failure_detector: &mut garnet_cluster::FailureDetector,
+    failover_controller: &mut garnet_cluster::ClusterFailoverController,
+    replication_manager: &mut garnet_cluster::ReplicationManager,
+    replication_transport: &mut R,
+    migration_max_keys_per_step: usize,
+    migration_step_interval: std::time::Duration,
+    migration_detection_interval: std::time::Duration,
+    shutdown: F,
+) -> Result<ClusterManagerFailoverMigrationRunReport, ClusterManagerFailoverMigrationError<R::Error>>
+where
+    F: Future<Output = ()> + Send + 'static,
+    T: garnet_cluster::AsyncGossipTransport,
+    R: garnet_cluster::AsyncReplicationTransport,
+{
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown_task = tokio::spawn(async move {
+        shutdown.await;
+        let _ = shutdown_tx.send(true);
+    });
+    let failover_shutdown = shutdown_rx.clone();
+    let migration_shutdown = shutdown_rx.clone();
+
+    let failover_future = async {
+        manager
+            .run_with_config_updates_and_failover_report(
+                source_store,
+                updates,
+                failure_detector,
+                failover_controller,
+                replication_manager,
+                replication_transport,
+                wait_for_watch_shutdown(failover_shutdown),
+            )
+            .await
+            .map_err(ClusterManagerFailoverMigrationError::Failover)
+    };
+    let migration_future = async {
+        run_detected_live_slot_migrations_until_shutdown(
+            source_store,
+            target_store,
+            source_processor,
+            target_processor,
+            migration_max_keys_per_step,
+            migration_step_interval,
+            migration_detection_interval,
+            wait_for_watch_shutdown(migration_shutdown),
+        )
+        .await
+        .map_err(ClusterManagerFailoverMigrationError::Migration)
+    };
+
+    let run_result = tokio::try_join!(failover_future, migration_future);
+    shutdown_task.abort();
+    let (failover_report, migration_reports) = run_result?;
+    Ok(ClusterManagerFailoverMigrationRunReport {
+        failover_report,
+        migration_reports,
+    })
 }
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
@@ -2224,6 +2342,131 @@ mod tests {
         let _ = shutdown3_tx.send(());
         server1.await.unwrap();
         server3.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_failover_and_detected_migration_runner_executes_migration_loop() {
+        let key = b"{manager-detected}k".to_vec();
+        let slot = redis_hash_slot(&key);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 8401);
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8402,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8402);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8401,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store2 = Arc::new(ClusterConfigStore::new(config2));
+        let source_processor = RequestProcessor::new().unwrap();
+        let target_processor = RequestProcessor::new().unwrap();
+
+        assert_eq!(
+            execute_processor_frame(
+                &source_processor,
+                &encode_resp_command(&[b"SET", &key, b"value"])
+            ),
+            b"+OK\r\n"
+        );
+        let source_migrating = store1
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_migration_to(slot, node2_id_in_1)
+            .unwrap();
+        store1.publish(source_migrating);
+        let target_importing = store2
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_import_from(slot, node1_id_in_2)
+            .unwrap();
+        store2.publish(target_importing);
+
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            InMemoryGossipTransport::new(Arc::clone(&store1)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1_000);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let (repl_tx, mut repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let report = run_cluster_manager_with_config_updates_failover_and_detected_migrations(
+            &mut manager,
+            &store1,
+            &store2,
+            &source_processor,
+            &target_processor,
+            updates_rx,
+            &mut failure_detector,
+            &mut failover_controller,
+            &mut replication_manager,
+            &mut replication_transport,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            tokio::time::sleep(Duration::from_millis(20)),
+        )
+        .await
+        .unwrap();
+        assert!(!report.failover_report.gossip_reports.is_empty());
+        assert!(report.failover_report.failover_records.is_empty());
+        assert!(repl_rx.try_recv().is_err());
+        assert_eq!(
+            report.migration_reports,
+            vec![LiveSlotMigrationsRunReport {
+                slots: vec![LiveSlotMigrationSlotReport {
+                    slot,
+                    batches: 1,
+                    moved_keys: 1,
+                    finalized: true,
+                }],
+                interrupted: false,
+            }]
+        );
+
+        let get_key = encode_resp_command(&[b"GET", &key]);
+        assert_eq!(
+            execute_processor_frame(&source_processor, &get_key),
+            b"$-1\r\n"
+        );
+        assert_eq!(
+            execute_processor_frame(&target_processor, &get_key),
+            b"$5\r\nvalue\r\n"
+        );
+        assert_eq!(
+            store1.load().slot_assigned_owner(slot).unwrap(),
+            node2_id_in_1
+        );
+        assert_eq!(
+            store2.load().slot_assigned_owner(slot).unwrap(),
+            LOCAL_WORKER_ID
+        );
     }
 
     #[tokio::test]
