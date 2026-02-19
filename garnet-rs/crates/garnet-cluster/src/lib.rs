@@ -3,7 +3,7 @@
 //! This module provides immutable-style copy-on-write cluster configuration
 //! structures with Redis-compatible 16,384 hash slots.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::future::Future;
 use std::io::Write;
@@ -1528,6 +1528,46 @@ impl ReplicationManager {
         };
         let updated = config.apply_failover_plan(&plan)?;
         Ok(Some((plan, updated)))
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FailoverCoordinator {
+    handled_failed_primaries: BTreeSet<String>,
+}
+
+impl FailoverCoordinator {
+    pub fn new() -> Self {
+        Self {
+            handled_failed_primaries: BTreeSet::new(),
+        }
+    }
+
+    pub fn handled_failed_primaries(&self) -> &BTreeSet<String> {
+        &self.handled_failed_primaries
+    }
+
+    pub fn execute_for_failed_primary(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        replication_manager: &ReplicationManager,
+        failed_primary_node_id: &str,
+    ) -> Result<Option<FailoverPlan>, ClusterConfigError> {
+        if self.handled_failed_primaries.contains(failed_primary_node_id) {
+            return Ok(None);
+        }
+
+        let current = config_store.load();
+        let Some((plan, updated)) =
+            replication_manager.execute_failover(current.as_ref(), failed_primary_node_id)?
+        else {
+            return Ok(None);
+        };
+
+        config_store.publish(updated);
+        self.handled_failed_primaries
+            .insert(failed_primary_node_id.to_owned());
+        Ok(Some(plan))
     }
 }
 
@@ -3279,6 +3319,68 @@ mod tests {
         let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
         let outcome = manager.execute_failover(&config, "local-node").unwrap();
         assert!(outcome.is_none());
+    }
+
+    #[test]
+    fn failover_coordinator_executes_and_publishes_failover_once() {
+        let config = base_config();
+        let (config, replica_a) = config
+            .add_worker(Worker::new(
+                "replica-a",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let (config, replica_b) = config
+            .add_worker(Worker::new(
+                "replica-b",
+                "10.0.0.3",
+                6381,
+                WorkerRole::Replica,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(replica_a, "local-node")
+            .unwrap()
+            .set_worker_replica_of(replica_b, "local-node")
+            .unwrap()
+            .set_slot_state(451, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(config);
+
+        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        manager.record_replica_offset(replica_a, 150);
+        manager.record_replica_offset(replica_b, 190);
+        let mut coordinator = FailoverCoordinator::new();
+
+        let plan = coordinator
+            .execute_for_failed_primary(&store, &manager, "local-node")
+            .unwrap()
+            .expect("first execution should apply failover");
+        assert_eq!(plan.promoted_worker_id, replica_b);
+        assert_eq!(store.load().slot_assigned_owner(451).unwrap(), replica_b);
+        assert!(coordinator
+            .handled_failed_primaries()
+            .contains("local-node"));
+
+        let second = coordinator
+            .execute_for_failed_primary(&store, &manager, "local-node")
+            .unwrap();
+        assert!(second.is_none());
+    }
+
+    #[test]
+    fn failover_coordinator_keeps_state_clean_when_no_plan_exists() {
+        let store = ClusterConfigStore::new(base_config());
+        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let mut coordinator = FailoverCoordinator::new();
+
+        let outcome = coordinator
+            .execute_for_failed_primary(&store, &manager, "local-node")
+            .unwrap();
+        assert!(outcome.is_none());
+        assert!(coordinator.handled_failed_primaries().is_empty());
     }
 
     #[test]
