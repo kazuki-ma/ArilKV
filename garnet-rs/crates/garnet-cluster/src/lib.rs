@@ -7,6 +7,7 @@ use std::fmt;
 use std::future::Future;
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
+use std::time::Duration;
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
 pub const RESERVED_WORKER_ID: u16 = 0;
@@ -887,6 +888,63 @@ impl<T: AsyncGossipTransport> AsyncGossipEngine<T> {
     }
 }
 
+#[derive(Debug)]
+pub struct ClusterManager<T: AsyncGossipTransport> {
+    engine: AsyncGossipEngine<T>,
+    gossip_delay: Duration,
+}
+
+impl<T: AsyncGossipTransport> ClusterManager<T> {
+    pub fn new(engine: AsyncGossipEngine<T>, gossip_delay: Duration) -> Self {
+        Self {
+            engine,
+            gossip_delay,
+        }
+    }
+
+    pub fn engine(&self) -> &AsyncGossipEngine<T> {
+        &self.engine
+    }
+
+    pub fn engine_mut(&mut self) -> &mut AsyncGossipEngine<T> {
+        &mut self.engine
+    }
+
+    pub async fn run_for_rounds(&mut self, rounds: usize) -> Vec<GossipRoundReport> {
+        let mut interval = tokio::time::interval(self.gossip_delay);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        let mut reports = Vec::with_capacity(rounds);
+        for _ in 0..rounds {
+            interval.tick().await;
+            reports.push(self.engine.run_once().await);
+        }
+        reports
+    }
+
+    pub async fn run_until_shutdown<F>(&mut self, shutdown: F) -> Vec<GossipRoundReport>
+    where
+        F: Future<Output = ()>,
+    {
+        let mut interval = tokio::time::interval(self.gossip_delay);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        let mut reports = Vec::new();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break,
+                _ = interval.tick() => {
+                    reports.push(self.engine.run_once().await);
+                }
+            }
+        }
+        reports
+    }
+}
+
 fn sample_random_unique_indices(
     node_count: usize,
     max_count: usize,
@@ -1312,6 +1370,37 @@ mod tests {
         assert_eq!(reports[0].failure_count, 0);
         assert_eq!(reports[1].failure_count, 0);
         assert_eq!(engine.transport().calls.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_runs_configured_number_of_rounds() {
+        let nodes = vec![GossipNode::new(1, 0)];
+        let coordinator = GossipCoordinator::new(nodes, 1);
+        let transport = AsyncMockTransport {
+            fail_on_worker: None,
+            calls: Vec::new(),
+        };
+        let engine = AsyncGossipEngine::new(coordinator, transport, 100, 0);
+        let mut manager = ClusterManager::new(engine, std::time::Duration::from_millis(2));
+        let reports = manager.run_for_rounds(3).await;
+        assert_eq!(reports.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_stops_on_shutdown_signal() {
+        let nodes = vec![GossipNode::new(1, 0)];
+        let coordinator = GossipCoordinator::new(nodes, 1);
+        let transport = AsyncMockTransport {
+            fail_on_worker: None,
+            calls: Vec::new(),
+        };
+        let engine = AsyncGossipEngine::new(coordinator, transport, 100, 0);
+        let mut manager = ClusterManager::new(engine, std::time::Duration::from_millis(5));
+        let reports = manager
+            .run_until_shutdown(tokio::time::sleep(std::time::Duration::from_millis(13)))
+            .await;
+        assert!(reports.len() >= 2);
+        assert!(reports.len() <= 3);
     }
 
     #[test]
