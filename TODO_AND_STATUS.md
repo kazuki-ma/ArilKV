@@ -364,3 +364,4 @@
 | 79 | 2026-02-19 | 10.5 | IN_PROGRESS | Added `ClusterConfig::take_over_slots_from_primary` plus unit tests for slot reassignment/role promotion to support explicit failover ownership mutation paths. |
 | 80 | 2026-02-19 | 10.2 | IN_PROGRESS | Added `ClusterManager` with `tokio::time::interval`-driven gossip round execution (`run_for_rounds` / `run_until_shutdown`) and coverage for timer-round/shutdown behavior. |
 | 81 | 2026-02-19 | 10.3 | IN_PROGRESS | Added `ReplicationTransport` abstraction and `ReplicationManager::execute_sync` with tests for incremental/full sync, checkpoint-required validation, and transport-error propagation. |
+| 82 | 2026-02-19 | 10.5 | IN_PROGRESS | Updated 3-node server integration failover path to use `ClusterConfig::take_over_slots_from_primary` for the promoted node, validating takeover helper behavior in end-to-end routing flow. |

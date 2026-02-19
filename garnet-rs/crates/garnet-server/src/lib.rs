@@ -1513,7 +1513,7 @@ mod tests {
             .load()
             .as_ref()
             .clone()
-            .set_slot_state(slot2, LOCAL_WORKER_ID, SlotState::Stable)
+            .take_over_slots_from_primary(node2_id_in_3)
             .unwrap();
         store3.publish(next3);
 
