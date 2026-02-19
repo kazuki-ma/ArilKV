@@ -183,7 +183,7 @@
 | 10.2 | Implement gossip protocol — failure-budget sampling | IN_PROGRESS | 10.1 | Added `garnet-cluster` sampling core + `GossipCoordinator` wrapper with pluggable transport (`GossipTransport`) and deterministic randomized sampling helper. Added `GossipEngine` stateful round runner plus async transport/runner counterparts (`AsyncGossipTransport`, `run_round_async`, `AsyncGossipEngine`) with unit coverage; cluster-manager message loop wiring remains pending. |
 | 10.3 | Implement replication — primary-replica sync via checkpoint + AOF | IN_PROGRESS | 8.4, 10.1 | Added `garnet-cluster` replication sync scaffolding (`ReplicationManager`) with full-vs-incremental planning based on retained AOF replay window and replica offsets, plus replica progress tracking helpers. Network streaming and checkpoint transfer wiring remain TODO. |
 | 10.4 | Implement slot migration — MOVED/ASK redirections | IN_PROGRESS | 10.1 | Added key→slot hashing (`CRC16/XMODEM` with hash-tag handling), slot-route decision helpers (`Local`/`Moved`/`Ask`/`Unbound`), RESP-ready redirection string helpers, and `garnet-server` cluster-routing hooks (`run_with_cluster`, `run_with_shutdown_and_cluster_config`, `run_listener_with_shutdown_and_cluster`) that return MOVED/ASK/CLUSTERDOWN before command execution. Added CROSSSLOT validation for multi-key DEL/WATCH and ASKING one-shot bypass for ASK routes, plus cluster-aware transaction slot consistency checks (`CROSSSLOT` during queueing -> `EXECABORT` on EXEC). |
-| 10.5 | Integration test: multi-node cluster | IN_PROGRESS | 10.1-10.4 | Added a 3-node `garnet-server` integration test that verifies cross-node MOVED routing and simulated failover redirection updates via runtime cluster-config publish. Automatic failover election and replication-integrated ownership transfer remain TODO. |
+| 10.5 | Integration test: multi-node cluster | IN_PROGRESS | 10.1-10.4 | Added a 3-node `garnet-server` integration test that verifies cross-node MOVED routing and simulated failover redirection updates via runtime cluster-config publish. Added `ClusterConfig::take_over_slots_from_primary` helper to model replica takeover slot reassignment in config mutations. Automatic failover election and replication-integrated ownership transfer remain TODO. |
 
 ---
 
@@ -265,6 +265,7 @@
 | 2026-02-19 | Validate multi-node routing/failover behavior with per-node cluster-config snapshots and runtime config publish updates. | Exercises realistic 3-node MOVED semantics and ownership changes without blocking on full election/replication implementation. |
 | 2026-02-19 | Introduce async gossip transport/runner APIs in parallel with sync gossip paths. | Creates an incremental bridge toward `tokio`-driven cluster manager loops while preserving deterministic sync unit tests and existing call sites. |
 | 2026-02-19 | Plan replica synchronization mode from a bounded AOF replay window (`replay_start..tail`) with explicit full/incremental plans. | Captures the core replication decision boundary early, so transport/checkpoint streaming code can consume a tested plan object without duplicating offset-window logic. |
+| 2026-02-19 | Add `ClusterConfig::take_over_slots_from_primary` to perform failover-style slot ownership reassignment to the local worker. | Encapsulates takeover semantics in one copy-on-write config mutation, reducing ad-hoc slot-looping in higher-level failover orchestration code/tests. |
 
 ---
 
@@ -358,3 +359,4 @@
 | 76 | 2026-02-19 | 10.5 | IN_PROGRESS | Added a 3-node cluster integration test that validates MOVED routing across nodes and failover-like slot-owner redirection changes after runtime config publish. |
 | 77 | 2026-02-19 | 10.2 | IN_PROGRESS | Added async gossip primitives (`AsyncGossipTransport`, `GossipCoordinator::run_round_async`, `AsyncGossipEngine`) and async unit tests for failure-budget semantics/tick advancement. |
 | 78 | 2026-02-19 | 10.3 | IN_PROGRESS | Added `ReplicationManager` planning primitives for full/incremental sync selection, AOF replay-window updates, and replica-progress candidate selection with unit tests. |
+| 79 | 2026-02-19 | 10.5 | IN_PROGRESS | Added `ClusterConfig::take_over_slots_from_primary` plus unit tests for slot reassignment/role promotion to support explicit failover ownership mutation paths. |

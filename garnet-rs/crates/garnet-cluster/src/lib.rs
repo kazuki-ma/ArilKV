@@ -331,6 +331,30 @@ impl ClusterConfig {
         Ok((next, worker_id))
     }
 
+    pub fn take_over_slots_from_primary(
+        &self,
+        failed_primary_worker_id: u16,
+    ) -> Result<Self, ClusterConfigError> {
+        if self.worker(failed_primary_worker_id).is_none() {
+            return Err(ClusterConfigError::WorkerNotFound(failed_primary_worker_id));
+        }
+
+        let mut next = self.clone();
+        for slot in next.slot_map.iter_mut() {
+            if slot.assigned_worker_id() == failed_primary_worker_id {
+                *slot = HashSlot::new(LOCAL_WORKER_ID, SlotState::Stable);
+            }
+        }
+
+        let local = next
+            .workers
+            .get_mut(LOCAL_WORKER_ID as usize)
+            .ok_or(ClusterConfigError::MissingLocalWorker)?;
+        local.role = WorkerRole::Primary;
+        local.replica_of_node_id = None;
+        Ok(next)
+    }
+
     fn slot_index(slot: u16) -> Result<usize, ClusterConfigError> {
         let slot_index = slot as usize;
         if slot_index >= HASH_SLOT_COUNT {
@@ -952,6 +976,37 @@ mod tests {
         assert_eq!(remote_id, 2);
         assert!(config.worker(remote_id).is_none());
         assert_eq!(updated.worker(remote_id).unwrap().node_id, "node-2");
+    }
+
+    #[test]
+    fn takeover_slots_from_primary_reassigns_slots_to_local_primary() {
+        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let with_slots = with_remote
+            .set_slot_state(100, remote_id, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(101, remote_id, SlotState::Importing)
+            .unwrap()
+            .set_slot_state(102, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let updated = with_slots.take_over_slots_from_primary(remote_id).unwrap();
+        assert_eq!(updated.slot_owner(100).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(updated.slot_state(100).unwrap(), SlotState::Stable);
+        assert_eq!(updated.slot_owner(101).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(updated.slot_state(101).unwrap(), SlotState::Stable);
+        assert_eq!(updated.slot_owner(102).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(updated.local_worker().unwrap().role, WorkerRole::Primary);
+    }
+
+    #[test]
+    fn takeover_slots_from_primary_rejects_unknown_worker() {
+        let config = base_config();
+        assert!(matches!(
+            config.take_over_slots_from_primary(99),
+            Err(ClusterConfigError::WorkerNotFound(99))
+        ));
     }
 
     #[test]
