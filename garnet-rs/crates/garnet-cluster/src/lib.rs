@@ -8,8 +8,8 @@ use std::fmt;
 use std::future::Future;
 use std::io::Write;
 use std::net::SocketAddr;
-use std::pin::Pin;
 use std::path::PathBuf;
+use std::pin::Pin;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -415,9 +415,12 @@ impl ClusterConfig {
         }
 
         let mut next = self.clone();
-        let failed_primary_node_id =
-            next.workers[plan.failed_primary_worker_id as usize].node_id.clone();
-        let promoted_node_id = next.workers[plan.promoted_worker_id as usize].node_id.clone();
+        let failed_primary_node_id = next.workers[plan.failed_primary_worker_id as usize]
+            .node_id
+            .clone();
+        let promoted_node_id = next.workers[plan.promoted_worker_id as usize]
+            .node_id
+            .clone();
 
         for slot in next.slot_map.iter_mut() {
             if slot.assigned_worker_id() == plan.failed_primary_worker_id {
@@ -472,8 +475,7 @@ impl ClusterConfig {
             let should_replace = incoming_worker.config_epoch > existing.config_epoch
                 || (incoming_worker.config_epoch == existing.config_epoch
                     && !incoming_worker.node_id.is_empty()
-                    && (existing.node_id.is_empty()
-                        || incoming_worker.node_id < existing.node_id));
+                    && (existing.node_id.is_empty() || incoming_worker.node_id < existing.node_id));
             if should_replace {
                 next.workers[worker_index] = incoming_worker.clone();
             }
@@ -598,7 +600,9 @@ pub fn encode_cluster_config_snapshot(
     Ok(out)
 }
 
-pub fn decode_cluster_config_snapshot(bytes: &[u8]) -> Result<ClusterConfig, ClusterConfigCodecError> {
+pub fn decode_cluster_config_snapshot(
+    bytes: &[u8],
+) -> Result<ClusterConfig, ClusterConfigCodecError> {
     let mut cursor = 0usize;
     let magic = read_exact_bytes(bytes, &mut cursor, CLUSTER_CONFIG_SNAPSHOT_MAGIC.len())?;
     if magic != CLUSTER_CONFIG_SNAPSHOT_MAGIC {
@@ -907,14 +911,8 @@ pub trait AsyncReplicationTransport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicationEvent {
-    Checkpoint {
-        worker_id: u16,
-        checkpoint_id: u64,
-    },
-    StreamAof {
-        worker_id: u16,
-        start_offset: u64,
-    },
+    Checkpoint { worker_id: u16, checkpoint_id: u64 },
+    StreamAof { worker_id: u16, start_offset: u64 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1041,8 +1039,11 @@ impl FileReplicationTransport {
         checkpoint_id: u64,
     ) -> Result<(), FileReplicationTransportError> {
         self.ensure_root_dir()?;
-        std::fs::write(self.checkpoint_path(worker_id), format!("{checkpoint_id}\n"))
-            .map_err(FileReplicationTransportError::Io)
+        std::fs::write(
+            self.checkpoint_path(worker_id),
+            format!("{checkpoint_id}\n"),
+        )
+        .map_err(FileReplicationTransportError::Io)
     }
 
     fn append_aof_start_offset(
@@ -1166,7 +1167,9 @@ pub enum TcpReplicationTransportError {
 impl fmt::Display for TcpReplicationTransportError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::UnknownPeer(worker_id) => write!(f, "unknown replication peer worker id: {worker_id}"),
+            Self::UnknownPeer(worker_id) => {
+                write!(f, "unknown replication peer worker id: {worker_id}")
+            }
             Self::Io(error) => write!(f, "{error}"),
         }
     }
@@ -1179,7 +1182,8 @@ impl ReplicationTransport for TcpReplicationTransport {
 
     fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error> {
         let endpoint = self.peer_endpoint(worker_id)?;
-        let mut stream = std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
+        let mut stream =
+            std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
         stream
             .write_all(format!("CHECKPOINT {checkpoint_id}\n").as_bytes())
             .map_err(TcpReplicationTransportError::Io)
@@ -1191,7 +1195,8 @@ impl ReplicationTransport for TcpReplicationTransport {
         start_offset: u64,
     ) -> Result<u64, Self::Error> {
         let endpoint = self.peer_endpoint(worker_id)?;
-        let mut stream = std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
+        let mut stream =
+            std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
         stream
             .write_all(format!("AOF {start_offset}\n").as_bytes())
             .map_err(TcpReplicationTransportError::Io)?;
@@ -1362,11 +1367,9 @@ impl ReplicationManager {
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         let plan = self.plan_sync(replica_offset);
         if matches!(plan.mode, ReplicationSyncMode::Full) {
-            let checkpoint_id = plan
-                .checkpoint_id
-                .ok_or(ReplicationSyncError::Replication(
-                    ReplicationError::MissingCheckpointForFullSync,
-                ))?;
+            let checkpoint_id = plan.checkpoint_id.ok_or(ReplicationSyncError::Replication(
+                ReplicationError::MissingCheckpointForFullSync,
+            ))?;
             transport
                 .send_checkpoint(worker_id, checkpoint_id)
                 .map_err(ReplicationSyncError::Transport)?;
@@ -1413,11 +1416,9 @@ impl ReplicationManager {
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         let plan = self.plan_sync(replica_offset);
         if matches!(plan.mode, ReplicationSyncMode::Full) {
-            let checkpoint_id = plan
-                .checkpoint_id
-                .ok_or(ReplicationSyncError::Replication(
-                    ReplicationError::MissingCheckpointForFullSync,
-                ))?;
+            let checkpoint_id = plan.checkpoint_id.ok_or(ReplicationSyncError::Replication(
+                ReplicationError::MissingCheckpointForFullSync,
+            ))?;
             transport
                 .send_checkpoint(worker_id, checkpoint_id)
                 .await
@@ -1453,7 +1454,9 @@ impl ReplicationManager {
     ) -> Result<Vec<(u16, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
         let mut outcomes = Vec::new();
         for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
-            let outcome = self.execute_sync_for_worker_async(worker_id, transport).await?;
+            let outcome = self
+                .execute_sync_for_worker_async(worker_id, transport)
+                .await?;
             outcomes.push((worker_id, outcome));
         }
         Ok(outcomes)
@@ -1480,12 +1483,9 @@ impl ReplicationManager {
         config: &ClusterConfig,
         failed_primary_node_id: &str,
     ) -> Option<FailoverPlan> {
-        let failed_primary = config
-            .workers()
-            .iter()
-            .find(|worker| {
-                worker.role == WorkerRole::Primary && worker.node_id == failed_primary_node_id
-            })?;
+        let failed_primary = config.workers().iter().find(|worker| {
+            worker.role == WorkerRole::Primary && worker.node_id == failed_primary_node_id
+        })?;
 
         let mut best: Option<(u64, u16)> = None;
         for worker in config.workers().iter() {
@@ -1558,7 +1558,10 @@ impl FailoverCoordinator {
         replication_manager: &ReplicationManager,
         failed_primary_node_id: &str,
     ) -> Result<Option<FailoverPlan>, ClusterConfigError> {
-        if self.handled_failed_primaries.contains(failed_primary_node_id) {
+        if self
+            .handled_failed_primaries
+            .contains(failed_primary_node_id)
+        {
             return Ok(None);
         }
 
@@ -2608,7 +2611,9 @@ mod tests {
 
     #[test]
     fn takeover_slots_from_primary_reassigns_slots_to_local_primary() {
-        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let config = base_config()
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap();
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let with_slots = with_remote
@@ -2685,8 +2690,14 @@ mod tests {
             })
             .unwrap();
 
-        assert_eq!(updated.slot_assigned_owner(300).unwrap(), promoted_replica_id);
-        assert_eq!(updated.slot_assigned_owner(301).unwrap(), promoted_replica_id);
+        assert_eq!(
+            updated.slot_assigned_owner(300).unwrap(),
+            promoted_replica_id
+        );
+        assert_eq!(
+            updated.slot_assigned_owner(301).unwrap(),
+            promoted_replica_id
+        );
         assert_eq!(updated.slot_state(300).unwrap(), SlotState::Stable);
         assert_eq!(updated.slot_state(301).unwrap(), SlotState::Stable);
         assert_eq!(updated.slot_assigned_owner(302).unwrap(), LOCAL_WORKER_ID);
@@ -2714,7 +2725,10 @@ mod tests {
             promoted_worker_id: LOCAL_WORKER_ID,
             promoted_replication_offset: 0,
         });
-        assert!(matches!(result, Err(ClusterConfigError::WorkerNotFound(99))));
+        assert!(matches!(
+            result,
+            Err(ClusterConfigError::WorkerNotFound(99))
+        ));
     }
 
     #[test]
@@ -2848,12 +2862,22 @@ mod tests {
         assert_eq!(decoded.slot_assigned_owner(102).unwrap(), worker3_id);
         assert_eq!(decoded.slot_state(102).unwrap(), SlotState::Importing);
         assert_eq!(decoded.worker(worker2_id).unwrap().config_epoch, 5);
-        assert_eq!(decoded.worker(worker3_id).unwrap().role, WorkerRole::Replica);
         assert_eq!(
-            decoded.worker(worker3_id).unwrap().replica_of_node_id.as_deref(),
+            decoded.worker(worker3_id).unwrap().role,
+            WorkerRole::Replica
+        );
+        assert_eq!(
+            decoded
+                .worker(worker3_id)
+                .unwrap()
+                .replica_of_node_id
+                .as_deref(),
             Some("node-b")
         );
-        assert_eq!(decoded.worker(worker3_id).unwrap().replication_offset, 1_234);
+        assert_eq!(
+            decoded.worker(worker3_id).unwrap().replication_offset,
+            1_234
+        );
     }
 
     #[test]
@@ -3204,7 +3228,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = manager.execute_sync_async(8, Some(999), &mut transport).await;
+        let result = manager
+            .execute_sync_async(8, Some(999), &mut transport)
+            .await;
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Replication(
@@ -3222,7 +3248,9 @@ mod tests {
             ..Default::default()
         };
 
-        let result = manager.execute_sync_async(2, Some(15), &mut transport).await;
+        let result = manager
+            .execute_sync_async(2, Some(15), &mut transport)
+            .await;
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport("stream failed"))
@@ -3288,7 +3316,9 @@ mod tests {
         drop(rx);
         let mut transport = ChannelReplicationTransport::new(tx, 1_980);
 
-        let result = manager.execute_sync_async(5, Some(1_500), &mut transport).await;
+        let result = manager
+            .execute_sync_async(5, Some(1_500), &mut transport)
+            .await;
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport(
@@ -3354,7 +3384,9 @@ mod tests {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("listener should bind");
-        let addr = listener.local_addr().expect("listener should expose address");
+        let addr = listener
+            .local_addr()
+            .expect("listener should expose address");
         let receiver = tokio::spawn(async move {
             let mut payloads = Vec::new();
             for _ in 0..2 {
@@ -3392,7 +3424,9 @@ mod tests {
         let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
         let mut transport = TcpReplicationTransport::new(900);
 
-        let result = manager.execute_sync_async(4, Some(400), &mut transport).await;
+        let result = manager
+            .execute_sync_async(4, Some(400), &mut transport)
+            .await;
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport(
@@ -3479,7 +3513,10 @@ mod tests {
             .await
             .expect("initial full sync should succeed");
         assert_eq!(first.len(), 2);
-        assert_eq!(transport.checkpoints, vec![(replica_a, 11), (replica_b, 11)]);
+        assert_eq!(
+            transport.checkpoints,
+            vec![(replica_a, 11), (replica_b, 11)]
+        );
         assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
 
         manager.set_aof_tail_offset(960).unwrap();
@@ -3654,7 +3691,10 @@ mod tests {
         assert_eq!(updated.worker(replica_b).unwrap().role, WorkerRole::Primary);
         assert_eq!(updated.worker(replica_b).unwrap().replica_of_node_id, None);
         assert_eq!(updated.worker(replica_b).unwrap().replication_offset, 190);
-        assert_eq!(updated.worker(LOCAL_WORKER_ID).unwrap().role, WorkerRole::Replica);
+        assert_eq!(
+            updated.worker(LOCAL_WORKER_ID).unwrap().role,
+            WorkerRole::Replica
+        );
         assert_eq!(
             updated
                 .worker(LOCAL_WORKER_ID)
@@ -3775,7 +3815,10 @@ mod tests {
             .unwrap();
         assert_eq!(first.synchronized_replicas.len(), 2);
         assert_eq!(
-            first.failover_plan.as_ref().map(|plan| plan.promoted_worker_id),
+            first
+                .failover_plan
+                .as_ref()
+                .map(|plan| plan.promoted_worker_id),
             Some(replica_a)
         );
         assert_eq!(store.load().slot_assigned_owner(452).unwrap(), replica_a);
@@ -3834,7 +3877,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcome.synchronized_replicas.len(), 2);
         assert_eq!(
-            outcome.failover_plan.as_ref().map(|plan| plan.promoted_worker_id),
+            outcome
+                .failover_plan
+                .as_ref()
+                .map(|plan| plan.promoted_worker_id),
             Some(replica_a)
         );
         assert_eq!(store.load().slot_assigned_owner(453).unwrap(), replica_a);
@@ -3844,14 +3890,11 @@ mod tests {
 
     #[test]
     fn cluster_failover_controller_handles_failed_worker_ids_for_primaries_only() {
-        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let config = base_config()
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap();
         let (config, failed_primary_id) = config
-            .add_worker(Worker::new(
-                "node-2",
-                "10.0.0.2",
-                6380,
-                WorkerRole::Primary,
-            ))
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
@@ -3877,7 +3920,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].0, failed_primary_id);
-        assert_eq!(store.load().slot_assigned_owner(454).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            store.load().slot_assigned_owner(454).unwrap(),
+            LOCAL_WORKER_ID
+        );
         assert_eq!(
             outcomes[0]
                 .1
@@ -3890,14 +3936,11 @@ mod tests {
 
     #[tokio::test]
     async fn cluster_failover_controller_handles_failed_worker_ids_async() {
-        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let config = base_config()
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap();
         let (config, failed_primary_id) = config
-            .add_worker(Worker::new(
-                "node-2",
-                "10.0.0.2",
-                6380,
-                WorkerRole::Primary,
-            ))
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
@@ -3919,7 +3962,10 @@ mod tests {
             .unwrap();
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].0, failed_primary_id);
-        assert_eq!(store.load().slot_assigned_owner(455).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            store.load().slot_assigned_owner(455).unwrap(),
+            LOCAL_WORKER_ID
+        );
         assert_eq!(transport.checkpoints, vec![(LOCAL_WORKER_ID, 5)]);
         assert_eq!(transport.streams, vec![(LOCAL_WORKER_ID, 300)]);
     }
@@ -4278,7 +4324,10 @@ mod tests {
         let mut transport = TcpGossipTransport::new(store);
 
         let result = transport.try_gossip(99).await;
-        assert!(matches!(result, Err(TcpGossipTransportError::UnknownPeer(99))));
+        assert!(matches!(
+            result,
+            Err(TcpGossipTransportError::UnknownPeer(99))
+        ));
     }
 
     #[tokio::test]
@@ -4364,7 +4413,11 @@ mod tests {
         drop(tx);
 
         let reports = manager
-            .run_with_config_updates(&store, rx, tokio::time::sleep(std::time::Duration::from_millis(12)))
+            .run_with_config_updates(
+                &store,
+                rx,
+                tokio::time::sleep(std::time::Duration::from_millis(12)),
+            )
             .await;
         assert!(reports.len() >= 2);
         assert_eq!(store.load().slot_assigned_owner(303).unwrap(), worker3_id);
@@ -4397,12 +4450,14 @@ mod tests {
         let receiver_store = ClusterConfigStore::new(older);
         let (tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
 
-        let mut sender_transport = InMemoryGossipTransport::new(std::sync::Arc::clone(&sender_store));
+        let mut sender_transport =
+            InMemoryGossipTransport::new(std::sync::Arc::clone(&sender_store));
         sender_transport.add_peer(worker2_id, tx_updates);
 
         let sender_coordinator = GossipCoordinator::new(vec![GossipNode::new(worker2_id, 0)], 1);
         let sender_engine = AsyncGossipEngine::new(sender_coordinator, sender_transport, 100, 0);
-        let mut sender_manager = ClusterManager::new(sender_engine, std::time::Duration::from_millis(5));
+        let mut sender_manager =
+            ClusterManager::new(sender_engine, std::time::Duration::from_millis(5));
 
         let receiver_coordinator = GossipCoordinator::new(Vec::new(), 1);
         let receiver_engine = AsyncGossipEngine::new(
@@ -4414,7 +4469,8 @@ mod tests {
             100,
             0,
         );
-        let mut receiver_manager = ClusterManager::new(receiver_engine, std::time::Duration::from_millis(5));
+        let mut receiver_manager =
+            ClusterManager::new(receiver_engine, std::time::Duration::from_millis(5));
 
         let receiver_task = tokio::spawn(async move {
             receiver_manager
@@ -4429,7 +4485,10 @@ mod tests {
 
         sender_manager.run_for_rounds(1).await;
         let receiver_store = receiver_task.await.unwrap();
-        assert_eq!(receiver_store.load().slot_assigned_owner(304).unwrap(), worker3_id);
+        assert_eq!(
+            receiver_store.load().slot_assigned_owner(304).unwrap(),
+            worker3_id
+        );
     }
 
     #[tokio::test]
@@ -4478,7 +4537,8 @@ mod tests {
 
         let sender_coordinator = GossipCoordinator::new(vec![GossipNode::new(worker2_id, 0)], 1);
         let sender_engine = AsyncGossipEngine::new(sender_coordinator, sender_transport, 100, 0);
-        let mut sender_manager = ClusterManager::new(sender_engine, std::time::Duration::from_millis(5));
+        let mut sender_manager =
+            ClusterManager::new(sender_engine, std::time::Duration::from_millis(5));
 
         let receiver_coordinator = GossipCoordinator::new(Vec::new(), 1);
         let receiver_engine = AsyncGossipEngine::new(
@@ -4490,7 +4550,8 @@ mod tests {
             100,
             0,
         );
-        let mut receiver_manager = ClusterManager::new(receiver_engine, std::time::Duration::from_millis(5));
+        let mut receiver_manager =
+            ClusterManager::new(receiver_engine, std::time::Duration::from_millis(5));
 
         let receiver_task = tokio::spawn(async move {
             receiver_manager
@@ -4506,19 +4567,19 @@ mod tests {
         sender_manager.run_for_rounds(1).await;
         listener_task.await.unwrap();
         let receiver_store = receiver_task.await.unwrap();
-        assert_eq!(receiver_store.load().slot_assigned_owner(305).unwrap(), worker3_id);
+        assert_eq!(
+            receiver_store.load().slot_assigned_owner(305).unwrap(),
+            worker3_id
+        );
     }
 
     #[tokio::test]
     async fn cluster_manager_run_with_failover_triggers_controller_on_detected_failure() {
-        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let config = base_config()
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap();
         let (config, failed_primary_id) = config
-            .add_worker(Worker::new(
-                "node-2",
-                "10.0.0.2",
-                6380,
-                WorkerRole::Primary,
-            ))
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
@@ -4562,22 +4623,28 @@ mod tests {
         assert!(reports
             .iter()
             .any(|report| report.failed_worker_ids.contains(&failed_primary_id)));
-        assert_eq!(store.load().slot_assigned_owner(460).unwrap(), LOCAL_WORKER_ID);
-        assert_eq!(store.load().local_worker().unwrap().role, WorkerRole::Primary);
-        assert_eq!(replication_transport.checkpoints, vec![(LOCAL_WORKER_ID, 3)]);
+        assert_eq!(
+            store.load().slot_assigned_owner(460).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(
+            store.load().local_worker().unwrap().role,
+            WorkerRole::Primary
+        );
+        assert_eq!(
+            replication_transport.checkpoints,
+            vec![(LOCAL_WORKER_ID, 3)]
+        );
         assert_eq!(replication_transport.streams, vec![(LOCAL_WORKER_ID, 100)]);
     }
 
     #[tokio::test]
     async fn cluster_manager_failover_report_exposes_executed_plan_details() {
-        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let config = base_config()
+            .set_local_worker_role(WorkerRole::Replica)
+            .unwrap();
         let (config, failed_primary_id) = config
-            .add_worker(Worker::new(
-                "node-2",
-                "10.0.0.2",
-                6380,
-                WorkerRole::Primary,
-            ))
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
@@ -4626,7 +4693,10 @@ mod tests {
         assert_eq!(record.plan.failed_primary_worker_id, failed_primary_id);
         assert_eq!(record.plan.promoted_worker_id, LOCAL_WORKER_ID);
         assert_eq!(record.synchronized_replicas.len(), 1);
-        assert_eq!(store.load().slot_assigned_owner(461).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            store.load().slot_assigned_owner(461).unwrap(),
+            LOCAL_WORKER_ID
+        );
     }
 
     #[test]
