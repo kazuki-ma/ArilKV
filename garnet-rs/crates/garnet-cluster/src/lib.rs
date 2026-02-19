@@ -12,7 +12,7 @@ use std::pin::Pin;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
 pub const RESERVED_WORKER_ID: u16 = 0;
@@ -523,6 +523,207 @@ fn slot_claim_key(config: &ClusterConfig, slot: HashSlot) -> (u64, &str) {
         .worker(slot.assigned_worker_id())
         .map(|worker| (worker.config_epoch, worker.node_id.as_str()))
         .unwrap_or((0, ""))
+}
+
+const CLUSTER_CONFIG_SNAPSHOT_MAGIC: [u8; 4] = *b"GCFG";
+const CLUSTER_CONFIG_SNAPSHOT_VERSION: u8 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClusterConfigCodecError {
+    WorkerCountTooLarge(usize),
+    StringTooLong(usize),
+    UnexpectedEof,
+    InvalidMagic,
+    InvalidVersion(u8),
+    InvalidUtf8,
+    TrailingBytes(usize),
+}
+
+impl fmt::Display for ClusterConfigCodecError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WorkerCountTooLarge(count) => {
+                write!(f, "worker count does not fit into u16: {count}")
+            }
+            Self::StringTooLong(len) => write!(f, "string length does not fit into u16: {len}"),
+            Self::UnexpectedEof => write!(f, "unexpected end of cluster-config snapshot bytes"),
+            Self::InvalidMagic => write!(f, "invalid cluster-config snapshot magic"),
+            Self::InvalidVersion(version) => {
+                write!(f, "unsupported cluster-config snapshot version: {version}")
+            }
+            Self::InvalidUtf8 => write!(f, "cluster-config snapshot contains invalid utf8"),
+            Self::TrailingBytes(extra) => write!(
+                f,
+                "cluster-config snapshot has trailing bytes after decode: {extra}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ClusterConfigCodecError {}
+
+pub fn encode_cluster_config_snapshot(
+    config: &ClusterConfig,
+) -> Result<Vec<u8>, ClusterConfigCodecError> {
+    let worker_count = config.workers.len();
+    let worker_count_u16 = u16::try_from(worker_count)
+        .map_err(|_| ClusterConfigCodecError::WorkerCountTooLarge(worker_count))?;
+    let mut out = Vec::with_capacity(64 + worker_count * 96 + HASH_SLOT_COUNT * 3);
+    out.extend_from_slice(&CLUSTER_CONFIG_SNAPSHOT_MAGIC);
+    out.push(CLUSTER_CONFIG_SNAPSHOT_VERSION);
+    out.extend_from_slice(&worker_count_u16.to_le_bytes());
+
+    for worker in &config.workers {
+        out.extend_from_slice(&worker.id.to_le_bytes());
+        out.extend_from_slice(&worker.config_epoch.to_le_bytes());
+        out.extend_from_slice(&worker.port.to_le_bytes());
+        out.push(worker.role as u8);
+        out.extend_from_slice(&worker.replication_offset.to_le_bytes());
+        push_len_prefixed_string(&mut out, &worker.node_id)?;
+        push_len_prefixed_string(&mut out, &worker.host)?;
+        match worker.replica_of_node_id.as_deref() {
+            Some(primary_node_id) => {
+                out.push(1);
+                push_len_prefixed_string(&mut out, primary_node_id)?;
+            }
+            None => out.push(0),
+        }
+    }
+
+    for slot in config.slot_map.iter() {
+        out.extend_from_slice(&slot.assigned_worker_id().to_le_bytes());
+        out.push(slot.state() as u8);
+    }
+
+    Ok(out)
+}
+
+pub fn decode_cluster_config_snapshot(bytes: &[u8]) -> Result<ClusterConfig, ClusterConfigCodecError> {
+    let mut cursor = 0usize;
+    let magic = read_exact_bytes(bytes, &mut cursor, CLUSTER_CONFIG_SNAPSHOT_MAGIC.len())?;
+    if magic != CLUSTER_CONFIG_SNAPSHOT_MAGIC {
+        return Err(ClusterConfigCodecError::InvalidMagic);
+    }
+
+    let version = read_u8(bytes, &mut cursor)?;
+    if version != CLUSTER_CONFIG_SNAPSHOT_VERSION {
+        return Err(ClusterConfigCodecError::InvalidVersion(version));
+    }
+
+    let worker_count = read_u16(bytes, &mut cursor)? as usize;
+    let mut decoded_workers = Vec::with_capacity(worker_count);
+    let mut max_worker_id = 0u16;
+    for _ in 0..worker_count {
+        let id = read_u16(bytes, &mut cursor)?;
+        let config_epoch = read_u64(bytes, &mut cursor)?;
+        let port = read_u16(bytes, &mut cursor)?;
+        let role = match read_u8(bytes, &mut cursor)? {
+            0 => WorkerRole::Unassigned,
+            1 => WorkerRole::Primary,
+            2 => WorkerRole::Replica,
+            _ => WorkerRole::Unassigned,
+        };
+        let replication_offset = read_u64(bytes, &mut cursor)?;
+        let node_id = read_len_prefixed_string(bytes, &mut cursor)?;
+        let host = read_len_prefixed_string(bytes, &mut cursor)?;
+        let replica_of_node_id = match read_u8(bytes, &mut cursor)? {
+            0 => None,
+            1 => Some(read_len_prefixed_string(bytes, &mut cursor)?),
+            _ => None,
+        };
+
+        max_worker_id = max_worker_id.max(id);
+        decoded_workers.push(Worker {
+            id,
+            node_id,
+            host,
+            port,
+            config_epoch,
+            role,
+            replica_of_node_id,
+            replication_offset,
+        });
+    }
+
+    let mut workers = if worker_count == 0 {
+        vec![Worker::reserved(); (LOCAL_WORKER_ID as usize) + 1]
+    } else {
+        vec![Worker::reserved(); (max_worker_id as usize) + 1]
+    };
+    if workers.len() <= LOCAL_WORKER_ID as usize {
+        workers.resize((LOCAL_WORKER_ID as usize) + 1, Worker::reserved());
+    }
+    for worker in decoded_workers {
+        let worker_id = worker.id as usize;
+        if worker_id >= workers.len() {
+            workers.resize(worker_id + 1, Worker::reserved());
+        }
+        workers[worker_id] = worker;
+    }
+
+    let mut slot_map = [HashSlot::default(); HASH_SLOT_COUNT];
+    for slot in &mut slot_map {
+        let worker_id = read_u16(bytes, &mut cursor)?;
+        let state = SlotState::from_u8(read_u8(bytes, &mut cursor)?);
+        *slot = HashSlot::new(worker_id, state);
+    }
+
+    if cursor != bytes.len() {
+        return Err(ClusterConfigCodecError::TrailingBytes(bytes.len() - cursor));
+    }
+
+    Ok(ClusterConfig {
+        slot_map: Box::new(slot_map),
+        workers,
+    })
+}
+
+fn push_len_prefixed_string(out: &mut Vec<u8>, value: &str) -> Result<(), ClusterConfigCodecError> {
+    let len = value.len();
+    let len_u16 = u16::try_from(len).map_err(|_| ClusterConfigCodecError::StringTooLong(len))?;
+    out.extend_from_slice(&len_u16.to_le_bytes());
+    out.extend_from_slice(value.as_bytes());
+    Ok(())
+}
+
+fn read_exact_bytes<'a>(
+    bytes: &'a [u8],
+    cursor: &mut usize,
+    len: usize,
+) -> Result<&'a [u8], ClusterConfigCodecError> {
+    let end = cursor.saturating_add(len);
+    if end > bytes.len() {
+        return Err(ClusterConfigCodecError::UnexpectedEof);
+    }
+    let out = &bytes[*cursor..end];
+    *cursor = end;
+    Ok(out)
+}
+
+fn read_u8(bytes: &[u8], cursor: &mut usize) -> Result<u8, ClusterConfigCodecError> {
+    Ok(read_exact_bytes(bytes, cursor, 1)?[0])
+}
+
+fn read_u16(bytes: &[u8], cursor: &mut usize) -> Result<u16, ClusterConfigCodecError> {
+    let raw = read_exact_bytes(bytes, cursor, 2)?;
+    Ok(u16::from_le_bytes([raw[0], raw[1]]))
+}
+
+fn read_u64(bytes: &[u8], cursor: &mut usize) -> Result<u64, ClusterConfigCodecError> {
+    let raw = read_exact_bytes(bytes, cursor, 8)?;
+    Ok(u64::from_le_bytes([
+        raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6], raw[7],
+    ]))
+}
+
+fn read_len_prefixed_string(
+    bytes: &[u8],
+    cursor: &mut usize,
+) -> Result<String, ClusterConfigCodecError> {
+    let len = read_u16(bytes, cursor)? as usize;
+    let raw = read_exact_bytes(bytes, cursor, len)?;
+    let as_str = std::str::from_utf8(raw).map_err(|_| ClusterConfigCodecError::InvalidUtf8)?;
+    Ok(as_str.to_owned())
 }
 
 pub fn redis_hash_slot(key: &[u8]) -> u16 {
@@ -1456,6 +1657,126 @@ impl AsyncGossipTransport for InMemoryGossipTransport {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TcpGossipTransportError {
+    UnknownPeer(u16),
+    MessageTooLarge(usize),
+    Codec(ClusterConfigCodecError),
+    Io(String),
+}
+
+impl fmt::Display for TcpGossipTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownPeer(worker_id) => write!(f, "unknown gossip peer worker id: {worker_id}"),
+            Self::MessageTooLarge(len) => write!(
+                f,
+                "gossip snapshot payload exceeds u32 frame length: {len} bytes"
+            ),
+            Self::Codec(error) => write!(f, "{error}"),
+            Self::Io(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for TcpGossipTransportError {}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TcpGossipReadError {
+    Io(String),
+    MessageTooLarge(usize),
+    Codec(ClusterConfigCodecError),
+}
+
+impl fmt::Display for TcpGossipReadError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::MessageTooLarge(len) => {
+                write!(f, "gossip frame length exceeds read limit: {len} bytes")
+            }
+            Self::Codec(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for TcpGossipReadError {}
+
+pub async fn read_gossip_snapshot(
+    stream: &mut tokio::net::TcpStream,
+    max_payload_len: usize,
+) -> Result<ClusterConfig, TcpGossipReadError> {
+    let mut len_buf = [0u8; 4];
+    stream
+        .read_exact(&mut len_buf)
+        .await
+        .map_err(|error| TcpGossipReadError::Io(error.to_string()))?;
+    let payload_len = u32::from_le_bytes(len_buf) as usize;
+    if payload_len > max_payload_len {
+        return Err(TcpGossipReadError::MessageTooLarge(payload_len));
+    }
+
+    let mut payload = vec![0u8; payload_len];
+    stream
+        .read_exact(&mut payload)
+        .await
+        .map_err(|error| TcpGossipReadError::Io(error.to_string()))?;
+    decode_cluster_config_snapshot(&payload).map_err(TcpGossipReadError::Codec)
+}
+
+#[derive(Debug)]
+pub struct TcpGossipTransport {
+    local_config: Arc<ClusterConfigStore>,
+    peers: BTreeMap<u16, SocketAddr>,
+}
+
+impl TcpGossipTransport {
+    pub fn new(local_config: Arc<ClusterConfigStore>) -> Self {
+        Self {
+            local_config,
+            peers: BTreeMap::new(),
+        }
+    }
+
+    pub fn add_peer(&mut self, worker_id: u16, endpoint: SocketAddr) {
+        self.peers.insert(worker_id, endpoint);
+    }
+}
+
+impl AsyncGossipTransport for TcpGossipTransport {
+    type Error = TcpGossipTransportError;
+    type Fut<'a>
+        = Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a> {
+        let peer_endpoint = self.peers.get(&worker_id).copied();
+        let snapshot = self.local_config.load();
+        let payload = encode_cluster_config_snapshot(snapshot.as_ref());
+
+        Box::pin(async move {
+            let endpoint = peer_endpoint.ok_or(TcpGossipTransportError::UnknownPeer(worker_id))?;
+            let payload = payload.map_err(TcpGossipTransportError::Codec)?;
+            let payload_len = payload.len();
+            let payload_len_u32 = u32::try_from(payload_len)
+                .map_err(|_| TcpGossipTransportError::MessageTooLarge(payload_len))?;
+
+            let mut stream = tokio::net::TcpStream::connect(endpoint)
+                .await
+                .map_err(|error| TcpGossipTransportError::Io(error.to_string()))?;
+            stream
+                .write_all(&payload_len_u32.to_le_bytes())
+                .await
+                .map_err(|error| TcpGossipTransportError::Io(error.to_string()))?;
+            stream
+                .write_all(&payload)
+                .await
+                .map_err(|error| TcpGossipTransportError::Io(error.to_string()))
+        })
+    }
+}
+
 #[derive(Debug)]
 pub struct GossipCoordinator {
     nodes: Vec<GossipNode>,
@@ -2060,6 +2381,43 @@ mod tests {
         let store = ClusterConfigStore::new(current);
         let merged = store.merge_publish(&incoming);
         assert_eq!(merged.slot_assigned_owner(202).unwrap(), worker3_id);
+    }
+
+    #[test]
+    fn cluster_config_snapshot_codec_roundtrip_preserves_workers_and_slots() {
+        let base = base_config();
+        let (base, worker2_id) = base
+            .add_worker(Worker::new("node-b", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+        let (base, worker3_id) = base
+            .add_worker(Worker::new("node-c", "10.0.0.3", 6381, WorkerRole::Replica))
+            .unwrap();
+        let original = base
+            .set_worker_config_epoch(worker2_id, 5)
+            .unwrap()
+            .set_worker_replica_of(worker3_id, "node-b")
+            .unwrap()
+            .set_worker_replication_offset(worker3_id, 1_234)
+            .unwrap()
+            .set_slot_state(101, worker2_id, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(102, worker3_id, SlotState::Importing)
+            .unwrap();
+
+        let encoded = encode_cluster_config_snapshot(&original).unwrap();
+        let decoded = decode_cluster_config_snapshot(&encoded).unwrap();
+
+        assert_eq!(decoded.slot_assigned_owner(101).unwrap(), worker2_id);
+        assert_eq!(decoded.slot_state(101).unwrap(), SlotState::Stable);
+        assert_eq!(decoded.slot_assigned_owner(102).unwrap(), worker3_id);
+        assert_eq!(decoded.slot_state(102).unwrap(), SlotState::Importing);
+        assert_eq!(decoded.worker(worker2_id).unwrap().config_epoch, 5);
+        assert_eq!(decoded.worker(worker3_id).unwrap().role, WorkerRole::Replica);
+        assert_eq!(
+            decoded.worker(worker3_id).unwrap().replica_of_node_id.as_deref(),
+            Some("node-b")
+        );
+        assert_eq!(decoded.worker(worker3_id).unwrap().replication_offset, 1_234);
     }
 
     #[test]
@@ -3011,6 +3369,41 @@ mod tests {
             result,
             Err(InMemoryGossipTransportError::ChannelClosed(4))
         ));
+    }
+
+    #[tokio::test]
+    async fn tcp_gossip_transport_sends_snapshot_over_socket() {
+        let config = base_config()
+            .set_slot_state(12, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        let store = std::sync::Arc::new(ClusterConfigStore::new(config));
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should have addr");
+        let receiver = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept should succeed");
+            read_gossip_snapshot(&mut socket, 2 * 1024 * 1024).await
+        });
+
+        let mut transport = TcpGossipTransport::new(std::sync::Arc::clone(&store));
+        transport.add_peer(2, addr);
+        transport.try_gossip(2).await.unwrap();
+
+        let received = receiver.await.unwrap().unwrap();
+        assert_eq!(received.slot_state(12).unwrap(), SlotState::Stable);
+        assert_eq!(received.slot_owner(12).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(received.local_worker().unwrap().node_id, "local-node");
+    }
+
+    #[tokio::test]
+    async fn tcp_gossip_transport_returns_unknown_peer_error() {
+        let store = std::sync::Arc::new(ClusterConfigStore::new(base_config()));
+        let mut transport = TcpGossipTransport::new(store);
+
+        let result = transport.try_gossip(99).await;
+        assert!(matches!(result, Err(TcpGossipTransportError::UnknownPeer(99))));
     }
 
     #[tokio::test]
