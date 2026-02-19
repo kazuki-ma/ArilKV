@@ -513,6 +513,27 @@ pub trait ReplicationTransport {
     ) -> Result<u64, Self::Error>;
 }
 
+pub trait AsyncReplicationTransport {
+    type Error;
+    type CheckpointFut<'a>: Future<Output = Result<(), Self::Error>> + 'a
+    where
+        Self: 'a;
+    type StreamFut<'a>: Future<Output = Result<u64, Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    fn send_checkpoint<'a>(
+        &'a mut self,
+        worker_id: u16,
+        checkpoint_id: u64,
+    ) -> Self::CheckpointFut<'a>;
+    fn stream_aof_from_offset<'a>(
+        &'a mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Self::StreamFut<'a>;
+}
+
 #[derive(Debug, Clone)]
 pub struct ReplicationManager {
     checkpoint_id: Option<u64>,
@@ -638,6 +659,37 @@ impl ReplicationManager {
 
         let streamed_until_offset = transport
             .stream_aof_from_offset(worker_id, plan.aof_start_offset)
+            .map_err(ReplicationSyncError::Transport)?;
+        self.record_replica_offset(worker_id, streamed_until_offset);
+
+        Ok(ReplicationSyncOutcome {
+            plan,
+            streamed_until_offset,
+        })
+    }
+
+    pub async fn execute_sync_async<T: AsyncReplicationTransport>(
+        &mut self,
+        worker_id: u16,
+        replica_offset: Option<u64>,
+        transport: &mut T,
+    ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
+        let plan = self.plan_sync(replica_offset);
+        if matches!(plan.mode, ReplicationSyncMode::Full) {
+            let checkpoint_id = plan
+                .checkpoint_id
+                .ok_or(ReplicationSyncError::Replication(
+                    ReplicationError::MissingCheckpointForFullSync,
+                ))?;
+            transport
+                .send_checkpoint(worker_id, checkpoint_id)
+                .await
+                .map_err(ReplicationSyncError::Transport)?;
+        }
+
+        let streamed_until_offset = transport
+            .stream_aof_from_offset(worker_id, plan.aof_start_offset)
+            .await
             .map_err(ReplicationSyncError::Transport)?;
         self.record_replica_offset(worker_id, streamed_until_offset);
 
@@ -1319,6 +1371,122 @@ mod tests {
         };
 
         let result = manager.execute_sync(2, Some(15), &mut transport);
+        assert!(matches!(
+            result,
+            Err(ReplicationSyncError::Transport("stream failed"))
+        ));
+    }
+
+    #[derive(Default)]
+    struct AsyncMockReplicationTransport {
+        checkpoints: Vec<(u16, u64)>,
+        streams: Vec<(u16, u64)>,
+        stream_result: u64,
+        fail_checkpoint: bool,
+        fail_stream: bool,
+    }
+
+    impl AsyncReplicationTransport for AsyncMockReplicationTransport {
+        type Error = &'static str;
+        type CheckpointFut<'a>
+            = std::future::Ready<Result<(), Self::Error>>
+        where
+            Self: 'a;
+        type StreamFut<'a>
+            = std::future::Ready<Result<u64, Self::Error>>
+        where
+            Self: 'a;
+
+        fn send_checkpoint<'a>(
+            &'a mut self,
+            worker_id: u16,
+            checkpoint_id: u64,
+        ) -> Self::CheckpointFut<'a> {
+            std::future::ready(if self.fail_checkpoint {
+                Err("checkpoint failed")
+            } else {
+                self.checkpoints.push((worker_id, checkpoint_id));
+                Ok(())
+            })
+        }
+
+        fn stream_aof_from_offset<'a>(
+            &'a mut self,
+            worker_id: u16,
+            start_offset: u64,
+        ) -> Self::StreamFut<'a> {
+            std::future::ready(if self.fail_stream {
+                Err("stream failed")
+            } else {
+                self.streams.push((worker_id, start_offset));
+                Ok(self.stream_result)
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn replication_manager_execute_sync_async_uses_incremental_plan_without_checkpoint() {
+        let mut manager = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            stream_result: 1_750,
+            ..Default::default()
+        };
+
+        let outcome = manager
+            .execute_sync_async(3, Some(1_500), &mut transport)
+            .await
+            .expect("incremental sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
+        assert!(transport.checkpoints.is_empty());
+        assert_eq!(transport.streams, vec![(3, 1_500)]);
+        assert_eq!(manager.replica_offset(3), Some(1_750));
+    }
+
+    #[tokio::test]
+    async fn replication_manager_execute_sync_async_sends_checkpoint_for_full_sync() {
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+
+        let outcome = manager
+            .execute_sync_async(4, Some(400), &mut transport)
+            .await
+            .expect("full sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(transport.checkpoints, vec![(4, 9)]);
+        assert_eq!(transport.streams, vec![(4, 500)]);
+        assert_eq!(manager.replica_offset(4), Some(900));
+    }
+
+    #[tokio::test]
+    async fn replication_manager_execute_sync_async_errors_when_checkpoint_missing_for_full_sync() {
+        let mut manager = ReplicationManager::new(None, 1_000, 2_000).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            stream_result: 2_000,
+            ..Default::default()
+        };
+
+        let result = manager.execute_sync_async(8, Some(999), &mut transport).await;
+        assert!(matches!(
+            result,
+            Err(ReplicationSyncError::Replication(
+                ReplicationError::MissingCheckpointForFullSync
+            ))
+        ));
+        assert!(transport.streams.is_empty());
+    }
+
+    #[tokio::test]
+    async fn replication_manager_execute_sync_async_propagates_transport_errors() {
+        let mut manager = ReplicationManager::new(Some(1), 10, 20).unwrap();
+        let mut transport = AsyncMockReplicationTransport {
+            fail_stream: true,
+            ..Default::default()
+        };
+
+        let result = manager.execute_sync_async(2, Some(15), &mut transport).await;
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport("stream failed"))
