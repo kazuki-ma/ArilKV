@@ -272,6 +272,11 @@ async fn handle_connection(
                                 {
                                     transaction.reset();
                                     responses.extend_from_slice(b"*-1\r\n");
+                                } else if transaction.aborted {
+                                    transaction.reset();
+                                    responses.extend_from_slice(
+                                        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+                                    );
                                 } else {
                                     execute_transaction_queue(
                                         &processor,
@@ -310,6 +315,20 @@ async fn handle_connection(
                                 }
                             }
                             _ => {
+                                if cluster_config.is_some() {
+                                    if let Some(slot) = command_hash_slot_for_transaction(
+                                        &args[..meta.argument_count],
+                                        command,
+                                    ) {
+                                        if !transaction.set_transaction_slot_or_abort(slot) {
+                                            responses.extend_from_slice(
+                                                b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+                                            );
+                                            consumed += meta.bytes_consumed;
+                                            continue;
+                                        }
+                                    }
+                                }
                                 transaction
                                     .queued_frames
                                     .push(receive_buffer[frame_start..frame_end].to_vec());
@@ -394,6 +413,8 @@ struct ConnectionTransactionState {
     in_multi: bool,
     queued_frames: Vec<Vec<u8>>,
     watched_keys: Vec<(Vec<u8>, u64)>,
+    transaction_slot: Option<u16>,
+    aborted: bool,
 }
 
 impl ConnectionTransactionState {
@@ -401,6 +422,8 @@ impl ConnectionTransactionState {
         self.in_multi = false;
         self.queued_frames.clear();
         self.watched_keys.clear();
+        self.transaction_slot = None;
+        self.aborted = false;
     }
 
     fn clear_watches(&mut self) {
@@ -418,6 +441,20 @@ impl ConnectionTransactionState {
         }
         self.watched_keys.push((key.to_vec(), version));
     }
+
+    fn set_transaction_slot_or_abort(&mut self, slot: u16) -> bool {
+        match self.transaction_slot {
+            None => {
+                self.transaction_slot = Some(slot);
+                true
+            }
+            Some(existing) if existing == slot => true,
+            Some(_) => {
+                self.aborted = true;
+                false
+            }
+        }
+    }
 }
 
 fn execute_transaction_queue(
@@ -428,6 +465,8 @@ fn execute_transaction_queue(
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
     transaction.watched_keys.clear();
+    transaction.transaction_slot = None;
+    transaction.aborted = false;
 
     responses.push(b'*');
     responses.extend_from_slice(queued.len().to_string().as_bytes());
@@ -564,6 +603,50 @@ fn cluster_redirection_for_slot(
         SlotRouteDecision::Local => Ok(None),
         SlotRouteDecision::Ask { .. } if asking_allowed => Ok(None),
         _ => config.redirection_error_for_slot(slot),
+    }
+}
+
+fn command_hash_slot_for_transaction(args: &[ArgSlice], command: CommandId) -> Option<u16> {
+    if args.len() < 2 {
+        return None;
+    }
+    match command {
+        CommandId::Del => {
+            // SAFETY: argument slices reference the current request frame.
+            let first_key = unsafe { args[1].as_slice() };
+            Some(redis_hash_slot(first_key))
+        }
+        CommandId::Get
+        | CommandId::Set
+        | CommandId::Incr
+        | CommandId::Decr
+        | CommandId::Expire
+        | CommandId::Ttl
+        | CommandId::Pexpire
+        | CommandId::Pttl
+        | CommandId::Persist
+        | CommandId::Hset
+        | CommandId::Hget
+        | CommandId::Hdel
+        | CommandId::Hgetall
+        | CommandId::Lpush
+        | CommandId::Rpush
+        | CommandId::Lpop
+        | CommandId::Rpop
+        | CommandId::Lrange
+        | CommandId::Sadd
+        | CommandId::Srem
+        | CommandId::Smembers
+        | CommandId::Sismember
+        | CommandId::Zadd
+        | CommandId::Zrem
+        | CommandId::Zrange
+        | CommandId::Zscore => {
+            // SAFETY: argument slices reference the current request frame.
+            let key = unsafe { args[1].as_slice() };
+            Some(redis_hash_slot(key))
+        }
+        _ => None,
     }
 }
 
@@ -1076,6 +1159,21 @@ mod tests {
         cluster_config = cluster_config
             .set_slot_state(ask_slot, remote_id, SlotState::Importing)
             .unwrap();
+
+        let tx_key_a = b"tx-slot-a";
+        let tx_slot_a = redis_hash_slot(tx_key_a);
+        let mut tx_key_b = b"tx-slot-b".to_vec();
+        let mut tx_slot_b = redis_hash_slot(&tx_key_b);
+        while tx_slot_b == tx_slot_a {
+            tx_key_b.push(b'x');
+            tx_slot_b = redis_hash_slot(&tx_key_b);
+        }
+        cluster_config = cluster_config
+            .set_slot_state(tx_slot_a, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        cluster_config = cluster_config
+            .set_slot_state(tx_slot_b, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
         let cluster_store = Arc::new(ClusterConfigStore::new(cluster_config));
 
         let server_metrics = Arc::clone(&metrics);
@@ -1139,6 +1237,37 @@ mod tests {
             &mut client,
             b"*2\r\n$3\r\nGET\r\n$5\r\nask-k\r\n",
             expected_ask.as_bytes(),
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$9\r\ntx-slot-a\r\n$1\r\n1\r\n",
+            b"+QUEUED\r\n",
+        )
+        .await;
+        let tx_b_len = tx_key_b.len();
+        let tx_b_req = format!(
+            "*3\r\n$3\r\nSET\r\n${}\r\n{}\r\n$1\r\n2\r\n",
+            tx_b_len,
+            String::from_utf8(tx_key_b.clone()).unwrap()
+        );
+        send_and_expect(
+            &mut client,
+            tx_b_req.as_bytes(),
+            b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*1\r\n$4\r\nEXEC\r\n",
+            b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$9\r\ntx-slot-a\r\n",
+            b"$-1\r\n",
         )
         .await;
 
