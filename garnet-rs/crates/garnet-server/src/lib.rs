@@ -722,6 +722,50 @@ where
     Ok(control_plane_report)
 }
 
+pub async fn run_with_cluster_control_plane<F, T, R>(
+    config: ServerConfig,
+    metrics: Arc<ServerMetrics>,
+    source_store: Arc<ClusterConfigStore>,
+    manager: &mut garnet_cluster::ClusterManager<T>,
+    target_store: &ClusterConfigStore,
+    target_processor: &RequestProcessor,
+    updates: tokio::sync::mpsc::UnboundedReceiver<garnet_cluster::ClusterConfig>,
+    failure_detector: &mut garnet_cluster::FailureDetector,
+    failover_controller: &mut garnet_cluster::ClusterFailoverController,
+    replication_manager: &mut garnet_cluster::ReplicationManager,
+    replication_transport: &mut R,
+    migration_max_keys_per_step: usize,
+    migration_step_interval: std::time::Duration,
+    migration_detection_interval: std::time::Duration,
+    shutdown: F,
+) -> Result<ClusterManagerFailoverMigrationRunReport, ClusteredServerRunError<R::Error>>
+where
+    F: Future<Output = ()> + Send + 'static,
+    T: garnet_cluster::AsyncGossipTransport,
+    R: garnet_cluster::AsyncReplicationTransport,
+{
+    let listener = TcpListener::bind(config.bind_addr).await?;
+    run_listener_with_cluster_control_plane(
+        listener,
+        config.read_buffer_size,
+        metrics,
+        source_store,
+        manager,
+        target_store,
+        target_processor,
+        updates,
+        failure_detector,
+        failover_controller,
+        replication_manager,
+        replication_transport,
+        migration_max_keys_per_step,
+        migration_step_interval,
+        migration_detection_interval,
+        shutdown,
+    )
+    .await
+}
+
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
     run_with_shutdown(config, metrics, std::future::pending::<()>()).await
 }
@@ -2610,6 +2654,94 @@ mod tests {
         let report = server1.await.unwrap();
         assert_eq!(report.migration_reports.len(), 1);
         server2.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_with_cluster_control_plane_binds_and_serves_requests() {
+        let probe = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr1 = probe.local_addr().unwrap();
+        drop(probe);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", addr1.port());
+        let (config1_next, _node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8702,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = config1_next;
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8702);
+        let (config2_next, _node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                addr1.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = config2_next;
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store2 = Arc::new(ClusterConfigStore::new(config2));
+        let target_processor = RequestProcessor::new().unwrap();
+        let metrics = Arc::new(ServerMetrics::default());
+        let client_addr = addr1;
+        let client = tokio::spawn(async move {
+            for _ in 0..50 {
+                if let Ok(mut stream) = TcpStream::connect(client_addr).await {
+                    send_and_expect(&mut stream, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(2)).await;
+            }
+            panic!("failed to connect to clustered server test listener");
+        });
+
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            InMemoryGossipTransport::new(Arc::clone(&store1)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1_000);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let (repl_tx, mut repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let report = run_with_cluster_control_plane(
+            ServerConfig {
+                bind_addr: addr1,
+                read_buffer_size: 1024,
+            },
+            metrics,
+            Arc::clone(&store1),
+            &mut manager,
+            store2.as_ref(),
+            &target_processor,
+            updates_rx,
+            &mut failure_detector,
+            &mut failover_controller,
+            &mut replication_manager,
+            &mut replication_transport,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            tokio::time::sleep(Duration::from_millis(30)),
+        )
+        .await
+        .unwrap();
+        client.await.unwrap();
+
+        assert!(report.failover_report.gossip_reports.len() > 0);
+        assert!(report.failover_report.failover_records.is_empty());
+        assert!(report.migration_reports.is_empty());
+        assert!(repl_rx.try_recv().is_err());
     }
 
     #[tokio::test]
