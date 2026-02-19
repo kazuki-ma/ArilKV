@@ -50,6 +50,19 @@ impl From<TsavoriteKvInitError> for RequestProcessorInitError {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MigrationValue {
+    String(Vec<u8>),
+    Object { object_type: u8, payload: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MigrationEntry {
+    pub key: Vec<u8>,
+    pub value: MigrationValue,
+    pub expiration_unix_millis: Option<u64>,
+}
+
 pub struct RequestProcessor {
     store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
     object_store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
@@ -197,6 +210,79 @@ impl RequestProcessor {
             DeleteOperationStatus::NotFound => Ok(false),
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
+    }
+
+    pub fn export_migration_entry(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<MigrationEntry>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
+
+        if let Some(value) = self.read_string_value(key)? {
+            return Ok(Some(MigrationEntry {
+                key: key.to_vec(),
+                value: MigrationValue::String(value),
+                expiration_unix_millis: self.expiration_unix_millis_for_key(key),
+            }));
+        }
+
+        if let Some((object_type, payload)) = self.object_read(key)? {
+            return Ok(Some(MigrationEntry {
+                key: key.to_vec(),
+                value: MigrationValue::Object {
+                    object_type,
+                    payload,
+                },
+                expiration_unix_millis: None,
+            }));
+        }
+
+        Ok(None)
+    }
+
+    pub fn import_migration_entry(
+        &self,
+        entry: &MigrationEntry,
+    ) -> Result<(), RequestExecutionError> {
+        match &entry.value {
+            MigrationValue::String(value) => {
+                self.upsert_string_value_for_migration(
+                    &entry.key,
+                    value,
+                    entry.expiration_unix_millis,
+                )?;
+                let _ = self.object_delete(&entry.key)?;
+            }
+            MigrationValue::Object {
+                object_type,
+                payload,
+            } => {
+                self.delete_string_key_for_migration(&entry.key)?;
+                self.object_upsert(&entry.key, *object_type, payload)?;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn migrate_keys_to(
+        &self,
+        target: &RequestProcessor,
+        keys: &[Vec<u8>],
+        delete_source: bool,
+    ) -> Result<usize, RequestExecutionError> {
+        let mut moved = 0usize;
+        for key in keys {
+            let Some(entry) = self.export_migration_entry(key)? else {
+                continue;
+            };
+            target.import_migration_entry(&entry)?;
+            if delete_source {
+                self.delete_string_key_for_migration(key)?;
+                let _ = self.object_delete(key)?;
+            }
+            moved += 1;
+        }
+        Ok(moved)
     }
 
     fn load_hash_object(
@@ -1580,6 +1666,27 @@ impl RequestProcessor {
         Ok(count)
     }
 
+    fn read_string_value(&self, key: &[u8]) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut session = store.session(&self.functions);
+        let mut output = Vec::new();
+        let status = session
+            .read(
+                &key.to_vec(),
+                &Vec::new(),
+                &mut output,
+                &ReadInfo::default(),
+            )
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        match status {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                Ok(Some(output))
+            }
+            ReadOperationStatus::NotFound => Ok(None),
+            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
+    }
+
     fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         let mut store = self.store.lock().expect("store mutex poisoned");
         let mut session = store.session(&self.functions);
@@ -1594,6 +1701,89 @@ impl RequestProcessor {
             ReadOperationStatus::NotFound => Ok(false),
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
+    }
+
+    fn upsert_string_value_for_migration(
+        &self,
+        key: &[u8],
+        user_value: &[u8],
+        expiration_unix_millis: Option<u64>,
+    ) -> Result<(), RequestExecutionError> {
+        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut session = store.session(&self.functions);
+        let mut output = Vec::new();
+        let mut upsert_info = UpsertInfo::default();
+        if expiration_unix_millis.is_some() {
+            upsert_info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+        }
+        let stored_value = encode_stored_value(user_value, expiration_unix_millis);
+        session
+            .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+        drop(session);
+        drop(store);
+
+        let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
+        match expiration_unix_millis.and_then(instant_from_unix_millis) {
+            Some(deadline) => {
+                expirations.insert(key.to_vec(), deadline);
+            }
+            None => {
+                expirations.remove(key);
+            }
+        }
+        self.key_registry
+            .lock()
+            .expect("key registry mutex poisoned")
+            .insert(key.to_vec());
+        self.bump_watch_version(key);
+        Ok(())
+    }
+
+    fn delete_string_key_for_migration(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
+        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut session = store.session(&self.functions);
+        let mut info = DeleteInfo::default();
+        let status = session
+            .delete(&key.to_vec(), &mut info)
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+
+        match status {
+            DeleteOperationStatus::TombstonedInPlace
+            | DeleteOperationStatus::AppendedTombstone
+            | DeleteOperationStatus::NotFound => {
+                self.expirations
+                    .lock()
+                    .expect("expiration mutex poisoned")
+                    .remove(key);
+                self.key_registry
+                    .lock()
+                    .expect("key registry mutex poisoned")
+                    .remove(key);
+                if !matches!(status, DeleteOperationStatus::NotFound) {
+                    self.bump_watch_version(key);
+                }
+                Ok(())
+            }
+            DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
+    }
+
+    fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
+        let deadline = self
+            .expirations
+            .lock()
+            .expect("expiration mutex poisoned")
+            .get(key)
+            .copied()?;
+        let now = Instant::now();
+        let now_unix_millis = current_unix_time_millis()?;
+        if deadline <= now {
+            return Some(now_unix_millis);
+        }
+        let remaining = deadline.duration_since(now);
+        let remaining_millis = u64::try_from(remaining.as_millis()).ok()?;
+        now_unix_millis.checked_add(remaining_millis)
     }
 
     fn rewrite_existing_value_expiration(
@@ -1834,6 +2024,16 @@ fn expiration_metadata_from_duration(duration: Duration) -> Option<ExpirationMet
         deadline,
         unix_millis,
     })
+}
+
+fn instant_from_unix_millis(unix_millis: u64) -> Option<Instant> {
+    let now = Instant::now();
+    let now_unix_millis = current_unix_time_millis()?;
+    if unix_millis <= now_unix_millis {
+        return Some(now);
+    }
+    let delta_millis = unix_millis.checked_sub(now_unix_millis)?;
+    now.checked_add(Duration::from_millis(delta_millis))
 }
 
 fn decode_stored_value(stored: &[u8]) -> DecodedStoredValue<'_> {
@@ -2643,6 +2843,118 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b"$3\r\nstr\r\n");
+    }
+
+    #[test]
+    fn migration_entry_roundtrip_preserves_string_and_expiration() {
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$4\r\n1000\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let entry = source
+            .export_migration_entry(b"key")
+            .unwrap()
+            .expect("source key should be exportable");
+        assert!(matches!(&entry.value, MigrationValue::String(value) if value == b"value"));
+        assert!(entry.expiration_unix_millis.is_some());
+
+        target.import_migration_entry(&entry).unwrap();
+
+        response.clear();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$5\r\nvalue\r\n");
+
+        response.clear();
+        let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        let ttl = parse_integer_response(&response);
+        assert!(ttl > 0);
+        assert!(ttl <= 1000);
+    }
+
+    #[test]
+    fn migrate_keys_to_transfers_string_and_deletes_source() {
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 4];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let moved = source
+            .migrate_keys_to(&target, &[b"key".to_vec()], true)
+            .unwrap();
+        assert_eq!(moved, 1);
+
+        response.clear();
+        let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$5\r\nvalue\r\n");
+    }
+
+    #[test]
+    fn migrate_keys_to_transfers_object_value() {
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        let moved = source
+            .migrate_keys_to(&target, &[b"key".to_vec()], true)
+            .unwrap();
+        assert_eq!(moved, 1);
+
+        response.clear();
+        let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
+        let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$5\r\nvalue\r\n");
     }
 
     #[test]
