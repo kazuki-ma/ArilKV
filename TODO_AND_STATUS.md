@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-19
-> **Current Phase**: Phase 9 — Transactions
-> **Current Iteration**: 63
+> **Current Phase**: Phase 10 — Cluster
+> **Current Iteration**: 64
 
 ---
 
@@ -179,7 +179,7 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 10.1 | Implement cluster config — 16384 hash slots, immutable copy-on-write config | TODO | 6.6 | See doc 13. ClusterConfig is immutable, replaced atomically. Worker array indexed by slot → node mapping. |
+| 10.1 | Implement cluster config — 16384 hash slots, immutable copy-on-write config | DONE | 6.6 | Added `garnet-cluster` cluster-config primitives: 16,384-slot map, 3-byte `HashSlot` representation (`[u16 worker_id | u8 state]`), worker table with reserved/local IDs, copy-on-write mutation APIs (`set_slot_state`, `add_worker`, `set_local_worker_role`), and snapshot-safe publish/load wrapper (`ClusterConfigStore`). |
 | 10.2 | Implement gossip protocol — failure-budget sampling | TODO | 10.1 | See doc 13. `count` = failure budget (NOT success target). Decrement on failure, increment on success. Random node selection. |
 | 10.3 | Implement replication — primary-replica sync via checkpoint + AOF | TODO | 8.4, 10.1 | See doc 13 + 14. Full sync = send checkpoint + AOF tail. Incremental = stream AOF. |
 | 10.4 | Implement slot migration — MOVED/ASK redirections | TODO | 10.1 | See doc 13. MOVED for completed migrations. ASK for in-progress migrations. |
@@ -250,6 +250,7 @@
 | 2026-02-18 | Validate crash recovery by replaying only compacted AOF tail commands on top of checkpoint-restored state in integration tests. | Confirms the intended recovery contract (`restore checkpoint` + `replay tail`) without introducing a full checkpoint file format implementation in the current phase. |
 | 2026-02-19 | Implement transactions as connection-scoped queued RESP frame replay in the TCP request loop. | This keeps queuing/replay localized to protocol handling with minimal disturbance to existing `RequestProcessor` command paths while preserving Redis-style `+QUEUED` and EXEC array replies. |
 | 2026-02-19 | Use a fixed-size hash-indexed watch-version map (`Vec<AtomicU64>`) for WATCH conflict checks. | Preserves low-overhead optimistic conflict detection semantics aligned with the design docs and supports concurrent mutation tracking without introducing per-key lock structures yet. |
+| 2026-02-19 | Represent cluster hash slots as a compact 3-byte value object (`HashSlot`) and expose copy-on-write `ClusterConfig` updates. | Mirrors the original slot compactness goal while keeping Rust ergonomics safe (no packed-field references) and making config snapshots immutable for readers. |
 
 ---
 
@@ -328,3 +329,4 @@
 | 61 | 2026-02-19 | 9.1 | DONE | Added connection-scoped MULTI/EXEC/DISCARD queueing in `garnet-server` with queued RESP frame replay and protocol error handling for nested/invalid transaction command usage. |
 | 62 | 2026-02-19 | 9.2 | DONE | Added WATCH/UNWATCH support with optimistic EXEC validation against a hash-indexed watch-version map and mutation-path version increments in `RequestProcessor`. |
 | 63 | 2026-02-19 | 9.3 | DONE | Expanded TCP integration tests to cover transaction success/abort/discard/watch/unwatch paths and re-validated workspace-wide `cargo check` + `cargo test` with matching test counts. |
+| 64 | 2026-02-19 | 10.1 | DONE | Added `garnet-cluster` ClusterConfig foundation with 16,384 slots, worker-table management, copy-on-write mutation APIs, and cluster-config snapshot store tests. |

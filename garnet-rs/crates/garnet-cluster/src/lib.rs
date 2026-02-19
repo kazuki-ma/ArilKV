@@ -1,1 +1,364 @@
-//! Cluster support for garnet-rs.
+//! Cluster configuration primitives for garnet-rs.
+//!
+//! This module provides immutable-style copy-on-write cluster configuration
+//! structures with Redis-compatible 16,384 hash slots.
+
+use std::fmt;
+use std::sync::{Arc, RwLock};
+
+pub const HASH_SLOT_COUNT: usize = 16_384;
+pub const RESERVED_WORKER_ID: u16 = 0;
+pub const LOCAL_WORKER_ID: u16 = 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub enum SlotState {
+    Offline = 0,
+    Stable = 1,
+    Migrating = 2,
+    Importing = 3,
+    Fail = 4,
+    Node = 5,
+    Invalid = 6,
+}
+
+impl SlotState {
+    fn from_u8(raw: u8) -> Self {
+        match raw {
+            0 => Self::Offline,
+            1 => Self::Stable,
+            2 => Self::Migrating,
+            3 => Self::Importing,
+            4 => Self::Fail,
+            5 => Self::Node,
+            _ => Self::Invalid,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HashSlot {
+    bytes: [u8; 3],
+}
+
+impl HashSlot {
+    pub fn new(worker_id: u16, state: SlotState) -> Self {
+        let [lo, hi] = worker_id.to_le_bytes();
+        Self {
+            bytes: [lo, hi, state as u8],
+        }
+    }
+
+    pub fn assigned_worker_id(self) -> u16 {
+        u16::from_le_bytes([self.bytes[0], self.bytes[1]])
+    }
+
+    pub fn worker_id(self) -> u16 {
+        if self.state() == SlotState::Migrating {
+            LOCAL_WORKER_ID
+        } else {
+            self.assigned_worker_id()
+        }
+    }
+
+    pub fn state(self) -> SlotState {
+        SlotState::from_u8(self.bytes[2])
+    }
+
+    pub fn is_local(self) -> bool {
+        self.worker_id() == LOCAL_WORKER_ID
+    }
+}
+
+impl Default for HashSlot {
+    fn default() -> Self {
+        Self::new(RESERVED_WORKER_ID, SlotState::Offline)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum WorkerRole {
+    #[default]
+    Unassigned,
+    Primary,
+    Replica,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Worker {
+    pub id: u16,
+    pub node_id: String,
+    pub host: String,
+    pub port: u16,
+    pub config_epoch: u64,
+    pub role: WorkerRole,
+    pub replica_of_node_id: Option<String>,
+    pub replication_offset: u64,
+}
+
+impl Worker {
+    pub fn new(
+        node_id: impl Into<String>,
+        host: impl Into<String>,
+        port: u16,
+        role: WorkerRole,
+    ) -> Self {
+        Self {
+            id: RESERVED_WORKER_ID,
+            node_id: node_id.into(),
+            host: host.into(),
+            port,
+            config_epoch: 0,
+            role,
+            replica_of_node_id: None,
+            replication_offset: 0,
+        }
+    }
+
+    fn reserved() -> Self {
+        Self {
+            id: RESERVED_WORKER_ID,
+            node_id: String::new(),
+            host: String::new(),
+            port: 0,
+            config_epoch: 0,
+            role: WorkerRole::Unassigned,
+            replica_of_node_id: None,
+            replication_offset: 0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClusterConfigError {
+    InvalidSlot(u16),
+    WorkerNotFound(u16),
+    WorkerCapacityExceeded,
+    MissingLocalWorker,
+}
+
+impl fmt::Display for ClusterConfigError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::InvalidSlot(slot) => write!(f, "invalid hash slot: {slot}"),
+            Self::WorkerNotFound(worker_id) => write!(f, "worker not found: {worker_id}"),
+            Self::WorkerCapacityExceeded => write!(f, "worker capacity exceeded"),
+            Self::MissingLocalWorker => write!(f, "local worker is missing"),
+        }
+    }
+}
+
+impl std::error::Error for ClusterConfigError {}
+
+#[derive(Debug, Clone)]
+pub struct ClusterConfig {
+    slot_map: Box<[HashSlot; HASH_SLOT_COUNT]>,
+    workers: Vec<Worker>,
+}
+
+impl ClusterConfig {
+    pub fn new(local_worker: Worker) -> Self {
+        let mut workers = Vec::with_capacity(2);
+        workers.push(Worker::reserved());
+        let mut local = local_worker;
+        local.id = LOCAL_WORKER_ID;
+        workers.push(local);
+        Self {
+            slot_map: Box::new([HashSlot::default(); HASH_SLOT_COUNT]),
+            workers,
+        }
+    }
+
+    pub fn new_local(node_id: impl Into<String>, host: impl Into<String>, port: u16) -> Self {
+        Self::new(Worker::new(node_id, host, port, WorkerRole::Primary))
+    }
+
+    pub fn workers(&self) -> &[Worker] {
+        &self.workers
+    }
+
+    pub fn worker(&self, worker_id: u16) -> Option<&Worker> {
+        self.workers.get(worker_id as usize)
+    }
+
+    pub fn local_worker(&self) -> Result<&Worker, ClusterConfigError> {
+        self.worker(LOCAL_WORKER_ID)
+            .ok_or(ClusterConfigError::MissingLocalWorker)
+    }
+
+    pub fn slot(&self, slot: u16) -> Result<HashSlot, ClusterConfigError> {
+        Ok(self.slot_map[Self::slot_index(slot)?])
+    }
+
+    pub fn slot_state(&self, slot: u16) -> Result<SlotState, ClusterConfigError> {
+        Ok(self.slot(slot)?.state())
+    }
+
+    pub fn slot_owner(&self, slot: u16) -> Result<u16, ClusterConfigError> {
+        Ok(self.slot(slot)?.worker_id())
+    }
+
+    pub fn slot_assigned_owner(&self, slot: u16) -> Result<u16, ClusterConfigError> {
+        Ok(self.slot(slot)?.assigned_worker_id())
+    }
+
+    pub fn is_local_slot(&self, slot: u16) -> Result<bool, ClusterConfigError> {
+        Ok(self.slot(slot)?.is_local())
+    }
+
+    pub fn set_slot_state(
+        &self,
+        slot: u16,
+        worker_id: u16,
+        state: SlotState,
+    ) -> Result<Self, ClusterConfigError> {
+        let slot_index = Self::slot_index(slot)?;
+        if self.worker(worker_id).is_none() {
+            return Err(ClusterConfigError::WorkerNotFound(worker_id));
+        }
+        let mut next = self.clone();
+        next.slot_map[slot_index] = HashSlot::new(worker_id, state);
+        Ok(next)
+    }
+
+    pub fn set_local_worker_role(&self, role: WorkerRole) -> Result<Self, ClusterConfigError> {
+        let mut next = self.clone();
+        let local = next
+            .workers
+            .get_mut(LOCAL_WORKER_ID as usize)
+            .ok_or(ClusterConfigError::MissingLocalWorker)?;
+        local.role = role;
+        if role != WorkerRole::Replica {
+            local.replica_of_node_id = None;
+        }
+        Ok(next)
+    }
+
+    pub fn add_worker(&self, mut worker: Worker) -> Result<(Self, u16), ClusterConfigError> {
+        let worker_id = u16::try_from(self.workers.len())
+            .map_err(|_| ClusterConfigError::WorkerCapacityExceeded)?;
+        let mut next = self.clone();
+        worker.id = worker_id;
+        next.workers.push(worker);
+        Ok((next, worker_id))
+    }
+
+    fn slot_index(slot: u16) -> Result<usize, ClusterConfigError> {
+        let slot_index = slot as usize;
+        if slot_index >= HASH_SLOT_COUNT {
+            return Err(ClusterConfigError::InvalidSlot(slot));
+        }
+        Ok(slot_index)
+    }
+}
+
+#[derive(Debug)]
+pub struct ClusterConfigStore {
+    current: RwLock<Arc<ClusterConfig>>,
+}
+
+impl ClusterConfigStore {
+    pub fn new(initial: ClusterConfig) -> Self {
+        Self {
+            current: RwLock::new(Arc::new(initial)),
+        }
+    }
+
+    pub fn load(&self) -> Arc<ClusterConfig> {
+        self.current
+            .read()
+            .expect("cluster config store read lock poisoned")
+            .clone()
+    }
+
+    pub fn publish(&self, next: ClusterConfig) -> Arc<ClusterConfig> {
+        let mut write_guard = self
+            .current
+            .write()
+            .expect("cluster config store write lock poisoned");
+        let previous = write_guard.clone();
+        *write_guard = Arc::new(next);
+        previous
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::mem::size_of;
+
+    fn base_config() -> ClusterConfig {
+        ClusterConfig::new_local("local-node", "127.0.0.1", 6379)
+    }
+
+    #[test]
+    fn hash_slot_layout_is_three_bytes() {
+        assert_eq!(size_of::<HashSlot>(), 3);
+    }
+
+    #[test]
+    fn initializes_reserved_and_local_workers() {
+        let config = base_config();
+        assert_eq!(config.workers().len(), 2);
+        assert_eq!(
+            config.workers()[RESERVED_WORKER_ID as usize].id,
+            RESERVED_WORKER_ID
+        );
+        assert_eq!(
+            config.workers()[LOCAL_WORKER_ID as usize].id,
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(config.local_worker().unwrap().role, WorkerRole::Primary);
+    }
+
+    #[test]
+    fn set_slot_state_is_copy_on_write() {
+        let config = base_config();
+        let updated = config
+            .set_slot_state(42, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        assert_eq!(config.slot_state(42).unwrap(), SlotState::Offline);
+        assert_eq!(updated.slot_state(42).unwrap(), SlotState::Stable);
+        assert_eq!(updated.slot_owner(42).unwrap(), LOCAL_WORKER_ID);
+    }
+
+    #[test]
+    fn migrating_slot_reports_local_owner() {
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let updated = with_remote
+            .set_slot_state(777, remote_id, SlotState::Migrating)
+            .unwrap();
+        assert_eq!(updated.slot_assigned_owner(777).unwrap(), remote_id);
+        assert_eq!(updated.slot_owner(777).unwrap(), LOCAL_WORKER_ID);
+        assert!(updated.is_local_slot(777).unwrap());
+    }
+
+    #[test]
+    fn add_worker_does_not_mutate_original_config() {
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (updated, remote_id) = config.add_worker(remote).unwrap();
+        assert_eq!(remote_id, 2);
+        assert!(config.worker(remote_id).is_none());
+        assert_eq!(updated.worker(remote_id).unwrap().node_id, "node-2");
+    }
+
+    #[test]
+    fn config_store_publish_keeps_snapshot_isolation() {
+        let config = base_config();
+        let store = ClusterConfigStore::new(config.clone());
+        let before = store.load();
+        let next = config
+            .set_slot_state(11, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let previous = store.publish(next);
+        let after = store.load();
+
+        assert_eq!(before.slot_state(11).unwrap(), SlotState::Offline);
+        assert_eq!(previous.slot_state(11).unwrap(), SlotState::Offline);
+        assert_eq!(after.slot_state(11).unwrap(), SlotState::Stable);
+    }
+}
