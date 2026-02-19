@@ -3557,6 +3557,83 @@ mod tests {
         assert_eq!(receiver_store.load().slot_assigned_owner(304).unwrap(), worker3_id);
     }
 
+    #[tokio::test]
+    async fn cluster_manager_applies_tcp_gossip_delivery_end_to_end() {
+        let base = base_config();
+        let worker2 = Worker::new("node-b", "127.0.0.1", 6380, WorkerRole::Primary);
+        let (base, worker2_id) = base.add_worker(worker2).unwrap();
+        let worker3 = Worker::new("node-a", "127.0.0.1", 6381, WorkerRole::Primary);
+        let (base, worker3_id) = base.add_worker(worker3).unwrap();
+
+        let newer = base
+            .set_worker_config_epoch(worker2_id, 1)
+            .unwrap()
+            .set_worker_config_epoch(worker3_id, 2)
+            .unwrap()
+            .set_slot_state(305, worker3_id, SlotState::Stable)
+            .unwrap();
+        let older = base
+            .set_worker_config_epoch(worker2_id, 1)
+            .unwrap()
+            .set_worker_config_epoch(worker3_id, 1)
+            .unwrap()
+            .set_slot_state(305, worker2_id, SlotState::Stable)
+            .unwrap();
+
+        let sender_store = std::sync::Arc::new(ClusterConfigStore::new(newer));
+        let receiver_store = ClusterConfigStore::new(older);
+        let (tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let listener_addr = listener.local_addr().expect("listener should have addr");
+        let listener_task = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept should succeed");
+            let snapshot = read_gossip_snapshot(&mut socket, 2 * 1024 * 1024)
+                .await
+                .expect("snapshot should decode");
+            tx_updates
+                .send(snapshot)
+                .expect("update channel should receive snapshot");
+        });
+
+        let mut sender_transport = TcpGossipTransport::new(std::sync::Arc::clone(&sender_store));
+        sender_transport.add_peer(worker2_id, listener_addr);
+
+        let sender_coordinator = GossipCoordinator::new(vec![GossipNode::new(worker2_id, 0)], 1);
+        let sender_engine = AsyncGossipEngine::new(sender_coordinator, sender_transport, 100, 0);
+        let mut sender_manager = ClusterManager::new(sender_engine, std::time::Duration::from_millis(5));
+
+        let receiver_coordinator = GossipCoordinator::new(Vec::new(), 1);
+        let receiver_engine = AsyncGossipEngine::new(
+            receiver_coordinator,
+            AsyncMockTransport {
+                fail_on_worker: None,
+                calls: Vec::new(),
+            },
+            100,
+            0,
+        );
+        let mut receiver_manager = ClusterManager::new(receiver_engine, std::time::Duration::from_millis(5));
+
+        let receiver_task = tokio::spawn(async move {
+            receiver_manager
+                .run_with_config_updates(
+                    &receiver_store,
+                    rx_updates,
+                    tokio::time::sleep(std::time::Duration::from_millis(20)),
+                )
+                .await;
+            receiver_store
+        });
+
+        sender_manager.run_for_rounds(1).await;
+        listener_task.await.unwrap();
+        let receiver_store = receiver_task.await.unwrap();
+        assert_eq!(receiver_store.load().slot_assigned_owner(305).unwrap(), worker3_id);
+    }
+
     #[test]
     fn redis_hash_slot_uses_crc16_xmodem() {
         assert_eq!(crc16_xmodem(b"123456789"), 0x31C3);
