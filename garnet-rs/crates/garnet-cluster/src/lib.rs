@@ -282,6 +282,99 @@ impl ClusterConfigStore {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GossipNode {
+    pub worker_id: u16,
+    pub last_gossip_tick: u64,
+}
+
+impl GossipNode {
+    pub fn new(worker_id: u16, last_gossip_tick: u64) -> Self {
+        Self {
+            worker_id,
+            last_gossip_tick,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GossipSendResult {
+    Success,
+    Failure,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GossipRoundReport {
+    pub attempted_worker_ids: Vec<u16>,
+    pub success_count: usize,
+    pub failure_count: usize,
+    pub remaining_failure_budget: usize,
+}
+
+pub fn calculate_gossip_failure_budget(node_count: usize, sample_percent: usize) -> usize {
+    if node_count == 0 {
+        return 0;
+    }
+    let bounded_percent = sample_percent.min(100);
+    let sampled = (node_count * bounded_percent).div_ceil(100);
+    sampled.max(1)
+}
+
+pub fn run_gossip_sample_round<Selector, Attempt>(
+    nodes: &mut [GossipNode],
+    sample_percent: usize,
+    max_random_nodes_to_poll: usize,
+    round_start_tick: u64,
+    mut selector: Selector,
+    mut attempt: Attempt,
+) -> GossipRoundReport
+where
+    Selector: FnMut(&[GossipNode], usize) -> Vec<usize>,
+    Attempt: FnMut(&mut GossipNode) -> GossipSendResult,
+{
+    let mut failure_budget = calculate_gossip_failure_budget(nodes.len(), sample_percent);
+    let mut report = GossipRoundReport {
+        attempted_worker_ids: Vec::new(),
+        success_count: 0,
+        failure_count: 0,
+        remaining_failure_budget: failure_budget,
+    };
+
+    while failure_budget > 0 {
+        let candidate_indices = selector(nodes, max_random_nodes_to_poll);
+        let candidate = candidate_indices
+            .into_iter()
+            .take(max_random_nodes_to_poll)
+            .filter(|index| *index < nodes.len())
+            .filter(|index| nodes[*index].last_gossip_tick < round_start_tick)
+            .min_by_key(|index| nodes[*index].last_gossip_tick);
+
+        let Some(candidate) = candidate else {
+            break;
+        };
+
+        let node = &mut nodes[candidate];
+        report.attempted_worker_ids.push(node.worker_id);
+        match attempt(node) {
+            GossipSendResult::Success => {
+                node.last_gossip_tick = round_start_tick;
+                report.success_count += 1;
+            }
+            GossipSendResult::Failure => {
+                // The original implementation removes failed connections from the
+                // candidate pool for the remainder of the round. Mark this node
+                // as non-stale so it is not retried in this round.
+                node.last_gossip_tick = round_start_tick;
+                failure_budget -= 1;
+                report.failure_count += 1;
+            }
+        }
+    }
+
+    report.remaining_failure_budget = failure_budget;
+    report
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -360,5 +453,83 @@ mod tests {
         assert_eq!(before.slot_state(11).unwrap(), SlotState::Offline);
         assert_eq!(previous.slot_state(11).unwrap(), SlotState::Offline);
         assert_eq!(after.slot_state(11).unwrap(), SlotState::Stable);
+    }
+
+    #[test]
+    fn gossip_failure_budget_is_zero_without_nodes() {
+        assert_eq!(calculate_gossip_failure_budget(0, 50), 0);
+    }
+
+    #[test]
+    fn gossip_failure_budget_has_minimum_of_one_for_non_empty_cluster() {
+        assert_eq!(calculate_gossip_failure_budget(3, 0), 1);
+    }
+
+    #[test]
+    fn gossip_round_continues_across_successes_until_no_stale_nodes_exist() {
+        let mut nodes = vec![
+            GossipNode::new(1, 10),
+            GossipNode::new(2, 20),
+            GossipNode::new(3, 30),
+        ];
+        let report = run_gossip_sample_round(
+            &mut nodes,
+            10,
+            3,
+            100,
+            |nodes, max| (0..nodes.len().min(max)).collect(),
+            |_node| GossipSendResult::Success,
+        );
+
+        assert_eq!(report.success_count, 3);
+        assert_eq!(report.failure_count, 0);
+        assert_eq!(report.attempted_worker_ids, vec![1, 2, 3]);
+        assert_eq!(report.remaining_failure_budget, 1);
+    }
+
+    #[test]
+    fn gossip_round_decrements_failure_budget_only_on_failure() {
+        let mut nodes = vec![GossipNode::new(1, 10), GossipNode::new(2, 20)];
+        let mut calls = 0usize;
+        let report = run_gossip_sample_round(
+            &mut nodes,
+            50,
+            2,
+            100,
+            |nodes, max| (0..nodes.len().min(max)).collect(),
+            |_node| {
+                calls += 1;
+                if calls == 1 {
+                    GossipSendResult::Success
+                } else {
+                    GossipSendResult::Failure
+                }
+            },
+        );
+
+        assert_eq!(report.success_count, 1);
+        assert_eq!(report.failure_count, 1);
+        assert_eq!(report.remaining_failure_budget, 0);
+    }
+
+    #[test]
+    fn gossip_round_chooses_stalest_candidate_from_sample() {
+        let mut nodes = vec![
+            GossipNode::new(1, 80),
+            GossipNode::new(2, 10),
+            GossipNode::new(3, 50),
+        ];
+        let report = run_gossip_sample_round(
+            &mut nodes,
+            100,
+            3,
+            100,
+            |_nodes, _max| vec![0, 1, 2],
+            |_node| GossipSendResult::Failure,
+        );
+
+        assert_eq!(report.attempted_worker_ids, vec![2, 3, 1]);
+        assert_eq!(report.failure_count, 3);
+        assert_eq!(report.success_count, 0);
     }
 }
