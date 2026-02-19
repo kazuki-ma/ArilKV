@@ -1545,6 +1545,7 @@ impl RequestProcessor {
                 b"DISCARD",
                 b"WATCH",
                 b"UNWATCH",
+                b"ASKING",
                 b"PING",
                 b"ECHO",
                 b"INFO",

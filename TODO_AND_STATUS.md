@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-19
 > **Current Phase**: Phase 10 — Cluster
-> **Current Iteration**: 71
+> **Current Iteration**: 72
 
 ---
 
@@ -182,7 +182,7 @@
 | 10.1 | Implement cluster config — 16384 hash slots, immutable copy-on-write config | DONE | 6.6 | Added `garnet-cluster` cluster-config primitives: 16,384-slot map, 3-byte `HashSlot` representation (`[u16 worker_id | u8 state]`), worker table with reserved/local IDs, copy-on-write mutation APIs (`set_slot_state`, `add_worker`, `set_local_worker_role`), and snapshot-safe publish/load wrapper (`ClusterConfigStore`). |
 | 10.2 | Implement gossip protocol — failure-budget sampling | IN_PROGRESS | 10.1 | Added `garnet-cluster` sampling core + `GossipCoordinator` wrapper with pluggable transport (`GossipTransport`) and deterministic randomized sampling helper. Failure-budget behavior and coordinator transport-result handling are unit-tested; async cluster-manager/network integration is pending. |
 | 10.3 | Implement replication — primary-replica sync via checkpoint + AOF | TODO | 8.4, 10.1 | See doc 13 + 14. Full sync = send checkpoint + AOF tail. Incremental = stream AOF. |
-| 10.4 | Implement slot migration — MOVED/ASK redirections | IN_PROGRESS | 10.1 | Added key→slot hashing (`CRC16/XMODEM` with hash-tag handling), slot-route decision helpers (`Local`/`Moved`/`Ask`/`Unbound`), RESP-ready redirection string helpers, and `garnet-server` cluster-routing hooks (`run_with_cluster`, `run_with_shutdown_and_cluster_config`, `run_listener_with_shutdown_and_cluster`) that return MOVED/ASK/CLUSTERDOWN before command execution. Added CROSSSLOT validation for multi-key DEL/WATCH in the cluster pre-check path; deeper transaction-aware multi-key validation remains pending. |
+| 10.4 | Implement slot migration — MOVED/ASK redirections | IN_PROGRESS | 10.1 | Added key→slot hashing (`CRC16/XMODEM` with hash-tag handling), slot-route decision helpers (`Local`/`Moved`/`Ask`/`Unbound`), RESP-ready redirection string helpers, and `garnet-server` cluster-routing hooks (`run_with_cluster`, `run_with_shutdown_and_cluster_config`, `run_listener_with_shutdown_and_cluster`) that return MOVED/ASK/CLUSTERDOWN before command execution. Added CROSSSLOT validation for multi-key DEL/WATCH and ASKING one-shot bypass for ASK routes; deeper transaction-aware multi-key validation remains pending. |
 | 10.5 | Integration test: multi-node cluster | TODO | 10.1-10.4 | Start 3 nodes, verify slot routing, test failover. |
 
 ---
@@ -258,6 +258,7 @@
 | 2026-02-19 | Add an optional cluster-config hook to the server connection loop and enforce key-level pre-dispatch routing checks. | Enables immediate MOVED/ASK/CLUSTERDOWN behavior in clustered runs without impacting standalone behavior (`cluster_config = None`) and keeps the integration boundary explicit. |
 | 2026-02-19 | Perform CROSSSLOT validation for multi-key commands in the server’s cluster pre-dispatch hook. | Prevents incorrectly routing multi-key requests by first-key only and aligns cluster semantics better for DEL/WATCH command shapes. |
 | 2026-02-19 | Expose cluster-aware server entrypoints (`run_with_cluster`, `run_with_shutdown_and_cluster_config`) above the listener-level integration hook. | Makes cluster-routing integration usable from application entrypoints without requiring direct listener-level wiring. |
+| 2026-02-19 | Implement ASKING as a one-shot bypass for ASK routes in cluster pre-dispatch validation. | Aligns server behavior with Redis cluster migration flow where clients issue ASKING before retrying an ASK-redirection command on the target node. |
 
 ---
 
@@ -344,3 +345,4 @@
 | 69 | 2026-02-19 | 10.4 | IN_PROGRESS | Added server-side optional cluster routing integration (`run_listener_with_shutdown_and_cluster`) and validated MOVED response path in a TCP integration test while preserving standalone behavior. |
 | 70 | 2026-02-19 | 10.4 | IN_PROGRESS | Added CROSSSLOT detection for multi-key DEL/WATCH in server pre-dispatch routing checks and extended integration coverage for CROSSSLOT behavior. |
 | 71 | 2026-02-19 | 10.4 | IN_PROGRESS | Added public cluster-aware server run entrypoints (`run_with_cluster`, `run_with_shutdown_and_cluster_config`) so cluster routing can be enabled without custom listener wiring. |
+| 72 | 2026-02-19 | 10.4 | IN_PROGRESS | Added `ASKING` command dispatch and one-shot ASK bypass in server cluster routing checks, with integration coverage for ASK reply, ASKING retry success, and reset-on-next-command behavior. |

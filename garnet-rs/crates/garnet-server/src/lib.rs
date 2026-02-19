@@ -15,7 +15,7 @@ pub use limited_fixed_buffer_pool::{
 };
 pub use request_lifecycle::{RequestExecutionError, RequestProcessor, RequestProcessorInitError};
 
-use garnet_cluster::{redis_hash_slot, ClusterConfigStore};
+use garnet_cluster::{redis_hash_slot, ClusterConfigStore, SlotRouteDecision};
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
 use std::future::Future;
 use std::io;
@@ -211,6 +211,7 @@ async fn handle_connection(
     let mut responses = Vec::with_capacity(read_buffer_size.max(1));
     let mut args = [ArgSlice::EMPTY; 64];
     let mut transaction = ConnectionTransactionState::default();
+    let mut allow_asking_once = false;
 
     loop {
         let bytes_read = stream.read(&mut read_buffer).await?;
@@ -232,12 +233,29 @@ async fn handle_connection(
                     let frame_end = consumed + meta.bytes_consumed;
                     // SAFETY: `args` refers to the still-live `receive_buffer` backing bytes.
                     let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                    if command == CommandId::Asking {
+                        if meta.argument_count != 1 {
+                            responses.extend_from_slice(
+                                b"-ERR wrong number of arguments for 'ASKING' command\r\n",
+                            );
+                        } else {
+                            allow_asking_once = true;
+                            append_simple_string(&mut responses, b"OK");
+                        }
+                        consumed += meta.bytes_consumed;
+                        continue;
+                    }
                     if let Some(cluster_store) = cluster_config.as_ref() {
-                        if let Some(redirection_error) = cluster_error_for_command(
+                        let (redirection_error, consume_asking) = cluster_error_for_command(
                             cluster_store,
                             &args[..meta.argument_count],
                             command,
-                        )? {
+                            allow_asking_once,
+                        )?;
+                        if consume_asking {
+                            allow_asking_once = false;
+                        }
+                        if let Some(redirection_error) = redirection_error {
                             append_error_line(&mut responses, redirection_error.as_bytes());
                             consumed += meta.bytes_consumed;
                             continue;
@@ -448,9 +466,10 @@ fn cluster_error_for_command(
     cluster_store: &ClusterConfigStore,
     args: &[ArgSlice],
     command: CommandId,
-) -> io::Result<Option<String>> {
+    asking_allowed: bool,
+) -> io::Result<(Option<String>, bool)> {
     if args.len() < 2 {
-        return Ok(None);
+        return Ok((None, false));
     }
 
     match command {
@@ -464,8 +483,11 @@ fn cluster_error_for_command(
 
                 if let Some(existing) = first_slot {
                     if slot != existing {
-                        return Ok(Some(
-                            "CROSSSLOT Keys in request don't hash to the same slot".to_string(),
+                        return Ok((
+                            Some(
+                                "CROSSSLOT Keys in request don't hash to the same slot".to_string(),
+                            ),
+                            true,
                         ));
                     }
                 } else {
@@ -473,14 +495,16 @@ fn cluster_error_for_command(
                 }
 
                 if let Some(redirection_error) =
-                    config.redirection_error_for_slot(slot).map_err(|error| {
-                        io::Error::new(io::ErrorKind::Other, format!("cluster error: {error}"))
-                    })?
+                    cluster_redirection_for_slot(&config, slot, asking_allowed).map_err(
+                        |error| {
+                            io::Error::new(io::ErrorKind::Other, format!("cluster error: {error}"))
+                        },
+                    )?
                 {
-                    return Ok(Some(redirection_error));
+                    return Ok((Some(redirection_error), true));
                 }
             }
-            Ok(None)
+            Ok((None, true))
         }
         _ => {
             let uses_first_key = matches!(
@@ -513,22 +537,33 @@ fn cluster_error_for_command(
                     | CommandId::Zscore
             );
             if !uses_first_key {
-                return Ok(None);
+                return Ok((None, false));
             }
 
             // SAFETY: argument slices reference the current request frame.
             let key = unsafe { args[1].as_slice() };
-            let error = cluster_store
-                .load()
-                .redirection_error_for_key(key)
+            let slot = redis_hash_slot(key);
+            let error = cluster_redirection_for_slot(&cluster_store.load(), slot, asking_allowed)
                 .map_err(|cluster_error| {
-                    io::Error::new(
-                        io::ErrorKind::Other,
-                        format!("cluster error: {cluster_error}"),
-                    )
-                })?;
-            Ok(error)
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("cluster error: {cluster_error}"),
+                )
+            })?;
+            Ok((error, true))
         }
+    }
+}
+
+fn cluster_redirection_for_slot(
+    config: &garnet_cluster::ClusterConfig,
+    slot: u16,
+    asking_allowed: bool,
+) -> Result<Option<String>, garnet_cluster::ClusterConfigError> {
+    match config.route_for_slot(slot)? {
+        SlotRouteDecision::Local => Ok(None),
+        SlotRouteDecision::Ask { .. } if asking_allowed => Ok(None),
+        _ => config.redirection_error_for_slot(slot),
     }
 }
 
@@ -883,6 +918,13 @@ mod tests {
             b"-ERR wrong number of arguments for 'UNWATCH' command\r\n",
         )
         .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$6\r\nASKING\r\n$1\r\nx\r\n",
+            b"-ERR wrong number of arguments for 'ASKING' command\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$6\r\nASKING\r\n", b"+OK\r\n").await;
         send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
         send_and_expect(
             &mut client,
@@ -997,7 +1039,7 @@ mod tests {
         send_and_expect(
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
-            b"*37\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
+            b"*38\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$6\r\nASKING\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
         )
         .await;
 
@@ -1027,6 +1069,12 @@ mod tests {
         let remote_slot = redis_hash_slot(remote_key);
         cluster_config = cluster_config
             .set_slot_state(remote_slot, remote_id, SlotState::Stable)
+            .unwrap();
+
+        let ask_key = b"ask-k";
+        let ask_slot = redis_hash_slot(ask_key);
+        cluster_config = cluster_config
+            .set_slot_state(ask_slot, remote_id, SlotState::Importing)
             .unwrap();
         let cluster_store = Arc::new(ClusterConfigStore::new(cluster_config));
 
@@ -1071,6 +1119,26 @@ mod tests {
             &mut client,
             b"*3\r\n$3\r\nDEL\r\n$7\r\nlocal-k\r\n$8\r\nremote-k\r\n",
             b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+        )
+        .await;
+        let expected_ask = format!("-ASK {} 10.0.0.2:6380\r\n", ask_slot);
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$5\r\nask-k\r\n",
+            expected_ask.as_bytes(),
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$6\r\nASKING\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$5\r\nask-k\r\n",
+            b"$-1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$5\r\nask-k\r\n",
+            expected_ask.as_bytes(),
         )
         .await;
 
