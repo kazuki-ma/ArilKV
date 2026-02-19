@@ -2991,6 +2991,146 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn run_live_slot_migrations_until_complete_deduplicates_slots() {
+        let key = b"{multi-dedupe}k".to_vec();
+        let slot = redis_hash_slot(&key);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 7701);
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                7702,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 7702);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                7701,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        let set = encode_resp_command(&[b"SET", &key, b"value"]);
+        assert_eq!(execute_processor_frame(&source, &set), b"+OK\r\n");
+
+        let report = run_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            &[slot, slot],
+            1,
+            Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.interrupted);
+        assert_eq!(
+            report.slots,
+            vec![LiveSlotMigrationSlotReport {
+                slot,
+                batches: 1,
+                moved_keys: 1,
+                finalized: true,
+            }]
+        );
+        let get = encode_resp_command(&[b"GET", &key]);
+        assert_eq!(execute_processor_frame(&source, &get), b"$-1\r\n");
+        assert_eq!(execute_processor_frame(&target, &get), b"$5\r\nvalue\r\n");
+        assert_eq!(
+            store1.load().slot_assigned_owner(slot).unwrap(),
+            node2_id_in_1
+        );
+        assert_eq!(
+            store2.load().slot_assigned_owner(slot).unwrap(),
+            LOCAL_WORKER_ID
+        );
+    }
+
+    #[tokio::test]
+    async fn run_live_slot_migrations_until_complete_zero_batch_is_interrupted_noop() {
+        let key = b"{multi-zero}k".to_vec();
+        let slot = redis_hash_slot(&key);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 7801);
+        let (next1, _node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                7802,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 7802);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                7801,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        let set = encode_resp_command(&[b"SET", &key, b"value"]);
+        assert_eq!(execute_processor_frame(&source, &set), b"+OK\r\n");
+
+        let report = run_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            &[slot],
+            0,
+            Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap();
+        assert!(report.interrupted);
+        assert_eq!(
+            report.slots,
+            vec![LiveSlotMigrationSlotReport {
+                slot,
+                batches: 0,
+                moved_keys: 0,
+                finalized: false,
+            }]
+        );
+        let get = encode_resp_command(&[b"GET", &key]);
+        assert_eq!(execute_processor_frame(&source, &get), b"$5\r\nvalue\r\n");
+        assert_eq!(execute_processor_frame(&target, &get), b"$-1\r\n");
+    }
+
     async fn wait_until<P>(mut predicate: P, timeout: Duration)
     where
         P: FnMut() -> bool,
