@@ -375,6 +375,90 @@ where
     report
 }
 
+pub trait GossipTransport {
+    type Error;
+
+    fn try_gossip(&mut self, worker_id: u16) -> Result<(), Self::Error>;
+}
+
+#[derive(Debug)]
+pub struct GossipCoordinator {
+    nodes: Vec<GossipNode>,
+    max_random_nodes_to_poll: usize,
+    rng_state: u64,
+}
+
+impl GossipCoordinator {
+    pub fn new(nodes: Vec<GossipNode>, max_random_nodes_to_poll: usize) -> Self {
+        Self {
+            nodes,
+            max_random_nodes_to_poll,
+            rng_state: 0x9E3779B97F4A7C15,
+        }
+    }
+
+    pub fn nodes(&self) -> &[GossipNode] {
+        &self.nodes
+    }
+
+    pub fn run_round<T: GossipTransport>(
+        &mut self,
+        sample_percent: usize,
+        round_start_tick: u64,
+        transport: &mut T,
+    ) -> GossipRoundReport {
+        let mut local_rng_state = self.rng_state;
+        let max_poll = self.max_random_nodes_to_poll;
+        let report = run_gossip_sample_round(
+            &mut self.nodes,
+            sample_percent,
+            max_poll,
+            round_start_tick,
+            |nodes, requested| {
+                sample_random_unique_indices(
+                    nodes.len(),
+                    requested.min(max_poll),
+                    &mut local_rng_state,
+                )
+            },
+            |node| match transport.try_gossip(node.worker_id) {
+                Ok(()) => GossipSendResult::Success,
+                Err(_) => GossipSendResult::Failure,
+            },
+        );
+        self.rng_state = local_rng_state;
+        report
+    }
+}
+
+fn sample_random_unique_indices(
+    node_count: usize,
+    max_count: usize,
+    rng_state: &mut u64,
+) -> Vec<usize> {
+    if node_count == 0 || max_count == 0 {
+        return Vec::new();
+    }
+    let target = node_count.min(max_count);
+    let mut out = Vec::with_capacity(target);
+    while out.len() < target {
+        let index = (next_rng(rng_state) as usize) % node_count;
+        if !out.contains(&index) {
+            out.push(index);
+        }
+    }
+    out
+}
+
+fn next_rng(state: &mut u64) -> u64 {
+    // SplitMix64 step; fast and deterministic for sampling.
+    *state = state.wrapping_add(0x9E3779B97F4A7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -531,5 +615,51 @@ mod tests {
         assert_eq!(report.attempted_worker_ids, vec![2, 3, 1]);
         assert_eq!(report.failure_count, 3);
         assert_eq!(report.success_count, 0);
+    }
+
+    #[derive(Default)]
+    struct MockTransport {
+        fail_on_worker: Option<u16>,
+    }
+
+    impl GossipTransport for MockTransport {
+        type Error = ();
+
+        fn try_gossip(&mut self, worker_id: u16) -> Result<(), Self::Error> {
+            if self.fail_on_worker == Some(worker_id) {
+                Err(())
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    #[test]
+    fn coordinator_samples_unique_indices() {
+        let mut seed = 42u64;
+        let sample = sample_random_unique_indices(10, 4, &mut seed);
+        assert_eq!(sample.len(), 4);
+        let mut dedup = sample.clone();
+        dedup.sort_unstable();
+        dedup.dedup();
+        assert_eq!(dedup.len(), 4);
+    }
+
+    #[test]
+    fn coordinator_round_uses_transport_result_for_success_failure() {
+        let nodes = vec![
+            GossipNode::new(10, 0),
+            GossipNode::new(20, 0),
+            GossipNode::new(30, 0),
+        ];
+        let mut coordinator = GossipCoordinator::new(nodes, 3);
+        let mut transport = MockTransport {
+            fail_on_worker: Some(20),
+        };
+
+        let report = coordinator.run_round(100, 100, &mut transport);
+        assert!(report.attempted_worker_ids.contains(&20));
+        assert!(report.failure_count >= 1);
+        assert!(report.success_count >= 1);
     }
 }
