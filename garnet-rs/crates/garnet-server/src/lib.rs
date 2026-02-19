@@ -184,6 +184,35 @@ impl<E> From<LiveSlotMigrationError> for ClusterManagerFailoverMigrationError<E>
     }
 }
 
+#[derive(Debug)]
+pub enum ClusteredServerRunError<E> {
+    Io(io::Error),
+    ControlPlane(ClusterManagerFailoverMigrationError<E>),
+}
+
+impl<E: core::fmt::Display> core::fmt::Display for ClusteredServerRunError<E> {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "{error}"),
+            Self::ControlPlane(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: core::fmt::Display + core::fmt::Debug> std::error::Error for ClusteredServerRunError<E> {}
+
+impl<E> From<io::Error> for ClusteredServerRunError<E> {
+    fn from(value: io::Error) -> Self {
+        Self::Io(value)
+    }
+}
+
+impl<E> From<ClusterManagerFailoverMigrationError<E>> for ClusteredServerRunError<E> {
+    fn from(value: ClusterManagerFailoverMigrationError<E>) -> Self {
+        Self::ControlPlane(value)
+    }
+}
+
 fn resolve_migration_peer_ids(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
@@ -605,6 +634,92 @@ where
         failover_report,
         migration_reports,
     })
+}
+
+pub async fn run_listener_with_cluster_control_plane<F, T, R>(
+    listener: TcpListener,
+    read_buffer_size: usize,
+    metrics: Arc<ServerMetrics>,
+    source_store: Arc<ClusterConfigStore>,
+    manager: &mut garnet_cluster::ClusterManager<T>,
+    target_store: &ClusterConfigStore,
+    target_processor: &RequestProcessor,
+    updates: tokio::sync::mpsc::UnboundedReceiver<garnet_cluster::ClusterConfig>,
+    failure_detector: &mut garnet_cluster::FailureDetector,
+    failover_controller: &mut garnet_cluster::ClusterFailoverController,
+    replication_manager: &mut garnet_cluster::ReplicationManager,
+    replication_transport: &mut R,
+    migration_max_keys_per_step: usize,
+    migration_step_interval: std::time::Duration,
+    migration_detection_interval: std::time::Duration,
+    shutdown: F,
+) -> Result<ClusterManagerFailoverMigrationRunReport, ClusteredServerRunError<R::Error>>
+where
+    F: Future<Output = ()> + Send + 'static,
+    T: garnet_cluster::AsyncGossipTransport,
+    R: garnet_cluster::AsyncReplicationTransport,
+{
+    let processor = Arc::new(RequestProcessor::new().map_err(|err| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("request processor initialization failed: {err}"),
+        )
+    })?);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let shutdown_signal_tx = shutdown_tx.clone();
+    let shutdown_task = tokio::spawn(async move {
+        shutdown.await;
+        let _ = shutdown_signal_tx.send(true);
+    });
+
+    let server_shutdown = shutdown_rx.clone();
+    let control_plane_shutdown = shutdown_rx.clone();
+    let server_processor = Arc::clone(&processor);
+    let server_store = Arc::clone(&source_store);
+    let server_task = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            read_buffer_size,
+            metrics,
+            wait_for_watch_shutdown(server_shutdown),
+            Some(server_store),
+            server_processor,
+        )
+        .await
+    });
+
+    let control_plane_result =
+        run_cluster_manager_with_config_updates_failover_and_detected_migrations(
+            manager,
+            source_store.as_ref(),
+            target_store,
+            processor.as_ref(),
+            target_processor,
+            updates,
+            failure_detector,
+            failover_controller,
+            replication_manager,
+            replication_transport,
+            migration_max_keys_per_step,
+            migration_step_interval,
+            migration_detection_interval,
+            wait_for_watch_shutdown(control_plane_shutdown),
+        )
+        .await;
+
+    let _ = shutdown_tx.send(true);
+    shutdown_task.abort();
+    let server_result = server_task.await.map_err(|join_error| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!("server task join failed: {join_error}"),
+        )
+    })?;
+
+    let control_plane_report = control_plane_result?;
+    server_result?;
+    Ok(control_plane_report)
 }
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
@@ -2342,6 +2457,159 @@ mod tests {
         let _ = shutdown3_tx.send(());
         server1.await.unwrap();
         server3.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_listener_with_cluster_control_plane_runs_server_and_detected_migration() {
+        let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+        let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr2 = listener2.local_addr().unwrap();
+
+        let key = b"{listener-cp}k".to_vec();
+        let slot = redis_hash_slot(&key);
+        let get_key = encode_resp_command(&[b"GET", &key]);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", addr1.port());
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                addr2.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", addr2.port());
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                addr1.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store2 = Arc::new(ClusterConfigStore::new(config2));
+        let target_processor = Arc::new(RequestProcessor::new().unwrap());
+        let (shutdown2_tx, shutdown2_rx) = oneshot::channel::<()>();
+        let server2_metrics = Arc::new(ServerMetrics::default());
+        let server2_store = Arc::clone(&store2);
+        let server2_processor = Arc::clone(&target_processor);
+        let server2 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster_with_processor(
+                listener2,
+                1024,
+                server2_metrics,
+                async move {
+                    let _ = shutdown2_rx.await;
+                },
+                Some(server2_store),
+                server2_processor,
+            )
+            .await
+            .unwrap();
+        });
+
+        let (shutdown1_tx, shutdown1_rx) = oneshot::channel::<()>();
+        let server1_metrics = Arc::new(ServerMetrics::default());
+        let server1_store = Arc::clone(&store1);
+        let server1_target_store = Arc::clone(&store2);
+        let server1_target_processor = Arc::clone(&target_processor);
+        let server1 = tokio::spawn(async move {
+            let gossip_engine = AsyncGossipEngine::new(
+                GossipCoordinator::new(Vec::new(), 1),
+                InMemoryGossipTransport::new(Arc::clone(&server1_store)),
+                100,
+                0,
+            );
+            let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+            let mut failure_detector = FailureDetector::new(1_000);
+            let mut failover_controller = ClusterFailoverController::new();
+            let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+            let (repl_tx, mut repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+            let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+            let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+            let report = run_listener_with_cluster_control_plane(
+                listener1,
+                1024,
+                server1_metrics,
+                Arc::clone(&server1_store),
+                &mut manager,
+                server1_target_store.as_ref(),
+                server1_target_processor.as_ref(),
+                updates_rx,
+                &mut failure_detector,
+                &mut failover_controller,
+                &mut replication_manager,
+                &mut replication_transport,
+                1,
+                Duration::from_millis(1),
+                Duration::from_millis(1),
+                async move {
+                    let _ = shutdown1_rx.await;
+                },
+            )
+            .await
+            .unwrap();
+            assert!(report.failover_report.failover_records.is_empty());
+            assert!(report.failover_report.gossip_reports.len() > 0);
+            assert!(report.migration_reports.len() > 0);
+            assert!(repl_rx.try_recv().is_err());
+            report
+        });
+
+        let mut node1 = TcpStream::connect(addr1).await.unwrap();
+        let mut node2 = TcpStream::connect(addr2).await.unwrap();
+        let set_key = encode_resp_command(&[b"SET", &key, b"value"]);
+        send_and_expect(&mut node1, &set_key, b"+OK\r\n").await;
+        send_and_expect(&mut node1, &get_key, b"$5\r\nvalue\r\n").await;
+
+        let moved_to_node1 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, addr1.port());
+        send_and_expect(&mut node2, &get_key, moved_to_node1.as_bytes()).await;
+
+        let source_migrating = store1
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_migration_to(slot, node2_id_in_1)
+            .unwrap();
+        store1.publish(source_migrating);
+        let target_importing = store2
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_import_from(slot, node1_id_in_2)
+            .unwrap();
+        store2.publish(target_importing);
+
+        wait_until(
+            || {
+                store1.load().slot_state(slot).unwrap() == SlotState::Stable
+                    && store1.load().slot_assigned_owner(slot).unwrap() == node2_id_in_1
+                    && execute_processor_frame(target_processor.as_ref(), &get_key)
+                        == b"$5\r\nvalue\r\n"
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+
+        let moved_to_node2 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, addr2.port());
+        send_and_expect(&mut node1, &get_key, moved_to_node2.as_bytes()).await;
+        send_and_expect(&mut node2, &get_key, b"$5\r\nvalue\r\n").await;
+
+        let _ = shutdown1_tx.send(());
+        let _ = shutdown2_tx.send(());
+        let report = server1.await.unwrap();
+        assert_eq!(report.migration_reports.len(), 1);
+        server2.await.unwrap();
     }
 
     #[tokio::test]
