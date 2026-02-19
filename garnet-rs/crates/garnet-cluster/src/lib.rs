@@ -7,9 +7,12 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::future::Future;
 use std::io::Write;
+use std::net::SocketAddr;
+use std::pin::Pin;
 use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
+use tokio::io::AsyncWriteExt;
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
 pub const RESERVED_WORKER_ID: u16 = 0;
@@ -919,6 +922,132 @@ impl AsyncReplicationTransport for FileReplicationTransport {
     }
 }
 
+#[derive(Debug)]
+pub struct TcpReplicationTransport {
+    peers: BTreeMap<u16, SocketAddr>,
+    stream_result: u64,
+}
+
+impl TcpReplicationTransport {
+    pub fn new(stream_result: u64) -> Self {
+        Self {
+            peers: BTreeMap::new(),
+            stream_result,
+        }
+    }
+
+    pub fn add_peer(&mut self, worker_id: u16, endpoint: SocketAddr) {
+        self.peers.insert(worker_id, endpoint);
+    }
+
+    pub fn stream_result(&self) -> u64 {
+        self.stream_result
+    }
+
+    pub fn set_stream_result(&mut self, stream_result: u64) {
+        self.stream_result = stream_result;
+    }
+
+    fn peer_endpoint(&self, worker_id: u16) -> Result<SocketAddr, TcpReplicationTransportError> {
+        self.peers
+            .get(&worker_id)
+            .copied()
+            .ok_or(TcpReplicationTransportError::UnknownPeer(worker_id))
+    }
+}
+
+#[derive(Debug)]
+pub enum TcpReplicationTransportError {
+    UnknownPeer(u16),
+    Io(std::io::Error),
+}
+
+impl fmt::Display for TcpReplicationTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownPeer(worker_id) => write!(f, "unknown replication peer worker id: {worker_id}"),
+            Self::Io(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for TcpReplicationTransportError {}
+
+impl ReplicationTransport for TcpReplicationTransport {
+    type Error = TcpReplicationTransportError;
+
+    fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error> {
+        let endpoint = self.peer_endpoint(worker_id)?;
+        let mut stream = std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
+        stream
+            .write_all(format!("CHECKPOINT {checkpoint_id}\n").as_bytes())
+            .map_err(TcpReplicationTransportError::Io)
+    }
+
+    fn stream_aof_from_offset(
+        &mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Result<u64, Self::Error> {
+        let endpoint = self.peer_endpoint(worker_id)?;
+        let mut stream = std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
+        stream
+            .write_all(format!("AOF {start_offset}\n").as_bytes())
+            .map_err(TcpReplicationTransportError::Io)?;
+        Ok(self.stream_result)
+    }
+}
+
+impl AsyncReplicationTransport for TcpReplicationTransport {
+    type Error = TcpReplicationTransportError;
+    type CheckpointFut<'a>
+        = Pin<Box<dyn Future<Output = Result<(), Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
+    type StreamFut<'a>
+        = Pin<Box<dyn Future<Output = Result<u64, Self::Error>> + Send + 'a>>
+    where
+        Self: 'a;
+
+    fn send_checkpoint<'a>(
+        &'a mut self,
+        worker_id: u16,
+        checkpoint_id: u64,
+    ) -> Self::CheckpointFut<'a> {
+        let endpoint = self.peers.get(&worker_id).copied();
+        Box::pin(async move {
+            let endpoint = endpoint.ok_or(TcpReplicationTransportError::UnknownPeer(worker_id))?;
+            let mut stream = tokio::net::TcpStream::connect(endpoint)
+                .await
+                .map_err(TcpReplicationTransportError::Io)?;
+            stream
+                .write_all(format!("CHECKPOINT {checkpoint_id}\n").as_bytes())
+                .await
+                .map_err(TcpReplicationTransportError::Io)
+        })
+    }
+
+    fn stream_aof_from_offset<'a>(
+        &'a mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Self::StreamFut<'a> {
+        let endpoint = self.peers.get(&worker_id).copied();
+        let stream_result = self.stream_result;
+        Box::pin(async move {
+            let endpoint = endpoint.ok_or(TcpReplicationTransportError::UnknownPeer(worker_id))?;
+            let mut stream = tokio::net::TcpStream::connect(endpoint)
+                .await
+                .map_err(TcpReplicationTransportError::Io)?;
+            stream
+                .write_all(format!("AOF {start_offset}\n").as_bytes())
+                .await
+                .map_err(TcpReplicationTransportError::Io)?;
+            Ok(stream_result)
+        })
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReplicationManager {
     checkpoint_id: Option<u64>,
@@ -1647,6 +1776,7 @@ mod tests {
     use super::*;
     use std::mem::size_of;
     use std::time::{SystemTime, UNIX_EPOCH};
+    use tokio::io::AsyncReadExt;
 
     fn base_config() -> ClusterConfig {
         ClusterConfig::new_local("local-node", "127.0.0.1", 6379)
@@ -2369,6 +2499,58 @@ mod tests {
         assert_eq!(aof_log, "700\n900\n");
 
         let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn tcp_replication_transport_emits_checkpoint_and_aof_messages() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("listener should bind");
+        let addr = listener.local_addr().expect("listener should expose address");
+        let receiver = tokio::spawn(async move {
+            let mut payloads = Vec::new();
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept should succeed");
+                let mut buf = Vec::new();
+                socket
+                    .read_to_end(&mut buf)
+                    .await
+                    .expect("read should succeed");
+                payloads.push(String::from_utf8(buf).expect("payload should be utf8"));
+            }
+            payloads
+        });
+
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = TcpReplicationTransport::new(900);
+        transport.add_peer(4, addr);
+
+        let outcome = manager
+            .execute_sync_async(4, Some(400), &mut transport)
+            .await
+            .expect("sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(outcome.streamed_until_offset, 900);
+
+        let payloads = receiver.await.expect("receiver task should succeed");
+        assert_eq!(
+            payloads,
+            vec!["CHECKPOINT 9\n".to_string(), "AOF 500\n".to_string()]
+        );
+    }
+
+    #[tokio::test]
+    async fn tcp_replication_transport_reports_unknown_peer() {
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = TcpReplicationTransport::new(900);
+
+        let result = manager.execute_sync_async(4, Some(400), &mut transport).await;
+        assert!(matches!(
+            result,
+            Err(ReplicationSyncError::Transport(
+                TcpReplicationTransportError::UnknownPeer(4)
+            ))
+        ));
     }
 
     #[tokio::test]
