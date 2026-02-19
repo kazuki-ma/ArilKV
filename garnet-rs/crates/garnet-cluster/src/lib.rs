@@ -2396,6 +2396,54 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
         }
         reports
     }
+
+    pub async fn run_with_config_updates_and_failover<F, R>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        mut updates: tokio::sync::mpsc::UnboundedReceiver<ClusterConfig>,
+        failure_detector: &mut FailureDetector,
+        failover_controller: &mut ClusterFailoverController,
+        replication_manager: &mut ReplicationManager,
+        replication_transport: &mut R,
+        shutdown: F,
+    ) -> Result<Vec<GossipRoundReport>, FailoverControllerError<R::Error>>
+    where
+        F: Future<Output = ()>,
+        R: AsyncReplicationTransport,
+    {
+        let mut interval = tokio::time::interval(self.gossip_delay);
+        interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+        interval.tick().await;
+
+        let mut reports = Vec::new();
+        tokio::pin!(shutdown);
+        loop {
+            tokio::select! {
+                _ = &mut shutdown => break,
+                _ = interval.tick() => {
+                    let report = self.engine.run_once().await;
+                    let newly_failed_workers = failure_detector.record_report(&report);
+                    if !newly_failed_workers.is_empty() {
+                        let _ = failover_controller
+                            .handle_failed_workers_async(
+                                config_store,
+                                replication_manager,
+                                &newly_failed_workers,
+                                replication_transport,
+                            )
+                            .await?;
+                    }
+                    reports.push(report);
+                }
+                update = updates.recv() => {
+                    if let Some(incoming) = update {
+                        let _ = config_store.merge_publish(&incoming);
+                    }
+                }
+            }
+        }
+        Ok(reports)
+    }
 }
 
 fn sample_random_unique_indices(
@@ -4405,6 +4453,65 @@ mod tests {
         listener_task.await.unwrap();
         let receiver_store = receiver_task.await.unwrap();
         assert_eq!(receiver_store.load().slot_assigned_owner(305).unwrap(), worker3_id);
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_run_with_failover_triggers_controller_on_detected_failure() {
+        let config = base_config().set_local_worker_role(WorkerRole::Replica).unwrap();
+        let (config, failed_primary_id) = config
+            .add_worker(Worker::new(
+                "node-2",
+                "10.0.0.2",
+                6380,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        let config = config
+            .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
+            .unwrap()
+            .set_slot_state(460, failed_primary_id, SlotState::Stable)
+            .unwrap();
+        let store = ClusterConfigStore::new(config);
+
+        let gossip_nodes = vec![GossipNode::new(failed_primary_id, 0)];
+        let gossip_coordinator = GossipCoordinator::new(gossip_nodes, 1);
+        let gossip_transport = AsyncMockTransport {
+            fail_on_worker: Some(failed_primary_id),
+            calls: Vec::new(),
+        };
+        let gossip_engine = AsyncGossipEngine::new(gossip_coordinator, gossip_transport, 100, 0);
+        let mut manager = ClusterManager::new(gossip_engine, std::time::Duration::from_millis(5));
+
+        let (_tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
+        let mut failure_detector = FailureDetector::new(1);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(3), 100, 200).unwrap();
+        let mut replication_transport = AsyncMockReplicationTransport {
+            stream_result: 200,
+            ..Default::default()
+        };
+
+        let reports = manager
+            .run_with_config_updates_and_failover(
+                &store,
+                rx_updates,
+                &mut failure_detector,
+                &mut failover_controller,
+                &mut replication_manager,
+                &mut replication_transport,
+                tokio::time::sleep(std::time::Duration::from_millis(20)),
+            )
+            .await
+            .unwrap();
+
+        assert!(!reports.is_empty());
+        assert!(reports
+            .iter()
+            .any(|report| report.failed_worker_ids.contains(&failed_primary_id)));
+        assert_eq!(store.load().slot_assigned_owner(460).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(store.load().local_worker().unwrap().role, WorkerRole::Primary);
+        assert_eq!(replication_transport.checkpoints, vec![(LOCAL_WORKER_ID, 3)]);
+        assert_eq!(replication_transport.streams, vec![(LOCAL_WORKER_ID, 100)]);
     }
 
     #[test]
