@@ -441,6 +441,54 @@ where
     .await
 }
 
+pub async fn run_detected_live_slot_migrations_until_shutdown<F>(
+    source_store: &ClusterConfigStore,
+    target_store: &ClusterConfigStore,
+    source_processor: &RequestProcessor,
+    target_processor: &RequestProcessor,
+    max_keys_per_step: usize,
+    step_interval: std::time::Duration,
+    detection_interval: std::time::Duration,
+    shutdown: F,
+) -> Result<Vec<LiveSlotMigrationsRunReport>, LiveSlotMigrationError>
+where
+    F: Future<Output = ()>,
+{
+    let mut interval = tokio::time::interval(detection_interval);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tokio::pin!(shutdown);
+    let mut reports = Vec::new();
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = &mut shutdown => return Ok(reports),
+            _ = interval.tick() => {
+                let slots = detect_live_slot_migration_slots(source_store, target_store)?;
+                if slots.is_empty() {
+                    continue;
+                }
+
+                let mut run = Box::pin(run_live_slot_migrations_until_complete(
+                    source_store,
+                    target_store,
+                    source_processor,
+                    target_processor,
+                    &slots,
+                    max_keys_per_step,
+                    step_interval,
+                    std::future::pending::<()>(),
+                ));
+                tokio::select! {
+                    biased;
+                    _ = &mut shutdown => return Ok(reports),
+                    report = &mut run => reports.push(report?),
+                }
+            }
+        }
+    }
+}
+
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
     run_with_shutdown(config, metrics, std::future::pending::<()>()).await
 }
@@ -3552,6 +3600,208 @@ mod tests {
             store2.load().slot_assigned_owner(901).unwrap(),
             node1_id_in_2
         );
+    }
+
+    #[tokio::test]
+    async fn run_detected_live_slot_migrations_until_shutdown_runs_multiple_detection_cycles() {
+        let key_a = b"{detected-cycle-a}k".to_vec();
+        let key_b = b"{detected-cycle-b}k".to_vec();
+        let slot_a = redis_hash_slot(&key_a);
+        let slot_b = redis_hash_slot(&key_b);
+        assert_ne!(slot_a, slot_b);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 8201);
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8202,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot_a, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(slot_b, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8202);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8201,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot_a, node1_id_in_2, SlotState::Stable)
+            .unwrap()
+            .set_slot_state(slot_b, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store2 = Arc::new(ClusterConfigStore::new(config2));
+        let source = Arc::new(RequestProcessor::new().unwrap());
+        let target = Arc::new(RequestProcessor::new().unwrap());
+
+        assert_eq!(
+            execute_processor_frame(&source, &encode_resp_command(&[b"SET", &key_a, b"va"])),
+            b"+OK\r\n"
+        );
+
+        let first_source = store1
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_migration_to(slot_a, node2_id_in_1)
+            .unwrap();
+        store1.publish(first_source);
+        let first_target = store2
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_import_from(slot_a, node1_id_in_2)
+            .unwrap();
+        store2.publish(first_target);
+
+        let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+        let orchestrator_store1 = Arc::clone(&store1);
+        let orchestrator_store2 = Arc::clone(&store2);
+        let orchestrator_source = Arc::clone(&source);
+        let orchestrator_target = Arc::clone(&target);
+        let orchestrator = tokio::spawn(async move {
+            let get_a = encode_resp_command(&[b"GET", &key_a]);
+            wait_until(
+                || {
+                    execute_processor_frame(&orchestrator_source, &get_a) == b"$-1\r\n"
+                        && execute_processor_frame(&orchestrator_target, &get_a) == b"$2\r\nva\r\n"
+                },
+                Duration::from_secs(1),
+            )
+            .await;
+            assert_eq!(
+                execute_processor_frame(&orchestrator_source, &get_a),
+                b"$-1\r\n"
+            );
+            assert_eq!(
+                execute_processor_frame(&orchestrator_target, &get_a),
+                b"$2\r\nva\r\n"
+            );
+
+            assert_eq!(
+                execute_processor_frame(
+                    &orchestrator_source,
+                    &encode_resp_command(&[b"SET", &key_b, b"vb"])
+                ),
+                b"+OK\r\n"
+            );
+            let second_source = orchestrator_store1
+                .load()
+                .as_ref()
+                .clone()
+                .begin_slot_migration_to(slot_b, node2_id_in_1)
+                .unwrap();
+            orchestrator_store1.publish(second_source);
+            let second_target = orchestrator_store2
+                .load()
+                .as_ref()
+                .clone()
+                .begin_slot_import_from(slot_b, node1_id_in_2)
+                .unwrap();
+            orchestrator_store2.publish(second_target);
+
+            let get_b = encode_resp_command(&[b"GET", &key_b]);
+            wait_until(
+                || {
+                    execute_processor_frame(&orchestrator_source, &get_b) == b"$-1\r\n"
+                        && execute_processor_frame(&orchestrator_target, &get_b) == b"$2\r\nvb\r\n"
+                },
+                Duration::from_secs(1),
+            )
+            .await;
+            assert_eq!(
+                execute_processor_frame(&orchestrator_source, &get_b),
+                b"$-1\r\n"
+            );
+            assert_eq!(
+                execute_processor_frame(&orchestrator_target, &get_b),
+                b"$2\r\nvb\r\n"
+            );
+            let _ = shutdown_tx.send(());
+        });
+
+        let reports = run_detected_live_slot_migrations_until_shutdown(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            async move {
+                let _ = shutdown_rx.await;
+            },
+        )
+        .await
+        .unwrap();
+        orchestrator.await.unwrap();
+
+        assert_eq!(reports.len(), 2);
+        assert!(reports.iter().all(|report| !report.interrupted));
+        let migrated_slots: HashSet<u16> = reports
+            .iter()
+            .flat_map(|report| report.slots.iter().map(|slot| slot.slot))
+            .collect();
+        assert_eq!(migrated_slots, HashSet::from([slot_a, slot_b]));
+    }
+
+    #[tokio::test]
+    async fn run_detected_live_slot_migrations_until_shutdown_honors_shutdown_without_work() {
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 8301);
+        let (next1, _node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                8302,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(1001, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8302);
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                8301,
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(1001, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = ClusterConfigStore::new(config1);
+        let store2 = ClusterConfigStore::new(config2);
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+
+        let reports = run_detected_live_slot_migrations_until_shutdown(
+            &store1,
+            &store2,
+            &source,
+            &target,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(10),
+            tokio::time::sleep(Duration::from_millis(5)),
+        )
+        .await
+        .unwrap();
+        assert!(reports.is_empty());
     }
 
     async fn wait_until<P>(mut predicate: P, timeout: Duration)
