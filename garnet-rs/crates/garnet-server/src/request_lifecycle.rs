@@ -1,6 +1,7 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
 use crate::{dispatch_from_arg_slices, CommandId};
+use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
@@ -68,6 +69,7 @@ pub struct RequestProcessor {
     object_store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
     expirations: Mutex<HashMap<Vec<u8>, Instant>>,
     key_registry: Mutex<HashSet<Vec<u8>>>,
+    object_key_registry: Mutex<HashSet<Vec<u8>>>,
     watch_versions: Vec<AtomicU64>,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
@@ -80,6 +82,7 @@ impl RequestProcessor {
             object_store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
             expirations: Mutex::new(HashMap::new()),
             key_registry: Mutex::new(HashSet::new()),
+            object_key_registry: Mutex::new(HashSet::new()),
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
@@ -165,6 +168,10 @@ impl RequestProcessor {
         session
             .upsert(&key, &value, &mut output, &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
+        self.object_key_registry
+            .lock()
+            .expect("object key registry mutex poisoned")
+            .insert(key.clone());
         self.bump_watch_version(&key);
         Ok(())
     }
@@ -204,10 +211,20 @@ impl RequestProcessor {
             .map_err(|_| RequestExecutionError::StorageFailure)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+                self.object_key_registry
+                    .lock()
+                    .expect("object key registry mutex poisoned")
+                    .remove(&key);
                 self.bump_watch_version(&key);
                 Ok(true)
             }
-            DeleteOperationStatus::NotFound => Ok(false),
+            DeleteOperationStatus::NotFound => {
+                self.object_key_registry
+                    .lock()
+                    .expect("object key registry mutex poisoned")
+                    .remove(&key);
+                Ok(false)
+            }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
@@ -283,6 +300,59 @@ impl RequestProcessor {
             moved += 1;
         }
         Ok(moved)
+    }
+
+    pub fn migration_keys_for_slot(&self, slot: u16, max_keys: usize) -> Vec<Vec<u8>> {
+        if max_keys == 0 {
+            return Vec::new();
+        }
+
+        let mut slot_keys = BTreeSet::new();
+
+        let string_keys: Vec<Vec<u8>> = self
+            .key_registry
+            .lock()
+            .expect("key registry mutex poisoned")
+            .iter()
+            .cloned()
+            .collect();
+        for key in string_keys {
+            if redis_hash_slot(&key) == slot {
+                slot_keys.insert(key);
+                if slot_keys.len() >= max_keys {
+                    return slot_keys.into_iter().collect();
+                }
+            }
+        }
+
+        let object_keys: Vec<Vec<u8>> = self
+            .object_key_registry
+            .lock()
+            .expect("object key registry mutex poisoned")
+            .iter()
+            .cloned()
+            .collect();
+        for key in object_keys {
+            if redis_hash_slot(&key) == slot {
+                slot_keys.insert(key);
+                if slot_keys.len() >= max_keys {
+                    return slot_keys.into_iter().collect();
+                }
+            }
+        }
+
+        slot_keys.into_iter().collect()
+    }
+
+    pub fn migrate_slot_to(
+        &self,
+        target: &RequestProcessor,
+        slot: u16,
+        max_keys: usize,
+        delete_source: bool,
+    ) -> Result<usize, RequestExecutionError> {
+        let keys = self.migration_keys_for_slot(slot, max_keys);
+        self.migrate_keys_to(target, &keys, delete_source)
     }
 
     fn load_hash_object(
@@ -1643,23 +1713,39 @@ impl RequestProcessor {
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
-        let keys: Vec<Vec<u8>> = self
+        let mut keys: HashSet<Vec<u8>> = self
             .key_registry
             .lock()
             .expect("key registry mutex poisoned")
             .iter()
             .cloned()
             .collect();
+        keys.extend(
+            self.object_key_registry
+                .lock()
+                .expect("object key registry mutex poisoned")
+                .iter()
+                .cloned(),
+        );
 
         let mut count = 0i64;
         for key in keys {
             self.expire_key_if_needed(&key)?;
-            if self.key_exists(&key)? {
+            let string_exists = self.key_exists(&key)?;
+            let object_exists = self.object_key_exists(&key)?;
+            if string_exists || object_exists {
                 count += 1;
-            } else {
+            }
+            if !string_exists {
                 self.key_registry
                     .lock()
                     .expect("key registry mutex poisoned")
+                    .remove(&key);
+            }
+            if !object_exists {
+                self.object_key_registry
+                    .lock()
+                    .expect("object key registry mutex poisoned")
                     .remove(&key);
             }
         }
@@ -1694,6 +1780,29 @@ impl RequestProcessor {
         let key_vec = key.to_vec();
         let status = session
             .read(&key_vec, &Vec::new(), &mut output, &ReadInfo::default())
+            .map_err(|_| RequestExecutionError::StorageFailure)?;
+
+        match status {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
+            ReadOperationStatus::NotFound => Ok(false),
+            ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
+    }
+
+    fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        let mut store = self
+            .object_store
+            .lock()
+            .expect("object store mutex poisoned");
+        let mut session = store.session(&self.object_functions);
+        let mut output = Vec::new();
+        let status = session
+            .read(
+                &key.to_vec(),
+                &Vec::new(),
+                &mut output,
+                &ReadInfo::default(),
+            )
             .map_err(|_| RequestExecutionError::StorageFailure)?;
 
         match status {
@@ -2746,6 +2855,17 @@ mod tests {
             .unwrap()
     }
 
+    fn encode_resp(parts: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+        for part in parts {
+            out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+            out.extend_from_slice(part);
+            out.extend_from_slice(b"\r\n");
+        }
+        out
+    }
+
     #[test]
     fn writers_toggle_record_has_expiration_from_upsert_user_data() {
         let functions = KvSessionFunctions;
@@ -2955,6 +3075,92 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b"$5\r\nvalue\r\n");
+    }
+
+    #[test]
+    fn migrate_slot_to_moves_only_slot_matched_keys() {
+        let source = RequestProcessor::new().unwrap();
+        let target = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let string_key = b"{slot-a}string".to_vec();
+        let object_key = b"{slot-a}object".to_vec();
+        let other_key = b"{slot-b}other".to_vec();
+        let slot = redis_hash_slot(&string_key);
+        assert_eq!(slot, redis_hash_slot(&object_key));
+        assert_ne!(slot, redis_hash_slot(&other_key));
+
+        let set_string = encode_resp(&[b"SET", &string_key, b"value-a"]);
+        let meta = parse_resp_command_arg_slices(&set_string, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let hset_object = encode_resp(&[b"HSET", &object_key, b"field", b"value-b"]);
+        let meta = parse_resp_command_arg_slices(&hset_object, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let set_other = encode_resp(&[b"SET", &other_key, b"value-c"]);
+        let meta = parse_resp_command_arg_slices(&set_other, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let moved = source.migrate_slot_to(&target, slot, 16, true).unwrap();
+        assert_eq!(moved, 2);
+
+        response.clear();
+        let get_string = encode_resp(&[b"GET", &string_key]);
+        let meta = parse_resp_command_arg_slices(&get_string, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let get_other = encode_resp(&[b"GET", &other_key]);
+        let meta = parse_resp_command_arg_slices(&get_other, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$7\r\nvalue-c\r\n");
+
+        response.clear();
+        let hget_object = encode_resp(&[b"HGET", &object_key, b"field"]);
+        let meta = parse_resp_command_arg_slices(&hget_object, &mut args).unwrap();
+        source
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(&get_string, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$7\r\nvalue-a\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(&hget_object, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$7\r\nvalue-b\r\n");
+
+        response.clear();
+        let meta = parse_resp_command_arg_slices(&get_other, &mut args).unwrap();
+        target
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
     }
 
     #[test]
@@ -3695,6 +3901,36 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b":0\r\n");
+    }
+
+    #[test]
+    fn dbsize_counts_string_and_object_keys() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let hset = b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+        let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":1\r\n");
+
+        response.clear();
+        let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
+        let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":2\r\n");
     }
 
     #[test]

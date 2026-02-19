@@ -1928,7 +1928,7 @@ mod tests {
         send_and_expect(&mut node2, &get_key, b"$-1\r\n").await;
 
         let moved = source_processor
-            .migrate_keys_to(&target_processor, &[key.clone()], true)
+            .migrate_slot_to(&target_processor, slot, 16, true)
             .unwrap();
         assert_eq!(moved, 1);
 
