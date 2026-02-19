@@ -4,6 +4,7 @@ use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
@@ -19,6 +20,8 @@ const HASH_OBJECT_TYPE_TAG: u8 = 3;
 const LIST_OBJECT_TYPE_TAG: u8 = 2;
 const SET_OBJECT_TYPE_TAG: u8 = 4;
 const ZSET_OBJECT_TYPE_TAG: u8 = 5;
+const WATCH_VERSION_MAP_SIZE: usize = 1024;
+const WATCH_VERSION_MAP_MASK: usize = WATCH_VERSION_MAP_SIZE - 1;
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -52,6 +55,7 @@ pub struct RequestProcessor {
     object_store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
     expirations: Mutex<HashMap<Vec<u8>, Instant>>,
     key_registry: Mutex<HashSet<Vec<u8>>>,
+    watch_versions: Vec<AtomicU64>,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
 }
@@ -63,9 +67,23 @@ impl RequestProcessor {
             object_store: Mutex::new(TsavoriteKV::new(TsavoriteKvConfig::default())?),
             expirations: Mutex::new(HashMap::new()),
             key_registry: Mutex::new(HashSet::new()),
+            watch_versions: (0..WATCH_VERSION_MAP_SIZE)
+                .map(|_| AtomicU64::new(0))
+                .collect(),
             functions: KvSessionFunctions,
             object_functions: ObjectSessionFunctions,
         })
+    }
+
+    pub fn watch_key_version(&self, key: &[u8]) -> u64 {
+        let slot = watch_version_slot(key);
+        self.watch_versions[slot].load(Ordering::SeqCst)
+    }
+
+    pub fn watch_versions_match(&self, watched_keys: &[(Vec<u8>, u64)]) -> bool {
+        watched_keys
+            .iter()
+            .all(|(key, expected)| self.watch_key_version(key) == *expected)
     }
 
     pub fn execute(
@@ -134,6 +152,7 @@ impl RequestProcessor {
         session
             .upsert(&key, &value, &mut output, &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
+        self.bump_watch_version(&key);
         Ok(())
     }
 
@@ -172,6 +191,7 @@ impl RequestProcessor {
             .map_err(|_| RequestExecutionError::StorageFailure)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+                self.bump_watch_version(&key);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => Ok(false),
@@ -337,6 +357,7 @@ impl RequestProcessor {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     removed += 1;
+                    self.bump_watch_version(&key);
                 }
                 DeleteOperationStatus::NotFound => {}
                 DeleteOperationStatus::RetryLater => {
@@ -444,7 +465,8 @@ impl RequestProcessor {
         self.key_registry
             .lock()
             .expect("key registry mutex poisoned")
-            .insert(key);
+            .insert(key.clone());
+        self.bump_watch_version(&key);
 
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -494,6 +516,7 @@ impl RequestProcessor {
                         .lock()
                         .expect("key registry mutex poisoned")
                         .remove(&key);
+                    self.bump_watch_version(&key);
                 }
                 DeleteOperationStatus::NotFound => {}
                 DeleteOperationStatus::RetryLater => {
@@ -539,6 +562,7 @@ impl RequestProcessor {
                     .lock()
                     .expect("key registry mutex poisoned")
                     .insert(key.clone());
+                self.bump_watch_version(&key);
                 append_integer(response_out, parsed);
                 Ok(())
             }
@@ -554,6 +578,7 @@ impl RequestProcessor {
                     .lock()
                     .expect("key registry mutex poisoned")
                     .insert(key.clone());
+                self.bump_watch_version(&key);
                 append_integer(response_out, delta);
                 Ok(())
             }
@@ -625,6 +650,7 @@ impl RequestProcessor {
                         .lock()
                         .expect("key registry mutex poisoned")
                         .remove(&key);
+                    self.bump_watch_version(&key);
                     append_integer(response_out, 1);
                     Ok(())
                 }
@@ -664,6 +690,7 @@ impl RequestProcessor {
             append_integer(response_out, 0);
             return Ok(());
         }
+        self.bump_watch_version(&key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -771,6 +798,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        self.bump_watch_version(&key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -1515,6 +1543,8 @@ impl RequestProcessor {
                 b"MULTI",
                 b"EXEC",
                 b"DISCARD",
+                b"WATCH",
+                b"UNWATCH",
                 b"PING",
                 b"ECHO",
                 b"INFO",
@@ -1614,15 +1644,36 @@ impl RequestProcessor {
         let mut store = self.store.lock().expect("store mutex poisoned");
         let mut session = store.session(&self.functions);
         let mut info = DeleteInfo::default();
-        session
+        let status = session
             .delete(&key.to_vec(), &mut info)
             .map_err(|_| RequestExecutionError::StorageFailure)?;
+        if matches!(
+            status,
+            DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone
+        ) {
+            self.bump_watch_version(key);
+        }
         self.key_registry
             .lock()
             .expect("key registry mutex poisoned")
             .remove(key);
         Ok(())
     }
+
+    fn bump_watch_version(&self, key: &[u8]) {
+        let slot = watch_version_slot(key);
+        self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+fn watch_version_slot(key: &[u8]) -> usize {
+    // FNV-1a 64-bit hash; compact and deterministic for slot mapping.
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in key {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    (hash as usize) & WATCH_VERSION_MAP_MASK
 }
 
 #[derive(Debug, Clone, Copy, Default)]

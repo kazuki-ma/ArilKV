@@ -179,11 +179,21 @@ async fn handle_connection(
                     if transaction.in_multi {
                         match command {
                             CommandId::Exec => {
-                                execute_transaction_queue(
-                                    &processor,
-                                    &mut transaction,
-                                    &mut responses,
-                                );
+                                if meta.argument_count != 1 {
+                                    responses.extend_from_slice(
+                                        b"-ERR wrong number of arguments for 'EXEC' command\r\n",
+                                    );
+                                } else if !processor.watch_versions_match(&transaction.watched_keys)
+                                {
+                                    transaction.reset();
+                                    responses.extend_from_slice(b"*-1\r\n");
+                                } else {
+                                    execute_transaction_queue(
+                                        &processor,
+                                        &mut transaction,
+                                        &mut responses,
+                                    );
+                                }
                             }
                             CommandId::Discard => {
                                 if meta.argument_count != 1 {
@@ -198,6 +208,21 @@ async fn handle_connection(
                             CommandId::Multi => {
                                 responses
                                     .extend_from_slice(b"-ERR MULTI calls can not be nested\r\n");
+                            }
+                            CommandId::Watch => {
+                                responses.extend_from_slice(
+                                    b"-ERR WATCH inside MULTI is not allowed\r\n",
+                                );
+                            }
+                            CommandId::Unwatch => {
+                                if meta.argument_count != 1 {
+                                    responses.extend_from_slice(
+                                        b"-ERR wrong number of arguments for 'UNWATCH' command\r\n",
+                                    );
+                                } else {
+                                    // Matches Garnet behavior: UNWATCH during MULTI is a no-op.
+                                    append_simple_string(&mut responses, b"OK");
+                                }
                             }
                             _ => {
                                 transaction
@@ -223,6 +248,31 @@ async fn handle_connection(
                             }
                             CommandId::Discard => {
                                 responses.extend_from_slice(b"-ERR DISCARD without MULTI\r\n");
+                            }
+                            CommandId::Watch => {
+                                if meta.argument_count < 2 {
+                                    responses.extend_from_slice(
+                                        b"-ERR wrong number of arguments for 'WATCH' command\r\n",
+                                    );
+                                } else {
+                                    for key_arg in &args[1..meta.argument_count] {
+                                        // SAFETY: `args` points to the live receive buffer.
+                                        let key = unsafe { key_arg.as_slice() };
+                                        let version = processor.watch_key_version(key);
+                                        transaction.watch_key(key, version);
+                                    }
+                                    append_simple_string(&mut responses, b"OK");
+                                }
+                            }
+                            CommandId::Unwatch => {
+                                if meta.argument_count != 1 {
+                                    responses.extend_from_slice(
+                                        b"-ERR wrong number of arguments for 'UNWATCH' command\r\n",
+                                    );
+                                } else {
+                                    transaction.clear_watches();
+                                    append_simple_string(&mut responses, b"OK");
+                                }
                             }
                             _ => {
                                 if let Err(error) =
@@ -258,12 +308,30 @@ async fn handle_connection(
 struct ConnectionTransactionState {
     in_multi: bool,
     queued_frames: Vec<Vec<u8>>,
+    watched_keys: Vec<(Vec<u8>, u64)>,
 }
 
 impl ConnectionTransactionState {
     fn reset(&mut self) {
         self.in_multi = false;
         self.queued_frames.clear();
+        self.watched_keys.clear();
+    }
+
+    fn clear_watches(&mut self) {
+        self.watched_keys.clear();
+    }
+
+    fn watch_key(&mut self, key: &[u8], version: u64) {
+        if let Some((_, watched_version)) = self
+            .watched_keys
+            .iter_mut()
+            .find(|(watched_key, _)| watched_key.as_slice() == key)
+        {
+            *watched_version = version;
+            return;
+        }
+        self.watched_keys.push((key.to_vec(), version));
     }
 }
 
@@ -274,6 +342,7 @@ fn execute_transaction_queue(
 ) {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
+    transaction.watched_keys.clear();
 
     responses.push(b'*');
     responses.extend_from_slice(queued.len().to_string().as_bytes());
@@ -637,6 +706,18 @@ mod tests {
             b"-ERR DISCARD without MULTI\r\n",
         )
         .await;
+        send_and_expect(
+            &mut client,
+            b"*1\r\n$5\r\nWATCH\r\n",
+            b"-ERR wrong number of arguments for 'WATCH' command\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$7\r\nUNWATCH\r\n$1\r\nx\r\n",
+            b"-ERR wrong number of arguments for 'UNWATCH' command\r\n",
+        )
+        .await;
         send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
         send_and_expect(
             &mut client,
@@ -671,9 +752,77 @@ mod tests {
             b"$-1\r\n",
         )
         .await;
+        let mut peer = TcpStream::connect(addr).await.unwrap();
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$5\r\nWATCH\r\n$7\r\ntxwatch\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$7\r\ntxwatch\r\n$5\r\ninner\r\n",
+            b"+QUEUED\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut peer,
+            b"*3\r\n$3\r\nSET\r\n$7\r\ntxwatch\r\n$5\r\nouter\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*-1\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$7\r\ntxwatch\r\n",
+            b"$5\r\nouter\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$5\r\nWATCH\r\n$7\r\ntxwatch\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$7\r\nUNWATCH\r\n", b"+OK\r\n").await;
+        send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$7\r\ntxwatch\r\n$5\r\ninner\r\n",
+            b"+QUEUED\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut peer,
+            b"*3\r\n$3\r\nSET\r\n$7\r\ntxwatch\r\n$6\r\nouter2\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*1\r\n+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$7\r\ntxwatch\r\n",
+            b"$5\r\ninner\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$5\r\nWATCH\r\n$7\r\ntxwatch\r\n",
+            b"-ERR WATCH inside MULTI is not allowed\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$7\r\nDISCARD\r\n", b"+OK\r\n").await;
         send_and_expect(
             &mut client,
             b"*2\r\n$3\r\nDEL\r\n$5\r\ntxkey\r\n",
+            b":1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nDEL\r\n$7\r\ntxwatch\r\n",
             b":1\r\n",
         )
         .await;
@@ -683,7 +832,7 @@ mod tests {
         send_and_expect(
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
-            b"*35\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
+            b"*37\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
         )
         .await;
 

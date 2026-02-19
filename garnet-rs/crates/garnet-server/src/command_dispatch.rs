@@ -36,6 +36,8 @@ pub enum CommandId {
     Multi,
     Exec,
     Discard,
+    Watch,
+    Unwatch,
     Ping,
     Echo,
     Info,
@@ -143,6 +145,12 @@ fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     }
     if is_ascii_eq_7(command, b"DISCARD") {
         return CommandId::Discard;
+    }
+    if is_ascii_eq_5(command, b"WATCH") {
+        return CommandId::Watch;
+    }
+    if is_ascii_eq_7(command, b"UNWATCH") {
+        return CommandId::Unwatch;
     }
     if is_ascii_eq_6(command, b"EXPIRE") {
         return CommandId::Expire;
@@ -301,6 +309,8 @@ mod tests {
         assert_eq!(dispatch_command_name(b"multi"), CommandId::Multi);
         assert_eq!(dispatch_command_name(b"EXEC"), CommandId::Exec);
         assert_eq!(dispatch_command_name(b"discard"), CommandId::Discard);
+        assert_eq!(dispatch_command_name(b"watch"), CommandId::Watch);
+        assert_eq!(dispatch_command_name(b"UNWATCH"), CommandId::Unwatch);
     }
 
     #[test]

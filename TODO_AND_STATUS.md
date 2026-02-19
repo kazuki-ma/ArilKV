@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
-> **Last Updated**: 2026-02-18
-> **Current Phase**: Phase 8 — Checkpointing & AOF
-> **Current Iteration**: 60
+> **Last Updated**: 2026-02-19
+> **Current Phase**: Phase 9 — Transactions
+> **Current Iteration**: 63
 
 ---
 
@@ -167,9 +167,9 @@
 
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
-| 9.1 | Implement MULTI/EXEC/DISCARD — command queuing and atomic replay | TODO | 6.1-6.4 | See doc 12. Queue commands during MULTI. Execute atomically on EXEC. Sorted lock acquisition for deadlock freedom. |
-| 9.2 | Implement WATCH — optimistic locking via WatchVersionMap | TODO | 9.1 | See doc 12. Track key versions at WATCH time. Abort EXEC if any watched key changed. Note: GarnetWatchApi is read-only (IGarnetReadApi only). |
-| 9.3 | Unit tests for transactions | TODO | 9.1, 9.2 | MULTI/EXEC correctness, WATCH conflict detection, DISCARD behavior. |
+| 9.1 | Implement MULTI/EXEC/DISCARD — command queuing and atomic replay | DONE | 6.1-6.4 | Added connection-scoped transaction state in the TCP request loop: `MULTI` starts queueing, commands return `+QUEUED`, `EXEC` replays queued frames as RESP array items, and `DISCARD` clears the queue; includes error paths for nested MULTI and EXEC/DISCARD without MULTI. |
+| 9.2 | Implement WATCH — optimistic locking via WatchVersionMap | DONE | 9.1 | Added a fixed-size watch-version map (`Vec<AtomicU64>`) in `RequestProcessor`, incremented on successful key mutations (including expiration-driven deletes). Added `WATCH`/`UNWATCH` command handling in connection state and EXEC watch-version validation (`*-1` on conflict). |
+| 9.3 | Unit tests for transactions | DONE | 9.1, 9.2 | Extended TCP pipeline integration coverage with MULTI/EXEC/DISCARD flows, WATCH conflict abort, UNWATCH behavior, wrong-arity errors, and command-registry assertions for transaction commands. |
 
 ---
 
@@ -248,6 +248,8 @@
 | 2026-02-18 | Track checkpoint/AOF coordination in a dedicated state object (`CheckpointAofCoordinator`) that emits a recovery plan after checkpoint completion. | Separates orchestration state from storage and network layers, making checkpoint-token validation and replay-offset updates testable before full truncation integration. |
 | 2026-02-18 | Implement AOF compaction as copy-from-offset into a new file (`compact_aof_file`) instead of in-place prefix truncation. | In-place prefix removal is OS/filesystem dependent and riskier; rewrite-by-suffix is deterministic and aligns with checkpoint-completed replay windows. |
 | 2026-02-18 | Validate crash recovery by replaying only compacted AOF tail commands on top of checkpoint-restored state in integration tests. | Confirms the intended recovery contract (`restore checkpoint` + `replay tail`) without introducing a full checkpoint file format implementation in the current phase. |
+| 2026-02-19 | Implement transactions as connection-scoped queued RESP frame replay in the TCP request loop. | This keeps queuing/replay localized to protocol handling with minimal disturbance to existing `RequestProcessor` command paths while preserving Redis-style `+QUEUED` and EXEC array replies. |
+| 2026-02-19 | Use a fixed-size hash-indexed watch-version map (`Vec<AtomicU64>`) for WATCH conflict checks. | Preserves low-overhead optimistic conflict detection semantics aligned with the design docs and supports concurrent mutation tracking without introducing per-key lock structures yet. |
 
 ---
 
@@ -323,3 +325,6 @@
 | 58 | 2026-02-18 | 8.4 | IN_PROGRESS | Added `CheckpointAofCoordinator` to track active checkpoint token/ID and update replay offsets on completion, with coordinator-level tests for busy/token/abort flows; wiring into real checkpoint truncation lifecycle remains. |
 | 59 | 2026-02-18 | 8.4 | IN_PROGRESS | Added AOF offset introspection and suffix-compaction helper (`compact_aof_file`) with coverage for retained-tail replay behavior; checkpoint-completion-triggered invocation path remains to be integrated. |
 | 60 | 2026-02-18 | 8.4-8.5 | DONE | Added crash-recovery integration test using checkpoint-restored baseline + compacted AOF tail replay and finalized checkpoint/AOF coordination task status for current architecture. |
+| 61 | 2026-02-19 | 9.1 | DONE | Added connection-scoped MULTI/EXEC/DISCARD queueing in `garnet-server` with queued RESP frame replay and protocol error handling for nested/invalid transaction command usage. |
+| 62 | 2026-02-19 | 9.2 | DONE | Added WATCH/UNWATCH support with optimistic EXEC validation against a hash-indexed watch-version map and mutation-path version increments in `RequestProcessor`. |
+| 63 | 2026-02-19 | 9.3 | DONE | Expanded TCP integration tests to cover transaction success/abort/discard/watch/unwatch paths and re-validated workspace-wide `cargo check` + `cargo test` with matching test counts. |
