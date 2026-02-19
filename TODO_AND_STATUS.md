@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-18
 > **Current Phase**: Phase 8 — Checkpointing & AOF
-> **Current Iteration**: 59
+> **Current Iteration**: 60
 
 ---
 
@@ -156,8 +156,8 @@
 | 8.1 | Implement checkpoint state machine — fold-over and snapshot modes | DONE | 4.6, 1.3 | Added `checkpoint_state_machine` module with fold-over/snapshot modes, tokenized REST→PREPARE→IN_PROGRESS→WAIT_FLUSH→PERSISTENCE_CALLBACK→REST transitions, transition validation, TsavoriteKV facade APIs, and safe-epoch-gated wait-flush progression tests. |
 | 8.2 | Implement AOF writer — append-only log with TsavoriteLog | DONE | 2.5 | Added `aof_log` module with append-only writer (`AofWriter`) using length-prefixed operation records and configurable flush-by-operation-count policy, plus sync and unit coverage. |
 | 8.3 | Implement AOF replay — recovery from AOF | DONE | 8.2 | Added tolerant AOF record replay and server-side replay helpers (`replay_aof_file` / `replay_aof_operations`) that parse RESP operation frames and apply them through `RequestProcessor`, with unit coverage for roundtrip recovery and invalid-frame handling. |
-| 8.4 | Implement checkpoint + AOF coordination | IN_PROGRESS | 8.1, 8.2 | Added `CheckpointAofCoordinator` with active-checkpoint tracking, token validation, and recovery-plan state plus AOF compaction helper (`compact_aof_file`) for suffix retention after checkpoint; end-to-end checkpoint-triggered truncation wiring remains. |
-| 8.5 | Integration test: crash recovery | TODO | 8.4 | Insert data → checkpoint → more inserts → simulate crash → recover → verify all data. |
+| 8.4 | Implement checkpoint + AOF coordination | DONE | 8.1, 8.2 | Added `CheckpointAofCoordinator`, AOF offset tracking (`AofWriter::current_offset`), and suffix compaction (`compact_aof_file`) to retain only post-checkpoint tail records, with coordinator/compaction test coverage. |
+| 8.5 | Integration test: crash recovery | DONE | 8.4 | Added crash-recovery integration coverage in `garnet-server::aof_replay` that simulates checkpoint restore + compacted AOF tail replay (insert data → checkpoint → more writes/deletes → recover → verify final state). |
 
 ---
 
@@ -247,6 +247,7 @@
 | 2026-02-18 | Encode AOF operations as full RESP command frames and reuse `RequestProcessor::execute` for replay application. | Avoids introducing a separate operation-decoder path and keeps replay behavior aligned with live command semantics. |
 | 2026-02-18 | Track checkpoint/AOF coordination in a dedicated state object (`CheckpointAofCoordinator`) that emits a recovery plan after checkpoint completion. | Separates orchestration state from storage and network layers, making checkpoint-token validation and replay-offset updates testable before full truncation integration. |
 | 2026-02-18 | Implement AOF compaction as copy-from-offset into a new file (`compact_aof_file`) instead of in-place prefix truncation. | In-place prefix removal is OS/filesystem dependent and riskier; rewrite-by-suffix is deterministic and aligns with checkpoint-completed replay windows. |
+| 2026-02-18 | Validate crash recovery by replaying only compacted AOF tail commands on top of checkpoint-restored state in integration tests. | Confirms the intended recovery contract (`restore checkpoint` + `replay tail`) without introducing a full checkpoint file format implementation in the current phase. |
 
 ---
 
@@ -321,3 +322,4 @@
 | 57 | 2026-02-18 | 8.3 | DONE | Added `garnet-server` AOF replay utilities that parse RESP operation frames and apply them to `RequestProcessor`, with tests for successful recovery and invalid-frame failures. |
 | 58 | 2026-02-18 | 8.4 | IN_PROGRESS | Added `CheckpointAofCoordinator` to track active checkpoint token/ID and update replay offsets on completion, with coordinator-level tests for busy/token/abort flows; wiring into real checkpoint truncation lifecycle remains. |
 | 59 | 2026-02-18 | 8.4 | IN_PROGRESS | Added AOF offset introspection and suffix-compaction helper (`compact_aof_file`) with coverage for retained-tail replay behavior; checkpoint-completion-triggered invocation path remains to be integrated. |
+| 60 | 2026-02-18 | 8.4-8.5 | DONE | Added crash-recovery integration test using checkpoint-restored baseline + compacted AOF tail replay and finalized checkpoint/AOF coordination task status for current architecture. |

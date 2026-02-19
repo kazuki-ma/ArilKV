@@ -53,7 +53,7 @@ pub fn replay_aof_operations(
 mod tests {
     use super::*;
     use garnet_common::parse_resp_command_arg_slices;
-    use tsavorite::{AofWriter, AofWriterConfig};
+    use tsavorite::{compact_aof_file, AofWriter, AofWriterConfig, CheckpointAofCoordinator};
 
     fn temp_path(suffix: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()
@@ -101,6 +101,86 @@ mod tests {
         assert_eq!(response, b"$6\r\nvalue2\r\n");
 
         let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn crash_recovery_replays_tail_after_checkpoint_compaction() {
+        let source_aof = temp_path("crash-source");
+        let compacted_aof = temp_path("crash-compacted");
+
+        let checkpoint_frames = vec![
+            b"*3\r\n$3\r\nSET\r\n$4\r\nkeya\r\n$4\r\nbase\r\n".to_vec(),
+            b"*3\r\n$3\r\nSET\r\n$4\r\nkeyb\r\n$3\r\nold\r\n".to_vec(),
+        ];
+        let tail_frames = vec![
+            b"*3\r\n$3\r\nSET\r\n$4\r\nkeyb\r\n$3\r\nnew\r\n".to_vec(),
+            b"*2\r\n$3\r\nDEL\r\n$4\r\nkeya\r\n".to_vec(),
+            b"*3\r\n$3\r\nSET\r\n$4\r\nkeyc\r\n$4\r\nlive\r\n".to_vec(),
+        ];
+
+        let mut writer =
+            AofWriter::open(&source_aof, AofWriterConfig { flush_every_ops: 1 }).unwrap();
+        let mut coordinator = CheckpointAofCoordinator::new();
+        let checkpoint_token = 77u64;
+        let begin_offset = writer.current_offset().unwrap();
+        coordinator
+            .begin_checkpoint(checkpoint_token, begin_offset)
+            .unwrap();
+
+        for frame in &checkpoint_frames {
+            writer.append_operation(frame).unwrap();
+        }
+
+        let checkpoint_tail_offset = writer.current_offset().unwrap();
+        let plan = coordinator
+            .complete_checkpoint(checkpoint_token, checkpoint_tail_offset)
+            .unwrap();
+
+        for frame in &tail_frames {
+            writer.append_operation(frame).unwrap();
+        }
+        writer.sync_all().unwrap();
+
+        let copied =
+            compact_aof_file(&source_aof, &compacted_aof, plan.replay_from_aof_offset).unwrap();
+        assert!(copied > 0);
+
+        // Simulate checkpoint restore, then AOF tail replay on restart.
+        let recovered_processor = RequestProcessor::new().unwrap();
+        let checkpoint_applied =
+            replay_aof_operations(&recovered_processor, &checkpoint_frames).unwrap();
+        assert_eq!(checkpoint_applied, checkpoint_frames.len());
+        let tail_applied = replay_aof_file(&recovered_processor, &compacted_aof).unwrap();
+        assert_eq!(tail_applied, tail_frames.len());
+
+        let mut args = [ArgSlice::EMPTY; 4];
+        let mut response = Vec::new();
+
+        let get_keya = b"*2\r\n$3\r\nGET\r\n$4\r\nkeya\r\n";
+        let meta = parse_resp_command_arg_slices(get_keya, &mut args).unwrap();
+        recovered_processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
+
+        response.clear();
+        let get_keyb = b"*2\r\n$3\r\nGET\r\n$4\r\nkeyb\r\n";
+        let meta = parse_resp_command_arg_slices(get_keyb, &mut args).unwrap();
+        recovered_processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$3\r\nnew\r\n");
+
+        response.clear();
+        let get_keyc = b"*2\r\n$3\r\nGET\r\n$4\r\nkeyc\r\n";
+        let meta = parse_resp_command_arg_slices(get_keyc, &mut args).unwrap();
+        recovered_processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$4\r\nlive\r\n");
+
+        let _ = std::fs::remove_file(source_aof);
+        let _ = std::fs::remove_file(compacted_aof);
     }
 
     #[test]
