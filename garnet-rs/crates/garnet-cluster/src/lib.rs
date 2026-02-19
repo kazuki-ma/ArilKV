@@ -4,6 +4,7 @@
 //! structures with Redis-compatible 16,384 hash slots.
 
 use std::fmt;
+use std::future::Future;
 use std::sync::{Arc, RwLock};
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
@@ -504,6 +505,15 @@ pub trait GossipTransport {
     fn try_gossip(&mut self, worker_id: u16) -> Result<(), Self::Error>;
 }
 
+pub trait AsyncGossipTransport {
+    type Error;
+    type Fut<'a>: Future<Output = Result<(), Self::Error>> + 'a
+    where
+        Self: 'a;
+
+    fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a>;
+}
+
 #[derive(Debug)]
 pub struct GossipCoordinator {
     nodes: Vec<GossipNode>,
@@ -552,6 +562,58 @@ impl GossipCoordinator {
         self.rng_state = local_rng_state;
         report
     }
+
+    pub async fn run_round_async<T: AsyncGossipTransport>(
+        &mut self,
+        sample_percent: usize,
+        round_start_tick: u64,
+        transport: &mut T,
+    ) -> GossipRoundReport {
+        let mut failure_budget = calculate_gossip_failure_budget(self.nodes.len(), sample_percent);
+        let mut report = GossipRoundReport {
+            attempted_worker_ids: Vec::new(),
+            success_count: 0,
+            failure_count: 0,
+            remaining_failure_budget: failure_budget,
+        };
+        let mut local_rng_state = self.rng_state;
+
+        while failure_budget > 0 {
+            let candidate_indices = sample_random_unique_indices(
+                self.nodes.len(),
+                self.max_random_nodes_to_poll,
+                &mut local_rng_state,
+            );
+            let candidate = candidate_indices
+                .into_iter()
+                .take(self.max_random_nodes_to_poll)
+                .filter(|index| *index < self.nodes.len())
+                .filter(|index| self.nodes[*index].last_gossip_tick < round_start_tick)
+                .min_by_key(|index| self.nodes[*index].last_gossip_tick);
+
+            let Some(candidate) = candidate else {
+                break;
+            };
+
+            let node = &mut self.nodes[candidate];
+            report.attempted_worker_ids.push(node.worker_id);
+            match transport.try_gossip(node.worker_id).await {
+                Ok(()) => {
+                    node.last_gossip_tick = round_start_tick;
+                    report.success_count += 1;
+                }
+                Err(_) => {
+                    node.last_gossip_tick = round_start_tick;
+                    failure_budget -= 1;
+                    report.failure_count += 1;
+                }
+            }
+        }
+
+        report.remaining_failure_budget = failure_budget;
+        self.rng_state = local_rng_state;
+        report
+    }
 }
 
 #[derive(Debug)]
@@ -597,6 +659,57 @@ impl<T: GossipTransport> GossipEngine<T> {
 
     pub fn transport(&self) -> &T {
         &self.transport
+    }
+}
+
+#[derive(Debug)]
+pub struct AsyncGossipEngine<T: AsyncGossipTransport> {
+    coordinator: GossipCoordinator,
+    transport: T,
+    sample_percent: usize,
+    tick: u64,
+}
+
+impl<T: AsyncGossipTransport> AsyncGossipEngine<T> {
+    pub fn new(
+        coordinator: GossipCoordinator,
+        transport: T,
+        sample_percent: usize,
+        initial_tick: u64,
+    ) -> Self {
+        Self {
+            coordinator,
+            transport,
+            sample_percent,
+            tick: initial_tick,
+        }
+    }
+
+    pub fn tick(&self) -> u64 {
+        self.tick
+    }
+
+    pub fn coordinator(&self) -> &GossipCoordinator {
+        &self.coordinator
+    }
+
+    pub fn transport(&self) -> &T {
+        &self.transport
+    }
+
+    pub async fn run_once(&mut self) -> GossipRoundReport {
+        self.tick = self.tick.saturating_add(1);
+        self.coordinator
+            .run_round_async(self.sample_percent, self.tick, &mut self.transport)
+            .await
+    }
+
+    pub async fn run_for_rounds(&mut self, rounds: usize) -> Vec<GossipRoundReport> {
+        let mut reports = Vec::with_capacity(rounds);
+        for _ in 0..rounds {
+            reports.push(self.run_once().await);
+        }
+        reports
     }
 }
 
@@ -864,6 +977,66 @@ mod tests {
         let _ = engine.run_once();
 
         assert_eq!(engine.transport().calls, vec![1]);
+    }
+
+    #[derive(Default)]
+    struct AsyncMockTransport {
+        fail_on_worker: Option<u16>,
+        calls: Vec<u16>,
+    }
+
+    impl AsyncGossipTransport for AsyncMockTransport {
+        type Error = ();
+        type Fut<'a>
+            = std::future::Ready<Result<(), Self::Error>>
+        where
+            Self: 'a;
+
+        fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a> {
+            self.calls.push(worker_id);
+            std::future::ready(if self.fail_on_worker == Some(worker_id) {
+                Err(())
+            } else {
+                Ok(())
+            })
+        }
+    }
+
+    #[tokio::test]
+    async fn coordinator_round_async_uses_transport_result_for_success_failure() {
+        let nodes = vec![
+            GossipNode::new(10, 0),
+            GossipNode::new(20, 0),
+            GossipNode::new(30, 0),
+        ];
+        let mut coordinator = GossipCoordinator::new(nodes, 3);
+        let mut transport = AsyncMockTransport {
+            fail_on_worker: Some(20),
+            calls: Vec::new(),
+        };
+
+        let report = coordinator.run_round_async(100, 100, &mut transport).await;
+        assert!(report.attempted_worker_ids.contains(&20));
+        assert!(report.failure_count >= 1);
+        assert!(report.success_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn async_gossip_engine_advances_tick_and_runs_rounds() {
+        let nodes = vec![GossipNode::new(1, 0), GossipNode::new(2, 0)];
+        let coordinator = GossipCoordinator::new(nodes, 2);
+        let transport = AsyncMockTransport {
+            fail_on_worker: None,
+            calls: Vec::new(),
+        };
+        let mut engine = AsyncGossipEngine::new(coordinator, transport, 100, 10);
+
+        let reports = engine.run_for_rounds(2).await;
+        assert_eq!(engine.tick(), 12);
+        assert_eq!(reports.len(), 2);
+        assert_eq!(reports[0].failure_count, 0);
+        assert_eq!(reports[1].failure_count, 0);
+        assert_eq!(engine.transport().calls.len(), 4);
     }
 
     #[test]

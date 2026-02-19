@@ -255,6 +255,9 @@ version = "0.1.0"
 [[package]]
 name = "garnet-cluster"
 version = "0.1.0"
+dependencies = [
+ "tokio",
+]
 
 [[package]]
 name = "garnet-common"
