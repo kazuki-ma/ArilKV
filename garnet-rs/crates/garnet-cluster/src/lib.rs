@@ -534,6 +534,102 @@ pub trait AsyncReplicationTransport {
     ) -> Self::StreamFut<'a>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicationEvent {
+    Checkpoint {
+        worker_id: u16,
+        checkpoint_id: u64,
+    },
+    StreamAof {
+        worker_id: u16,
+        start_offset: u64,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChannelReplicationTransportError {
+    ChannelClosed,
+}
+
+impl fmt::Display for ChannelReplicationTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ChannelClosed => write!(f, "replication event channel is closed"),
+        }
+    }
+}
+
+impl std::error::Error for ChannelReplicationTransportError {}
+
+#[derive(Debug)]
+pub struct ChannelReplicationTransport {
+    sender: tokio::sync::mpsc::UnboundedSender<ReplicationEvent>,
+    stream_result: u64,
+}
+
+impl ChannelReplicationTransport {
+    pub fn new(
+        sender: tokio::sync::mpsc::UnboundedSender<ReplicationEvent>,
+        stream_result: u64,
+    ) -> Self {
+        Self {
+            sender,
+            stream_result,
+        }
+    }
+
+    pub fn stream_result(&self) -> u64 {
+        self.stream_result
+    }
+
+    pub fn set_stream_result(&mut self, stream_result: u64) {
+        self.stream_result = stream_result;
+    }
+}
+
+impl AsyncReplicationTransport for ChannelReplicationTransport {
+    type Error = ChannelReplicationTransportError;
+    type CheckpointFut<'a>
+        = std::future::Ready<Result<(), Self::Error>>
+    where
+        Self: 'a;
+    type StreamFut<'a>
+        = std::future::Ready<Result<u64, Self::Error>>
+    where
+        Self: 'a;
+
+    fn send_checkpoint<'a>(
+        &'a mut self,
+        worker_id: u16,
+        checkpoint_id: u64,
+    ) -> Self::CheckpointFut<'a> {
+        std::future::ready(
+            self.sender
+                .send(ReplicationEvent::Checkpoint {
+                    worker_id,
+                    checkpoint_id,
+                })
+                .map_err(|_| ChannelReplicationTransportError::ChannelClosed),
+        )
+    }
+
+    fn stream_aof_from_offset<'a>(
+        &'a mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Self::StreamFut<'a> {
+        std::future::ready(
+            self.sender
+                .send(ReplicationEvent::StreamAof {
+                    worker_id,
+                    start_offset,
+                })
+                .map(|_| self.stream_result)
+                .map_err(|_| ChannelReplicationTransportError::ChannelClosed),
+        )
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ReplicationManager {
     checkpoint_id: Option<u64>,
@@ -1490,6 +1586,74 @@ mod tests {
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport("stream failed"))
+        ));
+    }
+
+    #[tokio::test]
+    async fn channel_replication_transport_emits_full_sync_events_in_order() {
+        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut transport = ChannelReplicationTransport::new(tx, 1_750);
+
+        let outcome = manager
+            .execute_sync_async(9, Some(999), &mut transport)
+            .await
+            .expect("full sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(outcome.streamed_until_offset, 1_750);
+
+        assert_eq!(
+            rx.recv().await,
+            Some(ReplicationEvent::Checkpoint {
+                worker_id: 9,
+                checkpoint_id: 42,
+            })
+        );
+        assert_eq!(
+            rx.recv().await,
+            Some(ReplicationEvent::StreamAof {
+                worker_id: 9,
+                start_offset: 1_000,
+            })
+        );
+        assert_eq!(manager.replica_offset(9), Some(1_750));
+    }
+
+    #[tokio::test]
+    async fn channel_replication_transport_emits_incremental_stream_only() {
+        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut transport = ChannelReplicationTransport::new(tx, 1_980);
+
+        let outcome = manager
+            .execute_sync_async(5, Some(1_500), &mut transport)
+            .await
+            .expect("incremental sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
+
+        assert_eq!(
+            rx.recv().await,
+            Some(ReplicationEvent::StreamAof {
+                worker_id: 5,
+                start_offset: 1_500,
+            })
+        );
+        assert_eq!(manager.replica_offset(5), Some(1_980));
+    }
+
+    #[tokio::test]
+    async fn channel_replication_transport_propagates_closed_channel_error() {
+        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        drop(rx);
+        let mut transport = ChannelReplicationTransport::new(tx, 1_980);
+
+        let result = manager.execute_sync_async(5, Some(1_500), &mut transport).await;
+        assert!(matches!(
+            result,
+            Err(ReplicationSyncError::Transport(
+                ChannelReplicationTransportError::ChannelClosed
+            ))
         ));
     }
 
