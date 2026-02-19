@@ -33,6 +33,9 @@ pub enum CommandId {
     Zrem,
     Zrange,
     Zscore,
+    Multi,
+    Exec,
+    Discard,
     Ping,
     Echo,
     Info,
@@ -131,6 +134,15 @@ fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
     }
     if is_ascii_eq_6(command, b"ZSCORE") {
         return CommandId::Zscore;
+    }
+    if is_ascii_eq_5(command, b"MULTI") {
+        return CommandId::Multi;
+    }
+    if is_ascii_eq_4(command, b"EXEC") {
+        return CommandId::Exec;
+    }
+    if is_ascii_eq_7(command, b"DISCARD") {
+        return CommandId::Discard;
     }
     if is_ascii_eq_6(command, b"EXPIRE") {
         return CommandId::Expire;
@@ -286,6 +298,9 @@ mod tests {
         assert_eq!(dispatch_command_name(b"ZREM"), CommandId::Zrem);
         assert_eq!(dispatch_command_name(b"zrange"), CommandId::Zrange);
         assert_eq!(dispatch_command_name(b"ZSCORE"), CommandId::Zscore);
+        assert_eq!(dispatch_command_name(b"multi"), CommandId::Multi);
+        assert_eq!(dispatch_command_name(b"EXEC"), CommandId::Exec);
+        assert_eq!(dispatch_command_name(b"discard"), CommandId::Discard);
     }
 
     #[test]

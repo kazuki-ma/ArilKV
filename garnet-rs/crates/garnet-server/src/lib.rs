@@ -154,6 +154,7 @@ async fn handle_connection(
     let mut receive_buffer = Vec::with_capacity(read_buffer_size.max(1));
     let mut responses = Vec::with_capacity(read_buffer_size.max(1));
     let mut args = [ArgSlice::EMPTY; 64];
+    let mut transaction = ConnectionTransactionState::default();
 
     loop {
         let bytes_read = stream.read(&mut read_buffer).await?;
@@ -171,10 +172,66 @@ async fn handle_connection(
         loop {
             match parse_resp_command_arg_slices(&receive_buffer[consumed..], &mut args) {
                 Ok(meta) => {
-                    if let Err(error) =
-                        processor.execute(&args[..meta.argument_count], &mut responses)
-                    {
-                        error.append_resp_error(&mut responses);
+                    let frame_start = consumed;
+                    let frame_end = consumed + meta.bytes_consumed;
+                    // SAFETY: `args` refers to the still-live `receive_buffer` backing bytes.
+                    let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                    if transaction.in_multi {
+                        match command {
+                            CommandId::Exec => {
+                                execute_transaction_queue(
+                                    &processor,
+                                    &mut transaction,
+                                    &mut responses,
+                                );
+                            }
+                            CommandId::Discard => {
+                                if meta.argument_count != 1 {
+                                    responses.extend_from_slice(
+                                        b"-ERR wrong number of arguments for 'DISCARD' command\r\n",
+                                    );
+                                } else {
+                                    transaction.reset();
+                                    append_simple_string(&mut responses, b"OK");
+                                }
+                            }
+                            CommandId::Multi => {
+                                responses
+                                    .extend_from_slice(b"-ERR MULTI calls can not be nested\r\n");
+                            }
+                            _ => {
+                                transaction
+                                    .queued_frames
+                                    .push(receive_buffer[frame_start..frame_end].to_vec());
+                                append_simple_string(&mut responses, b"QUEUED");
+                            }
+                        }
+                    } else {
+                        match command {
+                            CommandId::Multi => {
+                                if meta.argument_count != 1 {
+                                    responses.extend_from_slice(
+                                        b"-ERR wrong number of arguments for 'MULTI' command\r\n",
+                                    );
+                                } else {
+                                    transaction.in_multi = true;
+                                    append_simple_string(&mut responses, b"OK");
+                                }
+                            }
+                            CommandId::Exec => {
+                                responses.extend_from_slice(b"-ERR EXEC without MULTI\r\n");
+                            }
+                            CommandId::Discard => {
+                                responses.extend_from_slice(b"-ERR DISCARD without MULTI\r\n");
+                            }
+                            _ => {
+                                if let Err(error) =
+                                    processor.execute(&args[..meta.argument_count], &mut responses)
+                                {
+                                    error.append_resp_error(&mut responses);
+                                }
+                            }
+                        }
                     }
                     consumed += meta.bytes_consumed;
                 }
@@ -195,6 +252,54 @@ async fn handle_connection(
             stream.write_all(&responses).await?;
         }
     }
+}
+
+#[derive(Default)]
+struct ConnectionTransactionState {
+    in_multi: bool,
+    queued_frames: Vec<Vec<u8>>,
+}
+
+impl ConnectionTransactionState {
+    fn reset(&mut self) {
+        self.in_multi = false;
+        self.queued_frames.clear();
+    }
+}
+
+fn execute_transaction_queue(
+    processor: &RequestProcessor,
+    transaction: &mut ConnectionTransactionState,
+    responses: &mut Vec<u8>,
+) {
+    let queued = std::mem::take(&mut transaction.queued_frames);
+    transaction.in_multi = false;
+
+    responses.push(b'*');
+    responses.extend_from_slice(queued.len().to_string().as_bytes());
+    responses.extend_from_slice(b"\r\n");
+
+    let mut args = [ArgSlice::EMPTY; 64];
+    for frame in queued {
+        let mut item_response = Vec::new();
+        match parse_resp_command_arg_slices(&frame, &mut args) {
+            Ok(meta) if meta.bytes_consumed == frame.len() => {
+                if let Err(error) =
+                    processor.execute(&args[..meta.argument_count], &mut item_response)
+                {
+                    error.append_resp_error(&mut item_response);
+                }
+            }
+            _ => item_response.extend_from_slice(b"-ERR protocol error\r\n"),
+        }
+        responses.extend_from_slice(&item_response);
+    }
+}
+
+fn append_simple_string(output: &mut Vec<u8>, value: &[u8]) {
+    output.push(b'+');
+    output.extend_from_slice(value);
+    output.extend_from_slice(b"\r\n");
 }
 
 struct ConnectionLifecycle<'a> {
@@ -520,13 +625,65 @@ mod tests {
             b":2\r\n",
         )
         .await;
+        send_and_expect(
+            &mut client,
+            b"*1\r\n$4\r\nEXEC\r\n",
+            b"-ERR EXEC without MULTI\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*1\r\n$7\r\nDISCARD\r\n",
+            b"-ERR DISCARD without MULTI\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$5\r\ntxkey\r\n$1\r\n1\r\n",
+            b"+QUEUED\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$4\r\nINCR\r\n$5\r\ntxkey\r\n",
+            b"+QUEUED\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*2\r\n+OK\r\n:2\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$5\r\ntxkey\r\n",
+            b"$1\r\n2\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$3\r\nSET\r\n$8\r\ndiscardk\r\n$1\r\nx\r\n",
+            b"+QUEUED\r\n",
+        )
+        .await;
+        send_and_expect(&mut client, b"*1\r\n$7\r\nDISCARD\r\n", b"+OK\r\n").await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$8\r\ndiscardk\r\n",
+            b"$-1\r\n",
+        )
+        .await;
+        send_and_expect(
+            &mut client,
+            b"*2\r\n$3\r\nDEL\r\n$5\r\ntxkey\r\n",
+            b":1\r\n",
+        )
+        .await;
         send_and_expect(&mut client, b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n", b":1\r\n").await;
         send_and_expect(&mut client, b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n", b"$-1\r\n").await;
         send_and_expect(&mut client, b"*1\r\n$6\r\nDBSIZE\r\n", b":1\r\n").await;
         send_and_expect(
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
-            b"*32\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
+            b"*35\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
         )
         .await;
 
