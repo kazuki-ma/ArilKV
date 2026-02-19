@@ -198,6 +198,10 @@ ModelManifest.xml
 packages/
 *.VC.db*
 *.VC.opendb
+
+# Ignore hidden files (local dotfiles)
+.*
+!.gitignore
 .vs/
 *.lib
 nativebin/
