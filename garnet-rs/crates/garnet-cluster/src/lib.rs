@@ -839,6 +839,14 @@ impl ReplicationManager {
         })
     }
 
+    pub fn execute_sync_for_worker<T: ReplicationTransport>(
+        &mut self,
+        worker_id: u16,
+        transport: &mut T,
+    ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
+        self.execute_sync(worker_id, self.replica_offset(worker_id), transport)
+    }
+
     pub async fn execute_sync_async<T: AsyncReplicationTransport>(
         &mut self,
         worker_id: u16,
@@ -868,6 +876,15 @@ impl ReplicationManager {
             plan,
             streamed_until_offset,
         })
+    }
+
+    pub async fn execute_sync_for_worker_async<T: AsyncReplicationTransport>(
+        &mut self,
+        worker_id: u16,
+        transport: &mut T,
+    ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
+        self.execute_sync_async(worker_id, self.replica_offset(worker_id), transport)
+            .await
     }
 }
 
@@ -1726,6 +1743,35 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn replication_manager_execute_sync_for_worker_reuses_tracked_offset() {
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+
+        let first = manager
+            .execute_sync_for_worker(4, &mut transport)
+            .expect("first sync should succeed");
+        assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(transport.checkpoints, vec![(4, 9)]);
+        assert_eq!(transport.streams, vec![(4, 500)]);
+
+        manager.set_aof_tail_offset(940).unwrap();
+        transport.checkpoints.clear();
+        transport.streams.clear();
+        transport.stream_result = 940;
+
+        let second = manager
+            .execute_sync_for_worker(4, &mut transport)
+            .expect("second sync should succeed");
+        assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
+        assert!(transport.checkpoints.is_empty());
+        assert_eq!(transport.streams, vec![(4, 900)]);
+        assert_eq!(manager.replica_offset(4), Some(940));
+    }
+
     #[derive(Default)]
     struct AsyncMockReplicationTransport {
         checkpoints: Vec<(u16, u64)>,
@@ -1908,6 +1954,49 @@ mod tests {
                 ChannelReplicationTransportError::ChannelClosed
             ))
         ));
+    }
+
+    #[tokio::test]
+    async fn replication_manager_execute_sync_for_worker_async_reuses_tracked_offset() {
+        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut transport = ChannelReplicationTransport::new(tx, 2_000);
+
+        let first = manager
+            .execute_sync_for_worker_async(9, &mut transport)
+            .await
+            .expect("first sync should succeed");
+        assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(
+            rx.recv().await,
+            Some(ReplicationEvent::Checkpoint {
+                worker_id: 9,
+                checkpoint_id: 42,
+            })
+        );
+        assert_eq!(
+            rx.recv().await,
+            Some(ReplicationEvent::StreamAof {
+                worker_id: 9,
+                start_offset: 1_000,
+            })
+        );
+
+        manager.set_aof_tail_offset(2_100).unwrap();
+        transport.set_stream_result(2_100);
+        let second = manager
+            .execute_sync_for_worker_async(9, &mut transport)
+            .await
+            .expect("second sync should succeed");
+        assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
+        assert_eq!(
+            rx.recv().await,
+            Some(ReplicationEvent::StreamAof {
+                worker_id: 9,
+                start_offset: 2_000,
+            })
+        );
+        assert_eq!(manager.replica_offset(9), Some(2_100));
     }
 
     #[test]
