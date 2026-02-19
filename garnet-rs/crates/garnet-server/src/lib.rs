@@ -2799,6 +2799,57 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn run_with_cluster_control_plane_propagates_bind_errors() {
+        let occupied = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = occupied.local_addr().unwrap();
+
+        let source_store = Arc::new(ClusterConfigStore::new(ClusterConfig::new_local(
+            "node-1",
+            "127.0.0.1",
+            addr.port(),
+        )));
+        let target_store =
+            ClusterConfigStore::new(ClusterConfig::new_local("node-2", "127.0.0.1", 8802));
+        let target_processor = RequestProcessor::new().unwrap();
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            InMemoryGossipTransport::new(Arc::clone(&source_store)),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
+        let mut failure_detector = FailureDetector::new(1_000);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
+        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+
+        let result = run_with_cluster_control_plane(
+            ServerConfig {
+                bind_addr: addr,
+                read_buffer_size: 1024,
+            },
+            Arc::new(ServerMetrics::default()),
+            source_store,
+            &mut manager,
+            &target_store,
+            &target_processor,
+            updates_rx,
+            &mut failure_detector,
+            &mut failover_controller,
+            &mut replication_manager,
+            &mut replication_transport,
+            1,
+            Duration::from_millis(1),
+            Duration::from_millis(1),
+            tokio::time::sleep(Duration::from_millis(10)),
+        )
+        .await;
+        assert!(matches!(result, Err(ClusteredServerRunError::Io(_))));
+    }
+
+    #[tokio::test]
     async fn cluster_manager_failover_and_detected_migration_runner_executes_migration_loop() {
         let key = b"{manager-detected}k".to_vec();
         let slot = redis_hash_slot(&key);

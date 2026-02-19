@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
 > **Last Updated**: 2026-02-19
-> **Current Phase**: Phase 10 — Cluster (Completed)
-> **Current Iteration**: 122
+> **Current Phase**: Phase 11 — Performance Benchmarking
+> **Current Iteration**: 123
 
 ---
 
@@ -187,10 +187,19 @@
 
 ---
 
+## Phase 11: Performance Benchmarking
+
+| # | Task | Status | Depends On | Notes |
+|---|------|--------|------------|-------|
+| 11.1 | Integrate Redis official benchmark workflow (`redis-benchmark`) | DONE | 6.8 | Added `garnet-rs/benches/redis_official_benchmark.sh` to resolve/download Redis official `redis-benchmark`, optionally start `garnet-server`, and save benchmark reports to `garnet-rs/benches/results/`. Added `garnet-rs/crates/garnet-server/src/main.rs` env overrides (`GARNET_BIND_ADDR`, `GARNET_READ_BUFFER_SIZE`) to support benchmark-run bind configuration and added parser tests for invalid/valid env values. Documented usage and tunables in `garnet-rs/benches/README.md`. |
+
+---
+
 ## Design Decisions Log
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-19 | Standardize socket-level performance checks on Redis official `redis-benchmark`, with auto-download from `download.redis.io` when missing. | Reuses Redis’s de facto standard benchmark tool while making runs reproducible in clean environments without manual pre-install steps. |
 | 2026-02-18 | Use a pure virtual workspace at `garnet-rs/Cargo.toml` with five member crates and placeholder sources. | Keeps Phase 0 scaffolding minimal while enabling immediate workspace-wide `cargo check`/`cargo test`. |
 | 2026-02-18 | Pin `rust-toolchain.toml` to `stable` with `rustfmt` and `clippy`. | Matches Phase 0 requirement and keeps early iterations portable before Linux-specific `io_uring` decisions are needed. |
 | 2026-02-18 | Model SpanByte as a packed 4-byte `#[repr(C)]` header plus borrowed serialized views (`SpanByteRef`, `SpanByteRefMut`) instead of a pointer-bearing struct. | Preserves on-disk/in-log layout semantics while avoiding unsafe pointer ownership in early Rust scaffolding. |
@@ -440,3 +449,4 @@
 | 120 | 2026-02-19 | 10.5 | DONE | Added `run_with_cluster_control_plane` (`ServerConfig` wrapper over listener-level control-plane wiring) and a smoke integration test that verifies bind+serve behavior with the composed control-plane runtime. |
 | 121 | 2026-02-19 | 10.5 | DONE | Added listener-level control-plane error-path integration coverage (`run_listener_with_cluster_control_plane_propagates_control_plane_errors`) to verify immediate propagation of migration peer-resolution failures through `ClusteredServerRunError::ControlPlane`. |
 | 122 | 2026-02-19 | Tracking | DONE | Normalized historical Iteration Log status markers from `IN_PROGRESS` to `DONE` for already-completed milestones to keep active work visibility clean. |
+| 123 | 2026-02-19 | 11.1 | DONE | Added Redis official benchmark runner script (`redis_official_benchmark.sh`), documented benchmark execution parameters, wired server env-based bind config overrides for benchmark startup, and verified benchmark/test execution. |
