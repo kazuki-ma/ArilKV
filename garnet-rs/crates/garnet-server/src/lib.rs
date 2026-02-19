@@ -2326,6 +2326,147 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn detected_live_slot_migration_runner_updates_server_redirections() {
+        let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr1 = listener1.local_addr().unwrap();
+        let listener2 = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr2 = listener2.local_addr().unwrap();
+
+        let key = b"detected-live-migrate-key".to_vec();
+        let slot = redis_hash_slot(&key);
+
+        let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", addr1.port());
+        let (next1, node2_id_in_1) = config1
+            .add_worker(Worker::new(
+                "node-2",
+                "127.0.0.1",
+                addr2.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config1 = next1
+            .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+
+        let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", addr2.port());
+        let (next2, node1_id_in_2) = config2
+            .add_worker(Worker::new(
+                "node-1",
+                "127.0.0.1",
+                addr1.port(),
+                WorkerRole::Primary,
+            ))
+            .unwrap();
+        config2 = next2
+            .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
+            .unwrap();
+
+        let store1 = Arc::new(ClusterConfigStore::new(config1));
+        let store2 = Arc::new(ClusterConfigStore::new(config2));
+        let source_processor = Arc::new(RequestProcessor::new().unwrap());
+        let target_processor = Arc::new(RequestProcessor::new().unwrap());
+
+        let (shutdown1_tx, shutdown1_rx) = oneshot::channel::<()>();
+        let (shutdown2_tx, shutdown2_rx) = oneshot::channel::<()>();
+
+        let server1_metrics = Arc::new(ServerMetrics::default());
+        let server1_cluster = Arc::clone(&store1);
+        let server1_processor = Arc::clone(&source_processor);
+        let server1 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster_with_processor(
+                listener1,
+                1024,
+                server1_metrics,
+                async move {
+                    let _ = shutdown1_rx.await;
+                },
+                Some(server1_cluster),
+                server1_processor,
+            )
+            .await
+            .unwrap();
+        });
+
+        let server2_metrics = Arc::new(ServerMetrics::default());
+        let server2_cluster = Arc::clone(&store2);
+        let server2_processor = Arc::clone(&target_processor);
+        let server2 = tokio::spawn(async move {
+            run_listener_with_shutdown_and_cluster_with_processor(
+                listener2,
+                1024,
+                server2_metrics,
+                async move {
+                    let _ = shutdown2_rx.await;
+                },
+                Some(server2_cluster),
+                server2_processor,
+            )
+            .await
+            .unwrap();
+        });
+
+        let mut node1 = TcpStream::connect(addr1).await.unwrap();
+        let mut node2 = TcpStream::connect(addr2).await.unwrap();
+        let set_key = encode_resp_command(&[b"SET", &key, b"value"]);
+        let get_key = encode_resp_command(&[b"GET", &key]);
+
+        send_and_expect(&mut node1, &set_key, b"+OK\r\n").await;
+        send_and_expect(&mut node1, &get_key, b"$5\r\nvalue\r\n").await;
+
+        let moved_to_node1 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, addr1.port());
+        send_and_expect(&mut node2, &get_key, moved_to_node1.as_bytes()).await;
+
+        let migration_source = store1
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_migration_to(slot, node2_id_in_1)
+            .unwrap();
+        store1.publish(migration_source);
+        let migration_target = store2
+            .load()
+            .as_ref()
+            .clone()
+            .begin_slot_import_from(slot, node1_id_in_2)
+            .unwrap();
+        store2.publish(migration_target);
+
+        let ask_to_node2 = format!("-ASK {} 127.0.0.1:{}\r\n", slot, addr2.port());
+        send_and_expect(&mut node1, &get_key, ask_to_node2.as_bytes()).await;
+
+        let report = run_detected_live_slot_migrations_until_complete(
+            &store1,
+            &store2,
+            &source_processor,
+            &target_processor,
+            1,
+            Duration::from_millis(1),
+            std::future::pending::<()>(),
+        )
+        .await
+        .unwrap();
+        assert!(!report.interrupted);
+        assert_eq!(
+            report.slots,
+            vec![LiveSlotMigrationSlotReport {
+                slot,
+                batches: 1,
+                moved_keys: 1,
+                finalized: true,
+            }]
+        );
+
+        let moved_to_node2 = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, addr2.port());
+        send_and_expect(&mut node1, &get_key, moved_to_node2.as_bytes()).await;
+        send_and_expect(&mut node2, &get_key, b"$5\r\nvalue\r\n").await;
+
+        let _ = shutdown1_tx.send(());
+        let _ = shutdown2_tx.send(());
+        server1.await.unwrap();
+        server2.await.unwrap();
+    }
+
+    #[tokio::test]
     async fn execute_live_slot_migration_orchestrates_transfer_and_finalization() {
         let listener1 = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr1 = listener1.local_addr().unwrap();
