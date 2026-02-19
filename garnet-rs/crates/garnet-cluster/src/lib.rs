@@ -127,6 +127,10 @@ impl Worker {
             replication_offset: 0,
         }
     }
+
+    pub fn endpoint(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -260,6 +264,34 @@ impl ClusterConfig {
         self.route_for_slot(slot)
     }
 
+    pub fn redirection_error_for_slot(
+        &self,
+        slot: u16,
+    ) -> Result<Option<String>, ClusterConfigError> {
+        match self.route_for_slot(slot)? {
+            SlotRouteDecision::Local => Ok(None),
+            SlotRouteDecision::Moved { slot, worker_id } => {
+                let endpoint = self.worker_endpoint(worker_id)?;
+                Ok(Some(format!("MOVED {slot} {endpoint}")))
+            }
+            SlotRouteDecision::Ask { slot, worker_id } => {
+                let endpoint = self.worker_endpoint(worker_id)?;
+                Ok(Some(format!("ASK {slot} {endpoint}")))
+            }
+            SlotRouteDecision::Unbound { slot } => {
+                Ok(Some(format!("CLUSTERDOWN Hash slot {slot} is unbound")))
+            }
+        }
+    }
+
+    pub fn redirection_error_for_key(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<String>, ClusterConfigError> {
+        let slot = redis_hash_slot(key);
+        self.redirection_error_for_slot(slot)
+    }
+
     pub fn set_slot_state(
         &self,
         slot: u16,
@@ -303,6 +335,13 @@ impl ClusterConfig {
             return Err(ClusterConfigError::InvalidSlot(slot));
         }
         Ok(slot_index)
+    }
+
+    fn worker_endpoint(&self, worker_id: u16) -> Result<String, ClusterConfigError> {
+        let worker = self
+            .worker(worker_id)
+            .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
+        Ok(worker.endpoint())
     }
 }
 
@@ -805,6 +844,66 @@ mod tests {
         assert_eq!(
             config.route_for_slot(122).unwrap(),
             SlotRouteDecision::Local
+        );
+    }
+
+    #[test]
+    fn worker_endpoint_formats_host_and_port() {
+        let worker = Worker::new("n1", "127.0.0.1", 6379, WorkerRole::Primary);
+        assert_eq!(worker.endpoint(), "127.0.0.1:6379");
+    }
+
+    #[test]
+    fn moved_redirection_error_is_generated_for_remote_stable_slot() {
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let updated = with_remote
+            .set_slot_state(220, remote_id, SlotState::Stable)
+            .unwrap();
+        assert_eq!(
+            updated.redirection_error_for_slot(220).unwrap(),
+            Some("MOVED 220 10.0.0.2:6380".to_string())
+        );
+    }
+
+    #[test]
+    fn ask_redirection_error_is_generated_for_remote_migrating_slot() {
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let updated = with_remote
+            .set_slot_state(221, remote_id, SlotState::Migrating)
+            .unwrap();
+        assert_eq!(
+            updated.redirection_error_for_slot(221).unwrap(),
+            Some("ASK 221 10.0.0.2:6380".to_string())
+        );
+    }
+
+    #[test]
+    fn local_slot_has_no_redirection_error() {
+        let config = base_config()
+            .set_slot_state(222, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        assert_eq!(config.redirection_error_for_slot(222).unwrap(), None);
+    }
+
+    #[test]
+    fn key_based_redirection_uses_hash_slot() {
+        let key = b"{shared-tag}.k1";
+        let slot = redis_hash_slot(key);
+
+        let config = base_config();
+        let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
+        let (with_remote, remote_id) = config.add_worker(remote).unwrap();
+        let updated = with_remote
+            .set_slot_state(slot, remote_id, SlotState::Stable)
+            .unwrap();
+
+        assert_eq!(
+            updated.redirection_error_for_key(key).unwrap(),
+            Some(format!("MOVED {slot} 10.0.0.2:6380"))
         );
     }
 }

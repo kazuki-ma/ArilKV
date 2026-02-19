@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-19
 > **Current Phase**: Phase 10 — Cluster
-> **Current Iteration**: 67
+> **Current Iteration**: 68
 
 ---
 
@@ -182,7 +182,7 @@
 | 10.1 | Implement cluster config — 16384 hash slots, immutable copy-on-write config | DONE | 6.6 | Added `garnet-cluster` cluster-config primitives: 16,384-slot map, 3-byte `HashSlot` representation (`[u16 worker_id | u8 state]`), worker table with reserved/local IDs, copy-on-write mutation APIs (`set_slot_state`, `add_worker`, `set_local_worker_role`), and snapshot-safe publish/load wrapper (`ClusterConfigStore`). |
 | 10.2 | Implement gossip protocol — failure-budget sampling | IN_PROGRESS | 10.1 | Added `garnet-cluster` sampling core + `GossipCoordinator` wrapper with pluggable transport (`GossipTransport`) and deterministic randomized sampling helper. Failure-budget behavior and coordinator transport-result handling are unit-tested; async cluster-manager/network integration is pending. |
 | 10.3 | Implement replication — primary-replica sync via checkpoint + AOF | TODO | 8.4, 10.1 | See doc 13 + 14. Full sync = send checkpoint + AOF tail. Incremental = stream AOF. |
-| 10.4 | Implement slot migration — MOVED/ASK redirections | IN_PROGRESS | 10.1 | Added key→slot hashing (`CRC16/XMODEM` with hash-tag handling) and slot-route decision helpers (`Local`/`Moved`/`Ask`/`Unbound`) in `garnet-cluster`, with unit tests for routing behavior. Server-side redirection wiring is pending. |
+| 10.4 | Implement slot migration — MOVED/ASK redirections | IN_PROGRESS | 10.1 | Added key→slot hashing (`CRC16/XMODEM` with hash-tag handling), slot-route decision helpers (`Local`/`Moved`/`Ask`/`Unbound`), and RESP-ready redirection error generation helpers (`MOVED slot host:port` / `ASK slot host:port`) in `garnet-cluster`. Server-side redirection wiring is pending. |
 | 10.5 | Integration test: multi-node cluster | TODO | 10.1-10.4 | Start 3 nodes, verify slot routing, test failover. |
 
 ---
@@ -254,6 +254,7 @@
 | 2026-02-19 | Implement gossip sampling as a pure failure-budget round function with injectable selector/attempt callbacks. | Keeps the core failure-budget semantics testable and deterministic in isolation before wiring async networking and connection stores. |
 | 2026-02-19 | Add `GossipCoordinator` with pluggable `GossipTransport` and deterministic sampling RNG. | Encapsulates per-round gossip orchestration around the failure-budget kernel, enabling transport integration later without changing tested selection/budget semantics. |
 | 2026-02-19 | Implement Redis-compatible slot hashing (`CRC16/XMODEM` + hash tags) and explicit route-decision enum. | Creates a deterministic, testable boundary for MOVED/ASK routing decisions before integrating cluster routing into the server command path. |
+| 2026-02-19 | Generate redirection strings directly from routing decisions in cluster config helpers. | Keeps MOVED/ASK response formatting centralized and re-usable when wiring cluster routing into the server request path. |
 
 ---
 
@@ -336,3 +337,4 @@
 | 65 | 2026-02-19 | 10.2 | IN_PROGRESS | Added failure-budget gossip round core (`calculate_gossip_failure_budget` + `run_gossip_sample_round`) with deterministic tests for stale-node prioritization and success/failure budget behavior. |
 | 66 | 2026-02-19 | 10.2 | IN_PROGRESS | Added `GossipCoordinator` orchestration with pluggable transport and random-unique sampling helper; validated coordinator transport success/failure behavior via unit tests. |
 | 67 | 2026-02-19 | 10.4 | IN_PROGRESS | Added Redis slot hashing (`redis_hash_slot`) and `SlotRouteDecision` helpers with unit tests for MOVED/ASK/Local routing outcomes. |
+| 68 | 2026-02-19 | 10.4 | IN_PROGRESS | Added `Worker::endpoint` and cluster redirection helper APIs that emit RESP-compatible MOVED/ASK/CLUSTERDOWN strings from slot/key routing decisions. |
