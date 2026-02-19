@@ -979,6 +979,68 @@ pub trait AsyncGossipTransport {
     fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a>;
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum InMemoryGossipTransportError {
+    UnknownPeer(u16),
+    ChannelClosed(u16),
+}
+
+impl fmt::Display for InMemoryGossipTransportError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownPeer(worker_id) => write!(f, "unknown gossip peer worker id: {worker_id}"),
+            Self::ChannelClosed(worker_id) => {
+                write!(f, "gossip peer channel is closed: {worker_id}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for InMemoryGossipTransportError {}
+
+#[derive(Debug)]
+pub struct InMemoryGossipTransport {
+    local_config: Arc<ClusterConfigStore>,
+    peers: BTreeMap<u16, tokio::sync::mpsc::UnboundedSender<ClusterConfig>>,
+}
+
+impl InMemoryGossipTransport {
+    pub fn new(local_config: Arc<ClusterConfigStore>) -> Self {
+        Self {
+            local_config,
+            peers: BTreeMap::new(),
+        }
+    }
+
+    pub fn add_peer(
+        &mut self,
+        worker_id: u16,
+        sender: tokio::sync::mpsc::UnboundedSender<ClusterConfig>,
+    ) {
+        self.peers.insert(worker_id, sender);
+    }
+}
+
+impl AsyncGossipTransport for InMemoryGossipTransport {
+    type Error = InMemoryGossipTransportError;
+    type Fut<'a>
+        = std::future::Ready<Result<(), Self::Error>>
+    where
+        Self: 'a;
+
+    fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a> {
+        let Some(peer) = self.peers.get(&worker_id) else {
+            return std::future::ready(Err(InMemoryGossipTransportError::UnknownPeer(worker_id)));
+        };
+
+        let snapshot = self.local_config.load().as_ref().clone();
+        std::future::ready(
+            peer.send(snapshot)
+                .map_err(|_| InMemoryGossipTransportError::ChannelClosed(worker_id)),
+        )
+    }
+}
+
 #[derive(Debug)]
 pub struct GossipCoordinator {
     nodes: Vec<GossipNode>,
@@ -2046,6 +2108,50 @@ mod tests {
         assert!(report.attempted_worker_ids.contains(&20));
         assert!(report.failure_count >= 1);
         assert!(report.success_count >= 1);
+    }
+
+    #[tokio::test]
+    async fn in_memory_gossip_transport_sends_current_config_snapshot() {
+        let config = base_config()
+            .set_slot_state(12, LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        let store = std::sync::Arc::new(ClusterConfigStore::new(config));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+
+        let mut transport = InMemoryGossipTransport::new(store);
+        transport.add_peer(2, tx);
+        transport.try_gossip(2).await.unwrap();
+
+        let received = rx.recv().await.unwrap();
+        assert_eq!(received.slot_state(12).unwrap(), SlotState::Stable);
+        assert_eq!(received.slot_owner(12).unwrap(), LOCAL_WORKER_ID);
+    }
+
+    #[tokio::test]
+    async fn in_memory_gossip_transport_returns_unknown_peer_error() {
+        let store = std::sync::Arc::new(ClusterConfigStore::new(base_config()));
+        let mut transport = InMemoryGossipTransport::new(store);
+        let result = transport.try_gossip(7).await;
+
+        assert!(matches!(
+            result,
+            Err(InMemoryGossipTransportError::UnknownPeer(7))
+        ));
+    }
+
+    #[tokio::test]
+    async fn in_memory_gossip_transport_returns_channel_closed_error() {
+        let store = std::sync::Arc::new(ClusterConfigStore::new(base_config()));
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
+        drop(rx);
+        let mut transport = InMemoryGossipTransport::new(store);
+        transport.add_peer(4, tx);
+
+        let result = transport.try_gossip(4).await;
+        assert!(matches!(
+            result,
+            Err(InMemoryGossipTransportError::ChannelClosed(4))
+        ));
     }
 
     #[tokio::test]
