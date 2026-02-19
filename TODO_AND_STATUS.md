@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-19
 > **Current Phase**: Phase 10 — Cluster
-> **Current Iteration**: 73
+> **Current Iteration**: 74
 
 ---
 
@@ -260,6 +260,7 @@
 | 2026-02-19 | Expose cluster-aware server entrypoints (`run_with_cluster`, `run_with_shutdown_and_cluster_config`) above the listener-level integration hook. | Makes cluster-routing integration usable from application entrypoints without requiring direct listener-level wiring. |
 | 2026-02-19 | Implement ASKING as a one-shot bypass for ASK routes in cluster pre-dispatch validation. | Aligns server behavior with Redis cluster migration flow where clients issue ASKING before retrying an ASK-redirection command on the target node. |
 | 2026-02-19 | Enforce single-slot consistency across queued commands in MULTI when cluster routing is enabled. | Prevents cross-slot transactions from executing by marking the transaction aborted on conflicting queued slots and returning `EXECABORT` on EXEC. |
+| 2026-02-19 | Expand cluster-routing integration tests to include `WATCH CROSSSLOT` and `CLUSTERDOWN` (unbound slot) paths. | Improves confidence that slot-routing behavior handles non-local key edge cases beyond basic MOVED/ASK happy paths. |
 
 ---
 
@@ -348,3 +349,4 @@
 | 71 | 2026-02-19 | 10.4 | IN_PROGRESS | Added public cluster-aware server run entrypoints (`run_with_cluster`, `run_with_shutdown_and_cluster_config`) so cluster routing can be enabled without custom listener wiring. |
 | 72 | 2026-02-19 | 10.4 | IN_PROGRESS | Added `ASKING` command dispatch and one-shot ASK bypass in server cluster routing checks, with integration coverage for ASK reply, ASKING retry success, and reset-on-next-command behavior. |
 | 73 | 2026-02-19 | 10.4 | IN_PROGRESS | Added cluster-aware MULTI slot consistency checks: conflicting queued key slots now return `CROSSSLOT` during queueing and `EXECABORT` at EXEC, with integration test coverage. |
+| 74 | 2026-02-19 | 10.4 | IN_PROGRESS | Extended cluster integration coverage with WATCH multi-key CROSSSLOT rejection and unbound-slot CLUSTERDOWN response paths. |

@@ -1174,6 +1174,13 @@ mod tests {
         cluster_config = cluster_config
             .set_slot_state(tx_slot_b, LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
+
+        let mut unbound_key = b"unbound-k".to_vec();
+        let mut unbound_slot = redis_hash_slot(&unbound_key);
+        while [local_slot, remote_slot, ask_slot, tx_slot_a, tx_slot_b].contains(&unbound_slot) {
+            unbound_key.push(b'x');
+            unbound_slot = redis_hash_slot(&unbound_key);
+        }
         let cluster_store = Arc::new(ClusterConfigStore::new(cluster_config));
 
         let server_metrics = Arc::clone(&metrics);
@@ -1226,6 +1233,12 @@ mod tests {
             expected_ask.as_bytes(),
         )
         .await;
+        send_and_expect(
+            &mut client,
+            b"*3\r\n$5\r\nWATCH\r\n$7\r\nlocal-k\r\n$8\r\nremote-k\r\n",
+            b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+        )
+        .await;
         send_and_expect(&mut client, b"*1\r\n$6\r\nASKING\r\n", b"+OK\r\n").await;
         send_and_expect(
             &mut client,
@@ -1268,6 +1281,19 @@ mod tests {
             &mut client,
             b"*2\r\n$3\r\nGET\r\n$9\r\ntx-slot-a\r\n",
             b"$-1\r\n",
+        )
+        .await;
+        let unbound_req = format!(
+            "*2\r\n$3\r\nGET\r\n${}\r\n{}\r\n",
+            unbound_key.len(),
+            String::from_utf8(unbound_key.clone()).unwrap()
+        );
+        let expected_clusterdown =
+            format!("-CLUSTERDOWN Hash slot {} is unbound\r\n", unbound_slot);
+        send_and_expect(
+            &mut client,
+            unbound_req.as_bytes(),
+            expected_clusterdown.as_bytes(),
         )
         .await;
 
