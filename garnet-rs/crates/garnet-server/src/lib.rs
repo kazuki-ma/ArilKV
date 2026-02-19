@@ -77,6 +77,20 @@ pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Resul
     run_with_shutdown(config, metrics, std::future::pending::<()>()).await
 }
 
+pub async fn run_with_cluster(
+    config: ServerConfig,
+    metrics: Arc<ServerMetrics>,
+    cluster_config: Arc<ClusterConfigStore>,
+) -> io::Result<()> {
+    run_with_shutdown_and_cluster_config(
+        config,
+        metrics,
+        std::future::pending::<()>(),
+        Some(cluster_config),
+    )
+    .await
+}
+
 pub async fn run_with_shutdown<F>(
     config: ServerConfig,
     metrics: Arc<ServerMetrics>,
@@ -85,8 +99,27 @@ pub async fn run_with_shutdown<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    run_with_shutdown_and_cluster_config(config, metrics, shutdown, None).await
+}
+
+pub async fn run_with_shutdown_and_cluster_config<F>(
+    config: ServerConfig,
+    metrics: Arc<ServerMetrics>,
+    shutdown: F,
+    cluster_config: Option<Arc<ClusterConfigStore>>,
+) -> io::Result<()>
+where
+    F: Future<Output = ()> + Send,
+{
     let listener = TcpListener::bind(config.bind_addr).await?;
-    run_listener_with_shutdown(listener, config.read_buffer_size, metrics, shutdown).await
+    run_listener_with_shutdown_and_cluster(
+        listener,
+        config.read_buffer_size,
+        metrics,
+        shutdown,
+        cluster_config,
+    )
+    .await
 }
 
 pub async fn run_listener_with_shutdown<F>(
