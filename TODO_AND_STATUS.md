@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-19
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 123
+> **Current Iteration**: 124
 
 ---
 
@@ -192,6 +192,7 @@
 | # | Task | Status | Depends On | Notes |
 |---|------|--------|------------|-------|
 | 11.1 | Integrate Redis official benchmark workflow (`redis-benchmark`) | DONE | 6.8 | Added `garnet-rs/benches/redis_official_benchmark.sh` to resolve/download Redis official `redis-benchmark`, optionally start `garnet-server`, and save benchmark reports to `garnet-rs/benches/results/`. Added `garnet-rs/crates/garnet-server/src/main.rs` env overrides (`GARNET_BIND_ADDR`, `GARNET_READ_BUFFER_SIZE`) to support benchmark-run bind configuration and added parser tests for invalid/valid env values. Documented usage and tunables in `garnet-rs/benches/README.md`. |
+| 11.2 | Enable `tidwall/cache-benchmarks` execution against `garnet-rs` | DONE | 11.1 | Added `garnet-rs/benches/cache_benchmarks_garnet_wrapper.sh` to adapt .NET Garnet CLI flags expected by `cache-benchmarks` to Rust server env-based startup (`GARNET_BIND_ADDR`). Verified a real `./bench garnet --tcp ...` run with `memtier_benchmark` generated `bench.json` successfully. |
 
 ---
 
@@ -200,6 +201,7 @@
 | Date | Decision | Rationale |
 |------|----------|-----------|
 | 2026-02-19 | Standardize socket-level performance checks on Redis official `redis-benchmark`, with auto-download from `download.redis.io` when missing. | Reuses Redis’s de facto standard benchmark tool while making runs reproducible in clean environments without manual pre-install steps. |
+| 2026-02-19 | Use a thin wrapper to translate `cache-benchmarks` Garnet CLI flags to `garnet-rs` env-driven startup instead of modifying upstream benchmark code. | Preserves compatibility with upstream `tidwall/cache-benchmarks` workflow while avoiding invasive local forks and keeping repeatability high. |
 | 2026-02-18 | Use a pure virtual workspace at `garnet-rs/Cargo.toml` with five member crates and placeholder sources. | Keeps Phase 0 scaffolding minimal while enabling immediate workspace-wide `cargo check`/`cargo test`. |
 | 2026-02-18 | Pin `rust-toolchain.toml` to `stable` with `rustfmt` and `clippy`. | Matches Phase 0 requirement and keeps early iterations portable before Linux-specific `io_uring` decisions are needed. |
 | 2026-02-18 | Model SpanByte as a packed 4-byte `#[repr(C)]` header plus borrowed serialized views (`SpanByteRef`, `SpanByteRefMut`) instead of a pointer-bearing struct. | Preserves on-disk/in-log layout semantics while avoiding unsafe pointer ownership in early Rust scaffolding. |
@@ -450,3 +452,4 @@
 | 121 | 2026-02-19 | 10.5 | DONE | Added listener-level control-plane error-path integration coverage (`run_listener_with_cluster_control_plane_propagates_control_plane_errors`) to verify immediate propagation of migration peer-resolution failures through `ClusteredServerRunError::ControlPlane`. |
 | 122 | 2026-02-19 | Tracking | DONE | Normalized historical Iteration Log status markers from `IN_PROGRESS` to `DONE` for already-completed milestones to keep active work visibility clean. |
 | 123 | 2026-02-19 | 11.1 | DONE | Added Redis official benchmark runner script (`redis_official_benchmark.sh`), documented benchmark execution parameters, wired server env-based bind config overrides for benchmark startup, and verified benchmark/test execution. |
+| 124 | 2026-02-19 | 11.2 | DONE | Added `cache_benchmarks_garnet_wrapper.sh` and verified `tidwall/cache-benchmarks` `./bench garnet --tcp` can execute against `garnet-rs` with `memtier_benchmark`, producing `bench.json` throughput/latency output. |

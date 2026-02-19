@@ -36,3 +36,26 @@ REDIS_BENCH_REQUESTS=10000 REDIS_BENCH_CLIENTS=20 \
 ### Output
 
 Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark configuration and per-command throughput lines.
+
+## `tidwall/cache-benchmarks` integration
+
+`cache_benchmarks_garnet_wrapper.sh` adapts .NET Garnet CLI flags to the current Rust server.
+
+### Minimal run (single benchmark)
+
+```bash
+chmod +x garnet-rs/benches/cache_benchmarks_garnet_wrapper.sh
+cd /tmp/cache-benchmarks-20260219
+make
+cat > /tmp/cache-benchmarks-garnet-rs.json <<'JSON'
+{
+  "paths": {
+    "memtier": "/opt/homebrew/bin/memtier_benchmark",
+    "garnet": "/absolute/path/to/garnet-rs/benches/cache_benchmarks_garnet_wrapper.sh"
+  }
+}
+JSON
+./bench garnet --config=/tmp/cache-benchmarks-garnet-rs.json --tcp --threads=1 --pipeline=1 --perf=no --ops=2000 --bthreads=2 --conns=4 --sizerange=1-256
+```
+
+`./bench` writes `bench.json` with `sets`/`gets` throughput and latency metrics.
