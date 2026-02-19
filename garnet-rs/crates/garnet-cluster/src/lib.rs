@@ -438,6 +438,13 @@ pub enum ReplicationError {
         replay_start_offset: u64,
         tail_offset: u64,
     },
+    MissingCheckpointForFullSync,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReplicationSyncError<E> {
+    Replication(ReplicationError),
+    Transport(E),
 }
 
 impl fmt::Display for ReplicationError {
@@ -450,11 +457,25 @@ impl fmt::Display for ReplicationError {
                 f,
                 "invalid AOF replay window: start offset {replay_start_offset} is greater than tail offset {tail_offset}"
             ),
+            Self::MissingCheckpointForFullSync => {
+                write!(f, "full sync requested but no checkpoint is available")
+            }
         }
     }
 }
 
 impl std::error::Error for ReplicationError {}
+
+impl<E: fmt::Display> fmt::Display for ReplicationSyncError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Replication(error) => write!(f, "{error}"),
+            Self::Transport(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl<E: std::error::Error + 'static> std::error::Error for ReplicationSyncError<E> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReplicationSyncMode {
@@ -473,6 +494,23 @@ pub struct ReplicationSyncPlan {
 pub struct ReplicaProgress {
     pub worker_id: u16,
     pub acknowledged_offset: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplicationSyncOutcome {
+    pub plan: ReplicationSyncPlan,
+    pub streamed_until_offset: u64,
+}
+
+pub trait ReplicationTransport {
+    type Error;
+
+    fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error>;
+    fn stream_aof_from_offset(
+        &mut self,
+        worker_id: u16,
+        start_offset: u64,
+    ) -> Result<u64, Self::Error>;
 }
 
 #[derive(Debug, Clone)]
@@ -578,6 +616,35 @@ impl ReplicationManager {
             checkpoint_id: self.checkpoint_id,
             aof_start_offset: self.aof_replay_start_offset,
         }
+    }
+
+    pub fn execute_sync<T: ReplicationTransport>(
+        &mut self,
+        worker_id: u16,
+        replica_offset: Option<u64>,
+        transport: &mut T,
+    ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
+        let plan = self.plan_sync(replica_offset);
+        if matches!(plan.mode, ReplicationSyncMode::Full) {
+            let checkpoint_id = plan
+                .checkpoint_id
+                .ok_or(ReplicationSyncError::Replication(
+                    ReplicationError::MissingCheckpointForFullSync,
+                ))?;
+            transport
+                .send_checkpoint(worker_id, checkpoint_id)
+                .map_err(ReplicationSyncError::Transport)?;
+        }
+
+        let streamed_until_offset = transport
+            .stream_aof_from_offset(worker_id, plan.aof_start_offset)
+            .map_err(ReplicationSyncError::Transport)?;
+        self.record_replica_offset(worker_id, streamed_until_offset);
+
+        Ok(ReplicationSyncOutcome {
+            plan,
+            streamed_until_offset,
+        })
     }
 }
 
@@ -1152,6 +1219,110 @@ mod tests {
         assert_eq!(manager.checkpoint_id(), Some(2));
         assert_eq!(manager.aof_replay_start_offset(), 150);
         assert_eq!(manager.aof_tail_offset(), 450);
+    }
+
+    #[derive(Default)]
+    struct MockReplicationTransport {
+        checkpoints: Vec<(u16, u64)>,
+        streams: Vec<(u16, u64)>,
+        stream_result: u64,
+        fail_checkpoint: bool,
+        fail_stream: bool,
+    }
+
+    impl ReplicationTransport for MockReplicationTransport {
+        type Error = &'static str;
+
+        fn send_checkpoint(
+            &mut self,
+            worker_id: u16,
+            checkpoint_id: u64,
+        ) -> Result<(), Self::Error> {
+            if self.fail_checkpoint {
+                return Err("checkpoint failed");
+            }
+            self.checkpoints.push((worker_id, checkpoint_id));
+            Ok(())
+        }
+
+        fn stream_aof_from_offset(
+            &mut self,
+            worker_id: u16,
+            start_offset: u64,
+        ) -> Result<u64, Self::Error> {
+            if self.fail_stream {
+                return Err("stream failed");
+            }
+            self.streams.push((worker_id, start_offset));
+            Ok(self.stream_result)
+        }
+    }
+
+    #[test]
+    fn replication_manager_execute_sync_uses_incremental_plan_without_checkpoint() {
+        let mut manager = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 1_750,
+            ..Default::default()
+        };
+
+        let outcome = manager
+            .execute_sync(3, Some(1_500), &mut transport)
+            .expect("incremental sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
+        assert!(transport.checkpoints.is_empty());
+        assert_eq!(transport.streams, vec![(3, 1_500)]);
+        assert_eq!(manager.replica_offset(3), Some(1_750));
+    }
+
+    #[test]
+    fn replication_manager_execute_sync_sends_checkpoint_for_full_sync() {
+        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 900,
+            ..Default::default()
+        };
+
+        let outcome = manager
+            .execute_sync(4, Some(400), &mut transport)
+            .expect("full sync should succeed");
+        assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
+        assert_eq!(transport.checkpoints, vec![(4, 9)]);
+        assert_eq!(transport.streams, vec![(4, 500)]);
+        assert_eq!(manager.replica_offset(4), Some(900));
+    }
+
+    #[test]
+    fn replication_manager_execute_sync_errors_when_checkpoint_missing_for_full_sync() {
+        let mut manager = ReplicationManager::new(None, 1_000, 2_000).unwrap();
+        let mut transport = MockReplicationTransport {
+            stream_result: 2_000,
+            ..Default::default()
+        };
+
+        let result = manager.execute_sync(8, Some(999), &mut transport);
+        assert!(matches!(
+            result,
+            Err(ReplicationSyncError::Replication(
+                ReplicationError::MissingCheckpointForFullSync
+            ))
+        ));
+        assert!(transport.streams.is_empty());
+    }
+
+    #[test]
+    fn replication_manager_execute_sync_propagates_transport_errors() {
+        let mut manager = ReplicationManager::new(Some(1), 10, 20).unwrap();
+        let mut transport = MockReplicationTransport {
+            fail_stream: true,
+            ..Default::default()
+        };
+
+        let result = manager.execute_sync(2, Some(15), &mut transport);
+        assert!(matches!(
+            result,
+            Err(ReplicationSyncError::Transport("stream failed"))
+        ));
     }
 
     #[test]
