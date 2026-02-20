@@ -1,0 +1,52 @@
+name: Garnet RS Perf Gate
+
+on:
+  schedule:
+    - cron: "30 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  perf-gate:
+    name: perf-regression-gate
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install benchmark dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y memtier-benchmark netcat-openbsd
+
+      - name: Build garnet-rs server (release)
+        run: cargo build -p garnet-server --release --manifest-path garnet-rs/Cargo.toml
+
+      - name: Run perf regression gate
+        run: |
+          chmod +x garnet-rs/benches/perf_regression_gate_local.sh
+          OUTDIR="${GITHUB_WORKSPACE}/garnet-rs/benches/results/perf-gate-${GITHUB_RUN_ID}" \
+          RUNS=3 \
+          THREADS=4 \
+          CONNS=8 \
+          REQUESTS=5000 \
+          PRELOAD_REQUESTS=5000 \
+          MIN_MEDIAN_SET_OPS=15000 \
+          MIN_MEDIAN_GET_OPS=15000 \
+          MAX_MEDIAN_SET_P99_MS=50 \
+          MAX_MEDIAN_GET_P99_MS=50 \
+          ./garnet-rs/benches/perf_regression_gate_local.sh
+
+      - name: Upload perf gate artifacts
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: garnet-rs-perf-gate-${{ github.run_id }}
+          path: garnet-rs/benches/results/perf-gate-${{ github.run_id }}

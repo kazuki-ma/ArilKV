@@ -211,7 +211,7 @@
 | 11.20 | Run shard sweep under owner-thread routing to identify practical shard band | DONE | 11.19 | Local sweep (`threads=8`, `conns=16`, `requests=20000`, `GARNET_STRING_OWNER_THREADS=16`) over `shards=1/2/4/8/16`: `1 => 314106/333952`, `2 => 329537/333944`, `4 => 321031/335535`, `8 => 300223/329379`, `16 => 251922/287843` (SET/GET). Best observed band is `2-4` shards; high shard counts still regress materially. |
 | 11.21 | Extend cache-bench wrappers to support owner-thread routing controls | DONE | 11.18 | Updated `cache_benchmarks_garnet_wrapper.sh` and `cache_benchmarks_garnet_docker_wrapper.sh` with `CACHE_BENCH_GARNET_OWNER_THREADS` / `GARNET_STRING_OWNER_THREADS` plus opt-in thread-hint auto-mapping (`CACHE_BENCH_GARNET_AUTO_OWNER_THREADS=1`). Updated benchmark README accordingly. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.9 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). Local macOS pre-check is complete via 11.9; this task remains Linux-native differential profiling. |
-| 11.6 | Add automated performance regression gate | TODO | 11.5 | Add repeatable benchmark harness (median of N runs) with thresholds on ops/sec and p99 latency in CI/nightly. |
+| 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
 ---
 
@@ -231,6 +231,7 @@
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-20 | Gate perf regressions using median-of-N memtier runs plus threshold checks, not single-run values. | Shared CI runners are noisy; median-of-N with explicit throughput/p99 thresholds reduces false positives while still catching material regressions. |
 | 2026-02-20 | Set string-store shard default policy to `2` (or `1` only when owner threads are explicitly `1`) based on matrix sweep medians. | Broader workload data showed shard `2` is the most stable throughput/latency balance across owner-routing modes, while high shard counts still regress due storage-path overhead. |
 | 2026-02-20 | Introduce debug/test-only lock-order and sync-point instrumentation in `garnet-server`, and gate new concurrency behavior with deterministic multi-thread tests. | Upcoming owner-thread / sharding changes increase concurrency complexity; deterministic schedule control and lock-order assertions are required to catch regressions before benchmark-only validation. |
 | 2026-02-20 | Keep external DeepResearch output and local profiling workflow in-repo with reproducible scripts and explicit artifact paths. | Avoids drift between ad-hoc local notes and repository knowledge; every performance claim now maps to a checked-in document and command path. |
@@ -493,3 +494,4 @@
 | 127 | 2026-02-19 | 11.7 | DONE | Ran same-parameter `cache-benchmarks` comparison for `dragonfly` and `garnet-rs` with new wrappers; captured `bench.json` snapshots in `/tmp` and confirmed this run favored Garnet on both throughput and p99 latency. |
 | 128 | 2026-02-20 | 11.8 | DONE | Added Docker-to-Docker comparison support (`cache_benchmarks_garnet_docker_wrapper.sh`, `Dockerfile.garnet-rs-cachebench`, `garnet-rs/.dockerignore`) and reran `cache-benchmarks` with both servers in containers under identical parameters, confirming Garnet leads in this environment. |
 | 129 | 2026-02-20 | 11.12 | DONE | Added `sweep_string_store_policy_matrix_local.sh`, executed a 3-workload x 2-owner-mode shard policy matrix, and updated runtime shard default policy to `2` (`1` only when `GARNET_STRING_OWNER_THREADS=1`) with new unit coverage for policy derivation logic. |
+| 130 | 2026-02-20 | 11.6 | DONE | Added `perf_regression_gate_local.sh` with median-of-N threshold gating and memtier summary validation, plus nightly/dispatch CI workflow `.github/workflows/garnet-rs-perf-gate.yml` that runs the gate and uploads result artifacts. |

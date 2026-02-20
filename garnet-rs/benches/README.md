@@ -190,3 +190,27 @@ Outputs under `/tmp/garnet-shard-policy-matrix-<timestamp>/`:
 - `matrix-results.csv` (per workload/owner/shard row)
 - `summary-by-owner.csv` (median aggregation per owner+shard)
 - `recommendations.txt` (best shard by median geo-mean throughput)
+
+## Performance Regression Gate (local + CI)
+
+Use `perf_regression_gate_local.sh` to run repeated SET/GET benchmarks, validate
+memtier summary integrity, and fail on median throughput/latency threshold
+regressions.
+
+```bash
+cd garnet-rs
+chmod +x benches/perf_regression_gate_local.sh
+RUNS=5 THREADS=4 CONNS=8 REQUESTS=10000 \
+MIN_MEDIAN_SET_OPS=150000 MIN_MEDIAN_GET_OPS=150000 \
+MAX_MEDIAN_SET_P99_MS=5 MAX_MEDIAN_GET_P99_MS=5 \
+./benches/perf_regression_gate_local.sh
+```
+
+Outputs under `/tmp/garnet-perf-gate-<timestamp>/`:
+
+- `runs.csv` (per-run SET/GET ops + p99)
+- `summary.txt` (median metrics used for gate decisions)
+
+Nightly/dispatch CI automation is defined in:
+
+- `.github/workflows/garnet-rs-perf-gate.yml`
