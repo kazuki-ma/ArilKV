@@ -266,6 +266,10 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
       sync `35.2%`, parser `1.4%`, allocator/copy `1.5%`, storage `0.2%`.
     - SET top-20 leaf samples (category aggregate): sync `49.5%`,
       network `44.9%`, allocator/copy `3.4%`, storage `1.0%`.
+  - U4 allocator A/B (`/tmp/garnet-allocator-ab-u4-20260220-105849`,
+    `RUNS=3`, `THREADS=4`, `CONNS=8`, `REQUESTS=5000`):
+    - `mimalloc` vs default allocator: SET ops `+0.23%`, GET ops `+0.44%`,
+      SET p99 `-5.3%`, GET p99 `0.0%` (effect size small/near-neutral).
 
 ### Framegraph A/B validation for regression hypothesis (`shards=1` vs `shards=16`)
 
