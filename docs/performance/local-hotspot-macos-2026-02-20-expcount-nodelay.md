@@ -8,6 +8,7 @@ Validated two incremental GET/SET-path changes on macOS using
 1. Per-shard expiration-count fast path (`11.30`)
 2. `TCP_NODELAY` on accepted sockets (`11.31`)
 3. Internal shard routing hash swap (`redis_hash_slot` -> FNV-1a, `11.33`)
+4. `OrderedMutex` backend swap experiment (`std` -> `parking_lot`, `11.36`, rejected)
 
 All runs used:
 
@@ -22,6 +23,8 @@ All runs used:
 - After `TCP_NODELAY`: `/tmp/garnet-hotspots-post-nodelay-20260220-132224`
 - After shard-routing hash swap (rebuilt binary):
   `/tmp/garnet-hotspots-post-shardfnv-rebuild-20260220-133202`
+- Parking_lot backend experiment (reverted / not adopted):
+  `/tmp/garnet-hotspots-post-parkinglot-20260220-140407`
 
 ## Results Snapshot
 
@@ -33,6 +36,7 @@ All runs used:
 | post-expcount | 165290.39 | 1.64700 | 29.14% | 30.49% | 29.86% |
 | post-nodelay | 165149.31 | 1.57500 | 24.98% | 32.41% | 31.88% |
 | post-shardfnv-rebuild | 163656.59 | 1.56700 | 23.13% | 33.01% | 33.19% |
+| post-parkinglot (reverted) | 153744.82 | 1.84700 | 0.22% | 24.65% | 22.98% |
 
 ### SET-only
 
@@ -42,6 +46,7 @@ All runs used:
 | post-expcount | 162249.22 | 1.60700 | 23.19% | 32.04% | 32.14% |
 | post-nodelay | 163982.21 | 1.59900 | 22.81% | 31.94% | 32.63% |
 | post-shardfnv-rebuild | 162441.75 | 1.59100 | 20.90% | 33.31% | 33.66% |
+| post-parkinglot (reverted) | 159047.72 | 1.83900 | 0.20% | 24.29% | 23.14% |
 
 ## Observations
 
@@ -54,6 +59,11 @@ All runs used:
   leaf hotspots (`0.00%` GET/SET in this run). Throughput was slightly lower
   in this single sample (`GET -0.90%`, `SET -0.94%` vs `post-nodelay`) while
   p99 was slightly better (`GET -0.51%`, `SET -0.50%`).
+- `11.36` parking_lot backend swap looked superficially better on
+  `__psynch_mutexwait`, but was net-negative in throughput/latency
+  (`GET -6.06%`, `SET -2.09%`; p99 up sharply). New dominant leaf symbols
+  included scheduler/yield paths (`swtch_pri`, `cthread_yield`) and
+  `parking_lot::raw_mutex::RawMutex::lock_slow`, so this change was reverted.
 - Hotspot distribution remains dominated by socket I/O and mutex wait in this
   low-pipeline benchmark profile.
 

@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 148
+> **Current Iteration**: 149
 
 ---
 
@@ -224,6 +224,7 @@
 | 11.33 | Replace internal string-store shard mapping hash (`redis_hash_slot` -> FNV-1a) and re-profile | DONE | 11.32 | Switched `RequestProcessor::string_store_shard_index_for_key` to FNV-1a for internal sharding (cluster slot routing remains unchanged). Local hotspot rerun with rebuilt binary (`/tmp/garnet-hotspots-post-shardfnv-rebuild-20260220-133202`) reduced `redis_hash_slot` to `0.00%` (GET/SET) and lowered mutex wait share; Linux differential refresh (`garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`) showed Garnet GET `+0.91%` with better p99 (`0.623 -> 0.607`) vs previous run while SET remained flat. |
 | 11.34 | Add median-of-N Linux differential wrapper to reduce run-to-run comparison noise | DONE | 11.33 | Added `garnet-rs/benches/linux_perf_diff_profile_median_local.sh` to execute repeated Dockerized Linux differential runs and aggregate medians (`runs.csv`, `median_summary.csv`, `summary.txt`). Added README usage/docs and validated with smoke run (`RUNS=1`, `/tmp/garnet-linux-perf-median-smoke-20260220-133736`). |
 | 11.35 | Execute median-of-3 Linux differential run and publish robust gap snapshot | DONE | 11.34 | Ran `RUNS=3` median wrapper at `/tmp/garnet-linux-perf-median-r3-20260220-133907`. Median snapshot: Garnet `SET/GET 390.6k/462.0k`, Dragonfly `700.2k/691.0k` with throughput ratio `SET 1.793x`, `GET 1.496x`; one Dragonfly GET outlier run confirmed the need for median aggregation. |
+| 11.36 | Evaluate `OrderedMutex` backend swap to `parking_lot` and keep only if net-positive | DONE | 11.35 | Implemented and measured a full swap experiment, then reverted after regression. Local hotspot run with parking_lot (`/tmp/garnet-hotspots-post-parkinglot-20260220-140407`) showed large throughput loss vs pre-swap (`GET -6.06%`, `SET -2.09%`) and higher scheduler-yield pressure (`swtch_pri`, `cthread_yield`, `RawMutex::lock_slow`), so std mutex backend is retained. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -245,6 +246,7 @@
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-20 | Keep `OrderedMutex` on `std::sync::Mutex`; do not switch to `parking_lot` globally without per-workload proof. | The parking_lot swap removed futex symbols but increased scheduler-yield hotspots and reduced GET/SET throughput in measured local runs; lock backend changes must be judged by end-to-end throughput/p99, not single-symbol disappearance. |
 | 2026-02-20 | Use median-of-N aggregation as the default interpretation layer for Dockerized Linux differential comparisons. | Single-run Dragonfly/Garnet differentials showed non-trivial noise; codifying a repeated-run wrapper with median summaries reduces the risk of overfitting decisions to one noisy sample. |
 | 2026-02-20 | Use FNV-1a for internal string-store shard mapping and reserve `redis_hash_slot` for cluster-slot semantics only. | Internal store sharding does not require Redis cluster CRC16 compatibility; switching to a cheaper deterministic hash removes avoidable slot-hash overhead from GET/SET hot paths while keeping externally visible slot routing behavior unchanged. |
 | 2026-02-20 | Enable `TCP_NODELAY` on accepted sockets by default in the Tokio accept loop. | Local GET/SET hotspot captures remained dominated by small-packet send/recv syscalls; enabling Nagle bypass is a low-complexity latency optimization that slightly improved p99 and SET throughput in the latest sample run. |
@@ -537,3 +539,4 @@
 | 146 | 2026-02-20 | 11.33 | DONE | Replaced internal shard mapping from `redis_hash_slot` to FNV-1a, verified tests (`42` request-lifecycle + accept/shutdown loop), and refreshed both local hotspot and Linux differential artifacts; `redis_hash_slot` disappeared from top sampled Garnet user-space symbols in the latest Linux run. |
 | 147 | 2026-02-20 | 11.34 | DONE | Added repeated-run Linux differential median wrapper (`linux_perf_diff_profile_median_local.sh`), documented usage in bench README, and validated generated `runs.csv`/`median_summary.csv`/`summary.txt` via a smoke run. |
 | 148 | 2026-02-20 | 11.35 | DONE | Executed full `RUNS=3` Linux differential median capture (`/tmp/garnet-linux-perf-median-r3-20260220-133907`), recorded robust throughput ratio snapshot, and refreshed the Linux differential performance analysis to use median-of-3 values. |
+| 149 | 2026-02-20 | 11.36 | DONE | Ran an `OrderedMutex` parking_lot backend experiment end-to-end, observed measurable GET/SET regression and heavy `RawMutex::lock_slow`/scheduler-yield hotspots, and reverted code changes to keep the previous backend. |
