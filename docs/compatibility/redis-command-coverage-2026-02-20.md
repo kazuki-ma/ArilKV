@@ -23,13 +23,13 @@ Results:
 
 - Redis commands: `241`
 - Dragonfly commands: `288`
-- Garnet commands: `38`
-- Redis commands missing in Garnet: `203`
-- Coverage vs Redis baseline: `15.77%` (`38 / 241`)
+- Garnet commands: `42`
+- Redis commands missing in Garnet: `199`
+- Coverage vs Redis baseline: `17.43%` (`42 / 241`)
 
-Current Garnet command set (`38`):
+Current Garnet command set (`42`):
 
-`ASKING, COMMAND, DBSIZE, DECR, DEL, DISCARD, ECHO, EXEC, EXPIRE, GET, HDEL, HGET, HGETALL, HSET, INCR, INFO, LPOP, LPUSH, LRANGE, MULTI, PERSIST, PEXPIRE, PING, PTTL, RPOP, RPUSH, SADD, SET, SISMEMBER, SMEMBERS, SREM, TTL, UNWATCH, WATCH, ZADD, ZRANGE, ZREM, ZSCORE`
+`ASKING, COMMAND, DBSIZE, DECR, DEL, DISCARD, ECHO, EXEC, EXPIRE, GET, HDEL, HGET, HGETALL, HSET, INCR, INFO, LPOP, LPUSH, LRANGE, MULTI, PERSIST, PEXPIRE, PING, PSYNC, PTTL, REPLCONF, REPLICAOF, RPOP, RPUSH, SADD, SET, SISMEMBER, SMEMBERS, SREM, SYNC, TTL, UNWATCH, WATCH, ZADD, ZRANGE, ZREM, ZSCORE`
 
 ## Coverage interpretation
 
@@ -117,13 +117,13 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot:
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260220-233407`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
   - master switch performed (`REPLICAOF NO ONE` + reattach old master as replica)
   - switched-master->replica `SET/GET` verified
-- Redis master -> Garnet replica: `UNSUPPORTED`
-  - `REPLICAOF` command surface is not exposed by current `garnet-rs` server
-- Garnet master -> Redis replica: `UNSUPPORTED`
-  - Redis accepts `REPLICAOF`, but replication handshake does not reach `master_link_status=up`
+- Redis master -> Garnet replica: `PASS`
+  - Garnet accepts `REPLICAOF` and replicates `SET/GET` from Redis master.
+- Garnet master -> Redis replica: `PASS`
+  - Redis replica reaches `master_link_status=up` and receives probe writes from Garnet master.

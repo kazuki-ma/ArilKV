@@ -1736,6 +1736,10 @@ impl RequestProcessor {
                 b"INFO",
                 b"DBSIZE",
                 b"COMMAND",
+                b"REPLICAOF",
+                b"REPLCONF",
+                b"PSYNC",
+                b"SYNC",
             ],
         );
         Ok(())

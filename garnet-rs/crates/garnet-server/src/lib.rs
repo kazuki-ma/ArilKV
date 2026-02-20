@@ -8,6 +8,7 @@ pub mod aof_replay;
 pub mod command_dispatch;
 pub mod debug_concurrency;
 pub mod limited_fixed_buffer_pool;
+pub mod redis_replication;
 pub mod request_lifecycle;
 pub mod shard_owner_threads;
 #[cfg(test)]
@@ -41,6 +42,8 @@ use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
+
+use crate::redis_replication::RedisReplicationCoordinator;
 
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 
@@ -879,6 +882,7 @@ where
 {
     let mut tasks = JoinSet::new();
     let owner_thread_pool = build_owner_thread_pool(&processor)?;
+    let replication = Arc::new(RedisReplicationCoordinator::new(Arc::clone(&processor)));
     let expiration_processor = Arc::clone(&processor);
     let expiration_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
@@ -905,6 +909,7 @@ where
                 let task_processor = Arc::clone(&processor);
                 let task_cluster = cluster_config.clone();
                 let task_owner_threads = owner_thread_pool.clone();
+                let task_replication = Arc::clone(&replication);
                 tasks.spawn(async move {
                     let _ =
                         handle_connection(
@@ -914,6 +919,7 @@ where
                             task_processor,
                             task_cluster,
                             task_owner_threads,
+                            task_replication,
                         )
                         .await;
                 });
@@ -935,6 +941,7 @@ async fn handle_connection(
     processor: Arc<RequestProcessor>,
     cluster_config: Option<Arc<ClusterConfigStore>>,
     owner_thread_pool: Option<Arc<ShardOwnerThreadPool>>,
+    replication: Arc<RedisReplicationCoordinator>,
 ) -> io::Result<()> {
     let _lifecycle = ConnectionLifecycle { metrics: &metrics };
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
@@ -956,6 +963,7 @@ async fn handle_connection(
         receive_buffer.extend_from_slice(&read_buffer[..bytes_read]);
         let mut consumed = 0usize;
         responses.clear();
+        let mut switch_to_replica_stream = false;
 
         loop {
             match parse_resp_command_arg_slices(&receive_buffer[consumed..], &mut args) {
@@ -964,6 +972,59 @@ async fn handle_connection(
                     let frame_end = consumed + meta.bytes_consumed;
                     // SAFETY: `args` refers to the still-live `receive_buffer` backing bytes.
                     let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                    if meta.argument_count == 0 {
+                        responses.extend_from_slice(b"-ERR unknown command\r\n");
+                        consumed += meta.bytes_consumed;
+                        continue;
+                    }
+                    // SAFETY: `args` points to the current request frame in `receive_buffer`.
+                    let command_name = unsafe { args[0].as_slice() };
+
+                    if ascii_eq_ignore_case(command_name, b"REPLICAOF") {
+                        if meta.argument_count != 3 {
+                            responses.extend_from_slice(
+                                b"-ERR wrong number of arguments for 'REPLICAOF' command\r\n",
+                            );
+                        } else {
+                            // SAFETY: `args` points to the current request frame in `receive_buffer`.
+                            let arg1 = unsafe { args[1].as_slice() };
+                            // SAFETY: `args` points to the current request frame in `receive_buffer`.
+                            let arg2 = unsafe { args[2].as_slice() };
+
+                            if ascii_eq_ignore_case(arg1, b"NO")
+                                && ascii_eq_ignore_case(arg2, b"ONE")
+                            {
+                                replication.become_master().await;
+                                append_simple_string(&mut responses, b"OK");
+                            } else if let Some(master_port) = parse_u16_ascii(arg2) {
+                                let master_host = String::from_utf8_lossy(arg1).to_string();
+                                replication.become_replica(master_host, master_port).await;
+                                append_simple_string(&mut responses, b"OK");
+                            } else {
+                                responses.extend_from_slice(
+                                    b"-ERR value is not an integer or out of range\r\n",
+                                );
+                            }
+                        }
+                        consumed += meta.bytes_consumed;
+                        continue;
+                    }
+
+                    if ascii_eq_ignore_case(command_name, b"REPLCONF") {
+                        append_simple_string(&mut responses, b"OK");
+                        consumed += meta.bytes_consumed;
+                        continue;
+                    }
+
+                    if ascii_eq_ignore_case(command_name, b"PSYNC")
+                        || ascii_eq_ignore_case(command_name, b"SYNC")
+                    {
+                        responses.extend_from_slice(&replication.build_fullresync_payload());
+                        consumed += meta.bytes_consumed;
+                        switch_to_replica_stream = true;
+                        break;
+                    }
+
                     if command == CommandId::Asking {
                         if meta.argument_count != 1 {
                             responses.extend_from_slice(
@@ -992,6 +1053,7 @@ async fn handle_connection(
                             continue;
                         }
                     }
+                    let mut propagate_frame = false;
                     if transaction.in_multi {
                         match command {
                             CommandId::Exec => {
@@ -1046,6 +1108,15 @@ async fn handle_connection(
                                 }
                             }
                             _ => {
+                                if replication.is_replica_mode()
+                                    && is_mutating_command_for_replication(command)
+                                {
+                                    responses.extend_from_slice(
+                                        b"-READONLY You can't write against a read only replica.\r\n",
+                                    );
+                                    consumed += meta.bytes_consumed;
+                                    continue;
+                                }
                                 if cluster_config.is_some() {
                                     if let Some(slot) = command_hash_slot_for_transaction(
                                         &args[..meta.argument_count],
@@ -1110,6 +1181,16 @@ async fn handle_connection(
                                 }
                             }
                             _ => {
+                                if replication.is_replica_mode()
+                                    && is_mutating_command_for_replication(command)
+                                {
+                                    responses.extend_from_slice(
+                                        b"-READONLY You can't write against a read only replica.\r\n",
+                                    );
+                                    consumed += meta.bytes_consumed;
+                                    continue;
+                                }
+
                                 if let Some(owner_pool) = owner_thread_pool.as_ref() {
                                     if let Some(shard_index) = owner_routed_shard_for_command(
                                         &processor,
@@ -1131,6 +1212,9 @@ async fn handle_connection(
                                         }) {
                                             Ok(Ok(frame_response)) => {
                                                 responses.extend_from_slice(&frame_response);
+                                                if is_mutating_command_for_replication(command) {
+                                                    propagate_frame = true;
+                                                }
                                             }
                                             Ok(Err(RoutedExecutionError::Request(error))) => {
                                                 error.append_resp_error(&mut responses);
@@ -1145,18 +1229,28 @@ async fn handle_connection(
                                                 );
                                             }
                                         }
+                                        if propagate_frame {
+                                            replication.publish_write_frame(
+                                                &receive_buffer[frame_start..frame_end],
+                                            );
+                                        }
                                         consumed += meta.bytes_consumed;
                                         continue;
                                     }
                                 }
 
-                                if let Err(error) =
-                                    processor.execute(&args[..meta.argument_count], &mut responses)
+                                if let Err(error) = processor
+                                    .execute(&args[..meta.argument_count], &mut responses)
                                 {
                                     error.append_resp_error(&mut responses);
+                                } else if is_mutating_command_for_replication(command) {
+                                    propagate_frame = true;
                                 }
                             }
                         }
+                    }
+                    if propagate_frame {
+                        replication.publish_write_frame(&receive_buffer[frame_start..frame_end]);
                     }
                     consumed += meta.bytes_consumed;
                 }
@@ -1167,6 +1261,16 @@ async fn handle_connection(
                     return Ok(());
                 }
             }
+        }
+
+        if switch_to_replica_stream {
+            if consumed > 0 {
+                receive_buffer.drain(..consumed);
+            }
+            if !responses.is_empty() {
+                stream.write_all(&responses).await?;
+            }
+            return replication.serve_downstream_replica(stream).await;
         }
 
         if consumed > 0 {
@@ -1373,6 +1477,54 @@ fn append_error_line(output: &mut Vec<u8>, value: &[u8]) {
     output.push(b'-');
     output.extend_from_slice(value);
     output.extend_from_slice(b"\r\n");
+}
+
+fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
+    input.len() == expected_upper.len()
+        && input
+            .iter()
+            .zip(expected_upper.iter())
+            .all(|(lhs, rhs)| ascii_upper(*lhs) == *rhs)
+}
+
+fn ascii_upper(value: u8) -> u8 {
+    if value.is_ascii_lowercase() {
+        value - 32
+    } else {
+        value
+    }
+}
+
+fn parse_u16_ascii(value: &[u8]) -> Option<u16> {
+    let parsed = std::str::from_utf8(value).ok()?.parse::<u32>().ok()?;
+    if parsed <= u16::MAX as u32 {
+        Some(parsed as u16)
+    } else {
+        None
+    }
+}
+
+fn is_mutating_command_for_replication(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Set
+            | CommandId::Del
+            | CommandId::Incr
+            | CommandId::Decr
+            | CommandId::Expire
+            | CommandId::Pexpire
+            | CommandId::Persist
+            | CommandId::Hset
+            | CommandId::Hdel
+            | CommandId::Lpush
+            | CommandId::Rpush
+            | CommandId::Lpop
+            | CommandId::Rpop
+            | CommandId::Sadd
+            | CommandId::Srem
+            | CommandId::Zadd
+            | CommandId::Zrem
+    )
 }
 
 fn cluster_error_for_command(
@@ -1998,12 +2150,101 @@ mod tests {
         send_and_expect(
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
-            b"*38\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$6\r\nASKING\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n",
+            b"*42\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$6\r\nASKING\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n$9\r\nREPLICAOF\r\n$8\r\nREPLCONF\r\n$5\r\nPSYNC\r\n$4\r\nSYNC\r\n",
         )
         .await;
 
         let _ = shutdown_tx.send(());
         server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
+        let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let master_addr = master_listener.local_addr().unwrap();
+        let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let replica_addr = replica_listener.local_addr().unwrap();
+
+        let master_metrics = Arc::new(ServerMetrics::default());
+        let replica_metrics = Arc::new(ServerMetrics::default());
+        let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+        let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+        let master_metrics_task = Arc::clone(&master_metrics);
+        let master_server = tokio::spawn(async move {
+            run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
+                let _ = master_shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let replica_metrics_task = Arc::clone(&replica_metrics);
+        let replica_server = tokio::spawn(async move {
+            run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
+                let _ = replica_shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
+
+        let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+        let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+        let master_port = master_addr.port().to_string();
+        let replicaof = encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]);
+        send_and_expect(&mut replica_client, &replicaof, b"+OK\r\n").await;
+
+        let mut replicated = false;
+        for attempt in 0..50 {
+            let value = format!("v{attempt}");
+            let set_frame = encode_resp_command(&[b"SET", b"repl:test", value.as_bytes()]);
+            send_and_expect(&mut master_client, &set_frame, b"+OK\r\n").await;
+
+            let get_frame = encode_resp_command(&[b"GET", b"repl:test"]);
+            replica_client.write_all(&get_frame).await.unwrap();
+            let mut response = [0u8; 64];
+            let bytes_read = tokio::time::timeout(
+                Duration::from_millis(200),
+                replica_client.read(&mut response),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            let expected = format!("${}\r\n{}\r\n", value.len(), value);
+            if &response[..bytes_read] == expected.as_bytes() {
+                replicated = true;
+                break;
+            }
+            sleep(Duration::from_millis(50)).await;
+        }
+        assert!(replicated, "replica did not receive replicated value");
+
+        send_and_expect(
+            &mut replica_client,
+            b"*3\r\n$3\r\nSET\r\n$13\r\nrepl:readonly\r\n$1\r\nx\r\n",
+            b"-READONLY You can't write against a read only replica.\r\n",
+        )
+        .await;
+
+        send_and_expect(
+            &mut replica_client,
+            b"*3\r\n$9\r\nREPLICAOF\r\n$2\r\nNO\r\n$3\r\nONE\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+
+        send_and_expect(
+            &mut replica_client,
+            b"*3\r\n$3\r\nSET\r\n$13\r\nrepl:readonly\r\n$1\r\ny\r\n",
+            b"+OK\r\n",
+        )
+        .await;
+
+        let _ = master_shutdown_tx.send(());
+        let _ = replica_shutdown_tx.send(());
+        master_server.await.unwrap();
+        replica_server.await.unwrap();
     }
 
     #[tokio::test]
