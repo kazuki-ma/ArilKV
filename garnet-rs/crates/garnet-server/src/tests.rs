@@ -1,4 +1,3 @@
-
 use super::*;
 use garnet_cluster::{
     redis_hash_slot, AsyncGossipEngine, ChannelReplicationTransport, ClusterConfig,
