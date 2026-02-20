@@ -1,7 +1,7 @@
 use garnet_server::{run, run_with_cluster, ServerConfig, ServerMetrics};
-use std::sync::Arc;
 #[cfg(test)]
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 mod multi_port_runtime;
 mod server_launch_config;
