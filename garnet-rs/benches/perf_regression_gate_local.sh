@@ -115,6 +115,10 @@ validate_memtier_log() {
         echo "connection errors detected in ${log_file}" >&2
         exit 1
     fi
+    if grep -q 'handle error response:' "${log_file}"; then
+        echo "server error responses detected in ${log_file}" >&2
+        exit 1
+    fi
 
     local got_threads got_conns got_requests
     got_threads="$(awk '/Threads$/{print $1; exit}' "${log_file}")"

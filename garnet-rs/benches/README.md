@@ -135,6 +135,8 @@ The script also validates memtier run integrity from stdout summary lines:
 - non-zero `Totals` Ops/sec (and non-zero GET/SET ops for the target mode)
 
 This prevents treating "exit code only" as success.
+The run also fails on memtier `Connection error:` and
+`handle error response:` output.
 
 Sampling now stops when the memtier run finishes, so captured stacks stay focused
 on active workload time instead of idle tail time.
@@ -178,8 +180,9 @@ SHARD_COUNTS=\"1 2 4 8 16\" REQUESTS=20000 \
 The script prints CSV and validates each run from memtier summary lines
 (`Threads`, `Connections per thread`, `Requests per client`, and non-zero
 `Ops/sec`) so failed/partial runs are not treated as success.
-It also treats any memtier `Connection error:` line as a failed run and
-defaults to `HOST=127.0.0.1` to avoid `localhost` IPv6 fallback noise.
+It also treats memtier `Connection error:` and `handle error response:`
+lines as failed runs and defaults to `HOST=127.0.0.1` to avoid `localhost`
+IPv6 fallback noise.
 
 ## String-store shard policy matrix (local)
 
@@ -205,7 +208,8 @@ Outputs under `/tmp/garnet-shard-policy-matrix-<timestamp>/`:
 Use `perf_regression_gate_local.sh` to run repeated SET/GET benchmarks, validate
 memtier summary integrity, and fail on median throughput/latency threshold
 regressions.
-The gate also fails on any memtier `Connection error:` output.
+The gate also fails on memtier `Connection error:` and
+`handle error response:` output.
 
 ```bash
 cd garnet-rs
@@ -318,3 +322,23 @@ Outputs under `/tmp/garnet-allocator-ab-<timestamp>/`:
 - `default/summary.txt`
 - `mimalloc/summary.txt`
 - `comparison.txt` (ops/p99 deltas)
+
+## Binary A/B (local)
+
+Use `binary_ab_local.sh` to compare two arbitrary `garnet-server` binaries
+under the same median gate harness.
+
+```bash
+cd garnet-rs
+chmod +x benches/binary_ab_local.sh
+BASE_BIN=/tmp/garnet-server-base \
+NEW_BIN=/tmp/garnet-server-new \
+RUNS=3 THREADS=8 CONNS=16 REQUESTS=5000 \
+./benches/binary_ab_local.sh
+```
+
+The script reuses `perf_regression_gate_local.sh` for each binary and writes:
+
+- `<outdir>/<label>/runs.csv`
+- `<outdir>/<label>/summary.txt`
+- `<outdir>/comparison.txt` (median ops/p99 deltas)

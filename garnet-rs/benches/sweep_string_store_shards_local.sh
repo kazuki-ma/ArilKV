@@ -106,6 +106,10 @@ validate_run() {
     echo "connection errors detected in ${file}" >&2
     return 1
   fi
+  if grep -q 'handle error response:' "${file}"; then
+    echo "server error responses detected in ${file}" >&2
+    return 1
+  fi
   local expected_threads expected_conns expected_requests
   expected_threads="$(awk '/Threads$/{print $1; exit}' "${file}")"
   expected_conns="$(awk '/Connections per thread$/{print $1; exit}' "${file}")"
