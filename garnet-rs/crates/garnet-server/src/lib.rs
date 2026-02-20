@@ -10,6 +10,8 @@ pub mod debug_concurrency;
 pub mod limited_fixed_buffer_pool;
 pub mod request_lifecycle;
 pub mod shard_owner_threads;
+#[cfg(test)]
+pub(crate) mod testkit;
 
 pub use aof_replay::{replay_aof_file, replay_aof_operations};
 pub use command_dispatch::{

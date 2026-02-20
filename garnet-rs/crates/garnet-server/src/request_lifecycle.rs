@@ -3178,6 +3178,7 @@ impl HybridLogDeleteAdapter for ObjectSessionFunctions {
 mod tests {
     use super::*;
     use crate::debug_concurrency;
+    use crate::testkit::execute_command_line;
     use garnet_common::parse_resp_command_arg_slices;
     use std::sync::Arc;
     use std::thread;
@@ -3222,6 +3223,27 @@ mod tests {
             }
         }
         panic!("failed to find key for shard index {shard}");
+    }
+
+    #[test]
+    fn command_line_testkit_executes_against_in_memory_processor() {
+        let processor = RequestProcessor::new().unwrap();
+        assert_eq!(
+            execute_command_line(&processor, "SET alpha one").unwrap(),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            execute_command_line(&processor, "GET alpha").unwrap(),
+            b"$3\r\none\r\n"
+        );
+        assert_eq!(
+            execute_command_line(&processor, "DEL alpha").unwrap(),
+            b":1\r\n"
+        );
+        assert_eq!(
+            execute_command_line(&processor, "GET alpha").unwrap(),
+            b"$-1\r\n"
+        );
     }
 
     #[test]

@@ -1,0 +1,195 @@
+use crate::{RequestExecutionError, RequestProcessor};
+use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
+
+#[derive(Debug)]
+pub(crate) enum CommandLineParseError {
+    Empty,
+    UnterminatedQuote(char),
+    TrailingEscape,
+}
+
+impl core::fmt::Display for CommandLineParseError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Empty => write!(f, "command line is empty"),
+            Self::UnterminatedQuote(quote) => {
+                write!(f, "unterminated quote {}", quote)
+            }
+            Self::TrailingEscape => write!(f, "command line ends with trailing escape"),
+        }
+    }
+}
+
+impl std::error::Error for CommandLineParseError {}
+
+#[derive(Debug)]
+pub(crate) enum CommandHarnessError {
+    Parse(CommandLineParseError),
+    Protocol(RespParseError),
+    TrailingBytes,
+    Request(RequestExecutionError),
+}
+
+impl core::fmt::Display for CommandHarnessError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Parse(error) => error.fmt(f),
+            Self::Protocol(error) => error.fmt(f),
+            Self::TrailingBytes => write!(f, "RESP frame has trailing bytes"),
+            Self::Request(error) => write!(f, "{error:?}"),
+        }
+    }
+}
+
+impl std::error::Error for CommandHarnessError {}
+
+impl From<CommandLineParseError> for CommandHarnessError {
+    fn from(value: CommandLineParseError) -> Self {
+        Self::Parse(value)
+    }
+}
+
+impl From<RespParseError> for CommandHarnessError {
+    fn from(value: RespParseError) -> Self {
+        Self::Protocol(value)
+    }
+}
+
+impl From<RequestExecutionError> for CommandHarnessError {
+    fn from(value: RequestExecutionError) -> Self {
+        Self::Request(value)
+    }
+}
+
+pub(crate) fn tokenize_command_line(line: &str) -> Result<Vec<Vec<u8>>, CommandLineParseError> {
+    let mut tokens: Vec<Vec<u8>> = Vec::new();
+    let mut current = Vec::new();
+    let mut quote: Option<u8> = None;
+    let mut escaping = false;
+
+    for &byte in line.as_bytes() {
+        if escaping {
+            current.push(byte);
+            escaping = false;
+            continue;
+        }
+
+        if byte == b'\\' {
+            escaping = true;
+            continue;
+        }
+
+        if let Some(expected_quote) = quote {
+            if byte == expected_quote {
+                quote = None;
+            } else {
+                current.push(byte);
+            }
+            continue;
+        }
+
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            continue;
+        }
+
+        if byte.is_ascii_whitespace() {
+            if !current.is_empty() {
+                tokens.push(core::mem::take(&mut current));
+            }
+            continue;
+        }
+
+        current.push(byte);
+    }
+
+    if escaping {
+        return Err(CommandLineParseError::TrailingEscape);
+    }
+    if let Some(unclosed) = quote {
+        return Err(CommandLineParseError::UnterminatedQuote(unclosed as char));
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+    if tokens.is_empty() {
+        return Err(CommandLineParseError::Empty);
+    }
+    Ok(tokens)
+}
+
+pub(crate) fn encode_resp_command(parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+    for part in parts {
+        out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+        out.extend_from_slice(part);
+        out.extend_from_slice(b"\r\n");
+    }
+    out
+}
+
+pub(crate) fn execute_resp_frame(
+    processor: &RequestProcessor,
+    frame: &[u8],
+) -> Result<Vec<u8>, CommandHarnessError> {
+    let mut args = [ArgSlice::EMPTY; 64];
+    let meta = parse_resp_command_arg_slices(frame, &mut args)?;
+    if meta.bytes_consumed != frame.len() {
+        return Err(CommandHarnessError::TrailingBytes);
+    }
+
+    let mut response = Vec::new();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .map_err(CommandHarnessError::Request)?;
+    Ok(response)
+}
+
+pub(crate) fn execute_command_line(
+    processor: &RequestProcessor,
+    line: &str,
+) -> Result<Vec<u8>, CommandHarnessError> {
+    let tokens = tokenize_command_line(line)?;
+    let frame = encode_resp_command(&tokens);
+    execute_resp_frame(processor, &frame)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_command_line_supports_quotes_and_escapes() {
+        let tokens = tokenize_command_line("SET \"key with space\" 'v\\'1'").unwrap();
+        assert_eq!(
+            tokens,
+            vec![b"SET".to_vec(), b"key with space".to_vec(), b"v'1".to_vec()]
+        );
+    }
+
+    #[test]
+    fn execute_command_line_roundtrips_set_and_get() {
+        let processor = RequestProcessor::new().unwrap();
+        assert_eq!(
+            execute_command_line(&processor, "SET k \"hello world\"").unwrap(),
+            b"+OK\r\n"
+        );
+        assert_eq!(
+            execute_command_line(&processor, "GET k").unwrap(),
+            b"$11\r\nhello world\r\n"
+        );
+    }
+
+    #[test]
+    fn execute_command_line_reports_parse_error() {
+        let processor = RequestProcessor::new().unwrap();
+        let error = execute_command_line(&processor, "SET \"broken")
+            .err()
+            .expect("unterminated quote must fail");
+        assert!(matches!(
+            error,
+            CommandHarnessError::Parse(CommandLineParseError::UnterminatedQuote('"'))
+        ));
+    }
+}
