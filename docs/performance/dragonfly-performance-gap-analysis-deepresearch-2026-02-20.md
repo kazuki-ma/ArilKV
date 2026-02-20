@@ -249,7 +249,7 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
     local hotspot evidence showing lock contention as a dominant cost.
   - First implementation step completed in `garnet-rs`: debug/test lock-order
     instrumentation + deterministic sync points + shard-aware string-store
-    locking (`GARNET_TSAVORITE_STRING_STORE_SHARDS`, default `1`).
+    locking (`GARNET_TSAVORITE_STRING_STORE_SHARDS`, current default `2`).
   - First sweep data for string-store lock striping on local host
     (`threads=8`, `conns=16`, `requests=20000`):
     - shard 1: SET `317176`, GET `319846`
@@ -260,6 +260,12 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
     - Updated decision (2026-02-20): broadened matrix sweeps selected shard
       default `2` as the most stable median balance; retain explicit override
       and keep thread-hint auto-scaling opt-in.
+  - U3 refresh capture (`/tmp/garnet-hotspots-u3-20260220-105458`,
+    `STRING_STORE_SHARDS=2`, `threads=8`, `conns=16`, `REQ_PER_CLIENT=10000`):
+    - GET top-20 leaf samples (category aggregate): network `59.8%`,
+      sync `35.2%`, parser `1.4%`, allocator/copy `1.5%`, storage `0.2%`.
+    - SET top-20 leaf samples (category aggregate): sync `49.5%`,
+      network `44.9%`, allocator/copy `3.4%`, storage `1.0%`.
 
 ### Framegraph A/B validation for regression hypothesis (`shards=1` vs `shards=16`)
 
