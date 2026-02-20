@@ -45,9 +45,10 @@ The wrapper maps `cache-benchmarks` `--memory` into
 `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES` and `--index` into
 `GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS` automatically.
 
-It also maps thread hints (`--minthreads` / `--maxthreads`) into
-`GARNET_TSAVORITE_STRING_STORE_SHARDS` when that variable is not explicitly set.
-This activates string-store lock striping during cache-benchmarks runs.
+It can map thread hints (`--minthreads` / `--maxthreads`) into
+`GARNET_TSAVORITE_STRING_STORE_SHARDS` when
+`CACHE_BENCH_GARNET_AUTO_STRING_STORE_SHARDS=1` is set and
+`GARNET_TSAVORITE_STRING_STORE_SHARDS` is not explicitly set.
 
 For lock-striping experiments on string keys, set
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `1`) to a higher value, e.g.
@@ -131,3 +132,19 @@ Main outputs are written under `/tmp/garnet-hotspots-<timestamp>/`:
 - `get.incl.top20.txt`
 - `set.incl.top20.txt`
 - `SUMMARY.txt`
+
+## String-store shard sweep (local)
+
+Use `sweep_string_store_shards_local.sh` to run a repeatable local A/B/C...
+throughput sweep for `GARNET_TSAVORITE_STRING_STORE_SHARDS`.
+
+```bash
+cd garnet-rs
+chmod +x benches/sweep_string_store_shards_local.sh
+SHARD_COUNTS=\"1 2 4 8 16\" REQUESTS=20000 \
+  ./benches/sweep_string_store_shards_local.sh
+```
+
+The script prints CSV and validates each run from memtier summary lines
+(`Threads`, `Connections per thread`, `Requests per client`, and non-zero
+`Ops/sec`) so failed/partial runs are not treated as success.

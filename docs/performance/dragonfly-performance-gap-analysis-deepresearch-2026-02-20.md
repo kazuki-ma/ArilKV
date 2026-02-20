@@ -228,6 +228,7 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
   - `/tmp/garnet-hotspots-20260220-091323/garnet-set.flame.svg`
 - Local command used for reproducible capture:
   - `cd garnet-rs && ./benches/local_hotspot_framegraph_macos.sh`
+  - `cd garnet-rs && SHARD_COUNTS='1 2 4 8 16' REQUESTS=20000 ./benches/sweep_string_store_shards_local.sh`
 
 ### Local findings mapped to this report
 
@@ -249,3 +250,12 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
   - First implementation step completed in `garnet-rs`: debug/test lock-order
     instrumentation + deterministic sync points + shard-aware string-store
     locking (`GARNET_TSAVORITE_STRING_STORE_SHARDS`, default `1`).
+  - First sweep data for string-store lock striping on local host
+    (`threads=8`, `conns=16`, `requests=20000`):
+    - shard 1: SET `317176`, GET `319846`
+    - shard 2: SET `309438`, GET `331785`
+    - shard 4: SET `302024`, GET `313987`
+    - shard 8: SET `282727`, GET `281040`
+    - shard 16: SET `231803`, GET `257843`
+    - Current decision: keep default shard count at `1`; treat auto-scaling by
+      thread hints as opt-in pending broader sweep coverage.
