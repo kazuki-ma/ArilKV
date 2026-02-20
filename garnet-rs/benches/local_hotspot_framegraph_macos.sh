@@ -20,7 +20,7 @@ MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
 HOST="${HOST:-127.0.0.1}"
 HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS:-25}"
 MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES:-1048576}"
-STRING_STORE_SHARDS="${STRING_STORE_SHARDS:-1}"
+STRING_STORE_SHARDS="${STRING_STORE_SHARDS:-2}"
 
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then

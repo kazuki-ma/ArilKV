@@ -140,6 +140,8 @@ The run also fails on memtier `Connection error:` and
 
 Sampling now stops when the memtier run finishes, so captured stacks stay focused
 on active workload time instead of idle tail time.
+The default shard setting for this script is `STRING_STORE_SHARDS=2` to match
+current server-side default policy.
 
 ```bash
 cd garnet-rs
