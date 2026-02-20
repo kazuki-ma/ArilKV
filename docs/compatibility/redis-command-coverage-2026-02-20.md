@@ -69,6 +69,7 @@ A new command currently needs changes in multiple files/branches:
     - `request_lifecycle/string_commands.rs`
     - `request_lifecycle/hash_commands.rs`
     - `request_lifecycle/list_commands.rs`
+    - `request_lifecycle/set_commands.rs`
 - `garnet-rs/crates/garnet-server/src/lib.rs`
   - transaction-loop handling (if special behavior)
   - transaction-loop handling (if special behavior)
@@ -132,7 +133,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-004841`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-005006`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
