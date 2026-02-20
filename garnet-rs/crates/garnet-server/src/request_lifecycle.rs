@@ -1976,8 +1976,12 @@ impl RequestProcessor {
 
     #[inline]
     fn string_store_shard_index_for_key(&self, key: &[u8]) -> usize {
-        debug_assert!(!self.string_stores.is_empty());
-        usize::from(redis_hash_slot(key)) % self.string_stores.len()
+        let shard_count = self.string_stores.len();
+        debug_assert!(shard_count > 0);
+        if shard_count == 1 {
+            return 0;
+        }
+        (fnv1a_hash64(key) as usize) % shard_count
     }
 
     #[inline]
@@ -2208,14 +2212,18 @@ fn parse_env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok()?.parse::<usize>().ok()
 }
 
-fn watch_version_slot(key: &[u8]) -> usize {
-    // FNV-1a 64-bit hash; compact and deterministic for slot mapping.
+#[inline]
+fn fnv1a_hash64(key: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in key {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);
     }
-    (hash as usize) & WATCH_VERSION_MAP_MASK
+    hash
+}
+
+fn watch_version_slot(key: &[u8]) -> usize {
+    (fnv1a_hash64(key) as usize) & WATCH_VERSION_MAP_MASK
 }
 
 #[derive(Debug, Clone, Copy, Default)]

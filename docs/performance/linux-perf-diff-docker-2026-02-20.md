@@ -9,6 +9,8 @@
 - Script: `garnet-rs/benches/linux_perf_diff_profile.sh`
 - Wrapper: `garnet-rs/benches/docker_linux_perf_diff_profile.sh`
 - Latest artifact root:
+  `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`
+- Prior same-day artifact (post `11.30/11.31`, pre `11.33`):
   `garnet-rs/benches/results/linux-perf-diff-docker-20260220-132624`
 - Prior same-day artifact (pre `11.30/11.31` refresh):
   `/tmp/garnet-linux-perf-slotcache-20260220-131115`
@@ -28,17 +30,20 @@
 
 | Target | Workload | Ops/sec | Avg Lat (ms) | p99 (ms) |
 |---|---:|---:|---:|---:|
-| garnet | SET | 397,580 | 0.322 | 0.711 |
-| garnet | GET | 456,954 | 0.280 | 0.623 |
-| dragonfly | SET | 720,657 | 0.179 | 0.695 |
-| dragonfly | GET | 718,145 | 0.178 | 0.703 |
+| garnet | SET | 397,364 | 0.322 | 0.687 |
+| garnet | GET | 461,133 | 0.277 | 0.607 |
+| dragonfly | SET | 674,576 | 0.187 | 0.727 |
+| dragonfly | GET | 706,609 | 0.179 | 0.751 |
 
 Compared with the earlier same-day run using low hash-index default sizing, this
 reduced the throughput gap materially (roughly from ~3x to ~1.5-1.8x in this
 environment).
 
-`11.30/11.31` follow-up (expiration-count fast path + `TCP_NODELAY`) did not
-materially change the Linux differential gap in this single refreshed run.
+`11.30/11.31/11.33` follow-up (expiration-count fast path + `TCP_NODELAY` +
+internal shard hash swap) improved Garnet GET throughput/p99 modestly vs the
+previous run (`+0.91%` ops, `-2.57%` p99), while SET stayed essentially flat.
+Dragonfly throughput varied significantly run-to-run, so the absolute gap should
+be interpreted with caution unless median-of-N runs are used.
 
 ## `perf report` Hotspot Notes
 
@@ -48,12 +53,13 @@ sample tables and `perf script` traces are present.
 
 ### Garnet (user-space symbols)
 
-- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~1.8%)
-- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~2.9%)
+- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~2.5%)
+- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~3.5%)
 - Shared: `std::sys::sync::mutex::futex::Mutex::lock_contended`
-  (~2.1% SET / ~1.8% GET)
+  (~1.1% SET / ~2.1% GET)
 - Shared: `garnet_cluster::redis_hash_slot`
-  (~0.35% SET / ~2.04% GET)
+  no longer appears in top sampled user-space symbols in this run after
+  internal shard-index hashing moved off CRC16 slot computation.
 - Kernel-side dominant buckets include wakeups (`__wake_up_sync_key`,
   `try_to_wake_up`) across both workloads.
 
