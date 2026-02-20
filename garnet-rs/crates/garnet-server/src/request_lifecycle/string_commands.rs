@@ -1,4 +1,5 @@
 use super::*;
+use tsavorite::RmwOperationError;
 
 impl RequestProcessor {
     pub(super) fn handle_get(

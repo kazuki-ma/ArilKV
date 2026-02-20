@@ -88,6 +88,7 @@ A new command currently needs changes in multiple files/branches:
   - large inline unit-test module has been moved to `garnet-rs/crates/garnet-server/src/tests.rs` to keep production-path code review focused.
 - `garnet-rs/crates/garnet-server/src/request_lifecycle.rs`
   - inline unit tests have been moved to `garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs` for faster production-code review.
+  - error handling and storage error mapping have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/errors.rs`.
 
 Conclusion:
 
@@ -144,7 +145,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-061730`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-062028`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified

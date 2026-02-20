@@ -7,14 +7,12 @@ use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
-    DeleteInfo, DeleteOperationError, DeleteOperationStatus, HybridLogDeleteAdapter,
-    HybridLogReadAdapter, HybridLogRmwAdapter, HybridLogUpsertAdapter, ISessionFunctions,
-    PageManagerError, PageResidencyError, ReadInfo, ReadOperationError, ReadOperationStatus,
-    RecordInfo, RmwInfo, RmwOperationError, RmwOperationStatus, TsavoriteKV, TsavoriteKvConfig,
-    TsavoriteKvInitError, UpsertInfo, UpsertOperationError, WriteReason,
+    DeleteInfo, DeleteOperationStatus, HybridLogDeleteAdapter, HybridLogReadAdapter,
+    HybridLogRmwAdapter, HybridLogUpsertAdapter, ISessionFunctions, ReadInfo, ReadOperationStatus,
+    RecordInfo, RmwInfo, RmwOperationStatus, TsavoriteKV, TsavoriteKvConfig, TsavoriteKvInitError,
+    UpsertInfo, WriteReason,
 };
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
@@ -33,17 +31,19 @@ const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
-const GARNET_LOG_STORAGE_FAILURES_ENV: &str = "GARNET_LOG_STORAGE_FAILURES";
-const STORAGE_FAILURE_LOG_LIMIT: usize = 64;
-static STORAGE_FAILURE_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
-static STORAGE_FAILURE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
+mod errors;
 mod hash_commands;
 mod list_commands;
 mod server_commands;
 mod set_commands;
 mod string_commands;
 mod zset_commands;
+
+pub use self::errors::RequestExecutionError;
+use self::errors::{
+    map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
+};
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
@@ -1125,134 +1125,6 @@ fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionEr
     Ok(options)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RequestExecutionError {
-    WrongArity {
-        command: &'static str,
-        expected: &'static str,
-    },
-    UnknownCommand,
-    SyntaxError,
-    InvalidExpireTime,
-    WrongType,
-    StorageBusy,
-    StorageCapacityExceeded,
-    StorageFailure,
-    ValueNotInteger,
-    ValueNotFloat,
-}
-
-impl RequestExecutionError {
-    pub fn append_resp_error(self, response_out: &mut Vec<u8>) {
-        match self {
-            Self::WrongArity { command, .. } => append_error(
-                response_out,
-                &format!("ERR wrong number of arguments for '{}' command", command),
-            ),
-            Self::UnknownCommand => append_error(response_out, "ERR unknown command"),
-            Self::SyntaxError => append_error(response_out, "ERR syntax error"),
-            Self::InvalidExpireTime => {
-                append_error(response_out, "ERR invalid expire time in 'set' command")
-            }
-            Self::WrongType => append_error(
-                response_out,
-                "WRONGTYPE Operation against a key holding the wrong kind of value",
-            ),
-            Self::StorageBusy => append_error(response_out, "ERR storage busy, retry later"),
-            Self::StorageCapacityExceeded => append_error(
-                response_out,
-                "ERR storage capacity exceeded (increase max in-memory pages)",
-            ),
-            Self::StorageFailure => append_error(response_out, "ERR internal storage failure"),
-            Self::ValueNotInteger => {
-                append_error(response_out, "ERR value is not an integer or out of range")
-            }
-            Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
-        }
-    }
-}
-
-fn storage_failure_logging_enabled() -> bool {
-    *STORAGE_FAILURE_LOG_ENABLED.get_or_init(|| {
-        std::env::var(GARNET_LOG_STORAGE_FAILURES_ENV)
-            .map(|value| !matches!(value.as_str(), "0" | "false" | "FALSE"))
-            .unwrap_or(true)
-    })
-}
-
-fn log_storage_failure(context: &str, detail: &str) {
-    if !storage_failure_logging_enabled() {
-        return;
-    }
-
-    let count = STORAGE_FAILURE_LOG_COUNT.fetch_add(1, Ordering::Relaxed);
-    if count >= STORAGE_FAILURE_LOG_LIMIT {
-        if count == STORAGE_FAILURE_LOG_LIMIT {
-            eprintln!(
-                "garnet-server storage failure logging suppressed after {} entries",
-                STORAGE_FAILURE_LOG_LIMIT
-            );
-        }
-        return;
-    }
-
-    let backtrace = std::backtrace::Backtrace::force_capture();
-    eprintln!(
-        "garnet-server storage failure [{}]: {}\nbacktrace:\n{}",
-        context, detail, backtrace
-    );
-}
-
-fn storage_failure(context: &str, detail: &str) -> RequestExecutionError {
-    log_storage_failure(context, detail);
-    RequestExecutionError::StorageFailure
-}
-
-fn map_read_error(error: ReadOperationError) -> RequestExecutionError {
-    match error {
-        ReadOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
-            RequestExecutionError::StorageCapacityExceeded
-        }
-        ReadOperationError::PageResidency(PageResidencyError::PageManager(
-            PageManagerError::BufferFull { .. },
-        )) => RequestExecutionError::StorageCapacityExceeded,
-        ReadOperationError::PageResidency(PageResidencyError::NoEvictablePage { .. }) => {
-            RequestExecutionError::StorageBusy
-        }
-        other => storage_failure("read", &format!("{other:?}")),
-    }
-}
-
-fn map_upsert_error(error: UpsertOperationError) -> RequestExecutionError {
-    match error {
-        UpsertOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
-            RequestExecutionError::StorageCapacityExceeded
-        }
-        UpsertOperationError::CompareExchangeConflict => RequestExecutionError::StorageBusy,
-        other => storage_failure("upsert", &format!("{other:?}")),
-    }
-}
-
-fn map_delete_error(error: DeleteOperationError) -> RequestExecutionError {
-    match error {
-        DeleteOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
-            RequestExecutionError::StorageCapacityExceeded
-        }
-        DeleteOperationError::CompareExchangeConflict => RequestExecutionError::StorageBusy,
-        other => storage_failure("delete", &format!("{other:?}")),
-    }
-}
-
-fn map_rmw_error(error: RmwOperationError) -> RequestExecutionError {
-    match error {
-        RmwOperationError::PageManager(PageManagerError::BufferFull { .. }) => {
-            RequestExecutionError::StorageCapacityExceeded
-        }
-        RmwOperationError::CompareExchangeConflict => RequestExecutionError::StorageBusy,
-        other => storage_failure("rmw", &format!("{other:?}")),
-    }
-}
-
 fn parse_i64_ascii(input: &[u8]) -> Option<i64> {
     if input.is_empty() {
         return None;
@@ -1541,12 +1413,6 @@ fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
 fn append_simple_string(response_out: &mut Vec<u8>, value: &[u8]) {
     response_out.push(b'+');
     response_out.extend_from_slice(value);
-    response_out.extend_from_slice(b"\r\n");
-}
-
-fn append_error(response_out: &mut Vec<u8>, message: &str) {
-    response_out.push(b'-');
-    response_out.extend_from_slice(message.as_bytes());
     response_out.extend_from_slice(b"\r\n");
 }
 
