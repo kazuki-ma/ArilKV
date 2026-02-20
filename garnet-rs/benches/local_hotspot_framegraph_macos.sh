@@ -156,6 +156,27 @@ run_memtier() {
   validate_memtier_log "${mode}" "${log_out}"
 }
 
+run_sample_while_benchmark() {
+  local server_pid="$1"
+  local bench_pid="$2"
+  local sample_out="$3"
+
+  sample "${server_pid}" "${SAMPLE_SECONDS}" -mayDie -file "${sample_out}" >/dev/null 2>&1 &
+  local sample_pid=$!
+
+  local bench_status=0
+  wait "${bench_pid}" || bench_status=$?
+
+  if kill -0 "${sample_pid}" 2>/dev/null; then
+    kill -INT "${sample_pid}" 2>/dev/null || true
+  fi
+  wait "${sample_pid}" 2>/dev/null || true
+
+  if [[ "${bench_status}" -ne 0 ]]; then
+    return "${bench_status}"
+  fi
+}
+
 make_flamegraph() {
   local sample_txt="$1"
   local folded="$2"
@@ -215,8 +236,7 @@ run_memtier "set" "${OUTDIR}/get-preload-set.json" "${OUTDIR}/get-preload-set.lo
 run_memtier "get" "${OUTDIR}/get-run.json" "${OUTDIR}/get-run.log" &
 GET_BENCH_PID=$!
 sleep 1
-sample "${SERVER_PID}" "${SAMPLE_SECONDS}" -mayDie -file "${OUTDIR}/get.sample.txt" >/dev/null 2>&1 || true
-wait "${GET_BENCH_PID}"
+run_sample_while_benchmark "${SERVER_PID}" "${GET_BENCH_PID}" "${OUTDIR}/get.sample.txt"
 make_flamegraph "${OUTDIR}/get.sample.txt" "${OUTDIR}/get.folded" "${OUTDIR}/garnet-get.flame.svg" \
   "garnet-rs GET-only local"
 write_hotspots "${OUTDIR}/get.folded" "${OUTDIR}/get"
@@ -227,8 +247,7 @@ start_server "set"
 run_memtier "set" "${OUTDIR}/set-run.json" "${OUTDIR}/set-run.log" &
 SET_BENCH_PID=$!
 sleep 1
-sample "${SERVER_PID}" "${SAMPLE_SECONDS}" -mayDie -file "${OUTDIR}/set.sample.txt" >/dev/null 2>&1 || true
-wait "${SET_BENCH_PID}"
+run_sample_while_benchmark "${SERVER_PID}" "${SET_BENCH_PID}" "${OUTDIR}/set.sample.txt"
 make_flamegraph "${OUTDIR}/set.sample.txt" "${OUTDIR}/set.folded" "${OUTDIR}/garnet-set.flame.svg" \
   "garnet-rs SET-only local"
 write_hotspots "${OUTDIR}/set.folded" "${OUTDIR}/set"

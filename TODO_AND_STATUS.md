@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 131
+> **Current Iteration**: 133
 
 ---
 
@@ -204,6 +204,8 @@
 | 11.13 | Validate shard-regression hypothesis with hotspot framegraphs (`shards=1` vs `16`) | DONE | 11.11 | Captured local A/B via `local_hotspot_framegraph_macos.sh` (`THREADS=8`, `CONNS=16`, `REQ_PER_CLIENT=30000`): throughput regressed at shard `16` (`GET 444280 -> 261276`, `SET 286002 -> 217070` ops/s). Framegraph delta: mutex wait dropped (`GET 49.8% -> 32.3%`, `SET 56.2% -> 41.7%`) while `tsavorite::hash_index` lookup paths rose sharply (`GET find_tag_address 0.05% -> 22.18%`, `SET find_tag_entry/find_or_create 0.54% -> 18.61%`), matching the "over-sharding without owner-thread routing increases storage-path cost" hypothesis. |
 | 11.14 | Scale string-store hash-index size by shard count to avoid over-provisioned per-shard index | DONE | 11.13 | Added `scale_hash_index_bits_for_shards` in `request_lifecycle` so each string-store shard scales `hash_index_size_bits` down by `ceil(log2(shards))` (clamped to `>=1`) while object-store index size is unchanged. Added unit test `scales_hash_index_bits_with_shard_count`. Quick local sweep after change (`threads=8`, `conns=16`, `requests=20000`): shard `1` SET/GET `322749/320911`; shard `16` `225855/276991` (still regressed vs shard `1`, but GET improved vs pre-change `257843`). |
 | 11.15 | Shard string metadata locks (expiration + key registry) with store shard mapping | DONE | 11.14 | Replaced global `expirations`/`key_registry` mutexes with per-shard vectors (`string_expirations`, `string_key_registries`) and centralized metadata helpers (`track_string_key`, `set_string_expiration_deadline`, `remove_string_key_metadata`). Added regression test `sharded_string_metadata_tracks_keys_and_expiration_per_shard`. Full tests pass (`83 + 3 + 1`). Quick sweep (`threads=8`, `conns=16`, `requests=20000`): shard `1` SET/GET `322521/324126`; shard `16` `230558/273398` (global-lock contention reduced, but high-shard regression remains without owner routing). |
+| 11.16 | Add owner-thread routing primitive (fiber-free shard-affine executor foundation) | DONE | 11.15 | Added `shard_owner_threads` module with `ShardOwnerThreadPool` (`shard -> owner thread` stable mapping, submit/sync execution API, graceful shutdown) and tests for mapping stability, per-shard thread affinity, and cross-owner parallel execution. This keeps Tokio/network unchanged and prepares the next step: moving string command execution onto shard-owner threads without custom fiber scheduler. |
+| 11.17 | Fix hotspot capture fidelity by stopping macOS `sample` when benchmark ends | DONE | 11.13 | Updated `local_hotspot_framegraph_macos.sh` to run sampling in background and terminate it when memtier finishes, avoiding idle-tail stack pollution on short/fast runs. Documented behavior in `garnet-rs/benches/README.md`. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.9 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). Local macOS pre-check is complete via 11.9; this task remains Linux-native differential profiling. |
 | 11.6 | Add automated performance regression gate | TODO | 11.5 | Add repeatable benchmark harness (median of N runs) with thresholds on ops/sec and p99 latency in CI/nightly. |
 

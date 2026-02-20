@@ -119,6 +119,9 @@ The script also validates memtier run integrity from stdout summary lines:
 
 This prevents treating "exit code only" as success.
 
+Sampling now stops when the memtier run finishes, so captured stacks stay focused
+on active workload time instead of idle tail time.
+
 ```bash
 cd garnet-rs
 chmod +x benches/local_hotspot_framegraph_macos.sh
