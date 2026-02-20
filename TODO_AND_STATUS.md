@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-19
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 124
+> **Current Iteration**: 128
 
 ---
 
@@ -193,6 +193,24 @@
 |---|------|--------|------------|-------|
 | 11.1 | Integrate Redis official benchmark workflow (`redis-benchmark`) | DONE | 6.8 | Added `garnet-rs/benches/redis_official_benchmark.sh` to resolve/download Redis official `redis-benchmark`, optionally start `garnet-server`, and save benchmark reports to `garnet-rs/benches/results/`. Added `garnet-rs/crates/garnet-server/src/main.rs` env overrides (`GARNET_BIND_ADDR`, `GARNET_READ_BUFFER_SIZE`) to support benchmark-run bind configuration and added parser tests for invalid/valid env values. Documented usage and tunables in `garnet-rs/benches/README.md`. |
 | 11.2 | Enable `tidwall/cache-benchmarks` execution against `garnet-rs` | DONE | 11.1 | Added `garnet-rs/benches/cache_benchmarks_garnet_wrapper.sh` to adapt .NET Garnet CLI flags expected by `cache-benchmarks` to Rust server env-based startup (`GARNET_BIND_ADDR`). Verified a real `./bench garnet --tcp ...` run with `memtier_benchmark` generated `bench.json` successfully. |
+| 11.3 | Add Dragonfly execution path for `cache-benchmarks` on macOS | DONE | 11.2 | Added `garnet-rs/benches/cache_benchmarks_dragonfly_docker_wrapper.sh` to run Dragonfly via Docker with `cache-benchmarks`-compatible process naming and startup flags, and documented config usage in `garnet-rs/benches/README.md`. |
+| 11.4 | Record performance unknowns and prepare DeepResearch instructions | DONE | 11.3 | Added explicit unknown-items tracker below and created `garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md` for ChatGPT DeepResearch execution. |
+| 11.7 | Run apples-to-apples `cache-benchmarks` comparison (`dragonfly` vs `garnet-rs`) on macOS wrappers | DONE | 11.3 | Executed both targets under identical parameters (`threads=1`, `bthreads=8`, `conns=16`, `ops=50000`, `pipeline=1`, `sizerange=1-1024`, TCP). Result snapshot: Garnet higher throughput (SET `336k` vs `101k`, GET `280k` vs `93k`) and lower p99 latency (SET `1.399ms` vs `3.727ms`, GET `1.055ms` vs `3.407ms`) in this environment. |
+| 11.8 | Re-run comparison with both servers in Docker (`dragonfly` vs `garnet-rs`) | DONE | 11.3 | Added `garnet-rs` Docker benchmark wrapper + Dockerfile and reran same-parameter comparison with both targets containerized. Result snapshot: Garnet ahead on throughput and p99 (`SET 107.6k vs 100.3k`, `GET 103.9k vs 86.2k`, `SET p99 3.439ms vs 4.047ms`, `GET p99 3.455ms vs 4.191ms`). |
+| 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.3 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). |
+| 11.6 | Add automated performance regression gate | TODO | 11.5 | Add repeatable benchmark harness (median of N runs) with thresholds on ops/sec and p99 latency in CI/nightly. |
+
+---
+
+## Phase 11A: Performance Unknowns (Need DeepResearch)
+
+| ID | Unknown Item | Why It Matters | Status |
+|---|---|---|---|
+| U1 | Which Dragonfly internals are the dominant reason for GET/SET throughput advantage on ARM64 (scheduler/proactor/sharding/data layout)? | Prevents cargo-cult optimization and focuses engineering effort on high-impact areas. | TODO |
+| U2 | Which Dragonfly optimizations are portable to `garnet-rs` with acceptable complexity/risk? | Avoids spending time on techniques that conflict with current architecture or maintainability. | TODO |
+| U3 | How much of current gap is network/RESP path vs storage engine path vs allocation path? | Determines whether to prioritize server front-end, Tsavorite core, or allocator strategy. | TODO |
+| U4 | Which allocator and memory-tuning choices most affect this workload (`1-1024` bytes, high SET warmup)? | Memory behavior often dominates latency tail and throughput under heavy concurrency. | TODO |
+| U5 | Which benchmark settings are fair and representative for apples-to-apples comparison (threads, pipeline, affinity, warmup, memory limits)? | Invalid comparison settings can hide real regressions or overstate improvements. | TODO |
 
 ---
 
@@ -200,6 +218,7 @@
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-19 | Track performance unknowns explicitly and maintain a dedicated DeepResearch instruction file in-repo. | Keeps investigation scope auditable and reproducible, and prevents TODO drift into ad-hoc notes outside version control. |
 | 2026-02-19 | Standardize socket-level performance checks on Redis official `redis-benchmark`, with auto-download from `download.redis.io` when missing. | Reuses Redis’s de facto standard benchmark tool while making runs reproducible in clean environments without manual pre-install steps. |
 | 2026-02-19 | Use a thin wrapper to translate `cache-benchmarks` Garnet CLI flags to `garnet-rs` env-driven startup instead of modifying upstream benchmark code. | Preserves compatibility with upstream `tidwall/cache-benchmarks` workflow while avoiding invasive local forks and keeping repeatability high. |
 | 2026-02-18 | Use a pure virtual workspace at `garnet-rs/Cargo.toml` with five member crates and placeholder sources. | Keeps Phase 0 scaffolding minimal while enabling immediate workspace-wide `cargo check`/`cargo test`. |
@@ -453,3 +472,7 @@
 | 122 | 2026-02-19 | Tracking | DONE | Normalized historical Iteration Log status markers from `IN_PROGRESS` to `DONE` for already-completed milestones to keep active work visibility clean. |
 | 123 | 2026-02-19 | 11.1 | DONE | Added Redis official benchmark runner script (`redis_official_benchmark.sh`), documented benchmark execution parameters, wired server env-based bind config overrides for benchmark startup, and verified benchmark/test execution. |
 | 124 | 2026-02-19 | 11.2 | DONE | Added `cache_benchmarks_garnet_wrapper.sh` and verified `tidwall/cache-benchmarks` `./bench garnet --tcp` can execute against `garnet-rs` with `memtier_benchmark`, producing `bench.json` throughput/latency output. |
+| 125 | 2026-02-19 | 11.3 | DONE | Added `cache_benchmarks_dragonfly_docker_wrapper.sh` and bench docs so Dragonfly can be executed from `cache-benchmarks` on macOS using Docker while preserving expected wrapper behavior. |
+| 126 | 2026-02-19 | 11.4 | DONE | Added in-repo performance unknowns tracker and created `garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md` to drive evidence-based ChatGPT DeepResearch on optimization gaps. |
+| 127 | 2026-02-19 | 11.7 | DONE | Ran same-parameter `cache-benchmarks` comparison for `dragonfly` and `garnet-rs` with new wrappers; captured `bench.json` snapshots in `/tmp` and confirmed this run favored Garnet on both throughput and p99 latency. |
+| 128 | 2026-02-20 | 11.8 | DONE | Added Docker-to-Docker comparison support (`cache_benchmarks_garnet_docker_wrapper.sh`, `Dockerfile.garnet-rs-cachebench`, `garnet-rs/.dockerignore`) and reran `cache-benchmarks` with both servers in containers under identical parameters, confirming Garnet leads in this environment. |

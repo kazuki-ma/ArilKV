@@ -68,3 +68,30 @@ JSON
 If capacity is too small you will now see:
 
 `-ERR storage capacity exceeded (increase max in-memory pages)`
+
+### Dragonfly comparison on macOS (Docker)
+
+Dragonfly official release tarballs are Linux binaries, so on macOS use
+`cache_benchmarks_dragonfly_docker_wrapper.sh` as the Dragonfly path in config.
+
+For Docker-to-Docker fairness (both servers inside containers), use
+`cache_benchmarks_garnet_docker_wrapper.sh` for Garnet as well.
+
+```bash
+chmod +x garnet-rs/benches/cache_benchmarks_dragonfly_docker_wrapper.sh \
+  garnet-rs/benches/cache_benchmarks_garnet_docker_wrapper.sh
+docker build -f garnet-rs/benches/Dockerfile.garnet-rs-cachebench \
+  -t garnet-rs-cachebench:latest garnet-rs
+cat > /tmp/cache-benchmarks-compare.json <<'JSON'
+{
+  "paths": {
+    "memtier": "/opt/homebrew/bin/memtier_benchmark",
+    "garnet": "/absolute/path/to/garnet-rs/benches/cache_benchmarks_garnet_docker_wrapper.sh",
+    "dragonfly": "/absolute/path/to/garnet-rs/benches/cache_benchmarks_dragonfly_docker_wrapper.sh"
+  }
+}
+JSON
+```
+
+For investigation planning and unknown-item closure, see:
+`garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md`.
