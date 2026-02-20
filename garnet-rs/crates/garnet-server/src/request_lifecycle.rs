@@ -152,6 +152,16 @@ impl RequestProcessor {
             .all(|(key, expected)| self.watch_key_version(key) == *expected)
     }
 
+    #[inline]
+    pub fn string_store_shard_count(&self) -> usize {
+        self.string_stores.len()
+    }
+
+    #[inline]
+    pub fn string_store_shard_index(&self, key: &[u8]) -> usize {
+        self.string_store_shard_index_for_key(key)
+    }
+
     pub fn execute(
         &self,
         args: &[ArgSlice],

@@ -36,6 +36,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
+const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ServerConfig {
     pub bind_addr: SocketAddr,
@@ -870,6 +872,7 @@ where
     F: Future<Output = ()> + Send,
 {
     let mut tasks = JoinSet::new();
+    let owner_thread_pool = build_owner_thread_pool(&processor)?;
     let expiration_processor = Arc::clone(&processor);
     let expiration_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
@@ -894,6 +897,7 @@ where
                 let task_metrics = Arc::clone(&metrics);
                 let task_processor = Arc::clone(&processor);
                 let task_cluster = cluster_config.clone();
+                let task_owner_threads = owner_thread_pool.clone();
                 tasks.spawn(async move {
                     let _ =
                         handle_connection(
@@ -902,6 +906,7 @@ where
                             task_metrics,
                             task_processor,
                             task_cluster,
+                            task_owner_threads,
                         )
                         .await;
                 });
@@ -922,6 +927,7 @@ async fn handle_connection(
     metrics: Arc<ServerMetrics>,
     processor: Arc<RequestProcessor>,
     cluster_config: Option<Arc<ClusterConfigStore>>,
+    owner_thread_pool: Option<Arc<ShardOwnerThreadPool>>,
 ) -> io::Result<()> {
     let _lifecycle = ConnectionLifecycle { metrics: &metrics };
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
@@ -1097,6 +1103,38 @@ async fn handle_connection(
                                 }
                             }
                             _ => {
+                                if let Some(owner_pool) = owner_thread_pool.as_ref() {
+                                    if let Some(shard_index) = owner_routed_shard_for_command(
+                                        &processor,
+                                        &args[..meta.argument_count],
+                                        command,
+                                    ) {
+                                        let frame = receive_buffer[frame_start..frame_end].to_vec();
+                                        let routed_processor = Arc::clone(&processor);
+                                        match owner_pool.execute_sync(shard_index, move || {
+                                            execute_frame_via_processor(&routed_processor, &frame)
+                                        }) {
+                                            Ok(Ok(frame_response)) => {
+                                                responses.extend_from_slice(&frame_response);
+                                            }
+                                            Ok(Err(RoutedExecutionError::Request(error))) => {
+                                                error.append_resp_error(&mut responses);
+                                            }
+                                            Ok(Err(RoutedExecutionError::Protocol)) => {
+                                                responses
+                                                    .extend_from_slice(b"-ERR protocol error\r\n");
+                                            }
+                                            Err(_) => {
+                                                responses.extend_from_slice(
+                                                    b"-ERR owner routing execution failed\r\n",
+                                                );
+                                            }
+                                        }
+                                        consumed += meta.bytes_consumed;
+                                        continue;
+                                    }
+                                }
+
                                 if let Err(error) =
                                     processor.execute(&args[..meta.argument_count], &mut responses)
                                 {
@@ -1205,6 +1243,88 @@ fn execute_transaction_queue(
         }
         responses.extend_from_slice(&item_response);
     }
+}
+
+#[derive(Debug)]
+enum RoutedExecutionError {
+    Protocol,
+    Request(RequestExecutionError),
+}
+
+fn execute_frame_via_processor(
+    processor: &RequestProcessor,
+    frame: &[u8],
+) -> Result<Vec<u8>, RoutedExecutionError> {
+    let mut args = [ArgSlice::EMPTY; 64];
+    let meta = parse_resp_command_arg_slices(frame, &mut args)
+        .map_err(|_| RoutedExecutionError::Protocol)?;
+    if meta.bytes_consumed != frame.len() {
+        return Err(RoutedExecutionError::Protocol);
+    }
+    let mut response = Vec::new();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .map_err(RoutedExecutionError::Request)?;
+    Ok(response)
+}
+
+fn owner_routed_shard_for_command(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    command: CommandId,
+) -> Option<usize> {
+    if args.len() < 2 {
+        return None;
+    }
+
+    let is_routed = match command {
+        CommandId::Get
+        | CommandId::Set
+        | CommandId::Incr
+        | CommandId::Decr
+        | CommandId::Expire
+        | CommandId::Pexpire
+        | CommandId::Ttl
+        | CommandId::Pttl
+        | CommandId::Persist => true,
+        CommandId::Del => args.len() == 2,
+        _ => false,
+    };
+    if !is_routed {
+        return None;
+    }
+
+    // SAFETY: ArgSlice memory is owned by the live receive buffer in the caller.
+    let key = unsafe { args[1].as_slice() };
+    Some(processor.string_store_shard_index(key))
+}
+
+fn build_owner_thread_pool(
+    processor: &Arc<RequestProcessor>,
+) -> io::Result<Option<Arc<ShardOwnerThreadPool>>> {
+    let owner_threads = match parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV) {
+        Some(value) => value,
+        None => return Ok(None),
+    };
+    let shard_count = processor.string_store_shard_count();
+    let owner_threads = owner_threads.min(shard_count);
+    let pool = ShardOwnerThreadPool::new(owner_threads, shard_count).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::Other,
+            format!(
+                "owner-thread pool initialization failed (threads={}, shards={}): {}",
+                owner_threads, shard_count, error
+            ),
+        )
+    })?;
+    Ok(Some(Arc::new(pool)))
+}
+
+fn parse_positive_env_usize(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
 }
 
 fn append_simple_string(output: &mut Vec<u8>, value: &[u8]) {
@@ -4694,6 +4814,54 @@ mod tests {
         .await
         .unwrap();
         assert!(reports.is_empty());
+    }
+
+    #[test]
+    fn owner_routed_shard_selection_handles_single_and_multi_key_commands() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut args = [ArgSlice::EMPTY; 64];
+
+        let get_frame = encode_resp_command(&[b"GET", b"my-key"]);
+        let meta = parse_resp_command_arg_slices(&get_frame, &mut args).unwrap();
+        let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+        let routed_shard =
+            owner_routed_shard_for_command(&processor, &args[..meta.argument_count], command);
+        assert_eq!(
+            routed_shard,
+            Some(processor.string_store_shard_index(b"my-key"))
+        );
+
+        let del_multi_frame = encode_resp_command(&[b"DEL", b"k1", b"k2"]);
+        let del_meta = parse_resp_command_arg_slices(&del_multi_frame, &mut args).unwrap();
+        let del_command = unsafe { dispatch_from_arg_slices(&args[..del_meta.argument_count]) };
+        assert_eq!(
+            owner_routed_shard_for_command(
+                &processor,
+                &args[..del_meta.argument_count],
+                del_command
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn execute_frame_via_processor_matches_direct_execution() {
+        let processor = RequestProcessor::new().unwrap();
+
+        let set_frame = encode_resp_command(&[b"SET", b"k", b"v"]);
+        let routed_set = execute_frame_via_processor(&processor, &set_frame).unwrap();
+        let direct_set = execute_processor_frame(&processor, &set_frame);
+        assert_eq!(routed_set, direct_set);
+
+        let get_frame = encode_resp_command(&[b"GET", b"k"]);
+        let routed_get = execute_frame_via_processor(&processor, &get_frame).unwrap();
+        let direct_get = execute_processor_frame(&processor, &get_frame);
+        assert_eq!(routed_get, direct_get);
+
+        assert!(matches!(
+            execute_frame_via_processor(&processor, b"*1\r\n$4\r\nPING"),
+            Err(RoutedExecutionError::Protocol)
+        ));
     }
 
     async fn wait_until<P>(mut predicate: P, timeout: Duration)

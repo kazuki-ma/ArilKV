@@ -54,6 +54,11 @@ For lock-striping experiments on string keys, set
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `1`) to a higher value, e.g.
 `8` or `16`.
 
+For fiber-free owner-thread routing experiments, set
+`GARNET_STRING_OWNER_THREADS=<n>` (optional, disabled by default). This routes
+single-key string commands through shard-owner threads while keeping the Tokio
+network loop unchanged.
+
 ### Minimal run (single benchmark)
 
 ```bash

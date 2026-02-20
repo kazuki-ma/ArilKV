@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 133
+> **Current Iteration**: 134
 
 ---
 
@@ -206,6 +206,7 @@
 | 11.15 | Shard string metadata locks (expiration + key registry) with store shard mapping | DONE | 11.14 | Replaced global `expirations`/`key_registry` mutexes with per-shard vectors (`string_expirations`, `string_key_registries`) and centralized metadata helpers (`track_string_key`, `set_string_expiration_deadline`, `remove_string_key_metadata`). Added regression test `sharded_string_metadata_tracks_keys_and_expiration_per_shard`. Full tests pass (`83 + 3 + 1`). Quick sweep (`threads=8`, `conns=16`, `requests=20000`): shard `1` SET/GET `322521/324126`; shard `16` `230558/273398` (global-lock contention reduced, but high-shard regression remains without owner routing). |
 | 11.16 | Add owner-thread routing primitive (fiber-free shard-affine executor foundation) | DONE | 11.15 | Added `shard_owner_threads` module with `ShardOwnerThreadPool` (`shard -> owner thread` stable mapping, submit/sync execution API, graceful shutdown) and tests for mapping stability, per-shard thread affinity, and cross-owner parallel execution. This keeps Tokio/network unchanged and prepares the next step: moving string command execution onto shard-owner threads without custom fiber scheduler. |
 | 11.17 | Fix hotspot capture fidelity by stopping macOS `sample` when benchmark ends | DONE | 11.13 | Updated `local_hotspot_framegraph_macos.sh` to run sampling in background and terminate it when memtier finishes, avoiding idle-tail stack pollution on short/fast runs. Documented behavior in `garnet-rs/benches/README.md`. |
+| 11.18 | Integrate optional owner-thread routing for hot single-key string commands | DONE | 11.16 | Added optional routing in `handle_connection` gated by `GARNET_STRING_OWNER_THREADS` (clamped to shard count). Routed commands: `GET/SET/INCR/DECR/EXPIRE/PEXPIRE/TTL/PTTL/PERSIST` and single-key `DEL`. Added helper tests (`owner_routed_shard_selection_handles_single_and_multi_key_commands`, `execute_frame_via_processor_matches_direct_execution`) and verified compatibility path with `GARNET_STRING_OWNER_THREADS=2 cargo test -p garnet-server --test redis_cli_compat`. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.9 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). Local macOS pre-check is complete via 11.9; this task remains Linux-native differential profiling. |
 | 11.6 | Add automated performance regression gate | TODO | 11.5 | Add repeatable benchmark harness (median of N runs) with thresholds on ops/sec and p99 latency in CI/nightly. |
 
