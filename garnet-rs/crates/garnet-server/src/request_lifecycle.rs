@@ -82,6 +82,7 @@ pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_store: OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
     string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, Instant>>>,
+    string_expiration_counts: Vec<AtomicUsize>,
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registry: OrderedMutex<HashSet<Vec<u8>>>,
     watch_versions: Vec<AtomicU64>,
@@ -104,6 +105,7 @@ impl RequestProcessor {
             scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
         let mut string_stores = Vec::with_capacity(store_shard_count);
         let mut string_expirations = Vec::with_capacity(store_shard_count);
+        let mut string_expiration_counts = Vec::with_capacity(store_shard_count);
         let mut string_key_registries = Vec::with_capacity(store_shard_count);
         for _ in 0..store_shard_count {
             string_stores.push(OrderedMutex::new(
@@ -116,6 +118,7 @@ impl RequestProcessor {
                 LockClass::Expirations,
                 "request_processor.expirations",
             ));
+            string_expiration_counts.push(AtomicUsize::new(0));
             string_key_registries.push(OrderedMutex::new(
                 HashSet::new(),
                 LockClass::KeyRegistry,
@@ -125,6 +128,7 @@ impl RequestProcessor {
         Ok(Self {
             string_stores,
             string_expirations,
+            string_expiration_counts,
             string_key_registries,
             object_store: OrderedMutex::new(
                 TsavoriteKV::new(store_config)?,
@@ -536,9 +540,12 @@ impl RequestProcessor {
 
         let now = Instant::now();
         let mut expired_keys: Vec<Vec<u8>> = Vec::with_capacity(max_keys);
-        for expirations in &self.string_expirations {
+        for (shard_index, expirations) in self.string_expirations.iter().enumerate() {
             if expired_keys.len() >= max_keys {
                 break;
+            }
+            if self.string_expiration_count_for_shard(shard_index) == 0 {
+                continue;
             }
             let remaining = max_keys - expired_keys.len();
             let mut shard_expired: Vec<Vec<u8>> = expirations
@@ -957,10 +964,15 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let removed_deadline = self
-            .lock_string_expirations_for_key(&key)
-            .remove(&key)
-            .is_some();
+        let shard_index = self.string_store_shard_index_for_key(&key);
+        let removed_deadline = {
+            let mut expirations = self.lock_string_expirations_for_shard(shard_index);
+            let removed = expirations.remove(&key).is_some();
+            if removed {
+                self.decrement_string_expiration_count(shard_index);
+            }
+            removed
+        };
         if !removed_deadline {
             append_integer(response_out, 0);
             return Ok(());
@@ -1923,12 +1935,17 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: usize,
     ) -> Result<(), RequestExecutionError> {
+        if self.string_expiration_count_for_shard(shard_index) == 0 {
+            return Ok(());
+        }
         crate::debug_sync_point!("request_processor.expire_key_if_needed.enter");
         let should_expire = {
             let mut expirations = self.lock_string_expirations_for_shard(shard_index);
             match expirations.get(key) {
                 Some(deadline) if *deadline <= Instant::now() => {
-                    expirations.remove(key);
+                    if expirations.remove(key).is_some() {
+                        self.decrement_string_expiration_count(shard_index);
+                    }
                     true
                 }
                 _ => false,
@@ -1964,6 +1981,25 @@ impl RequestProcessor {
     }
 
     #[inline]
+    fn string_expiration_count_for_shard(&self, shard_index: usize) -> usize {
+        debug_assert!(shard_index < self.string_expiration_counts.len());
+        self.string_expiration_counts[shard_index].load(Ordering::Acquire)
+    }
+
+    #[inline]
+    fn increment_string_expiration_count(&self, shard_index: usize) {
+        debug_assert!(shard_index < self.string_expiration_counts.len());
+        self.string_expiration_counts[shard_index].fetch_add(1, Ordering::Release);
+    }
+
+    #[inline]
+    fn decrement_string_expiration_count(&self, shard_index: usize) {
+        debug_assert!(shard_index < self.string_expiration_counts.len());
+        let previous = self.string_expiration_counts[shard_index].fetch_sub(1, Ordering::Release);
+        debug_assert!(previous > 0, "expiration count underflow");
+    }
+
+    #[inline]
     fn lock_string_store_for_shard(
         &self,
         shard_index: usize,
@@ -1992,15 +2028,6 @@ impl RequestProcessor {
         self.string_expirations[shard_index]
             .lock()
             .expect("expiration mutex poisoned")
-    }
-
-    #[inline]
-    fn lock_string_expirations_for_key(
-        &self,
-        key: &[u8],
-    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, Instant>> {
-        let shard_index = self.string_store_shard_index_for_key(key);
-        self.lock_string_expirations_for_shard(shard_index)
     }
 
     #[inline]
@@ -2043,10 +2070,15 @@ impl RequestProcessor {
         let mut expirations = self.lock_string_expirations_for_shard(shard_index);
         match deadline {
             Some(deadline) => {
-                expirations.insert(key.to_vec(), deadline);
+                let previous = expirations.insert(key.to_vec(), deadline);
+                if previous.is_none() {
+                    self.increment_string_expiration_count(shard_index);
+                }
             }
             None => {
-                expirations.remove(key);
+                if expirations.remove(key).is_some() {
+                    self.decrement_string_expiration_count(shard_index);
+                }
             }
         }
     }
@@ -2071,6 +2103,9 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: usize,
     ) -> Option<Instant> {
+        if self.string_expiration_count_for_shard(shard_index) == 0 {
+            return None;
+        }
         self.lock_string_expirations_for_shard(shard_index)
             .get(key)
             .copied()
@@ -3396,6 +3431,8 @@ mod tests {
 
         assert!(processor.string_expiration_deadline(&key_a).is_some());
         assert!(processor.string_expiration_deadline(&key_b).is_none());
+        assert_eq!(processor.string_expiration_count_for_shard(shard_a), 1);
+        assert_eq!(processor.string_expiration_count_for_shard(shard_b), 0);
 
         assert!(processor.string_key_registries[shard_a]
             .lock()
@@ -3413,6 +3450,34 @@ mod tests {
             .lock()
             .expect("key registry mutex poisoned")
             .contains(&key_a));
+    }
+
+    #[test]
+    fn string_expiration_counts_stay_consistent_across_updates() {
+        let processor = RequestProcessor::new_with_string_store_shards(4).unwrap();
+        let key = find_key_for_shard(&processor, 0);
+        let shard = processor.string_store_shard_index_for_key(&key);
+        assert_eq!(processor.string_expiration_count_for_shard(shard), 0);
+
+        let set_px = encode_resp(&[b"SET", &key, b"value", b"PX", b"5000"]);
+        assert_eq!(execute_frame(&processor, &set_px), b"+OK\r\n");
+        assert_eq!(processor.string_expiration_count_for_shard(shard), 1);
+
+        let set_px_again = encode_resp(&[b"SET", &key, b"value", b"PX", b"7000"]);
+        assert_eq!(execute_frame(&processor, &set_px_again), b"+OK\r\n");
+        assert_eq!(processor.string_expiration_count_for_shard(shard), 1);
+
+        let persist = encode_resp(&[b"PERSIST", &key]);
+        assert_eq!(execute_frame(&processor, &persist), b":1\r\n");
+        assert_eq!(processor.string_expiration_count_for_shard(shard), 0);
+
+        let expire = encode_resp(&[b"EXPIRE", &key, b"1"]);
+        assert_eq!(execute_frame(&processor, &expire), b":1\r\n");
+        assert_eq!(processor.string_expiration_count_for_shard(shard), 1);
+
+        let del = encode_resp(&[b"DEL", &key]);
+        assert_eq!(execute_frame(&processor, &del), b":1\r\n");
+        assert_eq!(processor.string_expiration_count_for_shard(shard), 0);
     }
 
     #[test]

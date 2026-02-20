@@ -895,6 +895,7 @@ where
             }
             accept_result = listener.accept() => {
                 let (stream, _) = accept_result?;
+                let _ = stream.set_nodelay(true);
                 metrics.accepted_connections.fetch_add(1, Ordering::Relaxed);
                 metrics.active_connections.fetch_add(1, Ordering::Relaxed);
 
