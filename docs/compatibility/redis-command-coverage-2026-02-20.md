@@ -95,6 +95,7 @@ A new command currently needs changes in multiple files/branches:
   - object-store access and object payload persistence helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/object_store.rs`.
   - migration export/import and slot-migration helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/migration.rs`.
   - tsavorite/environment configuration helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/config.rs`.
+  - string-store/expiration metadata and shard-lock helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs`.
 
 Conclusion:
 
@@ -151,7 +152,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-063342`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-063653`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
