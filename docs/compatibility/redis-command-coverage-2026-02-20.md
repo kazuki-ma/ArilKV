@@ -101,6 +101,7 @@ A new command currently needs changes in multiple files/branches:
   - string-store/expiration metadata and shard-lock helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs`.
 - `garnet-rs/crates/garnet-server/src/main.rs`
   - inline unit tests have been moved to `garnet-rs/crates/garnet-server/src/main_tests.rs` to keep launch/runtime logic focused.
+  - launch config parsing/types have been split to `garnet-rs/crates/garnet-server/src/server_launch_config.rs`.
 
 Conclusion:
 
@@ -157,7 +158,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-065205`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-065428`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
