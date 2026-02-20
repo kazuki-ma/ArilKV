@@ -259,3 +259,28 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
     - shard 16: SET `231803`, GET `257843`
     - Current decision: keep default shard count at `1`; treat auto-scaling by
       thread hints as opt-in pending broader sweep coverage.
+
+### Framegraph A/B validation for regression hypothesis (`shards=1` vs `shards=16`)
+
+- Artifacts:
+  - `/tmp/garnet-hotspots-shards1-20260220`
+  - `/tmp/garnet-hotspots-shards16-20260220`
+- Repro command:
+  - `cd garnet-rs && STRING_STORE_SHARDS=1 OUTDIR=/tmp/garnet-hotspots-shards1-20260220 ./benches/local_hotspot_framegraph_macos.sh`
+  - `cd garnet-rs && STRING_STORE_SHARDS=16 OUTDIR=/tmp/garnet-hotspots-shards16-20260220 ./benches/local_hotspot_framegraph_macos.sh`
+- Throughput delta (memtier `Ops/sec` from log/json):
+  - GET: `444280.31 -> 261275.93` (`-41.2%`)
+  - SET: `286002.03 -> 217070.20` (`-24.1%`)
+- Hotspot delta (sample-based):
+  - GET leaf:
+    - `__psynch_mutexwait`: `49.83% -> 32.35%` (down)
+    - `HashIndex::find_tag_address`: `0.05% -> 22.18%` (up)
+  - SET leaf:
+    - `__psynch_mutexwait`: `56.22% -> 41.72%` (down)
+    - `HashIndex::find_tag_entry` + `find_or_create_tag`: `0.54% -> 18.61%` (up)
+- Interpretation:
+  - Regression at high shard count is not explained by lock-wait increase.
+  - The bottleneck shifted to Tsavorite hash-index lookup paths, which is
+    consistent with over-sharding without owner-thread routing and indicates
+    shard-count policy should remain conservative until routing/partition design
+    is introduced.

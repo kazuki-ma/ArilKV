@@ -125,6 +125,14 @@ chmod +x benches/local_hotspot_framegraph_macos.sh
 ./benches/local_hotspot_framegraph_macos.sh
 ```
 
+Compare shard settings under the same workload:
+
+```bash
+cd garnet-rs
+STRING_STORE_SHARDS=1 OUTDIR=/tmp/garnet-hotspots-shards1 ./benches/local_hotspot_framegraph_macos.sh
+STRING_STORE_SHARDS=16 OUTDIR=/tmp/garnet-hotspots-shards16 ./benches/local_hotspot_framegraph_macos.sh
+```
+
 Main outputs are written under `/tmp/garnet-hotspots-<timestamp>/`:
 
 - `garnet-get.flame.svg`
@@ -132,6 +140,8 @@ Main outputs are written under `/tmp/garnet-hotspots-<timestamp>/`:
 - `get.incl.top20.txt`
 - `set.incl.top20.txt`
 - `SUMMARY.txt`
+
+`SUMMARY.txt` also records `string_store_shards=<N>` so A/B runs are traceable.
 
 ## String-store shard sweep (local)
 

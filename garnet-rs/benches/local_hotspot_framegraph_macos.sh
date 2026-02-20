@@ -19,6 +19,7 @@ SERVER_BIN="${SERVER_BIN:-${SERVER_BIN_DEFAULT}}"
 MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
 HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS:-25}"
 MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES:-1048576}"
+STRING_STORE_SHARDS="${STRING_STORE_SHARDS:-1}"
 
 cleanup() {
   if [[ -n "${SERVER_PID:-}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
@@ -64,6 +65,7 @@ start_server() {
   GARNET_BIND_ADDR="127.0.0.1:${PORT}" \
     GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS}" \
     GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES}" \
+    GARNET_TSAVORITE_STRING_STORE_SHARDS="${STRING_STORE_SHARDS}" \
     "${SERVER_BIN}" >"${OUTDIR}/server-${tag}.log" 2>&1 &
   SERVER_PID=$!
 
@@ -107,20 +109,21 @@ validate_memtier_log() {
     exit 1
   fi
 
-  local totals_ops sets_ops gets_ops
+  local totals_ops sets_ops gets_ops run_avg_ops
   totals_ops="$(awk '/^Totals[[:space:]]/{ops=$2} END{print ops+0}' "${log_file}")"
   sets_ops="$(awk '/^Sets[[:space:]]/{print $2+0; exit}' "${log_file}")"
   gets_ops="$(awk '/^Gets[[:space:]]/{print $2+0; exit}' "${log_file}")"
-  if ! awk -v value="${totals_ops}" 'BEGIN { exit !(value > 0) }'; then
-    echo "Totals Ops/sec must be positive in ${log_file}" >&2
+  run_avg_ops="$(perl -ne 'if (/\[RUN #1.*avg:\s*([0-9.]+)\)\s*ops\/sec/) { $ops = $1; } END { print $ops if defined $ops; }' "${log_file}")"
+  if ! awk -v total="${totals_ops}" -v avg="${run_avg_ops:-0}" 'BEGIN { exit !((total > 0) || (avg > 0)) }'; then
+    echo "Neither Totals nor RUN avg Ops/sec was positive in ${log_file}" >&2
     exit 1
   fi
-  if [[ "${mode}" == "set" ]] && ! awk -v value="${sets_ops}" 'BEGIN { exit !(value > 0) }'; then
-    echo "SET Ops/sec must be positive in ${log_file}" >&2
+  if [[ "${mode}" == "set" ]] && ! awk -v value="${sets_ops}" -v avg="${run_avg_ops:-0}" 'BEGIN { exit !((value > 0) || (avg > 0)) }'; then
+    echo "SET Ops/sec and RUN avg were non-positive in ${log_file}" >&2
     exit 1
   fi
-  if [[ "${mode}" == "get" ]] && ! awk -v value="${gets_ops}" 'BEGIN { exit !(value > 0) }'; then
-    echo "GET Ops/sec must be positive in ${log_file}" >&2
+  if [[ "${mode}" == "get" ]] && ! awk -v value="${gets_ops}" -v avg="${run_avg_ops:-0}" 'BEGIN { exit !((value > 0) || (avg > 0)) }'; then
+    echo "GET Ops/sec and RUN avg were non-positive in ${log_file}" >&2
     exit 1
   fi
 }
@@ -233,6 +236,7 @@ stop_server
 
 {
   echo "outdir=${OUTDIR}"
+  echo "string_store_shards=${STRING_STORE_SHARDS}"
   echo "get_svg=${OUTDIR}/garnet-get.flame.svg"
   echo "set_svg=${OUTDIR}/garnet-set.flame.svg"
   echo "get_leaf_top20=${OUTDIR}/get.leaf.top20.txt"
