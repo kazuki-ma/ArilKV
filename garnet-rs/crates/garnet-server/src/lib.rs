@@ -6,6 +6,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod aof_replay;
 pub mod command_dispatch;
+pub mod command_spec;
 pub mod debug_concurrency;
 pub mod limited_fixed_buffer_pool;
 pub mod redis_replication;
@@ -43,6 +44,9 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
+use crate::command_spec::{
+    command_is_mutating, command_is_owner_routable, command_key_access_pattern, KeyAccessPattern,
+};
 use crate::redis_replication::RedisReplicationCoordinator;
 
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
@@ -1413,24 +1417,7 @@ fn owner_routed_shard_for_command(
     args: &[ArgSlice],
     command: CommandId,
 ) -> Option<usize> {
-    if args.len() < 2 {
-        return None;
-    }
-
-    let is_routed = match command {
-        CommandId::Get
-        | CommandId::Set
-        | CommandId::Incr
-        | CommandId::Decr
-        | CommandId::Expire
-        | CommandId::Pexpire
-        | CommandId::Ttl
-        | CommandId::Pttl
-        | CommandId::Persist => true,
-        CommandId::Del => args.len() == 2,
-        _ => false,
-    };
-    if !is_routed {
+    if !command_is_owner_routable(command, args.len()) {
         return None;
     }
 
@@ -1505,26 +1492,7 @@ fn parse_u16_ascii(value: &[u8]) -> Option<u16> {
 }
 
 fn is_mutating_command_for_replication(command: CommandId) -> bool {
-    matches!(
-        command,
-        CommandId::Set
-            | CommandId::Del
-            | CommandId::Incr
-            | CommandId::Decr
-            | CommandId::Expire
-            | CommandId::Pexpire
-            | CommandId::Persist
-            | CommandId::Hset
-            | CommandId::Hdel
-            | CommandId::Lpush
-            | CommandId::Rpush
-            | CommandId::Lpop
-            | CommandId::Rpop
-            | CommandId::Sadd
-            | CommandId::Srem
-            | CommandId::Zadd
-            | CommandId::Zrem
-    )
+    command_is_mutating(command)
 }
 
 fn cluster_error_for_command(
@@ -1537,8 +1505,8 @@ fn cluster_error_for_command(
         return Ok((None, asking_allowed));
     }
 
-    match command {
-        CommandId::Del | CommandId::Watch => {
+    match command_key_access_pattern(command) {
+        KeyAccessPattern::AllKeysFromArg1 => {
             let config = cluster_store.load();
             let mut first_slot = None;
             for arg in &args[1..] {
@@ -1571,40 +1539,7 @@ fn cluster_error_for_command(
             }
             Ok((None, true))
         }
-        _ => {
-            let uses_first_key = matches!(
-                command,
-                CommandId::Get
-                    | CommandId::Set
-                    | CommandId::Incr
-                    | CommandId::Decr
-                    | CommandId::Expire
-                    | CommandId::Ttl
-                    | CommandId::Pexpire
-                    | CommandId::Pttl
-                    | CommandId::Persist
-                    | CommandId::Hset
-                    | CommandId::Hget
-                    | CommandId::Hdel
-                    | CommandId::Hgetall
-                    | CommandId::Lpush
-                    | CommandId::Rpush
-                    | CommandId::Lpop
-                    | CommandId::Rpop
-                    | CommandId::Lrange
-                    | CommandId::Sadd
-                    | CommandId::Srem
-                    | CommandId::Smembers
-                    | CommandId::Sismember
-                    | CommandId::Zadd
-                    | CommandId::Zrem
-                    | CommandId::Zrange
-                    | CommandId::Zscore
-            );
-            if !uses_first_key {
-                return Ok((None, asking_allowed));
-            }
-
+        KeyAccessPattern::FirstKey => {
             // SAFETY: argument slices reference the current request frame.
             let key = unsafe { args[1].as_slice() };
             let slot = redis_hash_slot(key);
@@ -1617,6 +1552,7 @@ fn cluster_error_for_command(
             })?;
             Ok((error, asking_allowed))
         }
+        KeyAccessPattern::None => Ok((None, asking_allowed)),
     }
 }
 
@@ -1636,43 +1572,13 @@ fn command_hash_slot_for_transaction(args: &[ArgSlice], command: CommandId) -> O
     if args.len() < 2 {
         return None;
     }
-    match command {
-        CommandId::Del => {
-            // SAFETY: argument slices reference the current request frame.
-            let first_key = unsafe { args[1].as_slice() };
-            Some(redis_hash_slot(first_key))
-        }
-        CommandId::Get
-        | CommandId::Set
-        | CommandId::Incr
-        | CommandId::Decr
-        | CommandId::Expire
-        | CommandId::Ttl
-        | CommandId::Pexpire
-        | CommandId::Pttl
-        | CommandId::Persist
-        | CommandId::Hset
-        | CommandId::Hget
-        | CommandId::Hdel
-        | CommandId::Hgetall
-        | CommandId::Lpush
-        | CommandId::Rpush
-        | CommandId::Lpop
-        | CommandId::Rpop
-        | CommandId::Lrange
-        | CommandId::Sadd
-        | CommandId::Srem
-        | CommandId::Smembers
-        | CommandId::Sismember
-        | CommandId::Zadd
-        | CommandId::Zrem
-        | CommandId::Zrange
-        | CommandId::Zscore => {
+    match command_key_access_pattern(command) {
+        KeyAccessPattern::FirstKey | KeyAccessPattern::AllKeysFromArg1 => {
             // SAFETY: argument slices reference the current request frame.
             let key = unsafe { args[1].as_slice() };
             Some(redis_hash_slot(key))
         }
-        _ => None,
+        KeyAccessPattern::None => None,
     }
 }
 
@@ -2147,10 +2053,12 @@ mod tests {
         send_and_expect(&mut client, b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n", b":1\r\n").await;
         send_and_expect(&mut client, b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n", b"$-1\r\n").await;
         send_and_expect(&mut client, b"*1\r\n$6\r\nDBSIZE\r\n", b":1\r\n").await;
+        let expected_command_response =
+            encode_resp_command(crate::command_spec::command_names_for_command_response());
         send_and_expect(
             &mut client,
             b"*1\r\n$7\r\nCOMMAND\r\n",
-            b"*42\r\n$3\r\nGET\r\n$3\r\nSET\r\n$3\r\nDEL\r\n$4\r\nINCR\r\n$4\r\nDECR\r\n$6\r\nEXPIRE\r\n$3\r\nTTL\r\n$7\r\nPEXPIRE\r\n$4\r\nPTTL\r\n$7\r\nPERSIST\r\n$4\r\nHSET\r\n$4\r\nHGET\r\n$4\r\nHDEL\r\n$7\r\nHGETALL\r\n$5\r\nLPUSH\r\n$5\r\nRPUSH\r\n$4\r\nLPOP\r\n$4\r\nRPOP\r\n$6\r\nLRANGE\r\n$4\r\nSADD\r\n$4\r\nSREM\r\n$8\r\nSMEMBERS\r\n$9\r\nSISMEMBER\r\n$4\r\nZADD\r\n$4\r\nZREM\r\n$6\r\nZRANGE\r\n$6\r\nZSCORE\r\n$5\r\nMULTI\r\n$4\r\nEXEC\r\n$7\r\nDISCARD\r\n$5\r\nWATCH\r\n$7\r\nUNWATCH\r\n$6\r\nASKING\r\n$4\r\nPING\r\n$4\r\nECHO\r\n$4\r\nINFO\r\n$6\r\nDBSIZE\r\n$7\r\nCOMMAND\r\n$9\r\nREPLICAOF\r\n$8\r\nREPLCONF\r\n$5\r\nPSYNC\r\n$4\r\nSYNC\r\n",
+            &expected_command_response,
         )
         .await;
 

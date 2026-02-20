@@ -48,27 +48,39 @@ High-impact missing (non-Lua) examples:
 
 ## Command abstraction review (today)
 
-Current state is functional but not "add command in one place".
+Current state is improved but still not fully "add command in one place".
 
 A new command currently needs changes in multiple files/branches:
 
 - `garnet-rs/crates/garnet-server/src/command_dispatch.rs`
   - `CommandId` enum
   - command-name dispatch matching
+- `garnet-rs/crates/garnet-server/src/command_spec.rs`
+  - centralized metadata for:
+    - `COMMAND` response exposure
+    - key-access pattern (`none` / `first-key` / `all-keys-from-arg1`)
+    - owner-thread routability
+    - replication mutating classification
 - `garnet-rs/crates/garnet-server/src/request_lifecycle.rs`
   - `RequestProcessor::execute` match arm
   - command arity/handler implementation
-  - `COMMAND` response list
+  - command handlers are still centralized (partial extraction completed):
+    - `request_lifecycle/server_commands.rs`
+    - `request_lifecycle/string_commands.rs`
 - `garnet-rs/crates/garnet-server/src/lib.rs`
   - transaction-loop handling (if special behavior)
-  - cluster key-routing decision lists
-  - owner-thread routing eligibility
-  - transaction slot extraction (`command_hash_slot_for_transaction`)
+  - transaction-loop handling (if special behavior)
+  - now uses `command_spec` for:
+    - cluster key-routing policy
+    - owner-thread routing eligibility
+    - transaction slot extraction policy
+    - replication mutating checks
 
 Conclusion:
 
-- Command behavior is explicit and testable, but metadata is duplicated.
-- The architecture is not yet a single command-registry model.
+- `CommandSpec` centralization is in place for key policies and mutating/routing classification.
+- Handler dispatch and arity validation are still split between `command_dispatch.rs` + per-handler logic.
+- The architecture is not yet a full registry-driven command engine.
 
 ## TODO (prioritized, non-Lua focus)
 
@@ -79,6 +91,7 @@ Conclusion:
    - cluster routability checks
    - owner-thread routability checks
    - transaction slot extraction policy.
+   - Status: **partially complete** (`COMMAND`, key extraction/routing, replication mutating checks are now derived from `command_spec`).
 3. Add compatibility-focused command batches:
    - Phase C1: `EXISTS/TYPE/MGET/MSET/INCRBY/DECRBY/GETEX/GETDEL`
    - Phase C2: `SCAN/HSCAN/SSCAN/ZSCAN`
@@ -117,7 +130,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260220-233407`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-004503`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
