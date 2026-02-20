@@ -85,6 +85,7 @@ A new command currently needs changes in multiple files/branches:
     - `connection_protocol.rs` (RESP/error framing + ASCII command helpers)
     - `connection_routing.rs` (owner-thread routing + cluster slot routing checks)
     - `connection_transaction.rs` (transaction queue/state lifecycle)
+  - large inline unit-test module has been moved to `garnet-rs/crates/garnet-server/src/tests.rs` to keep production-path code review focused.
 
 Conclusion:
 
@@ -141,7 +142,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-061522`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-061632`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
