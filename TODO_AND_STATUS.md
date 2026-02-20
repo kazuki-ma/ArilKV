@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 141
+> **Current Iteration**: 142
 
 ---
 
@@ -217,7 +217,8 @@
 | 11.26 | Fix memtier percentile parsing so `p99` metrics use the actual `p99` column | DONE | 11.23 | Corrected `extract_ops_and_p99` in `sweep_string_store_shards_local.sh` and `perf_regression_gate_local.sh` from column `7` (`p90`) to column `8` (`p99`), and revalidated via local smoke runs. |
 | 11.27 | Prevent Dockerized Linux perf runs from overwriting host `target/` binaries | DONE | 11.5 | Updated `docker_linux_perf_diff_profile.sh` to use container-local `CARGO_TARGET_DIR=/tmp/garnet-target-linux` and explicit `GARNET_BIN` override, avoiding cross-platform binary clobber in host workspace. |
 | 11.28 | Raise server default hash-index sizing and validate with repeated A/B sweep | DONE | 11.27 | Updated server config derivation to use `DEFAULT_SERVER_HASH_INDEX_SIZE_BITS=16` (unless overridden by env) with new unit coverage in `request_lifecycle`. Repeated local A/B (`hash_bits=10 vs 16`, `runs=3`, `threads=8`, `conns=16`, `requests=5000`) showed median improvement at `16` (`SET 171708 -> 178977`, `GET 175480 -> 181313`, p99 down from `1.543/1.375` to `1.103/1.063`). |
-| 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential capture with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Latest post-default run (`threads=8`, `conns=16`, `requests=5000`) at `garnet-rs/benches/results/garnet-linux-perf-diff-post-hash-default-20260220-130508` showed Dragonfly vs Garnet throughput `SET 706k vs 397k`, `GET 679k vs 450k`; Garnet hotspot concentration in `find_tag_*` dropped materially vs earlier run. |
+| 11.29 | Reduce repeated shard-slot hashing on `GET/SET` hot path | DONE | 11.28 | Added shard-index-aware fast paths (`expire_key_if_needed_in_shard`, shard-index lock/metadata helpers) so `GET/SET` compute shard mapping once per command in the common case. Refreshed Linux differential run (`/tmp/garnet-linux-perf-slotcache-20260220-131115`) showed `garnet_cluster::redis_hash_slot` reduced to ~1.0% on GET with throughput snapshot `SET 399k`, `GET 461k`. |
+| 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Latest run (`threads=8`, `conns=16`, `requests=5000`) at `/tmp/garnet-linux-perf-slotcache-20260220-131115` showed Dragonfly vs Garnet throughput `SET 695k vs 399k`, `GET 702k vs 461k`; the earlier multi-x gap was reduced materially after hash-index and hot-path tuning. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
 ---
@@ -238,6 +239,7 @@
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-20 | Reuse precomputed shard index in `GET/SET` hot paths for store/expiration/metadata operations. | Repeated slot hashing (`redis_hash_slot`) was visible in user-space hotspots; reusing one computed shard index per command reduces avoidable routing overhead without changing behavior. |
 | 2026-02-20 | Set request-processor default hash-index bits to `16` (with env override) for benchmark-representative workloads. | Repeated A/B sweeps (`10` vs `16`) showed consistent median throughput and p99 gains; low default sizing over-concentrated hash-index lookup overhead and distorted differential profiling results. |
 | 2026-02-20 | Isolate Dockerized Linux benchmark builds with container-local `CARGO_TARGET_DIR` and explicit Linux `GARNET_BIN` path. | Running Linux builds against a mounted workspace can overwrite host-platform binaries; isolating build output prevents local toolchain breakage while keeping artifacts reproducible. |
 | 2026-02-20 | Treat memtier percentile extraction as schema-sensitive and bind `p99` to the explicit table column. | Prior scripts were unintentionally reading `p90` as `p99`; strict column mapping prevents false confidence in latency gates and sweep comparisons. |
@@ -518,3 +520,4 @@
 | 139 | 2026-02-20 | 11.5 / U3 | DONE | Completed Linux differential profiling via Dockerized runner (`garnet-rs/benches/docker_linux_perf_diff_profile.sh`), fixed invalid-run guards in `linux_perf_diff_profile.sh` (server error-response detection + larger default in-memory pages), and published hotspot + throughput analysis at `docs/performance/linux-perf-diff-docker-2026-02-20.md`. |
 | 140 | 2026-02-20 | 11.26 / 11.27 | DONE | Fixed `p99` column extraction in sweep/gate scripts (`$8`, not `$7`) with smoke-run verification, and hardened Dockerized Linux perf wrapper to use container-local build output so host binaries are not overwritten. |
 | 141 | 2026-02-20 | 11.28 | DONE | Raised server default hash-index sizing (`DEFAULT_SERVER_HASH_INDEX_SIZE_BITS=16`) with new config-resolution unit tests, confirmed A/B gains (`bits10` vs `16`, 3-run median), and refreshed Linux differential profile artifacts to reflect the new default. |
+| 142 | 2026-02-20 | 11.29 | DONE | Reduced repeated shard mapping in `GET/SET` by introducing shard-index-aware expiration/store/metadata helpers, and validated with an updated Linux differential run showing lower `redis_hash_slot` user-space overhead and improved Garnet GET throughput. |

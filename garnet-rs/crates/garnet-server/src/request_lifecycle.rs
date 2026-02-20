@@ -599,10 +599,11 @@ impl RequestProcessor {
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
-        self.expire_key_if_needed(&key)?;
+        let shard_index = self.string_store_shard_index_for_key(&key);
+        self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
-        let mut store = self.lock_string_store_for_key(&key);
+        let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_get.after_store_lock");
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
@@ -640,8 +641,9 @@ impl RequestProcessor {
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
         let value = unsafe { args[2].as_slice() }.to_vec();
+        let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
-        self.expire_key_if_needed(&key)?;
+        self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
         if options.only_if_absent || options.only_if_present {
@@ -656,7 +658,7 @@ impl RequestProcessor {
             }
         }
 
-        let mut store = self.lock_string_store_for_key(&key);
+        let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
@@ -675,8 +677,12 @@ impl RequestProcessor {
         drop(store);
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
-        self.set_string_expiration_deadline(&key, options.expiration.map(|e| e.deadline));
-        self.track_string_key(&key);
+        self.set_string_expiration_deadline_in_shard(
+            &key,
+            shard_index,
+            options.expiration.map(|e| e.deadline),
+        );
+        self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
 
         append_simple_string(response_out, b"OK");
@@ -1908,9 +1914,18 @@ impl RequestProcessor {
     }
 
     fn expire_key_if_needed(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.expire_key_if_needed_in_shard(key, shard_index)
+    }
+
+    fn expire_key_if_needed_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: usize,
+    ) -> Result<(), RequestExecutionError> {
         crate::debug_sync_point!("request_processor.expire_key_if_needed.enter");
         let should_expire = {
-            let mut expirations = self.lock_string_expirations_for_key(key);
+            let mut expirations = self.lock_string_expirations_for_shard(shard_index);
             match expirations.get(key) {
                 Some(deadline) if *deadline <= Instant::now() => {
                     expirations.remove(key);
@@ -1926,7 +1941,7 @@ impl RequestProcessor {
         }
 
         crate::debug_sync_point!("request_processor.expire_key_if_needed.before_store_lock");
-        let mut store = self.lock_string_store_for_key(key);
+        let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
         let mut info = DeleteInfo::default();
         let status = session
@@ -1938,7 +1953,7 @@ impl RequestProcessor {
         ) {
             self.bump_watch_version(key);
         }
-        self.untrack_string_key(key);
+        self.untrack_string_key_in_shard(key, shard_index);
         Ok(())
     }
 
@@ -1949,14 +1964,34 @@ impl RequestProcessor {
     }
 
     #[inline]
+    fn lock_string_store_for_shard(
+        &self,
+        shard_index: usize,
+    ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
+        debug_assert!(shard_index < self.string_stores.len());
+        self.string_stores[shard_index]
+            .lock()
+            .expect("store mutex poisoned")
+    }
+
+    #[inline]
     fn lock_string_store_for_key(
         &self,
         key: &[u8],
     ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
         let shard_index = self.string_store_shard_index_for_key(key);
-        self.string_stores[shard_index]
+        self.lock_string_store_for_shard(shard_index)
+    }
+
+    #[inline]
+    fn lock_string_expirations_for_shard(
+        &self,
+        shard_index: usize,
+    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, Instant>> {
+        debug_assert!(shard_index < self.string_expirations.len());
+        self.string_expirations[shard_index]
             .lock()
-            .expect("store mutex poisoned")
+            .expect("expiration mutex poisoned")
     }
 
     #[inline]
@@ -1965,33 +2000,47 @@ impl RequestProcessor {
         key: &[u8],
     ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, Instant>> {
         let shard_index = self.string_store_shard_index_for_key(key);
-        self.string_expirations[shard_index]
-            .lock()
-            .expect("expiration mutex poisoned")
+        self.lock_string_expirations_for_shard(shard_index)
     }
 
     #[inline]
-    fn lock_string_key_registry_for_key(
+    fn lock_string_key_registry_for_shard(
         &self,
-        key: &[u8],
+        shard_index: usize,
     ) -> OrderedMutexGuard<'_, HashSet<Vec<u8>>> {
-        let shard_index = self.string_store_shard_index_for_key(key);
+        debug_assert!(shard_index < self.string_key_registries.len());
         self.string_key_registries[shard_index]
             .lock()
             .expect("key registry mutex poisoned")
     }
 
-    fn track_string_key(&self, key: &[u8]) {
-        self.lock_string_key_registry_for_key(key)
+    fn track_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
+        self.lock_string_key_registry_for_shard(shard_index)
             .insert(key.to_vec());
     }
 
-    fn untrack_string_key(&self, key: &[u8]) {
-        self.lock_string_key_registry_for_key(key).remove(key);
+    fn track_string_key(&self, key: &[u8]) {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.track_string_key_in_shard(key, shard_index);
     }
 
-    fn set_string_expiration_deadline(&self, key: &[u8], deadline: Option<Instant>) {
-        let mut expirations = self.lock_string_expirations_for_key(key);
+    fn untrack_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
+        self.lock_string_key_registry_for_shard(shard_index)
+            .remove(key);
+    }
+
+    fn untrack_string_key(&self, key: &[u8]) {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.untrack_string_key_in_shard(key, shard_index);
+    }
+
+    fn set_string_expiration_deadline_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: usize,
+        deadline: Option<Instant>,
+    ) {
+        let mut expirations = self.lock_string_expirations_for_shard(shard_index);
         match deadline {
             Some(deadline) => {
                 expirations.insert(key.to_vec(), deadline);
@@ -2002,13 +2051,34 @@ impl RequestProcessor {
         }
     }
 
+    fn set_string_expiration_deadline(&self, key: &[u8], deadline: Option<Instant>) {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.set_string_expiration_deadline_in_shard(key, shard_index, deadline);
+    }
+
+    fn remove_string_key_metadata_in_shard(&self, key: &[u8], shard_index: usize) {
+        self.set_string_expiration_deadline_in_shard(key, shard_index, None);
+        self.untrack_string_key_in_shard(key, shard_index);
+    }
+
     fn remove_string_key_metadata(&self, key: &[u8]) {
-        self.set_string_expiration_deadline(key, None);
-        self.untrack_string_key(key);
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.remove_string_key_metadata_in_shard(key, shard_index);
+    }
+
+    fn string_expiration_deadline_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: usize,
+    ) -> Option<Instant> {
+        self.lock_string_expirations_for_shard(shard_index)
+            .get(key)
+            .copied()
     }
 
     fn string_expiration_deadline(&self, key: &[u8]) -> Option<Instant> {
-        self.lock_string_expirations_for_key(key).get(key).copied()
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.string_expiration_deadline_in_shard(key, shard_index)
     }
 
     fn string_keys_snapshot(&self) -> Vec<Vec<u8>> {

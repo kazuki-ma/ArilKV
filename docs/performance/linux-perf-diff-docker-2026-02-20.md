@@ -9,7 +9,7 @@
 - Script: `garnet-rs/benches/linux_perf_diff_profile.sh`
 - Wrapper: `garnet-rs/benches/docker_linux_perf_diff_profile.sh`
 - Artifact root:
-  `garnet-rs/benches/results/garnet-linux-perf-diff-post-hash-default-20260220-130508`
+  `/tmp/garnet-linux-perf-slotcache-20260220-131115`
 
 ## Workload
 
@@ -26,10 +26,10 @@
 
 | Target | Workload | Ops/sec | Avg Lat (ms) | p99 (ms) |
 |---|---:|---:|---:|---:|
-| garnet | SET | 396,717 | 0.322 | 0.687 |
-| garnet | GET | 450,434 | 0.283 | 0.615 |
-| dragonfly | SET | 706,612 | 0.184 | 0.663 |
-| dragonfly | GET | 678,794 | 0.190 | 0.719 |
+| garnet | SET | 399,349 | 0.320 | 0.679 |
+| garnet | GET | 461,498 | 0.278 | 0.615 |
+| dragonfly | SET | 694,632 | 0.183 | 0.679 |
+| dragonfly | GET | 701,839 | 0.181 | 0.727 |
 
 Compared with the earlier same-day run using low hash-index default sizing, this
 reduced the throughput gap materially (roughly from ~3x to ~1.5-1.8x in this
@@ -43,10 +43,11 @@ sample tables and `perf script` traces are present.
 
 ### Garnet (user-space symbols)
 
-- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~1.2%)
-- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~1.6%)
+- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~1.4%)
+- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~3.1%)
 - Shared: `std::sys::sync::mutex::futex::Mutex::lock_contended`
-- Shared: `garnet_cluster::redis_hash_slot`
+- Shared: `garnet_cluster::redis_hash_slot` (reduced to ~1.0% on GET after
+  single-key hot-path shard-index reuse)
 - Kernel-side dominant buckets include wakeups (`__wake_up_sync_key`,
   `try_to_wake_up`) across both workloads.
 
