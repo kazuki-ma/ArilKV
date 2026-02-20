@@ -102,6 +102,7 @@ A new command currently needs changes in multiple files/branches:
 - `garnet-rs/crates/garnet-server/src/main.rs`
   - inline unit tests have been moved to `garnet-rs/crates/garnet-server/src/main_tests.rs` to keep launch/runtime logic focused.
   - launch config parsing/types have been split to `garnet-rs/crates/garnet-server/src/server_launch_config.rs`.
+  - multi-port runtime (cluster store build + listener thread orchestration + pinning helpers) has been split to `garnet-rs/crates/garnet-server/src/multi_port_runtime.rs`.
 
 Conclusion:
 
@@ -158,7 +159,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-065428`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-065743`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
