@@ -6,8 +6,8 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use tsavorite::{
-    DeleteOperationError, PageManagerError, PageResidencyError, ReadOperationError,
-    ISessionFunctions, RecordInfo, RmwOperationError, UpsertOperationError, WriteReason,
+    DeleteOperationError, ISessionFunctions, PageManagerError, PageResidencyError,
+    ReadOperationError, RecordInfo, RmwOperationError, UpsertOperationError, WriteReason,
 };
 
 fn parse_integer_response(response: &[u8]) -> i64 {
