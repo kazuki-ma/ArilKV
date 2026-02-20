@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 146
+> **Current Iteration**: 147
 
 ---
 
@@ -222,6 +222,7 @@
 | 11.31 | Enable `TCP_NODELAY` for accepted client sockets and re-profile GET/SET single-command path | DONE | 11.30 | Updated accept loop to call `TcpStream::set_nodelay(true)` per connection. Verified connection-loop tests (`accept_loop_spawns_connection_handlers`, `shutdown_signal_stops_accept_loop`) and request-lifecycle suite (`42/42`). Local hotspot rerun (`/tmp/garnet-hotspots-post-nodelay-20260220-132224`) vs pre-nodelay showed `GET -0.09%`, `SET +1.07%`, with p99 improving (`GET -4.37%`, `SET -0.50%`) in this sample (`docs/performance/local-hotspot-macos-2026-02-20-expcount-nodelay.md`). |
 | 11.32 | Refresh Linux differential profile after `11.30/11.31` networking+expiration-path changes | DONE | 11.31 | Re-ran Dockerized Linux differential profile at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-132624` and updated analysis doc. Snapshot: Garnet `SET/GET 397.6k/457.0k`, Dragonfly `720.7k/718.1k` (p99: Garnet `0.711/0.623`, Dragonfly `0.695/0.703`). Garnet hotspots remain `find_tag_*`, `redis_hash_slot`, and mutex contention. |
 | 11.33 | Replace internal string-store shard mapping hash (`redis_hash_slot` -> FNV-1a) and re-profile | DONE | 11.32 | Switched `RequestProcessor::string_store_shard_index_for_key` to FNV-1a for internal sharding (cluster slot routing remains unchanged). Local hotspot rerun with rebuilt binary (`/tmp/garnet-hotspots-post-shardfnv-rebuild-20260220-133202`) reduced `redis_hash_slot` to `0.00%` (GET/SET) and lowered mutex wait share; Linux differential refresh (`garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`) showed Garnet GET `+0.91%` with better p99 (`0.623 -> 0.607`) vs previous run while SET remained flat. |
+| 11.34 | Add median-of-N Linux differential wrapper to reduce run-to-run comparison noise | DONE | 11.33 | Added `garnet-rs/benches/linux_perf_diff_profile_median_local.sh` to execute repeated Dockerized Linux differential runs and aggregate medians (`runs.csv`, `median_summary.csv`, `summary.txt`). Added README usage/docs and validated with smoke run (`RUNS=1`, `/tmp/garnet-linux-perf-median-smoke-20260220-133736`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Latest run (`threads=8`, `conns=16`, `requests=5000`) at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340` showed Dragonfly vs Garnet throughput `SET 675k vs 397k`, `GET 707k vs 461k`; run-to-run Dragonfly variance is non-trivial, so median-of-N remains the recommended comparison method. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -243,6 +244,7 @@
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-20 | Use median-of-N aggregation as the default interpretation layer for Dockerized Linux differential comparisons. | Single-run Dragonfly/Garnet differentials showed non-trivial noise; codifying a repeated-run wrapper with median summaries reduces the risk of overfitting decisions to one noisy sample. |
 | 2026-02-20 | Use FNV-1a for internal string-store shard mapping and reserve `redis_hash_slot` for cluster-slot semantics only. | Internal store sharding does not require Redis cluster CRC16 compatibility; switching to a cheaper deterministic hash removes avoidable slot-hash overhead from GET/SET hot paths while keeping externally visible slot routing behavior unchanged. |
 | 2026-02-20 | Enable `TCP_NODELAY` on accepted sockets by default in the Tokio accept loop. | Local GET/SET hotspot captures remained dominated by small-packet send/recv syscalls; enabling Nagle bypass is a low-complexity latency optimization that slightly improved p99 and SET throughput in the latest sample run. |
 | 2026-02-20 | Track per-shard expiration entry counts and skip expiration mutex acquisition when the count is zero. | In benchmark workloads that rarely set TTL, unconditional expiration-map locking adds avoidable synchronization overhead on GET/SET/TTL checks; a zero-count fast path preserves semantics while reducing lock traffic. |
@@ -532,3 +534,4 @@
 | 144 | 2026-02-20 | 11.31 | DONE | Enabled `TCP_NODELAY` on accepted sockets, verified accept/shutdown loop tests + request-lifecycle tests, and captured post-change hotspot artifacts at `/tmp/garnet-hotspots-post-nodelay-20260220-132224` with slight SET throughput and p99 improvements in this sample. |
 | 145 | 2026-02-20 | 11.32 | DONE | Re-ran Dockerized Linux `perf` differential profiling after `11.30/11.31` (`garnet-rs/benches/results/linux-perf-diff-docker-20260220-132624`) and refreshed the comparative analysis document with latest throughput/p99/hotspot snapshot. |
 | 146 | 2026-02-20 | 11.33 | DONE | Replaced internal shard mapping from `redis_hash_slot` to FNV-1a, verified tests (`42` request-lifecycle + accept/shutdown loop), and refreshed both local hotspot and Linux differential artifacts; `redis_hash_slot` disappeared from top sampled Garnet user-space symbols in the latest Linux run. |
+| 147 | 2026-02-20 | 11.34 | DONE | Added repeated-run Linux differential median wrapper (`linux_perf_diff_profile_median_local.sh`), documented usage in bench README, and validated generated `runs.csv`/`median_summary.csv`/`summary.txt` via a smoke run. |

@@ -279,6 +279,27 @@ Outputs are still written under `garnet-rs/benches/results/` on the host.
 Latest published differential analysis:
 `docs/performance/linux-perf-diff-docker-2026-02-20.md`.
 
+### Dockerized Linux `perf` median-of-N wrapper
+
+Use `linux_perf_diff_profile_median_local.sh` to run the Dockerized differential
+profile repeatedly and aggregate median metrics for each
+`{target, workload}` pair. This is the recommended path when run-to-run
+variance is high.
+
+```bash
+cd garnet-rs
+chmod +x benches/linux_perf_diff_profile_median_local.sh
+RUNS=3 THREADS=8 CONNS=16 REQUESTS=5000 \
+  ./benches/linux_perf_diff_profile_median_local.sh
+```
+
+Outputs under `garnet-rs/benches/results/linux-perf-diff-median-<timestamp>/`:
+
+- `run-<n>/...` (full per-run artifacts from Docker differential runs)
+- `runs.csv` (all parsed run metrics)
+- `median_summary.csv` (median ops/latency per target/workload)
+- `summary.txt` (quick ratio summary)
+
 ## Allocator A/B (default vs mimalloc)
 
 `allocator_ab_local.sh` builds two `garnet-server` binaries (default allocator
