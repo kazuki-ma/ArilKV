@@ -52,12 +52,21 @@ fi
 require_command nc
 require_command taskset
 require_command perf
+require_command file
 if [[ -z "${MEMTIER_BIN}" ]]; then
     echo "missing required command: memtier_benchmark" >&2
     exit 1
 fi
 
+needs_garnet_build=0
 if [[ ! -x "${GARNET_BIN}" ]]; then
+    needs_garnet_build=1
+elif ! file "${GARNET_BIN}" | grep -q 'ELF'; then
+    # Cross-platform worktrees can contain a non-Linux binary at the same path.
+    needs_garnet_build=1
+fi
+
+if (( needs_garnet_build )); then
     cargo build -p garnet-server --release --manifest-path "${MANIFEST_PATH}" >/dev/null
 fi
 if [[ ! -x "${GARNET_BIN}" ]]; then
@@ -119,6 +128,10 @@ validate_memtier_log() {
 
     if grep -q 'Connection error:' "${log_file}"; then
         echo "connection errors detected in ${log_file}" >&2
+        exit 1
+    fi
+    if grep -q 'handle error response:' "${log_file}"; then
+        echo "server error responses detected in ${log_file}" >&2
         exit 1
     fi
 
@@ -226,6 +239,7 @@ start_target_server() {
         taskset -c "${SERVER_CPU_SET}" env \
             GARNET_BIND_ADDR="${HOST}:${port}" \
             GARNET_TSAVORITE_STRING_STORE_SHARDS="${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}" \
+            GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-262144}" \
             "${GARNET_BIN}" >"${server_log}" 2>&1 &
         SERVER_PID=$!
     elif [[ "${target}" == "dragonfly" ]]; then

@@ -250,6 +250,29 @@ targeting for consistent runs.
 `SERVER_CPU_SET` / `CLIENT_CPU_SET` now default to an automatic split from
 `nproc` when not specified, and non-root runs auto-prefix `perf record` with
 `sudo` if available.
+The run now fails fast on memtier server-error output (`handle error response:`)
+so storage-capacity faults are not treated as valid profiles.
+For `garnet`, benchmark runs default to
+`GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=262144` (override via env) to avoid
+capacity-induced benchmark corruption.
+
+### Dockerized Linux `perf` profiling (macOS-friendly)
+
+If you are on macOS (or want a hermetic Linux runner), use
+`docker_linux_perf_diff_profile.sh`. It starts a Linux container, installs
+`perf` + `memtier_benchmark`, downloads Dragonfly release binaries, and then
+runs `linux_perf_diff_profile.sh` inside that container.
+
+```bash
+cd garnet-rs
+chmod +x benches/docker_linux_perf_diff_profile.sh
+THREADS=8 CONNS=16 REQUESTS=5000 \
+  ./benches/docker_linux_perf_diff_profile.sh
+```
+
+Outputs are still written under `garnet-rs/benches/results/` on the host.
+Latest published differential analysis:
+`docs/performance/linux-perf-diff-docker-2026-02-20.md`.
 
 ## Allocator A/B (default vs mimalloc)
 
