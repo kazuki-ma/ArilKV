@@ -71,7 +71,44 @@ Known noisy signature seen in this environment:
 If this repeats while daemon stays unavailable, disable/reset Kubernetes in
 Docker Desktop settings and retry.
 
-## 6. Benchmark fallback while Docker is down
+## 6. Proven recovery sequence (validated 2026-02-20)
+
+This exact flow recovered daemon connectivity in this environment after repeated
+`Cannot connect to the Docker daemon` failures:
+
+```bash
+pkill -9 -f com.docker.backend || true
+pkill -9 -f "Docker Desktop" || true
+sleep 2
+rm -f ~/.docker/run/docker.sock
+open -na Docker
+sleep 5
+DOCKER_CLIENT_TIMEOUT=4 COMPOSE_HTTP_TIMEOUT=4 \
+  docker info --format '{{.ServerVersion}} {{.OperatingSystem}}'
+docker run --rm alpine:3.20 sh -c 'echo docker-run-ok'
+```
+
+If `open -a Docker` returns AppleEvent timeout (`-1712`), prefer `open -na Docker`
+after force-killing backend/UI processes.
+
+## 7. Disk-pressure check (common trigger)
+
+```bash
+df -h /System/Volumes/Data
+du -sh ~/Library/Containers/com.docker.docker/Data
+docker system df
+```
+
+When free space is low, reclaim with:
+
+```bash
+docker system prune -af
+docker volume prune -f
+```
+
+Run prune only if disposable images/containers/volumes are acceptable.
+
+## 8. Benchmark fallback while Docker is down
 
 Use non-Docker local scripts where possible:
 
