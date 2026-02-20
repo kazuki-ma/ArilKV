@@ -45,7 +45,12 @@ Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark config
 - `GARNET_BIND_ADDRS` (comma-separated explicit binds; takes priority over `GARNET_BIND_ADDR`)
 - `GARNET_OWNER_NODE_COUNT` (optional, default `1`; when `>1`, expands from `GARNET_BIND_ADDR` to sequential ports)
 - `GARNET_MULTI_PORT_CLUSTER_MODE` (optional bool, default `0`; when enabled with multi-port launch, each port gets a local cluster view and slot-based `MOVED` routing)
+- `GARNET_MULTI_PORT_SLOT_POLICY` (optional, default `modulo`; supports `modulo` or `contiguous` slot ownership layout for multi-port cluster mode)
+- `GARNET_OWNER_THREAD_PINNING` (optional bool, default `0`; enable owner listener thread CPU pinning)
+- `GARNET_OWNER_THREAD_CPU_SET` (optional comma-separated CPU indices, e.g. `0,1,2,3`; if set, pinning is auto-enabled and owner threads are assigned round-robin over this set)
 - `GARNET_READ_BUFFER_SIZE`
+
+Note: app-side pinning is best-effort. On some platforms/container settings, affinity calls can fail and the server continues without pinning. Use `taskset -c ...` (Linux) for strict process-level pinning.
 
 Examples:
 
@@ -62,6 +67,23 @@ GARNET_BIND_ADDRS=127.0.0.1:6389,127.0.0.1:7390 cargo run -p garnet-server
 # 2-node in-process cluster routing (slot modulo split)
 GARNET_BIND_ADDR=127.0.0.1:6389 GARNET_OWNER_NODE_COUNT=2 \
   GARNET_MULTI_PORT_CLUSTER_MODE=1 cargo run -p garnet-server
+
+# 4 owner nodes with app-side CPU pinning
+GARNET_BIND_ADDR=127.0.0.1:6389 GARNET_OWNER_NODE_COUNT=4 \
+  GARNET_OWNER_THREAD_PINNING=1 GARNET_OWNER_THREAD_CPU_SET=0,1,2,3 \
+  cargo run -p garnet-server
+```
+
+For local launch convenience, use:
+
+```bash
+cd garnet-rs
+OWNER_NODES=4 BIND_ADDR=127.0.0.1:6389 OWNER_THREAD_CPU_SET=0,1,2,3 \
+  ./benches/run_owner_nodes_pinned_local.sh
+
+# strict pinning on Linux (if taskset is available)
+OWNER_NODES=4 BIND_ADDR=127.0.0.1:6389 OWNER_THREAD_CPU_SET=0,1,2,3 \
+  USE_TASKSET=1 ./benches/run_owner_nodes_pinned_local.sh
 ```
 
 ## `tidwall/cache-benchmarks` integration

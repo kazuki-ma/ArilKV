@@ -15,6 +15,7 @@ garnet-common = { path = "../garnet-common" }
 garnet-cluster = { path = "../garnet-cluster" }
 tsavorite = { path = "../tsavorite" }
 mimalloc = { version = "0.1", default-features = false, optional = true }
+core_affinity = "0.8"
 
 [dev-dependencies]
 criterion.workspace = true

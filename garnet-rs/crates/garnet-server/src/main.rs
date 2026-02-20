@@ -1,7 +1,9 @@
 use garnet_cluster::{
     ClusterConfig, ClusterConfigStore, SlotState, Worker, WorkerRole, HASH_SLOT_COUNT,
 };
-use garnet_server::{run, run_with_shutdown_and_cluster_config, ServerConfig, ServerMetrics};
+use garnet_server::{
+    run, run_with_cluster, run_with_shutdown_and_cluster_config, ServerConfig, ServerMetrics,
+};
 use std::net::SocketAddr;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -35,7 +37,21 @@ fn parse_server_config_from_values(
 struct ServerLaunchConfig {
     bind_addrs: Vec<SocketAddr>,
     multi_port_cluster_mode: bool,
+    multi_port_slot_policy: SlotOwnershipPolicy,
+    owner_thread_pinning: ThreadPinningConfig,
     read_buffer_size: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SlotOwnershipPolicy {
+    Modulo,
+    Contiguous,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ThreadPinningConfig {
+    enabled: bool,
+    cpu_set: Vec<usize>,
 }
 
 fn parse_bind_addr(raw: &str, key: &str) -> std::io::Result<SocketAddr> {
@@ -97,6 +113,71 @@ fn parse_owner_node_count(owner_node_count: Option<&str>) -> std::io::Result<usi
         }
         None => Ok(1),
     }
+}
+
+fn parse_slot_ownership_policy(raw: Option<&str>) -> std::io::Result<SlotOwnershipPolicy> {
+    match raw {
+        None => Ok(SlotOwnershipPolicy::Modulo),
+        Some(value) => match value.trim().to_ascii_lowercase().as_str() {
+            "modulo" => Ok(SlotOwnershipPolicy::Modulo),
+            "contiguous" => Ok(SlotOwnershipPolicy::Contiguous),
+            _ => Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "invalid GARNET_MULTI_PORT_SLOT_POLICY `{value}`: expected `modulo` or `contiguous`"
+                ),
+            )),
+        },
+    }
+}
+
+fn parse_cpu_set(raw: Option<&str>) -> std::io::Result<Vec<usize>> {
+    let Some(raw) = raw else {
+        return Ok(Vec::new());
+    };
+    if raw.trim().is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "invalid GARNET_OWNER_THREAD_CPU_SET ``: expected at least one CPU index",
+        ));
+    }
+
+    let mut cpus = Vec::new();
+    for candidate in raw.split(',') {
+        let trimmed = candidate.trim();
+        if trimmed.is_empty() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "invalid GARNET_OWNER_THREAD_CPU_SET `{raw}`: contains an empty CPU segment"
+                ),
+            ));
+        }
+        let cpu = trimmed.parse::<usize>().map_err(|error| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid GARNET_OWNER_THREAD_CPU_SET `{raw}`: {error}"),
+            )
+        })?;
+        if cpus.contains(&cpu) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("invalid GARNET_OWNER_THREAD_CPU_SET `{raw}`: duplicate CPU `{cpu}`"),
+            ));
+        }
+        cpus.push(cpu);
+    }
+    Ok(cpus)
+}
+
+fn parse_thread_pinning_config(
+    pinning_flag: Option<&str>,
+    cpu_set_raw: Option<&str>,
+) -> std::io::Result<ThreadPinningConfig> {
+    let cpu_set = parse_cpu_set(cpu_set_raw)?;
+    let enabled_from_flag = parse_bool_env_flag(pinning_flag, "GARNET_OWNER_THREAD_PINNING")?;
+    let enabled = enabled_from_flag || !cpu_set.is_empty();
+    Ok(ThreadPinningConfig { enabled, cpu_set })
 }
 
 fn expand_bind_addrs_from_base(
@@ -175,15 +256,23 @@ fn parse_server_launch_config_from_values(
     bind_addrs: Option<&str>,
     owner_node_count: Option<&str>,
     multi_port_cluster_mode: Option<&str>,
+    multi_port_slot_policy: Option<&str>,
+    owner_thread_pinning: Option<&str>,
+    owner_thread_cpu_set: Option<&str>,
     read_buffer_size: Option<&str>,
 ) -> std::io::Result<ServerLaunchConfig> {
     let bind_addrs = parse_bind_addrs_from_values(bind_addrs, bind_addr, owner_node_count)?;
     let multi_port_cluster_mode =
         parse_bool_env_flag(multi_port_cluster_mode, "GARNET_MULTI_PORT_CLUSTER_MODE")?;
+    let multi_port_slot_policy = parse_slot_ownership_policy(multi_port_slot_policy)?;
+    let owner_thread_pinning =
+        parse_thread_pinning_config(owner_thread_pinning, owner_thread_cpu_set)?;
     let read_buffer_size = parse_read_buffer_size(read_buffer_size)?;
     Ok(ServerLaunchConfig {
         bind_addrs,
         multi_port_cluster_mode,
+        multi_port_slot_policy,
+        owner_thread_pinning,
         read_buffer_size,
     })
 }
@@ -196,6 +285,11 @@ fn parse_server_launch_config_from_env() -> std::io::Result<ServerLaunchConfig> 
         std::env::var("GARNET_MULTI_PORT_CLUSTER_MODE")
             .ok()
             .as_deref(),
+        std::env::var("GARNET_MULTI_PORT_SLOT_POLICY")
+            .ok()
+            .as_deref(),
+        std::env::var("GARNET_OWNER_THREAD_PINNING").ok().as_deref(),
+        std::env::var("GARNET_OWNER_THREAD_CPU_SET").ok().as_deref(),
         std::env::var("GARNET_READ_BUFFER_SIZE").ok().as_deref(),
     )
 }
@@ -218,6 +312,7 @@ fn cluster_config_error_to_io(context: &str, error: impl core::fmt::Display) -> 
 fn build_cluster_store_for_local_index(
     bind_addrs: &[SocketAddr],
     local_index: usize,
+    policy: SlotOwnershipPolicy,
 ) -> std::io::Result<Arc<ClusterConfigStore>> {
     let local_addr = bind_addrs[local_index];
     let mut config = ClusterConfig::new_local(
@@ -249,7 +344,7 @@ fn build_cluster_store_for_local_index(
     }
 
     for slot in 0..HASH_SLOT_COUNT {
-        let owner_index = slot % bind_addrs.len();
+        let owner_index = slot_owner_index(slot, bind_addrs.len(), policy);
         let owner_worker_id = worker_ids_by_index[owner_index];
         config = config
             .set_slot_state(slot as u16, owner_worker_id, SlotState::Stable)
@@ -263,20 +358,124 @@ fn build_cluster_store_for_local_index(
 
 fn build_multi_port_cluster_stores(
     bind_addrs: &[SocketAddr],
+    policy: SlotOwnershipPolicy,
 ) -> std::io::Result<Vec<Arc<ClusterConfigStore>>> {
     let mut stores = Vec::with_capacity(bind_addrs.len());
     for local_index in 0..bind_addrs.len() {
         stores.push(build_cluster_store_for_local_index(
             bind_addrs,
             local_index,
+            policy,
         )?);
     }
     Ok(stores)
 }
 
+fn slot_owner_index(slot: usize, node_count: usize, policy: SlotOwnershipPolicy) -> usize {
+    if node_count <= 1 {
+        return 0;
+    }
+    match policy {
+        SlotOwnershipPolicy::Modulo => slot % node_count,
+        SlotOwnershipPolicy::Contiguous => {
+            let base = HASH_SLOT_COUNT / node_count;
+            let extra = HASH_SLOT_COUNT % node_count;
+            let threshold = (base + 1) * extra;
+            if slot < threshold {
+                slot / (base + 1)
+            } else {
+                extra + ((slot - threshold) / base)
+            }
+        }
+    }
+}
+
+fn resolve_core_assignments_from_available(
+    available_core_ids: &[usize],
+    listener_count: usize,
+    pinning: &ThreadPinningConfig,
+) -> std::io::Result<Vec<Option<usize>>> {
+    if !pinning.enabled {
+        return Ok(vec![None; listener_count]);
+    }
+    if available_core_ids.is_empty() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "owner-thread pinning requested, but no CPU cores were reported",
+        ));
+    }
+
+    let pinned_pool: Vec<usize> = if pinning.cpu_set.is_empty() {
+        available_core_ids.to_vec()
+    } else {
+        let mut selected = Vec::with_capacity(pinning.cpu_set.len());
+        for requested in &pinning.cpu_set {
+            if !available_core_ids.contains(requested) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "invalid GARNET_OWNER_THREAD_CPU_SET: CPU `{requested}` is not available"
+                    ),
+                ));
+            }
+            selected.push(*requested);
+        }
+        selected
+    };
+
+    let mut assignments = Vec::with_capacity(listener_count);
+    for index in 0..listener_count {
+        assignments.push(Some(pinned_pool[index % pinned_pool.len()]));
+    }
+    Ok(assignments)
+}
+
+fn resolve_core_assignments(
+    listener_count: usize,
+    pinning: &ThreadPinningConfig,
+) -> std::io::Result<Vec<Option<usize>>> {
+    if !pinning.enabled {
+        return Ok(vec![None; listener_count]);
+    }
+    let available = core_affinity::get_core_ids().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "owner-thread pinning requested, but CPU enumeration failed",
+        )
+    })?;
+    let available_ids: Vec<usize> = available.iter().map(|core| core.id).collect();
+    resolve_core_assignments_from_available(&available_ids, listener_count, pinning)
+}
+
+fn pin_current_thread_to_cpu(cpu_id: usize) -> std::io::Result<()> {
+    let available = core_affinity::get_core_ids().ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::Other,
+            "failed to enumerate CPU cores for owner-thread pinning",
+        )
+    })?;
+    let core = available
+        .into_iter()
+        .find(|core| core.id == cpu_id)
+        .ok_or_else(|| {
+            std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("requested CPU `{cpu_id}` is not available"),
+            )
+        })?;
+    if core_affinity::set_for_current(core) {
+        return Ok(());
+    }
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Other,
+        format!("failed to pin current thread to CPU `{cpu_id}`"),
+    ))
+}
+
 fn spawn_listener_thread(
     bind_addr: SocketAddr,
     read_buffer_size: usize,
+    pinned_cpu: Option<usize>,
     cluster_config: Option<Arc<ClusterConfigStore>>,
     result_tx: mpsc::Sender<ListenerThreadResult>,
 ) -> std::io::Result<ListenerThread> {
@@ -284,6 +483,13 @@ fn spawn_listener_thread(
     let join_handle = std::thread::Builder::new()
         .name(format!("garnet-node-{bind_addr}"))
         .spawn(move || {
+            if let Some(cpu_id) = pinned_cpu {
+                if let Err(error) = pin_current_thread_to_cpu(cpu_id) {
+                    eprintln!(
+                        "warning: listener {bind_addr} could not pin to CPU `{cpu_id}` ({error}); continuing without affinity"
+                    );
+                }
+            }
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build();
@@ -352,9 +558,14 @@ fn shutdown_and_join_listener_threads(listeners: Vec<ListenerThread>) -> std::io
 fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Result<()> {
     let (result_tx, result_rx) = mpsc::channel::<ListenerThreadResult>();
     let mut listeners = Vec::with_capacity(launch.bind_addrs.len());
+    let pinned_cpus =
+        resolve_core_assignments(launch.bind_addrs.len(), &launch.owner_thread_pinning)?;
 
     let cluster_stores = if launch.multi_port_cluster_mode {
-        Some(build_multi_port_cluster_stores(&launch.bind_addrs)?)
+        Some(build_multi_port_cluster_stores(
+            &launch.bind_addrs,
+            launch.multi_port_slot_policy,
+        )?)
     } else {
         None
     };
@@ -366,6 +577,7 @@ fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Result<()> {
         match spawn_listener_thread(
             bind_addr,
             launch.read_buffer_size,
+            pinned_cpus[index],
             cluster_store,
             result_tx.clone(),
         ) {
@@ -403,12 +615,25 @@ fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Result<()> {
 #[tokio::main(flavor = "multi_thread")]
 async fn main() -> std::io::Result<()> {
     let launch = parse_server_launch_config_from_env()?;
-    if launch.bind_addrs.len() == 1 {
+    if launch.bind_addrs.len() == 1 && !launch.owner_thread_pinning.enabled {
         let config = ServerConfig {
             bind_addr: launch.bind_addrs[0],
             read_buffer_size: launch.read_buffer_size,
         };
         let metrics = Arc::new(ServerMetrics::default());
+        if launch.multi_port_cluster_mode {
+            let cluster_store =
+                build_multi_port_cluster_stores(&launch.bind_addrs, launch.multi_port_slot_policy)?
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            "failed to build cluster store for single-port mode",
+                        )
+                    })?;
+            return run_with_cluster(config, metrics, cluster_store).await;
+        }
         return run(config, metrics).await;
     }
     run_multi_bind_addrs(launch)
@@ -444,10 +669,13 @@ mod tests {
 
     #[test]
     fn parse_server_launch_config_defaults_to_single_default_bind_addr() {
-        let config = parse_server_launch_config_from_values(None, None, None, None, None).unwrap();
+        let config =
+            parse_server_launch_config_from_values(None, None, None, None, None, None, None, None)
+                .unwrap();
         assert_eq!(config.bind_addrs.len(), 1);
         assert_eq!(config.bind_addrs[0], ServerConfig::default().bind_addr);
         assert!(!config.multi_port_cluster_mode);
+        assert_eq!(config.multi_port_slot_policy, SlotOwnershipPolicy::Modulo);
         assert_eq!(
             config.read_buffer_size,
             ServerConfig::default().read_buffer_size
@@ -461,6 +689,9 @@ mod tests {
             Some("127.0.0.1:7101,127.0.0.1:7102"),
             Some("4"),
             Some("true"),
+            Some("contiguous"),
+            None,
+            None,
             Some("2048"),
         )
         .unwrap();
@@ -473,6 +704,10 @@ mod tests {
             ]
         );
         assert!(config.multi_port_cluster_mode);
+        assert_eq!(
+            config.multi_port_slot_policy,
+            SlotOwnershipPolicy::Contiguous
+        );
         assert_eq!(config.read_buffer_size, 2048);
     }
 
@@ -481,6 +716,9 @@ mod tests {
         let error = parse_server_launch_config_from_values(
             None,
             Some("127.0.0.1:7101,127.0.0.1:7101"),
+            None,
+            None,
+            None,
             None,
             None,
             None,
@@ -498,6 +736,9 @@ mod tests {
             None,
             None,
             None,
+            None,
+            None,
+            None,
         )
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -510,6 +751,9 @@ mod tests {
             Some("127.0.0.1:7300"),
             None,
             Some("4"),
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -527,17 +771,34 @@ mod tests {
 
     #[test]
     fn parse_server_launch_config_rejects_invalid_owner_node_count() {
-        let error =
-            parse_server_launch_config_from_values(None, None, Some("not-a-number"), None, None)
-                .unwrap_err();
+        let error = parse_server_launch_config_from_values(
+            None,
+            None,
+            Some("not-a-number"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("GARNET_OWNER_NODE_COUNT"));
     }
 
     #[test]
     fn parse_server_launch_config_rejects_zero_owner_node_count() {
-        let error =
-            parse_server_launch_config_from_values(None, None, Some("0"), None, None).unwrap_err();
+        let error = parse_server_launch_config_from_values(
+            None,
+            None,
+            Some("0"),
+            None,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("must be >= 1"));
     }
@@ -548,6 +809,9 @@ mod tests {
             Some("127.0.0.1:65535"),
             None,
             Some("2"),
+            None,
+            None,
+            None,
             None,
             None,
         )
@@ -563,6 +827,9 @@ mod tests {
             Some("127.0.0.1:7501,127.0.0.1:7502"),
             Some("8"),
             Some("false"),
+            Some("modulo"),
+            None,
+            None,
             None,
         )
         .unwrap();
@@ -577,10 +844,122 @@ mod tests {
 
     #[test]
     fn parse_server_launch_config_rejects_invalid_cluster_mode_flag() {
-        let error = parse_server_launch_config_from_values(None, None, None, Some("maybe"), None)
-            .unwrap_err();
+        let error = parse_server_launch_config_from_values(
+            None,
+            None,
+            None,
+            Some("maybe"),
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("GARNET_MULTI_PORT_CLUSTER_MODE"));
+    }
+
+    #[test]
+    fn parse_server_launch_config_rejects_invalid_slot_policy() {
+        let error = parse_server_launch_config_from_values(
+            None,
+            None,
+            None,
+            None,
+            Some("random"),
+            None,
+            None,
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("GARNET_MULTI_PORT_SLOT_POLICY"));
+    }
+
+    #[test]
+    fn parse_server_launch_config_enables_thread_pinning_from_flag() {
+        let config = parse_server_launch_config_from_values(
+            Some("127.0.0.1:7600"),
+            None,
+            Some("2"),
+            None,
+            None,
+            Some("true"),
+            None,
+            None,
+        )
+        .unwrap();
+        assert!(config.owner_thread_pinning.enabled);
+        assert!(config.owner_thread_pinning.cpu_set.is_empty());
+    }
+
+    #[test]
+    fn parse_server_launch_config_enables_thread_pinning_from_cpu_set() {
+        let config = parse_server_launch_config_from_values(
+            Some("127.0.0.1:7600"),
+            None,
+            Some("2"),
+            None,
+            None,
+            None,
+            Some("0,2"),
+            None,
+        )
+        .unwrap();
+        assert!(config.owner_thread_pinning.enabled);
+        assert_eq!(config.owner_thread_pinning.cpu_set, vec![0, 2]);
+    }
+
+    #[test]
+    fn parse_server_launch_config_rejects_invalid_cpu_set() {
+        let error = parse_server_launch_config_from_values(
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            Some("0, ,2"),
+            None,
+        )
+        .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("GARNET_OWNER_THREAD_CPU_SET"));
+    }
+
+    #[test]
+    fn resolve_core_assignments_round_robins_available_cores() {
+        let pinning = ThreadPinningConfig {
+            enabled: true,
+            cpu_set: Vec::new(),
+        };
+        let assignments = resolve_core_assignments_from_available(&[0, 1], 5, &pinning).unwrap();
+        assert_eq!(
+            assignments,
+            vec![Some(0), Some(1), Some(0), Some(1), Some(0)]
+        );
+    }
+
+    #[test]
+    fn resolve_core_assignments_uses_requested_cpu_set() {
+        let pinning = ThreadPinningConfig {
+            enabled: true,
+            cpu_set: vec![3, 1],
+        };
+        let assignments =
+            resolve_core_assignments_from_available(&[0, 1, 2, 3], 4, &pinning).unwrap();
+        assert_eq!(assignments, vec![Some(3), Some(1), Some(3), Some(1)]);
+    }
+
+    #[test]
+    fn resolve_core_assignments_rejects_unavailable_requested_cpu() {
+        let pinning = ThreadPinningConfig {
+            enabled: true,
+            cpu_set: vec![4],
+        };
+        let error = resolve_core_assignments_from_available(&[0, 1, 2], 2, &pinning).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("not available"));
     }
 
     #[test]
@@ -590,7 +969,8 @@ mod tests {
             "127.0.0.1:8102".parse::<SocketAddr>().unwrap(),
             "127.0.0.1:8103".parse::<SocketAddr>().unwrap(),
         ];
-        let stores = build_multi_port_cluster_stores(&bind_addrs).unwrap();
+        let stores =
+            build_multi_port_cluster_stores(&bind_addrs, SlotOwnershipPolicy::Modulo).unwrap();
         assert_eq!(stores.len(), 3);
 
         let local0 = stores[0].load();
@@ -609,6 +989,59 @@ mod tests {
         assert_eq!(
             moved_from_1_for_slot_2.as_deref(),
             Some("MOVED 2 127.0.0.1:8103")
+        );
+    }
+
+    #[test]
+    fn slot_owner_index_contiguous_assigns_balanced_ranges() {
+        let node_count = 3;
+        assert_eq!(
+            slot_owner_index(0, node_count, SlotOwnershipPolicy::Contiguous),
+            0
+        );
+        assert_eq!(
+            slot_owner_index(5461, node_count, SlotOwnershipPolicy::Contiguous),
+            0
+        );
+        assert_eq!(
+            slot_owner_index(5462, node_count, SlotOwnershipPolicy::Contiguous),
+            1
+        );
+        assert_eq!(
+            slot_owner_index(10922, node_count, SlotOwnershipPolicy::Contiguous),
+            1
+        );
+        assert_eq!(
+            slot_owner_index(10923, node_count, SlotOwnershipPolicy::Contiguous),
+            2
+        );
+        assert_eq!(
+            slot_owner_index(16383, node_count, SlotOwnershipPolicy::Contiguous),
+            2
+        );
+    }
+
+    #[test]
+    fn build_multi_port_cluster_stores_assigns_slot_owners_by_contiguous_ranges() {
+        let bind_addrs = vec![
+            "127.0.0.1:8201".parse::<SocketAddr>().unwrap(),
+            "127.0.0.1:8202".parse::<SocketAddr>().unwrap(),
+            "127.0.0.1:8203".parse::<SocketAddr>().unwrap(),
+        ];
+        let stores =
+            build_multi_port_cluster_stores(&bind_addrs, SlotOwnershipPolicy::Contiguous).unwrap();
+        let local0 = stores[0].load();
+
+        let moved_at_start_of_worker1 = local0.redirection_error_for_slot(5462).unwrap();
+        assert_eq!(
+            moved_at_start_of_worker1.as_deref(),
+            Some("MOVED 5462 127.0.0.1:8202")
+        );
+
+        let moved_at_start_of_worker2 = local0.redirection_error_for_slot(10923).unwrap();
+        assert_eq!(
+            moved_at_start_of_worker2.as_deref(),
+            Some("MOVED 10923 127.0.0.1:8203")
         );
     }
 }
