@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=frame
+new_label=owned
+frame.median_set_ops=167658.000
+frame.median_get_ops=169134.000
+frame.median_set_p99_ms=1.83100
+frame.median_get_p99_ms=1.55900
+owned.median_set_ops=167636.000
+owned.median_get_ops=169043.000
+owned.median_set_p99_ms=1.72700
+owned.median_get_p99_ms=1.47900
+delta.set_ops_pct=-0.01
+delta.get_ops_pct=-0.05
+delta.set_p99_ms_pct=-5.68
+delta.get_p99_ms_pct=-5.13
