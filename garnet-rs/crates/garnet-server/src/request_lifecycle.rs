@@ -96,10 +96,13 @@ impl RequestProcessor {
     ) -> Result<Self, RequestProcessorInitError> {
         let store_shard_count = store_shard_count.max(1);
         let store_config = tsavorite_config_from_env();
+        let mut string_store_config = store_config;
+        string_store_config.hash_index_size_bits =
+            scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
         let mut string_stores = Vec::with_capacity(store_shard_count);
         for _ in 0..store_shard_count {
             string_stores.push(OrderedMutex::new(
-                TsavoriteKV::new(store_config)?,
+                TsavoriteKV::new(string_store_config)?,
                 LockClass::Store,
                 "request_processor.store",
             ));
@@ -2060,6 +2063,15 @@ fn string_store_shard_count_from_env() -> usize {
         .unwrap_or(DEFAULT_STRING_STORE_SHARDS)
 }
 
+fn scale_hash_index_bits_for_shards(base_bits: u8, shard_count: usize) -> u8 {
+    if shard_count <= 1 {
+        return base_bits;
+    }
+
+    let shard_shift = usize::BITS - (shard_count.saturating_sub(1)).leading_zeros();
+    base_bits.saturating_sub(shard_shift as u8).max(1)
+}
+
 fn parse_env_u8(key: &str) -> Option<u8> {
     std::env::var(key).ok()?.parse::<u8>().ok()
 }
@@ -3074,6 +3086,16 @@ mod tests {
             }
         }
         panic!("failed to find key for shard index {shard}");
+    }
+
+    #[test]
+    fn scales_hash_index_bits_with_shard_count() {
+        assert_eq!(scale_hash_index_bits_for_shards(25, 1), 25);
+        assert_eq!(scale_hash_index_bits_for_shards(25, 2), 24);
+        assert_eq!(scale_hash_index_bits_for_shards(25, 4), 23);
+        assert_eq!(scale_hash_index_bits_for_shards(25, 16), 21);
+        assert_eq!(scale_hash_index_bits_for_shards(25, 17), 20);
+        assert_eq!(scale_hash_index_bits_for_shards(3, 16), 1);
     }
 
     #[test]

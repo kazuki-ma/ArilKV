@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 129
+> **Current Iteration**: 130
 
 ---
 
@@ -202,6 +202,7 @@
 | 11.11 | Add automated shard-sweep benchmark for lock-striping mode | DONE | 11.10 | Added `garnet-rs/benches/sweep_string_store_shards_local.sh` to run repeatable local sweeps (`1/2/4/8/16/...`) with built-in memtier summary validation and CSV output. |
 | 11.12 | Tune shard-count policy after sweep data and define default/heuristic | TODO | 11.11 | Initial local sweep (`threads=8`, `conns=16`, `requests=20000`) favored low shard counts (`set`: shard `1` best, `get`: shard `2` best; `8/16` regressed). Wrapper auto-mapping is now opt-in only (`CACHE_BENCH_GARNET_AUTO_STRING_STORE_SHARDS=1`). Next: broaden workload matrix before choosing runtime default/heuristic. |
 | 11.13 | Validate shard-regression hypothesis with hotspot framegraphs (`shards=1` vs `16`) | DONE | 11.11 | Captured local A/B via `local_hotspot_framegraph_macos.sh` (`THREADS=8`, `CONNS=16`, `REQ_PER_CLIENT=30000`): throughput regressed at shard `16` (`GET 444280 -> 261276`, `SET 286002 -> 217070` ops/s). Framegraph delta: mutex wait dropped (`GET 49.8% -> 32.3%`, `SET 56.2% -> 41.7%`) while `tsavorite::hash_index` lookup paths rose sharply (`GET find_tag_address 0.05% -> 22.18%`, `SET find_tag_entry/find_or_create 0.54% -> 18.61%`), matching the "over-sharding without owner-thread routing increases storage-path cost" hypothesis. |
+| 11.14 | Scale string-store hash-index size by shard count to avoid over-provisioned per-shard index | DONE | 11.13 | Added `scale_hash_index_bits_for_shards` in `request_lifecycle` so each string-store shard scales `hash_index_size_bits` down by `ceil(log2(shards))` (clamped to `>=1`) while object-store index size is unchanged. Added unit test `scales_hash_index_bits_with_shard_count`. Quick local sweep after change (`threads=8`, `conns=16`, `requests=20000`): shard `1` SET/GET `322749/320911`; shard `16` `225855/276991` (still regressed vs shard `1`, but GET improved vs pre-change `257843`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.9 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). Local macOS pre-check is complete via 11.9; this task remains Linux-native differential profiling. |
 | 11.6 | Add automated performance regression gate | TODO | 11.5 | Add repeatable benchmark harness (median of N runs) with thresholds on ops/sec and p99 latency in CI/nightly. |
 
