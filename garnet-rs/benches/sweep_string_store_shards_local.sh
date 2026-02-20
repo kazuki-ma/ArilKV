@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVER_BIN="${SERVER_BIN:-${REPO_ROOT}/target/release/garnet-server}"
 MANIFEST_PATH="${REPO_ROOT}/Cargo.toml"
 MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
+HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-16389}"
 THREADS="${THREADS:-8}"
 CONNS="${CONNS:-16}"
@@ -20,7 +21,7 @@ OUTDIR="${OUTDIR:-/tmp/garnet-shard-sweep-$(date +%Y%m%d-%H%M%S)}"
 cleanup() {
   pkill -f "garnet-rs/target/release/garnet-server" 2>/dev/null || true
   for _ in $(seq 1 100); do
-    if ! nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+    if ! nc -z "${HOST}" "${PORT}" 2>/dev/null; then
       return 0
     fi
     sleep 0.05
@@ -68,10 +69,22 @@ start_server() {
   return 1
 }
 
+wait_for_ping_ready() {
+  for _ in $(seq 1 200); do
+    if printf '*1\r\n$4\r\nPING\r\n' | nc -w 1 "${HOST}" "${PORT}" 2>/dev/null | grep -q '^+PONG'; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "server failed PING readiness check on ${HOST}:${PORT}" >&2
+  return 1
+}
+
 run_memtier() {
   local ratio="$1"
   local output="$2"
-  "${MEMTIER_BIN}" \
+    "${MEMTIER_BIN}" \
+    -s "${HOST}" \
     -p "${PORT}" \
     -t "${THREADS}" \
     -c "${CONNS}" \
@@ -89,6 +102,10 @@ run_memtier() {
 
 validate_run() {
   local file="$1"
+  if grep -q 'Connection error:' "${file}"; then
+    echo "connection errors detected in ${file}" >&2
+    return 1
+  fi
   local expected_threads expected_conns expected_requests
   expected_threads="$(awk '/Threads$/{print $1; exit}' "${file}")"
   expected_conns="$(awk '/Connections per thread$/{print $1; exit}' "${file}")"
@@ -150,12 +167,13 @@ for shards in ${SHARD_COUNTS}; do
   fi
 
   cleanup
-  if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+  if nc -z "${HOST}" "${PORT}" 2>/dev/null; then
     echo "port ${PORT} is already in use; set PORT=<free-port> and retry" >&2
     exit 1
   fi
   server_log="${OUTDIR}/server-shards-${shards}.log"
   server_pid="$(start_server "${shards}" "${server_log}")"
+  wait_for_ping_ready
   sleep 1
   if ! kill -0 "${server_pid}" 2>/dev/null; then
     echo "server process ${server_pid} exited unexpectedly for shard ${shards}" >&2

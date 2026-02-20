@@ -8,6 +8,7 @@ MANIFEST_PATH="${REPO_ROOT}/Cargo.toml"
 GARNET_BIN="${GARNET_BIN:-${REPO_ROOT}/target/release/garnet-server}"
 DRAGONFLY_BIN="${DRAGONFLY_BIN:-$(command -v dragonfly || true)}"
 MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
+HOST="${HOST:-127.0.0.1}"
 FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-}"
 
 TARGETS="${TARGETS:-garnet dragonfly}"
@@ -70,6 +71,11 @@ validate_memtier_log() {
     local expected_requests="$2"
     local log_file="$3"
 
+    if grep -q 'Connection error:' "${log_file}"; then
+        echo "connection errors detected in ${log_file}" >&2
+        exit 1
+    fi
+
     local got_threads got_conns got_requests
     got_threads="$(awk '/Threads$/{print $1; exit}' "${log_file}")"
     got_conns="$(awk '/Connections per thread$/{print $1; exit}' "${log_file}")"
@@ -120,6 +126,7 @@ run_memtier() {
 
     taskset -c "${CLIENT_CPU_SET}" \
         "${MEMTIER_BIN}" \
+        -s "${HOST}" \
         -p "${port}" \
         -t "${THREADS}" \
         -c "${CONNS}" \
@@ -145,6 +152,18 @@ stop_server() {
     SERVER_PID=""
 }
 
+wait_for_ping_ready() {
+    local port="$1"
+    for _ in $(seq 1 200); do
+        if printf '*1\r\n$4\r\nPING\r\n' | nc -w 1 "${HOST}" "${port}" 2>/dev/null | grep -q '^+PONG'; then
+            return 0
+        fi
+        sleep 0.05
+    done
+    echo "server failed PING readiness check on ${HOST}:${port}" >&2
+    exit 1
+}
+
 start_target_server() {
     local target="$1"
     local port="$2"
@@ -152,14 +171,14 @@ start_target_server() {
 
     stop_server
 
-    if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
+    if nc -z "${HOST}" "${port}" 2>/dev/null; then
         echo "port ${port} already in use; adjust PORT_BASE or stop the existing process" >&2
         exit 1
     fi
 
     if [[ "${target}" == "garnet" ]]; then
         taskset -c "${SERVER_CPU_SET}" env \
-            GARNET_BIND_ADDR="127.0.0.1:${port}" \
+            GARNET_BIND_ADDR="${HOST}:${port}" \
             GARNET_TSAVORITE_STRING_STORE_SHARDS="${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}" \
             "${GARNET_BIN}" >"${server_log}" 2>&1 &
         SERVER_PID=$!
@@ -169,7 +188,7 @@ start_target_server() {
             exit 1
         fi
         taskset -c "${SERVER_CPU_SET}" \
-            "${DRAGONFLY_BIN}" --bind 127.0.0.1 --port "${port}" --dbfilename "" >"${server_log}" 2>&1 &
+            "${DRAGONFLY_BIN}" --bind "${HOST}" --port "${port}" --dbfilename "" >"${server_log}" 2>&1 &
         SERVER_PID=$!
     else
         echo "unknown target: ${target}" >&2
@@ -181,13 +200,13 @@ start_target_server() {
             echo "${target} server exited before ready (see ${server_log})" >&2
             exit 1
         fi
-        if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
+        if nc -z "${HOST}" "${port}" 2>/dev/null; then
             return 0
         fi
         sleep 0.05
     done
 
-    echo "${target} server did not become ready on port ${port}" >&2
+    echo "${target} server did not become ready on ${HOST}:${port}" >&2
     exit 1
 }
 
@@ -205,6 +224,7 @@ capture_perf_profile() {
 
     taskset -c "${CLIENT_CPU_SET}" \
         "${MEMTIER_BIN}" \
+        -s "${HOST}" \
         -p "${port}" \
         -t "${THREADS}" \
         -c "${CONNS}" \
@@ -246,6 +266,7 @@ for target in ${TARGETS}; do
     target_dir="${OUTDIR}/${target}"
     mkdir -p "${target_dir}"
     start_target_server "${target}" "${port}" "${target_dir}/server.log"
+    wait_for_ping_ready "${port}"
     for workload in ${WORKLOADS}; do
         run_dir="${target_dir}/${workload}"
         mkdir -p "${run_dir}"

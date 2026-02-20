@@ -231,6 +231,9 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
   - `cd garnet-rs && SHARD_COUNTS='1 2 4 8 16' REQUESTS=20000 ./benches/sweep_string_store_shards_local.sh`
   - Linux differential profiling harness:
     `cd garnet-rs && ./benches/linux_perf_diff_profile.sh`
+  - Benchmark integrity update: local scripts now force `HOST=127.0.0.1`
+    for memtier/server targeting and fail runs when memtier reports
+    `Connection error:` to avoid `localhost` resolution noise.
 
 ### Local findings mapped to this report
 

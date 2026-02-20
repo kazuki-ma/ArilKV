@@ -17,6 +17,7 @@ FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-/tmp/FlameGraph}"
 OUTDIR="${OUTDIR:-/tmp/garnet-hotspots-$(date +%Y%m%d-%H%M%S)}"
 SERVER_BIN="${SERVER_BIN:-${SERVER_BIN_DEFAULT}}"
 MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
+HOST="${HOST:-127.0.0.1}"
 HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS:-25}"
 MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES:-1048576}"
 STRING_STORE_SHARDS="${STRING_STORE_SHARDS:-1}"
@@ -48,7 +49,7 @@ ensure_flamegraph_tools() {
 }
 
 ensure_port_available() {
-  if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+  if nc -z "${HOST}" "${PORT}" 2>/dev/null; then
     echo "port ${PORT} is already in use; stop the existing server or set PORT=<free-port>" >&2
     exit 1
   fi
@@ -62,7 +63,7 @@ ensure_server_binary() {
 
 start_server() {
   local tag="$1"
-  GARNET_BIND_ADDR="127.0.0.1:${PORT}" \
+  GARNET_BIND_ADDR="${HOST}:${PORT}" \
     GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS="${HASH_INDEX_SIZE_BITS}" \
     GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${MAX_IN_MEMORY_PAGES}" \
     GARNET_TSAVORITE_STRING_STORE_SHARDS="${STRING_STORE_SHARDS}" \
@@ -70,12 +71,23 @@ start_server() {
   SERVER_PID=$!
 
   for _ in $(seq 1 200); do
-    if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+    if nc -z "${HOST}" "${PORT}" 2>/dev/null; then
       return 0
     fi
     sleep 0.05
   done
-  echo "server did not become ready on 127.0.0.1:${PORT}" >&2
+  echo "server did not become ready on ${HOST}:${PORT}" >&2
+  return 1
+}
+
+wait_for_ping_ready() {
+  for _ in $(seq 1 200); do
+    if printf '*1\r\n$4\r\nPING\r\n' | nc -w 1 "${HOST}" "${PORT}" 2>/dev/null | grep -q '^+PONG'; then
+      return 0
+    fi
+    sleep 0.05
+  done
+  echo "server failed PING readiness check on ${HOST}:${PORT}" >&2
   return 1
 }
 
@@ -91,6 +103,11 @@ stop_server() {
 validate_memtier_log() {
   local mode="$1"
   local log_file="$2"
+
+  if grep -q 'Connection error:' "${log_file}"; then
+    echo "connection errors detected in ${log_file}" >&2
+    exit 1
+  fi
 
   local got_threads got_conns got_requests
   got_threads="$(awk '/Threads$/{print $1; exit}' "${log_file}")"
@@ -138,6 +155,7 @@ run_memtier() {
   fi
 
   "${MEMTIER_BIN}" \
+    -s "${HOST}" \
     -p "${PORT}" \
     -c "${CONNS}" \
     -t "${THREADS}" \
@@ -232,6 +250,7 @@ ensure_server_binary
 
 # GET-only profiling: preload keys with SET first.
 start_server "get"
+wait_for_ping_ready
 run_memtier "set" "${OUTDIR}/get-preload-set.json" "${OUTDIR}/get-preload-set.log"
 run_memtier "get" "${OUTDIR}/get-run.json" "${OUTDIR}/get-run.log" &
 GET_BENCH_PID=$!
@@ -244,6 +263,7 @@ stop_server
 
 # SET-only profiling.
 start_server "set"
+wait_for_ping_ready
 run_memtier "set" "${OUTDIR}/set-run.json" "${OUTDIR}/set-run.log" &
 SET_BENCH_PID=$!
 sleep 1

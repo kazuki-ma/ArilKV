@@ -6,6 +6,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 SERVER_BIN="${SERVER_BIN:-${REPO_ROOT}/target/release/garnet-server}"
 MANIFEST_PATH="${REPO_ROOT}/Cargo.toml"
 MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
+HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-16389}"
 THREADS="${THREADS:-4}"
 CONNS="${CONNS:-8}"
@@ -58,14 +59,14 @@ trap cleanup EXIT
 start_server() {
     local server_log="$1"
     stop_server
-    if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+    if nc -z "${HOST}" "${PORT}" 2>/dev/null; then
         echo "port ${PORT} is already in use; set PORT=<free-port> and retry" >&2
         exit 1
     fi
 
     local -a env_args
     env_args=(
-        "GARNET_BIND_ADDR=127.0.0.1:${PORT}"
+        "GARNET_BIND_ADDR=${HOST}:${PORT}"
         "GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS=${HASH_INDEX_SIZE_BITS}"
         "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=${MAX_IN_MEMORY_PAGES}"
     )
@@ -84,13 +85,24 @@ start_server() {
             echo "server exited before becoming ready" >&2
             exit 1
         fi
-        if nc -z 127.0.0.1 "${PORT}" 2>/dev/null; then
+        if nc -z "${HOST}" "${PORT}" 2>/dev/null; then
             return 0
         fi
         sleep 0.05
     done
 
-    echo "server failed to become ready on port ${PORT}" >&2
+    echo "server failed to become ready on ${HOST}:${PORT}" >&2
+    exit 1
+}
+
+wait_for_ping_ready() {
+    for _ in $(seq 1 200); do
+        if printf '*1\r\n$4\r\nPING\r\n' | nc -w 1 "${HOST}" "${PORT}" 2>/dev/null | grep -q '^+PONG'; then
+            return 0
+        fi
+        sleep 0.05
+    done
+    echo "server failed PING readiness check on ${HOST}:${PORT}" >&2
     exit 1
 }
 
@@ -98,6 +110,11 @@ validate_memtier_log() {
     local mode="$1"
     local expected_requests="$2"
     local log_file="$3"
+
+    if grep -q 'Connection error:' "${log_file}"; then
+        echo "connection errors detected in ${log_file}" >&2
+        exit 1
+    fi
 
     local got_threads got_conns got_requests
     got_threads="$(awk '/Threads$/{print $1; exit}' "${log_file}")"
@@ -142,6 +159,7 @@ run_memtier() {
     local requests="$2"
     local output="$3"
     "${MEMTIER_BIN}" \
+        -s "${HOST}" \
         -p "${PORT}" \
         -t "${THREADS}" \
         -c "${CONNS}" \
@@ -193,6 +211,7 @@ for run_idx in $(seq 1 "${RUNS}"); do
     run_dir="${OUTDIR}/run-${run_idx}"
     mkdir -p "${run_dir}"
     start_server "${run_dir}/server.log"
+    wait_for_ping_ready
 
     set_log="${run_dir}/set.log"
     preload_log="${run_dir}/preload.log"

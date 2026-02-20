@@ -171,6 +171,8 @@ SHARD_COUNTS=\"1 2 4 8 16\" REQUESTS=20000 \
 The script prints CSV and validates each run from memtier summary lines
 (`Threads`, `Connections per thread`, `Requests per client`, and non-zero
 `Ops/sec`) so failed/partial runs are not treated as success.
+It also treats any memtier `Connection error:` line as a failed run and
+defaults to `HOST=127.0.0.1` to avoid `localhost` IPv6 fallback noise.
 
 ## String-store shard policy matrix (local)
 
@@ -196,6 +198,7 @@ Outputs under `/tmp/garnet-shard-policy-matrix-<timestamp>/`:
 Use `perf_regression_gate_local.sh` to run repeated SET/GET benchmarks, validate
 memtier summary integrity, and fail on median throughput/latency threshold
 regressions.
+The gate also fails on any memtier `Connection error:` output.
 
 ```bash
 cd garnet-rs
@@ -234,6 +237,9 @@ Outputs under `/tmp/garnet-linux-perf-diff-<timestamp>/`:
 - `<target>/<workload>/perf-report-<workload>.txt`
 - `<target>/<workload>/perf-script-<workload>.txt`
 - optional `flame-<target>-<workload>.svg` when `FLAMEGRAPH_DIR` is set
+
+`HOST` defaults to `127.0.0.1` and is applied to server bind/probe and memtier
+targeting for consistent runs.
 
 ## Allocator A/B (default vs mimalloc)
 
