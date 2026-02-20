@@ -46,6 +46,10 @@ The wrapper maps `cache-benchmarks` `--memory` into
 `GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS` automatically, so high-volume SET
 warmups do not hit tiny default capacities.
 
+For lock-striping experiments on string keys, set
+`GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `1`) to a higher value, e.g.
+`8` or `16`.
+
 ### Minimal run (single benchmark)
 
 ```bash
@@ -95,3 +99,32 @@ JSON
 
 For investigation planning and unknown-item closure, see:
 `garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md`.
+
+## Local GET/SET hotspot framegraph (macOS)
+
+Use `local_hotspot_framegraph_macos.sh` to capture GET-only and SET-only
+hotspots from a local `garnet-server` process with macOS `sample`, and render
+flamegraphs with Brendan Gregg's FlameGraph scripts.
+
+The script also validates memtier run integrity from stdout summary lines:
+
+- expected `Threads`
+- expected `Connections per thread`
+- expected `Requests per client`
+- non-zero `Totals` Ops/sec (and non-zero GET/SET ops for the target mode)
+
+This prevents treating "exit code only" as success.
+
+```bash
+cd garnet-rs
+chmod +x benches/local_hotspot_framegraph_macos.sh
+./benches/local_hotspot_framegraph_macos.sh
+```
+
+Main outputs are written under `/tmp/garnet-hotspots-<timestamp>/`:
+
+- `garnet-get.flame.svg`
+- `garnet-set.flame.svg`
+- `get.incl.top20.txt`
+- `set.incl.top20.txt`
+- `SUMMARY.txt`

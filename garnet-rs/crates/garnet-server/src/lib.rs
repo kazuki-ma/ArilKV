@@ -2,6 +2,7 @@
 
 pub mod aof_replay;
 pub mod command_dispatch;
+pub mod debug_concurrency;
 pub mod limited_fixed_buffer_pool;
 pub mod request_lifecycle;
 

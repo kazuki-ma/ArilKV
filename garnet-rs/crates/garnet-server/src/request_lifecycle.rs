@@ -1,12 +1,13 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
+use crate::debug_concurrency::{LockClass, OrderedMutex, OrderedMutexGuard};
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
     DeleteInfo, DeleteOperationError, DeleteOperationStatus, HybridLogDeleteAdapter,
@@ -27,6 +28,8 @@ const WATCH_VERSION_MAP_MASK: usize = WATCH_VERSION_MAP_SIZE - 1;
 const GARNET_HASH_INDEX_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS";
 const GARNET_PAGE_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_PAGE_SIZE_BITS";
 const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES";
+const GARNET_STRING_STORE_SHARDS_ENV: &str = "GARNET_TSAVORITE_STRING_STORE_SHARDS";
+const DEFAULT_STRING_STORE_SHARDS: usize = 1;
 const GARNET_LOG_STORAGE_FAILURES_ENV: &str = "GARNET_LOG_STORAGE_FAILURES";
 const STORAGE_FAILURE_LOG_LIMIT: usize = 64;
 static STORAGE_FAILURE_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -73,11 +76,11 @@ pub struct MigrationEntry {
 }
 
 pub struct RequestProcessor {
-    store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
-    object_store: Mutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
-    expirations: Mutex<HashMap<Vec<u8>, Instant>>,
-    key_registry: Mutex<HashSet<Vec<u8>>>,
-    object_key_registry: Mutex<HashSet<Vec<u8>>>,
+    string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
+    object_store: OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
+    expirations: OrderedMutex<HashMap<Vec<u8>, Instant>>,
+    key_registry: OrderedMutex<HashSet<Vec<u8>>>,
+    object_key_registry: OrderedMutex<HashSet<Vec<u8>>>,
     watch_versions: Vec<AtomicU64>,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
@@ -85,13 +88,44 @@ pub struct RequestProcessor {
 
 impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
+        Self::new_with_string_store_shards(string_store_shard_count_from_env())
+    }
+
+    fn new_with_string_store_shards(
+        store_shard_count: usize,
+    ) -> Result<Self, RequestProcessorInitError> {
+        let store_shard_count = store_shard_count.max(1);
         let store_config = tsavorite_config_from_env();
+        let mut string_stores = Vec::with_capacity(store_shard_count);
+        for _ in 0..store_shard_count {
+            string_stores.push(OrderedMutex::new(
+                TsavoriteKV::new(store_config)?,
+                LockClass::Store,
+                "request_processor.store",
+            ));
+        }
         Ok(Self {
-            store: Mutex::new(TsavoriteKV::new(store_config)?),
-            object_store: Mutex::new(TsavoriteKV::new(store_config)?),
-            expirations: Mutex::new(HashMap::new()),
-            key_registry: Mutex::new(HashSet::new()),
-            object_key_registry: Mutex::new(HashSet::new()),
+            string_stores,
+            object_store: OrderedMutex::new(
+                TsavoriteKV::new(store_config)?,
+                LockClass::ObjectStore,
+                "request_processor.object_store",
+            ),
+            expirations: OrderedMutex::new(
+                HashMap::new(),
+                LockClass::Expirations,
+                "request_processor.expirations",
+            ),
+            key_registry: OrderedMutex::new(
+                HashSet::new(),
+                LockClass::KeyRegistry,
+                "request_processor.key_registry",
+            ),
+            object_key_registry: OrderedMutex::new(
+                HashSet::new(),
+                LockClass::ObjectKeyRegistry,
+                "request_processor.object_key_registry",
+            ),
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
@@ -505,7 +539,7 @@ impl RequestProcessor {
         let mut removed = 0usize;
         for key in expired_keys {
             let status = {
-                let mut store = self.store.lock().expect("store mutex poisoned");
+                let mut store = self.lock_string_store_for_key(&key);
                 let mut session = store.session(&self.functions);
                 let mut info = DeleteInfo::default();
                 session.delete(&key, &mut info).map_err(map_delete_error)?
@@ -541,6 +575,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        crate::debug_sync_point!("request_processor.handle_get.enter");
         if args.len() != 2 {
             return Err(RequestExecutionError::WrongArity {
                 command: "GET",
@@ -551,8 +586,10 @@ impl RequestProcessor {
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         self.expire_key_if_needed(&key)?;
+        crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(&key);
+        crate::debug_sync_point!("request_processor.handle_get.after_store_lock");
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let status = session
@@ -577,6 +614,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        crate::debug_sync_point!("request_processor.handle_set.enter");
         if args.len() < 3 {
             return Err(RequestExecutionError::WrongArity {
                 command: "SET",
@@ -590,6 +628,7 @@ impl RequestProcessor {
         let value = unsafe { args[2].as_slice() }.to_vec();
         let options = parse_set_options(args)?;
         self.expire_key_if_needed(&key)?;
+        crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
         if options.only_if_absent || options.only_if_present {
             let exists = self.key_exists(&key)?;
@@ -603,7 +642,8 @@ impl RequestProcessor {
             }
         }
 
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(&key);
+        crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
@@ -619,6 +659,7 @@ impl RequestProcessor {
             .map_err(map_upsert_error)?;
         drop(session);
         drop(store);
+        crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
         let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
         match options.expiration {
@@ -664,9 +705,9 @@ impl RequestProcessor {
         }
 
         let mut deleted = 0i64;
-        let mut store = self.store.lock().expect("store mutex poisoned");
-        let mut session = store.session(&self.functions);
         for key in keys {
+            let mut store = self.lock_string_store_for_key(&key);
+            let mut session = store.session(&self.functions);
             let mut info = DeleteInfo::default();
             let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
             match status {
@@ -713,7 +754,7 @@ impl RequestProcessor {
         let input = delta.to_string().into_bytes();
         let mut output = Vec::new();
         let mut info = RmwInfo::default();
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(&key);
         let mut session = store.session(&self.functions);
         let status = session.rmw(&key, &input, &mut output, &mut info);
 
@@ -798,7 +839,7 @@ impl RequestProcessor {
         }
 
         if amount <= 0 {
-            let mut store = self.store.lock().expect("store mutex poisoned");
+            let mut store = self.lock_string_store_for_key(&key);
             let mut session = store.session(&self.functions);
             let mut info = DeleteInfo::default();
             let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
@@ -1760,7 +1801,7 @@ impl RequestProcessor {
     }
 
     fn read_string_value(&self, key: &[u8]) -> Result<Option<Vec<u8>>, RequestExecutionError> {
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let status = session
@@ -1781,7 +1822,7 @@ impl RequestProcessor {
     }
 
     fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let key_vec = key.to_vec();
@@ -1825,7 +1866,7 @@ impl RequestProcessor {
         user_value: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<(), RequestExecutionError> {
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
@@ -1857,7 +1898,7 @@ impl RequestProcessor {
     }
 
     fn delete_string_key_for_migration(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut info = DeleteInfo::default();
         let status = session
@@ -1908,7 +1949,7 @@ impl RequestProcessor {
         expiration_unix_millis: Option<u64>,
     ) -> Result<bool, RequestExecutionError> {
         let key_vec = key.to_vec();
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut current = Vec::new();
         let status = session
@@ -1933,6 +1974,7 @@ impl RequestProcessor {
     }
 
     fn expire_key_if_needed(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
+        crate::debug_sync_point!("request_processor.expire_key_if_needed.enter");
         let should_expire = {
             let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
             match expirations.get(key) {
@@ -1943,12 +1985,14 @@ impl RequestProcessor {
                 _ => false,
             }
         };
+        crate::debug_sync_point!("request_processor.expire_key_if_needed.after_expiration_lookup");
 
         if !should_expire {
             return Ok(());
         }
 
-        let mut store = self.store.lock().expect("store mutex poisoned");
+        crate::debug_sync_point!("request_processor.expire_key_if_needed.before_store_lock");
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut info = DeleteInfo::default();
         let status = session
@@ -1965,6 +2009,23 @@ impl RequestProcessor {
             .expect("key registry mutex poisoned")
             .remove(key);
         Ok(())
+    }
+
+    #[inline]
+    fn string_store_shard_index_for_key(&self, key: &[u8]) -> usize {
+        debug_assert!(!self.string_stores.is_empty());
+        usize::from(redis_hash_slot(key)) % self.string_stores.len()
+    }
+
+    #[inline]
+    fn lock_string_store_for_key(
+        &self,
+        key: &[u8],
+    ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.string_stores[shard_index]
+            .lock()
+            .expect("store mutex poisoned")
     }
 
     fn bump_watch_version(&self, key: &[u8]) {
@@ -1991,6 +2052,12 @@ fn tsavorite_config_from_env() -> TsavoriteKvConfig {
         }
     }
     config
+}
+
+fn string_store_shard_count_from_env() -> usize {
+    parse_env_usize(GARNET_STRING_STORE_SHARDS_ENV)
+        .filter(|count| *count > 0)
+        .unwrap_or(DEFAULT_STRING_STORE_SHARDS)
 }
 
 fn parse_env_u8(key: &str) -> Option<u8> {
@@ -2962,7 +3029,9 @@ impl HybridLogDeleteAdapter for ObjectSessionFunctions {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::debug_concurrency;
     use garnet_common::parse_resp_command_arg_slices;
+    use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
 
@@ -2985,6 +3054,26 @@ mod tests {
             out.extend_from_slice(b"\r\n");
         }
         out
+    }
+
+    fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
+        let mut args = [ArgSlice::EMPTY; 16];
+        let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+        let mut response = Vec::new();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        response
+    }
+
+    fn find_key_for_shard(processor: &RequestProcessor, shard: usize) -> Vec<u8> {
+        for i in 0..20_000 {
+            let candidate = format!("key-shard-{shard}-{i}").into_bytes();
+            if processor.string_store_shard_index_for_key(&candidate) == shard {
+                return candidate;
+            }
+        }
+        panic!("failed to find key for shard index {shard}");
     }
 
     #[test]
@@ -3043,6 +3132,94 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         assert_eq!(response, b"$5\r\nvalue\r\n");
+    }
+
+    #[test]
+    fn debug_sync_points_can_force_get_set_ordering_between_threads() {
+        let _test_guard = debug_concurrency::SYNC_TEST_MUTEX.lock().unwrap();
+        debug_concurrency::reset_sync_points();
+        let processor = Arc::new(RequestProcessor::new().unwrap());
+        let key = b"key";
+
+        let initial_set = encode_resp(&[b"SET", key, b"old"]);
+        assert_eq!(execute_frame(&processor, &initial_set), b"+OK\r\n");
+
+        const GET_BEFORE_STORE: &str = "request_processor.handle_get.before_store_lock";
+        debug_concurrency::block_sync_point(GET_BEFORE_STORE);
+
+        let getter = {
+            let processor = Arc::clone(&processor);
+            thread::spawn(move || {
+                let get_frame = encode_resp(&[b"GET", key]);
+                execute_frame(&processor, &get_frame)
+            })
+        };
+
+        assert!(debug_concurrency::wait_for_sync_point_hits(
+            GET_BEFORE_STORE,
+            1,
+            Duration::from_secs(2)
+        ));
+
+        let set_new = encode_resp(&[b"SET", key, b"new"]);
+        assert_eq!(execute_frame(&processor, &set_new), b"+OK\r\n");
+
+        debug_concurrency::unblock_sync_point(GET_BEFORE_STORE);
+        let get_response = getter.join().expect("GET worker thread panicked");
+        assert_eq!(get_response, b"$3\r\nnew\r\n");
+        debug_concurrency::reset_sync_points();
+    }
+
+    #[test]
+    fn sharded_string_stores_support_parallel_get_set_on_distinct_shards() {
+        let processor = Arc::new(RequestProcessor::new_with_string_store_shards(4).unwrap());
+        let key_a = find_key_for_shard(&processor, 0);
+        let key_b = find_key_for_shard(&processor, 1);
+        assert_ne!(
+            processor.string_store_shard_index_for_key(&key_a),
+            processor.string_store_shard_index_for_key(&key_b)
+        );
+
+        let worker_a = {
+            let processor = Arc::clone(&processor);
+            let key_a = key_a.clone();
+            thread::spawn(move || {
+                for i in 0..200 {
+                    let value = format!("a-{i}").into_bytes();
+                    let set = encode_resp(&[b"SET", &key_a, &value]);
+                    assert_eq!(execute_frame(&processor, &set), b"+OK\r\n");
+                    let get = encode_resp(&[b"GET", &key_a]);
+                    let expected = format!(
+                        "${}\r\n{}\r\n",
+                        value.len(),
+                        String::from_utf8_lossy(&value)
+                    );
+                    assert_eq!(execute_frame(&processor, &get), expected.as_bytes());
+                }
+            })
+        };
+
+        let worker_b = {
+            let processor = Arc::clone(&processor);
+            let key_b = key_b.clone();
+            thread::spawn(move || {
+                for i in 0..200 {
+                    let value = format!("b-{i}").into_bytes();
+                    let set = encode_resp(&[b"SET", &key_b, &value]);
+                    assert_eq!(execute_frame(&processor, &set), b"+OK\r\n");
+                    let get = encode_resp(&[b"GET", &key_b]);
+                    let expected = format!(
+                        "${}\r\n{}\r\n",
+                        value.len(),
+                        String::from_utf8_lossy(&value)
+                    );
+                    assert_eq!(execute_frame(&processor, &get), expected.as_bytes());
+                }
+            })
+        };
+
+        worker_a.join().unwrap();
+        worker_b.join().unwrap();
     }
 
     #[test]
