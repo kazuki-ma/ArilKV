@@ -257,8 +257,9 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
     - shard 4: SET `302024`, GET `313987`
     - shard 8: SET `282727`, GET `281040`
     - shard 16: SET `231803`, GET `257843`
-    - Current decision: keep default shard count at `1`; treat auto-scaling by
-      thread hints as opt-in pending broader sweep coverage.
+    - Updated decision (2026-02-20): broadened matrix sweeps selected shard
+      default `2` as the most stable median balance; retain explicit override
+      and keep thread-hint auto-scaling opt-in.
 
 ### Framegraph A/B validation for regression hypothesis (`shards=1` vs `shards=16`)
 

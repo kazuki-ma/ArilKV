@@ -219,11 +219,11 @@
 
 | ID | Unknown Item | Why It Matters | Status |
 |---|---|---|---|
-| U1 | Which Dragonfly internals are the dominant reason for GET/SET throughput advantage on ARM64 (scheduler/proactor/sharding/data layout)? | Prevents cargo-cult optimization and focuses engineering effort on high-impact areas. | TODO |
-| U2 | Which Dragonfly optimizations are portable to `garnet-rs` with acceptable complexity/risk? | Avoids spending time on techniques that conflict with current architecture or maintainability. | TODO |
+| U1 | Which Dragonfly internals are the dominant reason for GET/SET throughput advantage on ARM64 (scheduler/proactor/sharding/data layout)? | Prevents cargo-cult optimization and focuses engineering effort on high-impact areas. | DONE |
+| U2 | Which Dragonfly optimizations are portable to `garnet-rs` with acceptable complexity/risk? | Avoids spending time on techniques that conflict with current architecture or maintainability. | DONE |
 | U3 | How much of current gap is network/RESP path vs storage engine path vs allocation path? | Determines whether to prioritize server front-end, Tsavorite core, or allocator strategy. | TODO |
 | U4 | Which allocator and memory-tuning choices most affect this workload (`1-1024` bytes, high SET warmup)? | Memory behavior often dominates latency tail and throughput under heavy concurrency. | TODO |
-| U5 | Which benchmark settings are fair and representative for apples-to-apples comparison (threads, pipeline, affinity, warmup, memory limits)? | Invalid comparison settings can hide real regressions or overstate improvements. | TODO |
+| U5 | Which benchmark settings are fair and representative for apples-to-apples comparison (threads, pipeline, affinity, warmup, memory limits)? | Invalid comparison settings can hide real regressions or overstate improvements. | DONE |
 
 ---
 
@@ -495,3 +495,4 @@
 | 128 | 2026-02-20 | 11.8 | DONE | Added Docker-to-Docker comparison support (`cache_benchmarks_garnet_docker_wrapper.sh`, `Dockerfile.garnet-rs-cachebench`, `garnet-rs/.dockerignore`) and reran `cache-benchmarks` with both servers in containers under identical parameters, confirming Garnet leads in this environment. |
 | 129 | 2026-02-20 | 11.12 | DONE | Added `sweep_string_store_policy_matrix_local.sh`, executed a 3-workload x 2-owner-mode shard policy matrix, and updated runtime shard default policy to `2` (`1` only when `GARNET_STRING_OWNER_THREADS=1`) with new unit coverage for policy derivation logic. |
 | 130 | 2026-02-20 | 11.6 | DONE | Added `perf_regression_gate_local.sh` with median-of-N threshold gating and memtier summary validation, plus nightly/dispatch CI workflow `.github/workflows/garnet-rs-perf-gate.yml` that runs the gate and uploads result artifacts. |
+| 131 | 2026-02-20 | 11A(U1/U2/U5) | DONE | Closed DeepResearch unknowns for Dragonfly internals, portability matrix, and fair benchmark settings by grounding tracker status in `docs/performance/dragonfly-performance-gap-analysis-deepresearch-2026-02-20.md`; U3/U4 remain open pending Linux differential profiling and allocator-specific A/B data. |
