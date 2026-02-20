@@ -78,8 +78,8 @@ pub struct MigrationEntry {
 pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_store: OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
-    expirations: OrderedMutex<HashMap<Vec<u8>, Instant>>,
-    key_registry: OrderedMutex<HashSet<Vec<u8>>>,
+    string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, Instant>>>,
+    string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registry: OrderedMutex<HashSet<Vec<u8>>>,
     watch_versions: Vec<AtomicU64>,
     functions: KvSessionFunctions,
@@ -100,29 +100,33 @@ impl RequestProcessor {
         string_store_config.hash_index_size_bits =
             scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
         let mut string_stores = Vec::with_capacity(store_shard_count);
+        let mut string_expirations = Vec::with_capacity(store_shard_count);
+        let mut string_key_registries = Vec::with_capacity(store_shard_count);
         for _ in 0..store_shard_count {
             string_stores.push(OrderedMutex::new(
                 TsavoriteKV::new(string_store_config)?,
                 LockClass::Store,
                 "request_processor.store",
             ));
+            string_expirations.push(OrderedMutex::new(
+                HashMap::new(),
+                LockClass::Expirations,
+                "request_processor.expirations",
+            ));
+            string_key_registries.push(OrderedMutex::new(
+                HashSet::new(),
+                LockClass::KeyRegistry,
+                "request_processor.key_registry",
+            ));
         }
         Ok(Self {
             string_stores,
+            string_expirations,
+            string_key_registries,
             object_store: OrderedMutex::new(
                 TsavoriteKV::new(store_config)?,
                 LockClass::ObjectStore,
                 "request_processor.object_store",
-            ),
-            expirations: OrderedMutex::new(
-                HashMap::new(),
-                LockClass::Expirations,
-                "request_processor.expirations",
-            ),
-            key_registry: OrderedMutex::new(
-                HashSet::new(),
-                LockClass::KeyRegistry,
-                "request_processor.key_registry",
             ),
             object_key_registry: OrderedMutex::new(
                 HashSet::new(),
@@ -353,13 +357,7 @@ impl RequestProcessor {
 
         let mut slot_keys = BTreeSet::new();
 
-        let string_keys: Vec<Vec<u8>> = self
-            .key_registry
-            .lock()
-            .expect("key registry mutex poisoned")
-            .iter()
-            .cloned()
-            .collect();
+        let string_keys = self.string_keys_snapshot();
         for key in string_keys {
             if redis_hash_slot(&key) == slot {
                 slot_keys.insert(key);
@@ -524,20 +522,27 @@ impl RequestProcessor {
         }
 
         let now = Instant::now();
-        let expired_keys: Vec<Vec<u8>> = self
-            .expirations
-            .lock()
-            .expect("expiration mutex poisoned")
-            .iter()
-            .filter_map(|(key, deadline)| {
-                if *deadline <= now {
-                    Some(key.clone())
-                } else {
-                    None
-                }
-            })
-            .take(max_keys)
-            .collect();
+        let mut expired_keys: Vec<Vec<u8>> = Vec::with_capacity(max_keys);
+        for expirations in &self.string_expirations {
+            if expired_keys.len() >= max_keys {
+                break;
+            }
+            let remaining = max_keys - expired_keys.len();
+            let mut shard_expired: Vec<Vec<u8>> = expirations
+                .lock()
+                .expect("expiration mutex poisoned")
+                .iter()
+                .filter_map(|(key, deadline)| {
+                    if *deadline <= now {
+                        Some(key.clone())
+                    } else {
+                        None
+                    }
+                })
+                .take(remaining)
+                .collect();
+            expired_keys.append(&mut shard_expired);
+        }
 
         let mut removed = 0usize;
         for key in expired_keys {
@@ -548,14 +553,7 @@ impl RequestProcessor {
                 session.delete(&key, &mut info).map_err(map_delete_error)?
             };
 
-            self.expirations
-                .lock()
-                .expect("expiration mutex poisoned")
-                .remove(&key);
-            self.key_registry
-                .lock()
-                .expect("key registry mutex poisoned")
-                .remove(&key);
+            self.remove_string_key_metadata(&key);
 
             match status {
                 DeleteOperationStatus::TombstonedInPlace
@@ -664,19 +662,8 @@ impl RequestProcessor {
         drop(store);
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
-        let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
-        match options.expiration {
-            Some(expiration) => {
-                expirations.insert(key.clone(), expiration.deadline);
-            }
-            None => {
-                expirations.remove(&key);
-            }
-        }
-        self.key_registry
-            .lock()
-            .expect("key registry mutex poisoned")
-            .insert(key.clone());
+        self.set_string_expiration_deadline(&key, options.expiration.map(|e| e.deadline));
+        self.track_string_key(&key);
         self.bump_watch_version(&key);
 
         append_simple_string(response_out, b"OK");
@@ -717,14 +704,7 @@ impl RequestProcessor {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     deleted += 1;
-                    self.expirations
-                        .lock()
-                        .expect("expiration mutex poisoned")
-                        .remove(&key);
-                    self.key_registry
-                        .lock()
-                        .expect("key registry mutex poisoned")
-                        .remove(&key);
+                    self.remove_string_key_metadata(&key);
                     self.bump_watch_version(&key);
                 }
                 DeleteOperationStatus::NotFound => {}
@@ -767,10 +747,7 @@ impl RequestProcessor {
             | Ok(RmwOperationStatus::Inserted) => {
                 let parsed =
                     parse_i64_ascii(&output).ok_or(RequestExecutionError::ValueNotInteger)?;
-                self.key_registry
-                    .lock()
-                    .expect("key registry mutex poisoned")
-                    .insert(key.clone());
+                self.track_string_key(&key);
                 self.bump_watch_version(&key);
                 append_integer(response_out, parsed);
                 Ok(())
@@ -783,10 +760,7 @@ impl RequestProcessor {
                 session
                     .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
                     .map_err(map_upsert_error)?;
-                self.key_registry
-                    .lock()
-                    .expect("key registry mutex poisoned")
-                    .insert(key.clone());
+                self.track_string_key(&key);
                 self.bump_watch_version(&key);
                 append_integer(response_out, delta);
                 Ok(())
@@ -849,27 +823,13 @@ impl RequestProcessor {
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
-                    self.expirations
-                        .lock()
-                        .expect("expiration mutex poisoned")
-                        .remove(&key);
-                    self.key_registry
-                        .lock()
-                        .expect("key registry mutex poisoned")
-                        .remove(&key);
+                    self.remove_string_key_metadata(&key);
                     self.bump_watch_version(&key);
                     append_integer(response_out, 1);
                     Ok(())
                 }
                 DeleteOperationStatus::NotFound => {
-                    self.expirations
-                        .lock()
-                        .expect("expiration mutex poisoned")
-                        .remove(&key);
-                    self.key_registry
-                        .lock()
-                        .expect("key registry mutex poisoned")
-                        .remove(&key);
+                    self.remove_string_key_metadata(&key);
                     append_integer(response_out, 0);
                     Ok(())
                 }
@@ -885,15 +845,9 @@ impl RequestProcessor {
         };
         let expiration = expiration_metadata_from_duration(duration)
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        self.expirations
-            .lock()
-            .expect("expiration mutex poisoned")
-            .insert(key.clone(), expiration.deadline);
+        self.set_string_expiration_deadline(&key, Some(expiration.deadline));
         if !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))? {
-            self.expirations
-                .lock()
-                .expect("expiration mutex poisoned")
-                .remove(&key);
+            self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
             return Ok(());
         }
@@ -942,12 +896,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let deadline = self
-            .expirations
-            .lock()
-            .expect("expiration mutex poisoned")
-            .get(&key)
-            .copied();
+        let deadline = self.string_expiration_deadline(&key);
         match deadline {
             None => append_integer(response_out, -1),
             Some(deadline) => {
@@ -990,9 +939,7 @@ impl RequestProcessor {
         }
 
         let removed_deadline = self
-            .expirations
-            .lock()
-            .expect("expiration mutex poisoned")
+            .lock_string_expirations_for_key(&key)
             .remove(&key)
             .is_some();
         if !removed_deadline {
@@ -1764,13 +1711,7 @@ impl RequestProcessor {
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
-        let mut keys: HashSet<Vec<u8>> = self
-            .key_registry
-            .lock()
-            .expect("key registry mutex poisoned")
-            .iter()
-            .cloned()
-            .collect();
+        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(
             self.object_key_registry
                 .lock()
@@ -1788,10 +1729,7 @@ impl RequestProcessor {
                 count += 1;
             }
             if !string_exists {
-                self.key_registry
-                    .lock()
-                    .expect("key registry mutex poisoned")
-                    .remove(&key);
+                self.untrack_string_key(&key);
             }
             if !object_exists {
                 self.object_key_registry
@@ -1883,19 +1821,11 @@ impl RequestProcessor {
         drop(session);
         drop(store);
 
-        let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
-        match expiration_unix_millis.and_then(instant_from_unix_millis) {
-            Some(deadline) => {
-                expirations.insert(key.to_vec(), deadline);
-            }
-            None => {
-                expirations.remove(key);
-            }
-        }
-        self.key_registry
-            .lock()
-            .expect("key registry mutex poisoned")
-            .insert(key.to_vec());
+        self.set_string_expiration_deadline(
+            key,
+            expiration_unix_millis.and_then(instant_from_unix_millis),
+        );
+        self.track_string_key(key);
         self.bump_watch_version(key);
         Ok(())
     }
@@ -1912,14 +1842,7 @@ impl RequestProcessor {
             DeleteOperationStatus::TombstonedInPlace
             | DeleteOperationStatus::AppendedTombstone
             | DeleteOperationStatus::NotFound => {
-                self.expirations
-                    .lock()
-                    .expect("expiration mutex poisoned")
-                    .remove(key);
-                self.key_registry
-                    .lock()
-                    .expect("key registry mutex poisoned")
-                    .remove(key);
+                self.remove_string_key_metadata(key);
                 if !matches!(status, DeleteOperationStatus::NotFound) {
                     self.bump_watch_version(key);
                 }
@@ -1930,12 +1853,7 @@ impl RequestProcessor {
     }
 
     fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
-        let deadline = self
-            .expirations
-            .lock()
-            .expect("expiration mutex poisoned")
-            .get(key)
-            .copied()?;
+        let deadline = self.string_expiration_deadline(key)?;
         let now = Instant::now();
         let now_unix_millis = current_unix_time_millis()?;
         if deadline <= now {
@@ -1979,7 +1897,7 @@ impl RequestProcessor {
     fn expire_key_if_needed(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
         crate::debug_sync_point!("request_processor.expire_key_if_needed.enter");
         let should_expire = {
-            let mut expirations = self.expirations.lock().expect("expiration mutex poisoned");
+            let mut expirations = self.lock_string_expirations_for_key(key);
             match expirations.get(key) {
                 Some(deadline) if *deadline <= Instant::now() => {
                     expirations.remove(key);
@@ -2007,10 +1925,7 @@ impl RequestProcessor {
         ) {
             self.bump_watch_version(key);
         }
-        self.key_registry
-            .lock()
-            .expect("key registry mutex poisoned")
-            .remove(key);
+        self.untrack_string_key(key);
         Ok(())
     }
 
@@ -2029,6 +1944,72 @@ impl RequestProcessor {
         self.string_stores[shard_index]
             .lock()
             .expect("store mutex poisoned")
+    }
+
+    #[inline]
+    fn lock_string_expirations_for_key(
+        &self,
+        key: &[u8],
+    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, Instant>> {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.string_expirations[shard_index]
+            .lock()
+            .expect("expiration mutex poisoned")
+    }
+
+    #[inline]
+    fn lock_string_key_registry_for_key(
+        &self,
+        key: &[u8],
+    ) -> OrderedMutexGuard<'_, HashSet<Vec<u8>>> {
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.string_key_registries[shard_index]
+            .lock()
+            .expect("key registry mutex poisoned")
+    }
+
+    fn track_string_key(&self, key: &[u8]) {
+        self.lock_string_key_registry_for_key(key)
+            .insert(key.to_vec());
+    }
+
+    fn untrack_string_key(&self, key: &[u8]) {
+        self.lock_string_key_registry_for_key(key).remove(key);
+    }
+
+    fn set_string_expiration_deadline(&self, key: &[u8], deadline: Option<Instant>) {
+        let mut expirations = self.lock_string_expirations_for_key(key);
+        match deadline {
+            Some(deadline) => {
+                expirations.insert(key.to_vec(), deadline);
+            }
+            None => {
+                expirations.remove(key);
+            }
+        }
+    }
+
+    fn remove_string_key_metadata(&self, key: &[u8]) {
+        self.set_string_expiration_deadline(key, None);
+        self.untrack_string_key(key);
+    }
+
+    fn string_expiration_deadline(&self, key: &[u8]) -> Option<Instant> {
+        self.lock_string_expirations_for_key(key).get(key).copied()
+    }
+
+    fn string_keys_snapshot(&self) -> Vec<Vec<u8>> {
+        self.string_key_registries
+            .iter()
+            .flat_map(|registry| {
+                registry
+                    .lock()
+                    .expect("key registry mutex poisoned")
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect()
     }
 
     fn bump_watch_version(&self, key: &[u8]) {
@@ -3242,6 +3223,41 @@ mod tests {
 
         worker_a.join().unwrap();
         worker_b.join().unwrap();
+    }
+
+    #[test]
+    fn sharded_string_metadata_tracks_keys_and_expiration_per_shard() {
+        let processor = RequestProcessor::new_with_string_store_shards(4).unwrap();
+        let key_a = find_key_for_shard(&processor, 0);
+        let key_b = find_key_for_shard(&processor, 1);
+        let shard_a = processor.string_store_shard_index_for_key(&key_a);
+        let shard_b = processor.string_store_shard_index_for_key(&key_b);
+        assert_ne!(shard_a, shard_b);
+
+        let set_a = encode_resp(&[b"SET", &key_a, b"value-a", b"PX", b"5000"]);
+        let set_b = encode_resp(&[b"SET", &key_b, b"value-b"]);
+        assert_eq!(execute_frame(&processor, &set_a), b"+OK\r\n");
+        assert_eq!(execute_frame(&processor, &set_b), b"+OK\r\n");
+
+        assert!(processor.string_expiration_deadline(&key_a).is_some());
+        assert!(processor.string_expiration_deadline(&key_b).is_none());
+
+        assert!(processor.string_key_registries[shard_a]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_a));
+        assert!(processor.string_key_registries[shard_b]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_b));
+        assert!(!processor.string_key_registries[shard_a]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_b));
+        assert!(!processor.string_key_registries[shard_b]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_a));
     }
 
     #[test]
