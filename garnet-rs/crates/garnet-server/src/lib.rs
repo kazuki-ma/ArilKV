@@ -1114,10 +1114,18 @@ async fn handle_connection(
                                         &args[..meta.argument_count],
                                         command,
                                     ) {
-                                        let frame = receive_buffer[frame_start..frame_end].to_vec();
+                                        let mut owned_args =
+                                            Vec::with_capacity(meta.argument_count);
+                                        for arg in &args[..meta.argument_count] {
+                                            // SAFETY: `args` points to the live receive buffer.
+                                            owned_args.push(unsafe { arg.as_slice() }.to_vec());
+                                        }
                                         let routed_processor = Arc::clone(&processor);
                                         match owner_pool.execute_sync(shard_index, move || {
-                                            execute_frame_via_processor(&routed_processor, &frame)
+                                            execute_owned_args_via_processor(
+                                                &routed_processor,
+                                                &owned_args,
+                                            )
                                         }) {
                                             Ok(Ok(frame_response)) => {
                                                 responses.extend_from_slice(&frame_response);
@@ -1256,6 +1264,27 @@ enum RoutedExecutionError {
     Request(RequestExecutionError),
 }
 
+fn execute_owned_args_via_processor(
+    processor: &RequestProcessor,
+    owned_args: &[Vec<u8>],
+) -> Result<Vec<u8>, RoutedExecutionError> {
+    if owned_args.is_empty() || owned_args.len() > 64 {
+        return Err(RoutedExecutionError::Protocol);
+    }
+
+    let mut args = [ArgSlice::EMPTY; 64];
+    for (index, arg) in owned_args.iter().enumerate() {
+        args[index] = ArgSlice::from_slice(arg).map_err(|_| RoutedExecutionError::Protocol)?;
+    }
+
+    let mut response = Vec::new();
+    processor
+        .execute(&args[..owned_args.len()], &mut response)
+        .map_err(RoutedExecutionError::Request)?;
+    Ok(response)
+}
+
+#[cfg(test)]
 fn execute_frame_via_processor(
     processor: &RequestProcessor,
     frame: &[u8],
@@ -4869,6 +4898,28 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn execute_owned_args_via_processor_matches_direct_execution() {
+        let processor = RequestProcessor::new().unwrap();
+
+        let set_frame = encode_resp_command(&[b"SET", b"k", b"v"]);
+        let set_owned_args = owned_args_from_frame(&set_frame);
+        let routed_set = execute_owned_args_via_processor(&processor, &set_owned_args).unwrap();
+        let direct_set = execute_processor_frame(&processor, &set_frame);
+        assert_eq!(routed_set, direct_set);
+
+        let get_frame = encode_resp_command(&[b"GET", b"k"]);
+        let get_owned_args = owned_args_from_frame(&get_frame);
+        let routed_get = execute_owned_args_via_processor(&processor, &get_owned_args).unwrap();
+        let direct_get = execute_processor_frame(&processor, &get_frame);
+        assert_eq!(routed_get, direct_get);
+
+        assert!(matches!(
+            execute_owned_args_via_processor(&processor, &[]),
+            Err(RoutedExecutionError::Protocol)
+        ));
+    }
+
     async fn wait_until<P>(mut predicate: P, timeout: Duration)
     where
         P: FnMut() -> bool,
@@ -4912,5 +4963,16 @@ mod tests {
             .execute(&args[..meta.argument_count], &mut response)
             .unwrap();
         response
+    }
+
+    fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {
+        let mut args = [ArgSlice::EMPTY; 64];
+        let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+        let mut owned = Vec::with_capacity(meta.argument_count);
+        for arg in &args[..meta.argument_count] {
+            // SAFETY: ArgSlice references `frame`, which is alive for this conversion.
+            owned.push(unsafe { arg.as_slice() }.to_vec());
+        }
+        owned
     }
 }
