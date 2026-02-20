@@ -22,14 +22,27 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
   - Writes a CSV summary and per-case logs under
     `garnet-rs/tests/interop/results/...`.
 
+- `replication_capability_matrix.sh`
+  - Runs replication capability checks:
+    - Redis <-> Redis baseline with master switching:
+      - phase1: master->replica `SET`/`GET`
+      - switch: promote replica to master, reattach old master as replica
+      - phase2: switched-master->replica `SET`/`GET`
+    - Redis master -> Garnet replica attempt
+    - Garnet master -> Redis replica attempt
+  - Writes a CSV summary and per-case logs under
+    `garnet-rs/tests/interop/results/...`.
+
 ## Usage
 
 ```bash
 cd garnet-rs/tests/interop
 chmod +x command_coverage_audit.sh cluster_capability_matrix.sh
+chmod +x replication_capability_matrix.sh
 
 ./command_coverage_audit.sh
 ./cluster_capability_matrix.sh
+./replication_capability_matrix.sh
 ```
 
 ## Current interpretation

@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 161
+> **Current Iteration**: 162
 
 ---
 
@@ -237,6 +237,7 @@
 | 11.46 | Audit Redis command coverage and publish compatibility TODO (non-Lua prioritized) | DONE | 11.45 | Added `docs/compatibility/redis-command-coverage-2026-02-20.md` with measured command counts (`Redis 241`, `Dragonfly 288`, `garnet-rs 38`), coverage ratio (`15.77%`), abstraction-gap analysis, and prioritized non-Lua command roadmap. |
 | 11.47 | Add string-command unit test harness for in-memory `RequestProcessor` verification | DONE | 11.46 | Added `garnet-server` test utility module `src/testkit.rs` (command-line tokenizer -> RESP encoder -> processor execute) and request-lifecycle coverage test `command_line_testkit_executes_against_in_memory_processor`. |
 | 11.48 | Add Redis/Dragonfly/Garnet interoperability scripts (command + cluster capability matrix) | DONE | 11.46 | Added `garnet-rs/tests/interop/command_coverage_audit.sh`, `cluster_capability_matrix.sh`, and `interop/README.md` to automate command-surface diffs and cluster-capability checks (including explicit unsupported-state classification). |
+| 11.49 | Add replication interoperability matrix with master-switch and bidirectional master-state probes | DONE | 11.48 | Added `garnet-rs/tests/interop/replication_capability_matrix.sh` and extended interop docs. The script validates Redis<->Redis master-switch replication (`SET`/`GET` both master states) and records current Redis<->Garnet replication interoperability status. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -569,3 +570,4 @@
 | 159 | 2026-02-20 | 11.46 | DONE | Added compatibility audit doc `docs/compatibility/redis-command-coverage-2026-02-20.md` with measured command-surface counts, Redis coverage ratio, abstraction hot spots, and prioritized non-Lua command TODO backlog. |
 | 160 | 2026-02-20 | 11.47 | DONE | Added `garnet-server` testkit (`src/testkit.rs`) for string-command -> RESP -> in-memory `RequestProcessor` execution and added lifecycle coverage for this harness path. |
 | 161 | 2026-02-20 | 11.48 | DONE | Added interoperability scripts under `garnet-rs/tests/interop/` for command-surface diff (`command_coverage_audit.sh`) and cluster capability matrix (`cluster_capability_matrix.sh`) across Redis/Dragonfly/Garnet. |
+| 162 | 2026-02-20 | 11.49 | DONE | Added replication interoperability matrix script `garnet-rs/tests/interop/replication_capability_matrix.sh` with explicit master-switch validation for Redis<->Redis and bidirectional Redis<->Garnet replication probes (each side as master), including `SET`/`GET` verification when handshake is established. |

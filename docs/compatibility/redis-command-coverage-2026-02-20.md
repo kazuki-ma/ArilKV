@@ -110,3 +110,20 @@ Added:
 
 These scripts make Redis/Dragonfly/Garnet compatibility checks reproducible and
 explicitly classify unsupported cluster bootstrap cases.
+
+## Replication interop snapshot
+
+Replication compatibility is tracked via:
+
+- `garnet-rs/tests/interop/replication_capability_matrix.sh`
+
+Latest run snapshot:
+
+- Redis <-> Redis: `PASS`
+  - master->replica `SET/GET` verified
+  - master switch performed (`REPLICAOF NO ONE` + reattach old master as replica)
+  - switched-master->replica `SET/GET` verified
+- Redis master -> Garnet replica: `UNSUPPORTED`
+  - `REPLICAOF` command surface is not exposed by current `garnet-rs` server
+- Garnet master -> Redis replica: `UNSUPPORTED`
+  - Redis accepts `REPLICAOF`, but replication handshake does not reach `master_link_status=up`
