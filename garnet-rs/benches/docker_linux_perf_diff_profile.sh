@@ -80,8 +80,10 @@ tar -xzf /tmp/dragonfly.tar.gz -C /tmp/dragonfly
 chmod +x \"/tmp/dragonfly/\${dfly_name}\"
 
 cd /work/garnet-rs
+export CARGO_TARGET_DIR=/tmp/garnet-target-linux
 MEMTIER_BIN=/tmp/memtier-src/memtier_benchmark \
 DRAGONFLY_BIN=\"/tmp/dragonfly/\${dfly_name}\" \
+GARNET_BIN=/tmp/garnet-target-linux/release/garnet-server \
 THREADS='${THREADS}' \
 CONNS='${CONNS}' \
 REQUESTS='${REQUESTS}' \

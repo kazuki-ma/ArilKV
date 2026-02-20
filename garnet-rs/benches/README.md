@@ -262,6 +262,8 @@ If you are on macOS (or want a hermetic Linux runner), use
 `docker_linux_perf_diff_profile.sh`. It starts a Linux container, installs
 `perf` + `memtier_benchmark`, downloads Dragonfly release binaries, and then
 runs `linux_perf_diff_profile.sh` inside that container.
+The wrapper isolates container build output with a container-local
+`CARGO_TARGET_DIR`, so host `target/` binaries are not overwritten.
 
 ```bash
 cd garnet-rs

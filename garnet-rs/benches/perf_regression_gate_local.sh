@@ -180,7 +180,8 @@ extract_ops_and_p99() {
     local row="$2"
     local ops p99
     ops="$(perl -ne 'if (/\[RUN #1.*avg:\s*([0-9.]+)\)\s*ops\/sec/) { $ops=$1; } END { print $ops if defined $ops; }' "${file}")"
-    p99="$(awk -v row="${row}" '$1==row{print $7; exit}' "${file}")"
+    # memtier table columns: ... p50 (6), p90 (7), p99 (8)
+    p99="$(awk -v row="${row}" '$1==row{print $8; exit}' "${file}")"
     if [[ -z "${ops}" ]]; then
         ops="0.00"
     fi
