@@ -8,7 +8,9 @@
 - memtier: built from source (`RedisLabs/memtier_benchmark`)
 - Script: `garnet-rs/benches/linux_perf_diff_profile.sh`
 - Wrapper: `garnet-rs/benches/docker_linux_perf_diff_profile.sh`
-- Artifact root:
+- Latest artifact root:
+  `garnet-rs/benches/results/linux-perf-diff-docker-20260220-132624`
+- Prior same-day artifact (pre `11.30/11.31` refresh):
   `/tmp/garnet-linux-perf-slotcache-20260220-131115`
 
 ## Workload
@@ -26,14 +28,17 @@
 
 | Target | Workload | Ops/sec | Avg Lat (ms) | p99 (ms) |
 |---|---:|---:|---:|---:|
-| garnet | SET | 399,349 | 0.320 | 0.679 |
-| garnet | GET | 461,498 | 0.278 | 0.615 |
-| dragonfly | SET | 694,632 | 0.183 | 0.679 |
-| dragonfly | GET | 701,839 | 0.181 | 0.727 |
+| garnet | SET | 397,580 | 0.322 | 0.711 |
+| garnet | GET | 456,954 | 0.280 | 0.623 |
+| dragonfly | SET | 720,657 | 0.179 | 0.695 |
+| dragonfly | GET | 718,145 | 0.178 | 0.703 |
 
 Compared with the earlier same-day run using low hash-index default sizing, this
 reduced the throughput gap materially (roughly from ~3x to ~1.5-1.8x in this
 environment).
+
+`11.30/11.31` follow-up (expiration-count fast path + `TCP_NODELAY`) did not
+materially change the Linux differential gap in this single refreshed run.
 
 ## `perf report` Hotspot Notes
 
@@ -43,11 +48,12 @@ sample tables and `perf script` traces are present.
 
 ### Garnet (user-space symbols)
 
-- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~1.4%)
-- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~3.1%)
+- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~1.8%)
+- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~2.9%)
 - Shared: `std::sys::sync::mutex::futex::Mutex::lock_contended`
-- Shared: `garnet_cluster::redis_hash_slot` (reduced to ~1.0% on GET after
-  single-key hot-path shard-index reuse)
+  (~2.1% SET / ~1.8% GET)
+- Shared: `garnet_cluster::redis_hash_slot`
+  (~0.35% SET / ~2.04% GET)
 - Kernel-side dominant buckets include wakeups (`__wake_up_sync_key`,
   `try_to_wake_up`) across both workloads.
 
