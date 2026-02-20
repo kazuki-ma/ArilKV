@@ -93,6 +93,7 @@ A new command currently needs changes in multiple files/branches:
   - RESP formatting and ASCII command option helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/resp.rs`.
   - Tsavorite session callback implementations have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/session_functions.rs`.
   - object-store access and object payload persistence helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/object_store.rs`.
+  - migration export/import and slot-migration helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/migration.rs`.
 
 Conclusion:
 
@@ -149,7 +150,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-062930`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-063054`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
