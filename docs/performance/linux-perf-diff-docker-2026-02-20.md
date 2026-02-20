@@ -8,7 +8,9 @@
 - memtier: built from source (`RedisLabs/memtier_benchmark`)
 - Script: `garnet-rs/benches/linux_perf_diff_profile.sh`
 - Wrapper: `garnet-rs/benches/docker_linux_perf_diff_profile.sh`
-- Latest artifact root:
+- Latest median-of-3 artifact root:
+  `/tmp/garnet-linux-perf-median-r3-20260220-133907`
+- Latest single-run hotspot artifact root:
   `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`
 - Prior same-day artifact (post `11.30/11.31`, pre `11.33`):
   `garnet-rs/benches/results/linux-perf-diff-docker-20260220-132624`
@@ -26,26 +28,27 @@
 - `WORKLOADS="set get"`
 - `TARGETS="garnet dragonfly"`
 
-## Throughput/Latency Snapshot (memtier)
+## Throughput/Latency Snapshot (memtier median-of-3)
 
 | Target | Workload | Ops/sec | Avg Lat (ms) | p99 (ms) |
 |---|---:|---:|---:|---:|
-| garnet | SET | 397,364 | 0.322 | 0.687 |
-| garnet | GET | 461,133 | 0.277 | 0.607 |
-| dragonfly | SET | 674,576 | 0.187 | 0.727 |
-| dragonfly | GET | 706,609 | 0.179 | 0.751 |
+| garnet | SET | 390,590 | 0.327 | 0.711 |
+| garnet | GET | 462,025 | 0.276 | 0.599 |
+| dragonfly | SET | 700,184 | 0.184 | 0.703 |
+| dragonfly | GET | 691,025 | 0.183 | 0.719 |
 
 Compared with the earlier same-day run using low hash-index default sizing, this
 reduced the throughput gap materially (roughly from ~3x to ~1.5-1.8x in this
 environment).
 
 `11.30/11.31/11.33` follow-up (expiration-count fast path + `TCP_NODELAY` +
-internal shard hash swap) improved Garnet GET throughput/p99 modestly vs the
-previous run (`+0.91%` ops, `-2.57%` p99), while SET stayed essentially flat.
-Dragonfly throughput varied significantly run-to-run, so the absolute gap should
-be interpreted with caution unless median-of-N runs are used.
+internal shard hash swap) is now interpreted via median-of-3 runs to reduce
+noise. Median Dragonfly/Garnet throughput ratios are:
 
-## `perf report` Hotspot Notes
+- SET: `1.793x`
+- GET: `1.496x`
+
+## `perf report` Hotspot Notes (latest single-run capture)
 
 `perf` samples were captured for all 4 runs (`garnet/dragonfly` x `set/get`).
 Report files include initial `unwind: get_proc_name unsupported` warnings, but
