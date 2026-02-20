@@ -56,7 +56,7 @@ It can also map thread hints into owner-thread routing via
 `GARNET_STRING_OWNER_THREADS` is not explicitly set.
 
 For lock-striping experiments on string keys, set
-`GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `1`) to a higher value, e.g.
+`GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `2`) to a higher value, e.g.
 `8` or `16`.
 
 For fiber-free owner-thread routing experiments, set
@@ -171,3 +171,22 @@ SHARD_COUNTS=\"1 2 4 8 16\" REQUESTS=20000 \
 The script prints CSV and validates each run from memtier summary lines
 (`Threads`, `Connections per thread`, `Requests per client`, and non-zero
 `Ops/sec`) so failed/partial runs are not treated as success.
+
+## String-store shard policy matrix (local)
+
+Use `sweep_string_store_policy_matrix_local.sh` to run a workload matrix over
+shard counts and owner-thread modes, then emit recommendation artifacts.
+
+```bash
+cd garnet-rs
+chmod +x benches/sweep_string_store_policy_matrix_local.sh
+OWNER_THREAD_COUNTS="0 16" \
+WORKLOAD_MATRIX="w1:1:4:20000 w2:4:8:20000 w3:8:16:20000" \
+./benches/sweep_string_store_policy_matrix_local.sh
+```
+
+Outputs under `/tmp/garnet-shard-policy-matrix-<timestamp>/`:
+
+- `matrix-results.csv` (per workload/owner/shard row)
+- `summary-by-owner.csv` (median aggregation per owner+shard)
+- `recommendations.txt` (best shard by median geo-mean throughput)

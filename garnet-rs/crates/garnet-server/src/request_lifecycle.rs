@@ -29,7 +29,9 @@ const GARNET_HASH_INDEX_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_HASH_INDEX_SIZE_
 const GARNET_PAGE_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_PAGE_SIZE_BITS";
 const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES";
 const GARNET_STRING_STORE_SHARDS_ENV: &str = "GARNET_TSAVORITE_STRING_STORE_SHARDS";
-const DEFAULT_STRING_STORE_SHARDS: usize = 1;
+const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
+const DEFAULT_STRING_STORE_SHARDS: usize = 2;
+const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const GARNET_LOG_STORAGE_FAILURES_ENV: &str = "GARNET_LOG_STORAGE_FAILURES";
 const STORAGE_FAILURE_LOG_LIMIT: usize = 64;
 static STORAGE_FAILURE_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
@@ -2049,9 +2051,25 @@ fn tsavorite_config_from_env() -> TsavoriteKvConfig {
 }
 
 fn string_store_shard_count_from_env() -> usize {
-    parse_env_usize(GARNET_STRING_STORE_SHARDS_ENV)
-        .filter(|count| *count > 0)
-        .unwrap_or(DEFAULT_STRING_STORE_SHARDS)
+    let explicit_shards =
+        parse_env_usize(GARNET_STRING_STORE_SHARDS_ENV).filter(|count| *count > 0);
+    let owner_threads = parse_env_usize(GARNET_STRING_OWNER_THREADS_ENV).filter(|count| *count > 0);
+    string_store_shard_count_from_values(explicit_shards, owner_threads)
+}
+
+fn string_store_shard_count_from_values(
+    explicit_shards: Option<usize>,
+    owner_threads: Option<usize>,
+) -> usize {
+    if let Some(explicit) = explicit_shards {
+        return explicit;
+    }
+
+    match owner_threads {
+        Some(1) => SINGLE_OWNER_THREAD_STRING_STORE_SHARDS,
+        Some(_) => DEFAULT_STRING_STORE_SHARDS,
+        None => DEFAULT_STRING_STORE_SHARDS,
+    }
 }
 
 fn scale_hash_index_bits_for_shards(base_bits: u8, shard_count: usize) -> u8 {
@@ -3077,6 +3095,15 @@ mod tests {
             }
         }
         panic!("failed to find key for shard index {shard}");
+    }
+
+    #[test]
+    fn derives_default_string_store_shards_from_owner_thread_hint() {
+        assert_eq!(string_store_shard_count_from_values(None, None), 2);
+        assert_eq!(string_store_shard_count_from_values(Some(4), None), 4);
+        assert_eq!(string_store_shard_count_from_values(None, Some(1)), 1);
+        assert_eq!(string_store_shard_count_from_values(None, Some(8)), 2);
+        assert_eq!(string_store_shard_count_from_values(Some(3), Some(8)), 3);
     }
 
     #[test]
