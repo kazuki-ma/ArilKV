@@ -214,3 +214,22 @@ Outputs under `/tmp/garnet-perf-gate-<timestamp>/`:
 Nightly/dispatch CI automation is defined in:
 
 - `.github/workflows/garnet-rs-perf-gate.yml`
+
+## Allocator A/B (default vs mimalloc)
+
+`allocator_ab_local.sh` builds two `garnet-server` binaries (default allocator
+and `mimalloc` feature-enabled), runs the same median gate for both, and writes
+a delta summary.
+
+```bash
+cd garnet-rs
+chmod +x benches/allocator_ab_local.sh
+RUNS=3 THREADS=4 CONNS=8 REQUESTS=5000 \
+./benches/allocator_ab_local.sh
+```
+
+Outputs under `/tmp/garnet-allocator-ab-<timestamp>/`:
+
+- `default/summary.txt`
+- `mimalloc/summary.txt`
+- `comparison.txt` (ops/p99 deltas)

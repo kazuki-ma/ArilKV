@@ -4,12 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+[features]
+default = []
+mimalloc = ["dep:mimalloc"]
+
 [dependencies]
 tokio.workspace = true
 crossbeam-queue.workspace = true
 garnet-common = { path = "../garnet-common" }
 garnet-cluster = { path = "../garnet-cluster" }
 tsavorite = { path = "../tsavorite" }
+mimalloc = { version = "0.1", default-features = false, optional = true }
 
 [dev-dependencies]
 criterion.workspace = true

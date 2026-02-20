@@ -1,5 +1,9 @@
 //! TCP server accept loop and connection handler primitives.
 
+#[cfg(feature = "mimalloc")]
+#[global_allocator]
+static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 pub mod aof_replay;
 pub mod command_dispatch;
 pub mod debug_concurrency;
