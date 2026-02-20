@@ -37,6 +37,28 @@ REDIS_BENCH_REQUESTS=10000 REDIS_BENCH_CLIENTS=20 \
 
 Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark configuration and per-command throughput lines.
 
+## Server launch env (single process)
+
+`garnet-server` launch accepts these env overrides:
+
+- `GARNET_BIND_ADDR` (single base bind, default `127.0.0.1:6379`)
+- `GARNET_BIND_ADDRS` (comma-separated explicit binds; takes priority over `GARNET_BIND_ADDR`)
+- `GARNET_OWNER_NODE_COUNT` (optional, default `1`; when `>1`, expands from `GARNET_BIND_ADDR` to sequential ports)
+- `GARNET_READ_BUFFER_SIZE`
+
+Examples:
+
+```bash
+# single port
+GARNET_BIND_ADDR=127.0.0.1:6389 cargo run -p garnet-server
+
+# four owner nodes in one process (6389..6392)
+GARNET_BIND_ADDR=127.0.0.1:6389 GARNET_OWNER_NODE_COUNT=4 cargo run -p garnet-server
+
+# explicit multi-port list
+GARNET_BIND_ADDRS=127.0.0.1:6389,127.0.0.1:7390 cargo run -p garnet-server
+```
+
 ## `tidwall/cache-benchmarks` integration
 
 `cache_benchmarks_garnet_wrapper.sh` adapts .NET Garnet CLI flags to the current Rust server.
