@@ -5,7 +5,6 @@ use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::mem::size_of;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
@@ -16,7 +15,6 @@ use tsavorite::{
 };
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
-const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
 const HASH_OBJECT_TYPE_TAG: u8 = 3;
 const LIST_OBJECT_TYPE_TAG: u8 = 2;
 const SET_OBJECT_TYPE_TAG: u8 = 4;
@@ -38,11 +36,19 @@ mod list_commands;
 mod server_commands;
 mod set_commands;
 mod string_commands;
+mod value_codec;
 mod zset_commands;
 
 pub use self::errors::RequestExecutionError;
 use self::errors::{
     map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
+};
+use self::value_codec::{
+    decode_object_value, decode_stored_value, deserialize_hash_object_payload,
+    deserialize_list_object_payload, deserialize_set_object_payload,
+    deserialize_zset_object_payload, encode_object_value, encode_stored_value, parse_f64_ascii,
+    parse_i64_ascii, parse_u64_ascii, serialize_hash_object_payload, serialize_list_object_payload,
+    serialize_set_object_payload, serialize_zset_object_payload,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -1125,40 +1131,6 @@ fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionEr
     Ok(options)
 }
 
-fn parse_i64_ascii(input: &[u8]) -> Option<i64> {
-    if input.is_empty() {
-        return None;
-    }
-    let text = core::str::from_utf8(input).ok()?;
-    text.parse::<i64>().ok()
-}
-
-fn parse_u64_ascii(input: &[u8]) -> Option<u64> {
-    if input.is_empty() {
-        return None;
-    }
-    let text = core::str::from_utf8(input).ok()?;
-    text.parse::<u64>().ok()
-}
-
-fn parse_f64_ascii(input: &[u8]) -> Option<f64> {
-    if input.is_empty() {
-        return None;
-    }
-    let text = core::str::from_utf8(input).ok()?;
-    let parsed = text.parse::<f64>().ok()?;
-    if !parsed.is_finite() {
-        return None;
-    }
-    Some(parsed)
-}
-
-#[derive(Debug, Clone, Copy)]
-struct DecodedStoredValue<'a> {
-    expiration_unix_millis: Option<u64>,
-    user_value: &'a [u8],
-}
-
 fn current_unix_time_millis() -> Option<u64> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     u64::try_from(now.as_millis()).ok()
@@ -1183,221 +1155,6 @@ fn instant_from_unix_millis(unix_millis: u64) -> Option<Instant> {
     }
     let delta_millis = unix_millis.checked_sub(now_unix_millis)?;
     now.checked_add(Duration::from_millis(delta_millis))
-}
-
-fn decode_stored_value(stored: &[u8]) -> DecodedStoredValue<'_> {
-    if stored.len() < VALUE_EXPIRATION_PREFIX_LEN {
-        return DecodedStoredValue {
-            expiration_unix_millis: None,
-            user_value: stored,
-        };
-    }
-
-    let mut metadata = [0u8; VALUE_EXPIRATION_PREFIX_LEN];
-    metadata.copy_from_slice(&stored[..VALUE_EXPIRATION_PREFIX_LEN]);
-    let expiration_millis = u64::from_le_bytes(metadata);
-    DecodedStoredValue {
-        expiration_unix_millis: if expiration_millis == 0 {
-            None
-        } else {
-            Some(expiration_millis)
-        },
-        user_value: &stored[VALUE_EXPIRATION_PREFIX_LEN..],
-    }
-}
-
-fn encode_stored_value(user_value: &[u8], expiration_unix_millis: Option<u64>) -> Vec<u8> {
-    let mut stored = Vec::with_capacity(VALUE_EXPIRATION_PREFIX_LEN + user_value.len());
-    stored.extend_from_slice(&expiration_unix_millis.unwrap_or(0).to_le_bytes());
-    stored.extend_from_slice(user_value);
-    stored
-}
-
-fn encode_object_value(object_type: u8, payload: &[u8]) -> Vec<u8> {
-    let mut value = Vec::with_capacity(1 + payload.len());
-    value.push(object_type);
-    value.extend_from_slice(payload);
-    value
-}
-
-fn decode_object_value(encoded: &[u8]) -> Option<(u8, Vec<u8>)> {
-    let (&object_type, payload) = encoded.split_first()?;
-    Some((object_type, payload.to_vec()))
-}
-
-fn serialize_hash_object_payload(hash: &BTreeMap<Vec<u8>, Vec<u8>>) -> Vec<u8> {
-    let mut encoded = Vec::new();
-    encoded.extend_from_slice(&(hash.len() as u32).to_le_bytes());
-    for (field, value) in hash {
-        encoded.extend_from_slice(&(field.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(field);
-        encoded.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(value);
-    }
-    encoded
-}
-
-fn deserialize_hash_object_payload(encoded: &[u8]) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
-    let mut cursor = 0usize;
-
-    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
-        let end = (*cursor).checked_add(size_of::<u32>())?;
-        let bytes = encoded.get(*cursor..end)?;
-        let mut raw = [0u8; size_of::<u32>()];
-        raw.copy_from_slice(bytes);
-        *cursor = end;
-        Some(u32::from_le_bytes(raw))
-    }
-
-    let count = take_u32(encoded, &mut cursor)? as usize;
-    let mut hash = BTreeMap::new();
-    for _ in 0..count {
-        let field_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let field_end = cursor.checked_add(field_len)?;
-        let field = encoded.get(cursor..field_end)?.to_vec();
-        cursor = field_end;
-
-        let value_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let value_end = cursor.checked_add(value_len)?;
-        let value = encoded.get(cursor..value_end)?.to_vec();
-        cursor = value_end;
-
-        hash.insert(field, value);
-    }
-
-    if cursor != encoded.len() {
-        return None;
-    }
-    Some(hash)
-}
-
-fn serialize_list_object_payload(list: &[Vec<u8>]) -> Vec<u8> {
-    let mut encoded = Vec::new();
-    encoded.extend_from_slice(&(list.len() as u32).to_le_bytes());
-    for value in list {
-        encoded.extend_from_slice(&(value.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(value);
-    }
-    encoded
-}
-
-fn deserialize_list_object_payload(encoded: &[u8]) -> Option<Vec<Vec<u8>>> {
-    let mut cursor = 0usize;
-
-    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
-        let end = (*cursor).checked_add(size_of::<u32>())?;
-        let bytes = encoded.get(*cursor..end)?;
-        let mut raw = [0u8; size_of::<u32>()];
-        raw.copy_from_slice(bytes);
-        *cursor = end;
-        Some(u32::from_le_bytes(raw))
-    }
-
-    let count = take_u32(encoded, &mut cursor)? as usize;
-    let mut list = Vec::with_capacity(count);
-    for _ in 0..count {
-        let value_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let value_end = cursor.checked_add(value_len)?;
-        let value = encoded.get(cursor..value_end)?.to_vec();
-        cursor = value_end;
-        list.push(value);
-    }
-
-    if cursor != encoded.len() {
-        return None;
-    }
-    Some(list)
-}
-
-fn serialize_set_object_payload(set: &BTreeSet<Vec<u8>>) -> Vec<u8> {
-    let mut encoded = Vec::new();
-    encoded.extend_from_slice(&(set.len() as u32).to_le_bytes());
-    for member in set {
-        encoded.extend_from_slice(&(member.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(member);
-    }
-    encoded
-}
-
-fn deserialize_set_object_payload(encoded: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
-    let mut cursor = 0usize;
-
-    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
-        let end = (*cursor).checked_add(size_of::<u32>())?;
-        let bytes = encoded.get(*cursor..end)?;
-        let mut raw = [0u8; size_of::<u32>()];
-        raw.copy_from_slice(bytes);
-        *cursor = end;
-        Some(u32::from_le_bytes(raw))
-    }
-
-    let count = take_u32(encoded, &mut cursor)? as usize;
-    let mut set = BTreeSet::new();
-    for _ in 0..count {
-        let member_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let member_end = cursor.checked_add(member_len)?;
-        let member = encoded.get(cursor..member_end)?.to_vec();
-        cursor = member_end;
-        set.insert(member);
-    }
-
-    if cursor != encoded.len() {
-        return None;
-    }
-    Some(set)
-}
-
-fn serialize_zset_object_payload(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<u8> {
-    let mut encoded = Vec::new();
-    encoded.extend_from_slice(&(zset.len() as u32).to_le_bytes());
-    for (member, score) in zset {
-        encoded.extend_from_slice(&(member.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(member);
-        encoded.extend_from_slice(&score.to_le_bytes());
-    }
-    encoded
-}
-
-fn deserialize_zset_object_payload(encoded: &[u8]) -> Option<BTreeMap<Vec<u8>, f64>> {
-    let mut cursor = 0usize;
-
-    fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
-        let end = (*cursor).checked_add(size_of::<u32>())?;
-        let bytes = encoded.get(*cursor..end)?;
-        let mut raw = [0u8; size_of::<u32>()];
-        raw.copy_from_slice(bytes);
-        *cursor = end;
-        Some(u32::from_le_bytes(raw))
-    }
-
-    fn take_f64(encoded: &[u8], cursor: &mut usize) -> Option<f64> {
-        let end = (*cursor).checked_add(size_of::<f64>())?;
-        let bytes = encoded.get(*cursor..end)?;
-        let mut raw = [0u8; size_of::<f64>()];
-        raw.copy_from_slice(bytes);
-        let value = f64::from_le_bytes(raw);
-        if !value.is_finite() {
-            return None;
-        }
-        *cursor = end;
-        Some(value)
-    }
-
-    let count = take_u32(encoded, &mut cursor)? as usize;
-    let mut zset = BTreeMap::new();
-    for _ in 0..count {
-        let member_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let member_end = cursor.checked_add(member_len)?;
-        let member = encoded.get(cursor..member_end)?.to_vec();
-        cursor = member_end;
-        let score = take_f64(encoded, &mut cursor)?;
-        zset.insert(member, score);
-    }
-
-    if cursor != encoded.len() {
-        return None;
-    }
-    Some(zset)
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
