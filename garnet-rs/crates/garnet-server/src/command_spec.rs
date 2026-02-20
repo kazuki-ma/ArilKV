@@ -73,6 +73,50 @@ pub fn command_has_valid_arity(command: CommandId, argument_count: usize) -> boo
     }
 }
 
+pub fn command_name_upper(command: CommandId) -> &'static [u8] {
+    match command {
+        CommandId::Get => b"GET",
+        CommandId::Set => b"SET",
+        CommandId::Del => b"DEL",
+        CommandId::Incr => b"INCR",
+        CommandId::Decr => b"DECR",
+        CommandId::Expire => b"EXPIRE",
+        CommandId::Ttl => b"TTL",
+        CommandId::Pexpire => b"PEXPIRE",
+        CommandId::Pttl => b"PTTL",
+        CommandId::Persist => b"PERSIST",
+        CommandId::Hset => b"HSET",
+        CommandId::Hget => b"HGET",
+        CommandId::Hdel => b"HDEL",
+        CommandId::Hgetall => b"HGETALL",
+        CommandId::Lpush => b"LPUSH",
+        CommandId::Rpush => b"RPUSH",
+        CommandId::Lpop => b"LPOP",
+        CommandId::Rpop => b"RPOP",
+        CommandId::Lrange => b"LRANGE",
+        CommandId::Sadd => b"SADD",
+        CommandId::Srem => b"SREM",
+        CommandId::Smembers => b"SMEMBERS",
+        CommandId::Sismember => b"SISMEMBER",
+        CommandId::Zadd => b"ZADD",
+        CommandId::Zrem => b"ZREM",
+        CommandId::Zrange => b"ZRANGE",
+        CommandId::Zscore => b"ZSCORE",
+        CommandId::Multi => b"MULTI",
+        CommandId::Exec => b"EXEC",
+        CommandId::Discard => b"DISCARD",
+        CommandId::Watch => b"WATCH",
+        CommandId::Unwatch => b"UNWATCH",
+        CommandId::Asking => b"ASKING",
+        CommandId::Ping => b"PING",
+        CommandId::Echo => b"ECHO",
+        CommandId::Info => b"INFO",
+        CommandId::Dbsize => b"DBSIZE",
+        CommandId::Command => b"COMMAND",
+        CommandId::Unknown => b"UNKNOWN",
+    }
+}
+
 pub fn command_key_access_pattern(command: CommandId) -> KeyAccessPattern {
     match command {
         CommandId::Del | CommandId::Watch => KeyAccessPattern::AllKeysFromArg1,
@@ -279,6 +323,13 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Watch, 3));
         assert!(!command_has_valid_arity(CommandId::Watch, 1));
         assert!(command_has_valid_arity(CommandId::Set, 2));
+    }
+
+    #[test]
+    fn command_name_upper_maps_known_and_unknown_commands() {
+        assert_eq!(command_name_upper(CommandId::Set), b"SET");
+        assert_eq!(command_name_upper(CommandId::Watch), b"WATCH");
+        assert_eq!(command_name_upper(CommandId::Unknown), b"UNKNOWN");
     }
 
     #[test]

@@ -47,7 +47,7 @@ use tokio::task::JoinSet;
 
 use crate::command_spec::{
     command_has_valid_arity, command_is_mutating, command_is_owner_routable,
-    command_key_access_pattern, command_transaction_control, KeyAccessPattern,
+    command_key_access_pattern, command_name_upper, command_transaction_control, KeyAccessPattern,
     TransactionControlCommand,
 };
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
@@ -1036,7 +1036,7 @@ async fn handle_connection(
                     let transaction_control = command_transaction_control(command);
                     if transaction_control == TransactionControlCommand::Asking {
                         if !command_has_valid_arity(command, meta.argument_count) {
-                            append_wrong_arity_error(&mut responses, b"ASKING");
+                            append_wrong_arity_error_for_command(&mut responses, command);
                         } else {
                             allow_asking_once = true;
                             append_simple_string(&mut responses, b"OK");
@@ -1065,7 +1065,7 @@ async fn handle_connection(
                         match transaction_control {
                             TransactionControlCommand::Exec => {
                                 if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error(&mut responses, b"EXEC");
+                                    append_wrong_arity_error_for_command(&mut responses, command);
                                 } else if !processor.watch_versions_match(&transaction.watched_keys)
                                 {
                                     transaction.reset();
@@ -1085,7 +1085,7 @@ async fn handle_connection(
                             }
                             TransactionControlCommand::Discard => {
                                 if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error(&mut responses, b"DISCARD");
+                                    append_wrong_arity_error_for_command(&mut responses, command);
                                 } else {
                                     transaction.reset();
                                     append_simple_string(&mut responses, b"OK");
@@ -1102,7 +1102,7 @@ async fn handle_connection(
                             }
                             TransactionControlCommand::Unwatch => {
                                 if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error(&mut responses, b"UNWATCH");
+                                    append_wrong_arity_error_for_command(&mut responses, command);
                                 } else {
                                     // Matches Garnet behavior: UNWATCH during MULTI is a no-op.
                                     append_simple_string(&mut responses, b"OK");
@@ -1140,7 +1140,7 @@ async fn handle_connection(
                         match transaction_control {
                             TransactionControlCommand::Multi => {
                                 if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error(&mut responses, b"MULTI");
+                                    append_wrong_arity_error_for_command(&mut responses, command);
                                 } else {
                                     transaction.in_multi = true;
                                     append_simple_string(&mut responses, b"OK");
@@ -1154,7 +1154,7 @@ async fn handle_connection(
                             }
                             TransactionControlCommand::Watch => {
                                 if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error(&mut responses, b"WATCH");
+                                    append_wrong_arity_error_for_command(&mut responses, command);
                                 } else {
                                     for key_arg in &args[1..meta.argument_count] {
                                         // SAFETY: `args` points to the live receive buffer.
@@ -1167,7 +1167,7 @@ async fn handle_connection(
                             }
                             TransactionControlCommand::Unwatch => {
                                 if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error(&mut responses, b"UNWATCH");
+                                    append_wrong_arity_error_for_command(&mut responses, command);
                                 } else {
                                     transaction.clear_watches();
                                     append_simple_string(&mut responses, b"OK");
@@ -1376,6 +1376,10 @@ fn append_wrong_arity_error(output: &mut Vec<u8>, command_upper: &[u8]) {
     output.extend_from_slice(b"-ERR wrong number of arguments for '");
     output.extend_from_slice(command_upper);
     output.extend_from_slice(b"' command\r\n");
+}
+
+fn append_wrong_arity_error_for_command(output: &mut Vec<u8>, command: CommandId) {
+    append_wrong_arity_error(output, command_name_upper(command));
 }
 
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {

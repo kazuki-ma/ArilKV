@@ -57,6 +57,7 @@ A new command currently needs changes in multiple files/branches:
   - command-name dispatch matching
 - `garnet-rs/crates/garnet-server/src/command_spec.rs`
   - centralized metadata for:
+    - command id -> uppercase command name mapping
     - `COMMAND` response exposure
     - key-access pattern (`none` / `first-key` / `all-keys-from-arg1`)
     - owner-thread routability
@@ -136,7 +137,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-010520`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-010811`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
