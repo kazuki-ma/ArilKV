@@ -1,0 +1,8 @@
+scope,port,set_ops,set_p99_ms,get_ops,get_p99_ms
+step2-single-port,17420,163962,0.271,163602,0.231
+step3-multi-port-per-port,17410,43425,0.815,43243,0.727
+step3-multi-port-per-port,17411,43449,0.791,43246,0.703
+step3-multi-port-per-port,17412,43687,0.743,43439,0.511
+step3-multi-port-per-port,17413,43569,0.751,43352,0.519
+step3-multi-port-aggregate,sum,174130,0.815,173280,0.727
+step4-single-port-fair,17430,176355,0.719,174291,0.751

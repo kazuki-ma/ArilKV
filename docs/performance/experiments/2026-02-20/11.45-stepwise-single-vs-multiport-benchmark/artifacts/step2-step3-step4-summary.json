@@ -1,0 +1,26 @@
+{
+  "step2_single_port_threads2_clients8": {
+    "set_ops": 163962,
+    "get_ops": 163602,
+    "set_p99_ms": 0.271,
+    "get_p99_ms": 0.231
+  },
+  "step3_multi_port_aggregate": {
+    "set_ops": 174130,
+    "get_ops": 173280,
+    "set_max_p99_ms": 0.815,
+    "get_max_p99_ms": 0.727
+  },
+  "step4_single_port_fair_threads8_clients8": {
+    "set_ops": 176355,
+    "get_ops": 174291,
+    "set_p99_ms": 0.719,
+    "get_p99_ms": 0.751
+  },
+  "ratios": {
+    "step3_vs_step2_set": 1.062,
+    "step3_vs_step2_get": 1.059,
+    "step3_vs_step4_fair_set": 0.987,
+    "step3_vs_step4_fair_get": 0.994
+  }
+}

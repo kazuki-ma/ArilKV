@@ -6,7 +6,8 @@
 2. `11.38-owner-routing-no-frame-reparse`
 3. `11.39-hotspot-default-shards2`
 4. `11.40-packed-owner-routing-rejected`
-5. `rxbuf-copy-rewrite-rejected`
+5. `11.45-stepwise-single-vs-multiport-benchmark`
+6. `rxbuf-copy-rewrite-rejected`
 
 ## Policy
 

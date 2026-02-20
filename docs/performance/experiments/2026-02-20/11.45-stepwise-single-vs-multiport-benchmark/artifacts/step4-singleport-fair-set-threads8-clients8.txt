@@ -1,0 +1,18 @@
+Writing results to stdout
+[RUN #1] Preparing benchmark client...
+[RUN #1] Launching threads now...
+[RUN #1 100%,   0 secs]  0 threads:      128000 ops,       0 (avg:  176117) ops/sec, 0.00KB/sec (avg: 12.74MB/sec),  0.00 (avg:  0.36) msec latency
+
+8         Threads
+8         Connections per thread
+2000      Requests per client
+
+
+ALL STATS
+============================================================================================================================
+Type         Ops/sec     Hits/sec   Misses/sec    Avg. Latency     p50 Latency     p99 Latency   p99.9 Latency       KB/sec 
+----------------------------------------------------------------------------------------------------------------------------
+Sets       176354.94          ---          ---         0.36336         0.35100         0.71900         1.39900     13067.57 
+Gets            0.00         0.00         0.00             ---             ---             ---             ---         0.00 
+Waits           0.00          ---          ---             ---             ---             ---             ---          --- 
+Totals     176354.94         0.00         0.00         0.36336         0.35100         0.71900         1.39900     13067.57 
