@@ -7,6 +7,8 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod aof_replay;
 pub mod command_dispatch;
 pub mod command_spec;
+mod connection_protocol;
+mod connection_routing;
 mod connection_transaction;
 pub mod debug_concurrency;
 pub mod limited_fixed_buffer_pool;
@@ -30,10 +32,7 @@ pub use request_lifecycle::{
 };
 pub use shard_owner_threads::{ShardOwnerThreadPool, ShardOwnerThreadPoolError};
 
-use garnet_cluster::{
-    redis_hash_slot, ClusterConfigError, ClusterConfigStore, SlotRouteDecision, SlotState,
-    LOCAL_WORKER_ID,
-};
+use garnet_cluster::{ClusterConfigError, ClusterConfigStore, SlotState, LOCAL_WORKER_ID};
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
@@ -46,9 +45,15 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
 use crate::command_spec::{
-    command_has_valid_arity, command_is_mutating, command_is_owner_routable,
-    command_key_access_pattern, command_name_upper, command_transaction_control, KeyAccessPattern,
+    command_has_valid_arity, command_is_mutating, command_transaction_control,
     TransactionControlCommand,
+};
+use crate::connection_protocol::{
+    append_error_line, append_simple_string, append_wrong_arity_error_for_command,
+    ascii_eq_ignore_case, parse_u16_ascii,
+};
+use crate::connection_routing::{
+    cluster_error_for_command, command_hash_slot_for_transaction, owner_routed_shard_for_command,
 };
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
@@ -1318,20 +1323,6 @@ fn execute_frame_via_processor(
     Ok(response)
 }
 
-fn owner_routed_shard_for_command(
-    processor: &RequestProcessor,
-    args: &[ArgSlice],
-    command: CommandId,
-) -> Option<usize> {
-    if !command_is_owner_routable(command, args.len()) {
-        return None;
-    }
-
-    // SAFETY: ArgSlice memory is owned by the live receive buffer in the caller.
-    let key = unsafe { args[1].as_slice() };
-    Some(processor.string_store_shard_index(key))
-}
-
 fn build_owner_thread_pool(
     processor: &Arc<RequestProcessor>,
 ) -> io::Result<Option<Arc<ShardOwnerThreadPool>>> {
@@ -1358,140 +1349,6 @@ fn parse_positive_env_usize(key: &str) -> Option<usize> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
-}
-
-fn append_simple_string(output: &mut Vec<u8>, value: &[u8]) {
-    output.push(b'+');
-    output.extend_from_slice(value);
-    output.extend_from_slice(b"\r\n");
-}
-
-fn append_error_line(output: &mut Vec<u8>, value: &[u8]) {
-    output.push(b'-');
-    output.extend_from_slice(value);
-    output.extend_from_slice(b"\r\n");
-}
-
-fn append_wrong_arity_error(output: &mut Vec<u8>, command_upper: &[u8]) {
-    output.extend_from_slice(b"-ERR wrong number of arguments for '");
-    output.extend_from_slice(command_upper);
-    output.extend_from_slice(b"' command\r\n");
-}
-
-fn append_wrong_arity_error_for_command(output: &mut Vec<u8>, command: CommandId) {
-    append_wrong_arity_error(output, command_name_upper(command));
-}
-
-fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
-    input.len() == expected_upper.len()
-        && input
-            .iter()
-            .zip(expected_upper.iter())
-            .all(|(lhs, rhs)| ascii_upper(*lhs) == *rhs)
-}
-
-fn ascii_upper(value: u8) -> u8 {
-    if value.is_ascii_lowercase() {
-        value - 32
-    } else {
-        value
-    }
-}
-
-fn parse_u16_ascii(value: &[u8]) -> Option<u16> {
-    let parsed = std::str::from_utf8(value).ok()?.parse::<u32>().ok()?;
-    if parsed <= u16::MAX as u32 {
-        Some(parsed as u16)
-    } else {
-        None
-    }
-}
-
-fn cluster_error_for_command(
-    cluster_store: &ClusterConfigStore,
-    args: &[ArgSlice],
-    command: CommandId,
-    asking_allowed: bool,
-) -> io::Result<(Option<String>, bool)> {
-    if args.len() < 2 {
-        return Ok((None, asking_allowed));
-    }
-
-    match command_key_access_pattern(command) {
-        KeyAccessPattern::AllKeysFromArg1 => {
-            let config = cluster_store.load();
-            let mut first_slot = None;
-            for arg in &args[1..] {
-                // SAFETY: argument slices reference the current request frame.
-                let key = unsafe { arg.as_slice() };
-                let slot = redis_hash_slot(key);
-
-                if let Some(existing) = first_slot {
-                    if slot != existing {
-                        return Ok((
-                            Some(
-                                "CROSSSLOT Keys in request don't hash to the same slot".to_string(),
-                            ),
-                            true,
-                        ));
-                    }
-                } else {
-                    first_slot = Some(slot);
-                }
-
-                if let Some(redirection_error) =
-                    cluster_redirection_for_slot(&config, slot, asking_allowed).map_err(
-                        |error| {
-                            io::Error::new(io::ErrorKind::Other, format!("cluster error: {error}"))
-                        },
-                    )?
-                {
-                    return Ok((Some(redirection_error), true));
-                }
-            }
-            Ok((None, true))
-        }
-        KeyAccessPattern::FirstKey => {
-            // SAFETY: argument slices reference the current request frame.
-            let key = unsafe { args[1].as_slice() };
-            let slot = redis_hash_slot(key);
-            let error = cluster_redirection_for_slot(&cluster_store.load(), slot, asking_allowed)
-                .map_err(|cluster_error| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("cluster error: {cluster_error}"),
-                )
-            })?;
-            Ok((error, asking_allowed))
-        }
-        KeyAccessPattern::None => Ok((None, asking_allowed)),
-    }
-}
-
-fn cluster_redirection_for_slot(
-    config: &garnet_cluster::ClusterConfig,
-    slot: u16,
-    asking_allowed: bool,
-) -> Result<Option<String>, garnet_cluster::ClusterConfigError> {
-    match config.route_for_slot(slot)? {
-        SlotRouteDecision::Local => Ok(None),
-        SlotRouteDecision::Ask { .. } if asking_allowed => Ok(None),
-        _ => config.redirection_error_for_slot(slot),
-    }
-}
-
-fn command_hash_slot_for_transaction(args: &[ArgSlice], command: CommandId) -> Option<u16> {
-    if args.len() < 2 {
-        return None;
-    }
-    match command_key_access_pattern(command) {
-        KeyAccessPattern::FirstKey | KeyAccessPattern::AllKeysFromArg1 => {
-            // SAFETY: argument slices reference the current request frame.
-            let key = unsafe { args[1].as_slice() };
-            Some(redis_hash_slot(key))
-        }
-        KeyAccessPattern::None => None,
-    }
 }
 
 struct ConnectionLifecycle<'a> {

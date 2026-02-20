@@ -1,0 +1,112 @@
+use garnet_cluster::{redis_hash_slot, ClusterConfigError, ClusterConfigStore, SlotRouteDecision};
+use garnet_common::ArgSlice;
+use std::io;
+
+use crate::command_spec::{
+    command_is_owner_routable, command_key_access_pattern, KeyAccessPattern,
+};
+use crate::{CommandId, RequestProcessor};
+
+pub(crate) fn owner_routed_shard_for_command(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    command: CommandId,
+) -> Option<usize> {
+    if !command_is_owner_routable(command, args.len()) {
+        return None;
+    }
+
+    // SAFETY: ArgSlice memory is owned by the live receive buffer in the caller.
+    let key = unsafe { args[1].as_slice() };
+    Some(processor.string_store_shard_index(key))
+}
+
+pub(crate) fn cluster_error_for_command(
+    cluster_store: &ClusterConfigStore,
+    args: &[ArgSlice],
+    command: CommandId,
+    asking_allowed: bool,
+) -> io::Result<(Option<String>, bool)> {
+    if args.len() < 2 {
+        return Ok((None, asking_allowed));
+    }
+
+    match command_key_access_pattern(command) {
+        KeyAccessPattern::AllKeysFromArg1 => {
+            let config = cluster_store.load();
+            let mut first_slot = None;
+            for arg in &args[1..] {
+                // SAFETY: argument slices reference the current request frame.
+                let key = unsafe { arg.as_slice() };
+                let slot = redis_hash_slot(key);
+
+                if let Some(existing) = first_slot {
+                    if slot != existing {
+                        return Ok((
+                            Some(
+                                "CROSSSLOT Keys in request don't hash to the same slot".to_string(),
+                            ),
+                            true,
+                        ));
+                    }
+                } else {
+                    first_slot = Some(slot);
+                }
+
+                if let Some(redirection_error) =
+                    cluster_redirection_for_slot(&config, slot, asking_allowed).map_err(
+                        |error| {
+                            io::Error::new(io::ErrorKind::Other, format!("cluster error: {error}"))
+                        },
+                    )?
+                {
+                    return Ok((Some(redirection_error), true));
+                }
+            }
+            Ok((None, true))
+        }
+        KeyAccessPattern::FirstKey => {
+            // SAFETY: argument slices reference the current request frame.
+            let key = unsafe { args[1].as_slice() };
+            let slot = redis_hash_slot(key);
+            let error = cluster_redirection_for_slot(&cluster_store.load(), slot, asking_allowed)
+                .map_err(|cluster_error| {
+                io::Error::new(
+                    io::ErrorKind::Other,
+                    format!("cluster error: {cluster_error}"),
+                )
+            })?;
+            Ok((error, asking_allowed))
+        }
+        KeyAccessPattern::None => Ok((None, asking_allowed)),
+    }
+}
+
+fn cluster_redirection_for_slot(
+    config: &garnet_cluster::ClusterConfig,
+    slot: u16,
+    asking_allowed: bool,
+) -> Result<Option<String>, ClusterConfigError> {
+    match config.route_for_slot(slot)? {
+        SlotRouteDecision::Local => Ok(None),
+        SlotRouteDecision::Ask { .. } if asking_allowed => Ok(None),
+        _ => config.redirection_error_for_slot(slot),
+    }
+}
+
+pub(crate) fn command_hash_slot_for_transaction(
+    args: &[ArgSlice],
+    command: CommandId,
+) -> Option<u16> {
+    if args.len() < 2 {
+        return None;
+    }
+    match command_key_access_pattern(command) {
+        KeyAccessPattern::FirstKey | KeyAccessPattern::AllKeysFromArg1 => {
+            // SAFETY: argument slices reference the current request frame.
+            let key = unsafe { args[1].as_slice() };
+            Some(redis_hash_slot(key))
+        }
+        KeyAccessPattern::None => None,
+    }
+}
