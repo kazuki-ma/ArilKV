@@ -5,6 +5,7 @@ Date: 2026-02-20
 Checked out repos:
 - `/Users/kazuki-matsuda/dev/src/github.com/redis/redis`
 - `/Users/kazuki-matsuda/dev/src/github.com/redis/docs`
+- `/Users/kazuki-matsuda/dev/src/github.com/dragonflydb/dragonfly`
 
 ## 1. Fast map: where command definitions come from
 
@@ -142,3 +143,102 @@ Notes:
 6. `redis/docs/content/develop/reference/protocol-spec.md`
 7. `redis/docs/content/commands/{replicaof,psync,replconf}.md`
 8. `redis/docs/content/operate/oss_and_stack/management/replication.md`
+
+## 8. Dragonfly source map (command registration / dispatch / threading)
+
+### 8.1 Best entry docs (high-level)
+
+- `dragonfly/docs/df-share-nothing.md`
+  - explains shared-nothing shard ownership and fiber model.
+- `dragonfly/docs/differences.md`
+  - concise Redis compatibility caveats (edge behavior references).
+
+### 8.2 Command registration and metadata path
+
+1. Registry type and command metadata:
+- `dragonfly/src/server/command_registry.h`
+  - `CommandId` holds arity, key positions, flags (`CO::*`), ACL, stats hooks, validators, async support.
+  - `CommandRegistry` supports families, aliases/renames, and lookup.
+
+2. Registry behavior:
+- `dragonfly/src/server/command_registry.cc`
+  - `StartFamily(...)` and `operator<<` assign per-family bit indices and metadata.
+  - `FindExtended(...)` handles subcommand resolution (`ACL ...`) and special command rewrites.
+
+3. Global command wiring:
+- `dragonfly/src/server/main_service.cc`
+  - `Service::Register(...)` registers top-level control commands (`MULTI`, `EXEC`, `EVAL*`, `COMMAND`, etc.).
+  - `Service::RegisterCommands()` wires families in one place:
+    - `RegisterStringFamily`, `RegisterListFamily`, `SetFamily::Register`, `HSetFamily::Register`, `ZSetFamily::Register`, etc.
+  - calls `registry_.Init(pp_.size())` only after all registrations are complete.
+
+4. Family-specific command surfaces:
+- Example: `dragonfly/src/server/string_family.cc` (`RegisterStringFamily(...)`).
+  - commands are table-registered with metadata + handler:
+    - `CI{"GET", ...}.HFUNC(Get)`
+    - `CI{"SET", ...}.SetHandler(SetStrCmd::Run, true)`
+
+### 8.3 Dispatch and validation path
+
+- `Service::DispatchCommand(...)` in `main_service.cc`:
+  - uppercase command name and registry lookup (`FindExtended`).
+  - verifies ACL/state constraints.
+  - routes MULTI-collection path.
+  - prepares transaction context and invokes handler (`InvokeCmd`).
+- Key point:
+  - arity/state/transactional behavior are command metadata driven, not duplicated in unrelated modules.
+
+## 9. Cross-project structure comparison (for Garnet command expansion)
+
+Observed pattern:
+
+- Redis:
+  - command metadata comes from `src/commands/*.json`, generated to `src/commands.def`.
+  - single execution gate in `processCommand()` / `call()` applies common checks and propagation.
+  - command implementations are split by family (`t_string.c`, `t_hash.c`, `t_list.c`, ...).
+- Dragonfly:
+  - explicit `CommandRegistry` with metadata, validators, and family registration.
+  - one dispatch gate (`DispatchCommand`) and family-based implementation files.
+- Current garnet-rs:
+  - behavior works, but command metadata is duplicated across:
+    - `command_dispatch.rs` (`CommandId` + parser)
+    - `request_lifecycle.rs` (`execute` match + `COMMAND` output)
+    - `lib.rs` (owner-thread routing, transaction slot checks, replication mutating checks, txn behavior).
+
+## 10. Recommended pre-refactor before adding many commands
+
+To reduce future implementation cost and regressions, do these first:
+
+1. Introduce `CommandSpec` registry in `garnet-rs`:
+- fields: name, arity policy, key policy, mutating/read-only, txn policy, owner-routing eligibility, replication propagation policy.
+- make this the single source for:
+  - `COMMAND` response
+  - transaction slot extraction policy
+  - owner-thread routing eligibility
+  - read-only replica write rejection policy
+  - mutating-propagation decision.
+
+2. Split command handlers by family:
+- move from monolithic `request_lifecycle.rs` into modules like:
+  - `commands/string.rs`
+  - `commands/hash.rs`
+  - `commands/list.rs`
+  - `commands/set.rs`
+  - `commands/zset.rs`
+  - `commands/server.rs`
+- keep `RequestProcessor::execute` as thin dispatch glue.
+
+3. Remove hard-coded `CommandId` lists from `lib.rs`:
+- replace `match` lists with `CommandSpec` trait/flag checks to avoid forgetting updates when adding commands.
+
+4. Add command-conformance tests that are spec-driven:
+- one table test verifies:
+  - dispatch name
+  - arity checks
+  - routeability flags
+  - mutating/read-only flags
+  - `COMMAND` output membership.
+
+5. Keep replication protocol commands (`REPLICAOF/REPLCONF/PSYNC/SYNC`) as protocol-layer commands:
+- either in a dedicated protocol command family or a separate pre-dispatch registry.
+- avoid hidden drift between connection-layer interception and `COMMAND` exposure.
