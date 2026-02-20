@@ -111,9 +111,8 @@ impl RedisReplicationCoordinator {
         response.extend_from_slice(
             format!("+FULLRESYNC {} {}\r\n", self.inner.repl_id, repl_offset).as_bytes(),
         );
-        response.extend_from_slice(
-            format!("${}\r\n", self.inner.empty_rdb_payload.len()).as_bytes(),
-        );
+        response
+            .extend_from_slice(format!("${}\r\n", self.inner.empty_rdb_payload.len()).as_bytes());
         response.extend_from_slice(&self.inner.empty_rdb_payload);
         response.extend_from_slice(b"\r\n");
         response
@@ -323,11 +322,7 @@ async fn process_upstream_frame(
             if starts_with_ascii_no_case(sub, b"GETACK") {
                 write_resp_command(
                     stream,
-                    &[
-                        b"REPLCONF",
-                        b"ACK",
-                        applied_offset.to_string().as_bytes(),
-                    ],
+                    &[b"REPLCONF", b"ACK", applied_offset.to_string().as_bytes()],
                 )
                 .await?;
             }
@@ -440,7 +435,9 @@ fn parse_bulk_length(raw: &[u8]) -> io::Result<usize> {
     let value = std::str::from_utf8(raw)
         .ok()
         .and_then(|text| text.parse::<i64>().ok())
-        .ok_or_else(|| io::Error::new(io::ErrorKind::Other, "invalid bulk length in replication"))?;
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::Other, "invalid bulk length in replication")
+        })?;
     if value < 0 {
         return Ok(0);
     }

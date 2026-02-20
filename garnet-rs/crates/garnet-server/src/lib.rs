@@ -7,6 +7,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 pub mod aof_replay;
 pub mod command_dispatch;
 pub mod command_spec;
+mod connection_transaction;
 pub mod debug_concurrency;
 pub mod limited_fixed_buffer_pool;
 pub mod redis_replication;
@@ -45,8 +46,11 @@ use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinSet;
 
 use crate::command_spec::{
-    command_is_mutating, command_is_owner_routable, command_key_access_pattern, KeyAccessPattern,
+    command_has_valid_arity, command_is_mutating, command_is_owner_routable,
+    command_key_access_pattern, command_transaction_control, KeyAccessPattern,
+    TransactionControlCommand,
 };
+use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
 
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
@@ -1029,11 +1033,10 @@ async fn handle_connection(
                         break;
                     }
 
-                    if command == CommandId::Asking {
-                        if meta.argument_count != 1 {
-                            responses.extend_from_slice(
-                                b"-ERR wrong number of arguments for 'ASKING' command\r\n",
-                            );
+                    let transaction_control = command_transaction_control(command);
+                    if transaction_control == TransactionControlCommand::Asking {
+                        if !command_has_valid_arity(command, meta.argument_count) {
+                            append_wrong_arity_error(&mut responses, b"ASKING");
                         } else {
                             allow_asking_once = true;
                             append_simple_string(&mut responses, b"OK");
@@ -1059,12 +1062,10 @@ async fn handle_connection(
                     }
                     let mut propagate_frame = false;
                     if transaction.in_multi {
-                        match command {
-                            CommandId::Exec => {
-                                if meta.argument_count != 1 {
-                                    responses.extend_from_slice(
-                                        b"-ERR wrong number of arguments for 'EXEC' command\r\n",
-                                    );
+                        match transaction_control {
+                            TransactionControlCommand::Exec => {
+                                if !command_has_valid_arity(command, meta.argument_count) {
+                                    append_wrong_arity_error(&mut responses, b"EXEC");
                                 } else if !processor.watch_versions_match(&transaction.watched_keys)
                                 {
                                     transaction.reset();
@@ -1082,39 +1083,33 @@ async fn handle_connection(
                                     );
                                 }
                             }
-                            CommandId::Discard => {
-                                if meta.argument_count != 1 {
-                                    responses.extend_from_slice(
-                                        b"-ERR wrong number of arguments for 'DISCARD' command\r\n",
-                                    );
+                            TransactionControlCommand::Discard => {
+                                if !command_has_valid_arity(command, meta.argument_count) {
+                                    append_wrong_arity_error(&mut responses, b"DISCARD");
                                 } else {
                                     transaction.reset();
                                     append_simple_string(&mut responses, b"OK");
                                 }
                             }
-                            CommandId::Multi => {
+                            TransactionControlCommand::Multi => {
                                 responses
                                     .extend_from_slice(b"-ERR MULTI calls can not be nested\r\n");
                             }
-                            CommandId::Watch => {
+                            TransactionControlCommand::Watch => {
                                 responses.extend_from_slice(
                                     b"-ERR WATCH inside MULTI is not allowed\r\n",
                                 );
                             }
-                            CommandId::Unwatch => {
-                                if meta.argument_count != 1 {
-                                    responses.extend_from_slice(
-                                        b"-ERR wrong number of arguments for 'UNWATCH' command\r\n",
-                                    );
+                            TransactionControlCommand::Unwatch => {
+                                if !command_has_valid_arity(command, meta.argument_count) {
+                                    append_wrong_arity_error(&mut responses, b"UNWATCH");
                                 } else {
                                     // Matches Garnet behavior: UNWATCH during MULTI is a no-op.
                                     append_simple_string(&mut responses, b"OK");
                                 }
                             }
                             _ => {
-                                if replication.is_replica_mode()
-                                    && is_mutating_command_for_replication(command)
-                                {
+                                if replication.is_replica_mode() && command_is_mutating(command) {
                                     responses.extend_from_slice(
                                         b"-READONLY You can't write against a read only replica.\r\n",
                                     );
@@ -1142,28 +1137,24 @@ async fn handle_connection(
                             }
                         }
                     } else {
-                        match command {
-                            CommandId::Multi => {
-                                if meta.argument_count != 1 {
-                                    responses.extend_from_slice(
-                                        b"-ERR wrong number of arguments for 'MULTI' command\r\n",
-                                    );
+                        match transaction_control {
+                            TransactionControlCommand::Multi => {
+                                if !command_has_valid_arity(command, meta.argument_count) {
+                                    append_wrong_arity_error(&mut responses, b"MULTI");
                                 } else {
                                     transaction.in_multi = true;
                                     append_simple_string(&mut responses, b"OK");
                                 }
                             }
-                            CommandId::Exec => {
+                            TransactionControlCommand::Exec => {
                                 responses.extend_from_slice(b"-ERR EXEC without MULTI\r\n");
                             }
-                            CommandId::Discard => {
+                            TransactionControlCommand::Discard => {
                                 responses.extend_from_slice(b"-ERR DISCARD without MULTI\r\n");
                             }
-                            CommandId::Watch => {
-                                if meta.argument_count < 2 {
-                                    responses.extend_from_slice(
-                                        b"-ERR wrong number of arguments for 'WATCH' command\r\n",
-                                    );
+                            TransactionControlCommand::Watch => {
+                                if !command_has_valid_arity(command, meta.argument_count) {
+                                    append_wrong_arity_error(&mut responses, b"WATCH");
                                 } else {
                                     for key_arg in &args[1..meta.argument_count] {
                                         // SAFETY: `args` points to the live receive buffer.
@@ -1174,20 +1165,16 @@ async fn handle_connection(
                                     append_simple_string(&mut responses, b"OK");
                                 }
                             }
-                            CommandId::Unwatch => {
-                                if meta.argument_count != 1 {
-                                    responses.extend_from_slice(
-                                        b"-ERR wrong number of arguments for 'UNWATCH' command\r\n",
-                                    );
+                            TransactionControlCommand::Unwatch => {
+                                if !command_has_valid_arity(command, meta.argument_count) {
+                                    append_wrong_arity_error(&mut responses, b"UNWATCH");
                                 } else {
                                     transaction.clear_watches();
                                     append_simple_string(&mut responses, b"OK");
                                 }
                             }
                             _ => {
-                                if replication.is_replica_mode()
-                                    && is_mutating_command_for_replication(command)
-                                {
+                                if replication.is_replica_mode() && command_is_mutating(command) {
                                     responses.extend_from_slice(
                                         b"-READONLY You can't write against a read only replica.\r\n",
                                     );
@@ -1216,7 +1203,7 @@ async fn handle_connection(
                                         }) {
                                             Ok(Ok(frame_response)) => {
                                                 responses.extend_from_slice(&frame_response);
-                                                if is_mutating_command_for_replication(command) {
+                                                if command_is_mutating(command) {
                                                     propagate_frame = true;
                                                 }
                                             }
@@ -1243,11 +1230,11 @@ async fn handle_connection(
                                     }
                                 }
 
-                                if let Err(error) = processor
-                                    .execute(&args[..meta.argument_count], &mut responses)
+                                if let Err(error) =
+                                    processor.execute(&args[..meta.argument_count], &mut responses)
                                 {
                                     error.append_resp_error(&mut responses);
-                                } else if is_mutating_command_for_replication(command) {
+                                } else if command_is_mutating(command) {
                                     propagate_frame = true;
                                 }
                             }
@@ -1284,87 +1271,6 @@ async fn handle_connection(
         if !responses.is_empty() {
             stream.write_all(&responses).await?;
         }
-    }
-}
-
-#[derive(Default)]
-struct ConnectionTransactionState {
-    in_multi: bool,
-    queued_frames: Vec<Vec<u8>>,
-    watched_keys: Vec<(Vec<u8>, u64)>,
-    transaction_slot: Option<u16>,
-    aborted: bool,
-}
-
-impl ConnectionTransactionState {
-    fn reset(&mut self) {
-        self.in_multi = false;
-        self.queued_frames.clear();
-        self.watched_keys.clear();
-        self.transaction_slot = None;
-        self.aborted = false;
-    }
-
-    fn clear_watches(&mut self) {
-        self.watched_keys.clear();
-    }
-
-    fn watch_key(&mut self, key: &[u8], version: u64) {
-        if let Some((_, watched_version)) = self
-            .watched_keys
-            .iter_mut()
-            .find(|(watched_key, _)| watched_key.as_slice() == key)
-        {
-            *watched_version = version;
-            return;
-        }
-        self.watched_keys.push((key.to_vec(), version));
-    }
-
-    fn set_transaction_slot_or_abort(&mut self, slot: u16) -> bool {
-        match self.transaction_slot {
-            None => {
-                self.transaction_slot = Some(slot);
-                true
-            }
-            Some(existing) if existing == slot => true,
-            Some(_) => {
-                self.aborted = true;
-                false
-            }
-        }
-    }
-}
-
-fn execute_transaction_queue(
-    processor: &RequestProcessor,
-    transaction: &mut ConnectionTransactionState,
-    responses: &mut Vec<u8>,
-) {
-    let queued = std::mem::take(&mut transaction.queued_frames);
-    transaction.in_multi = false;
-    transaction.watched_keys.clear();
-    transaction.transaction_slot = None;
-    transaction.aborted = false;
-
-    responses.push(b'*');
-    responses.extend_from_slice(queued.len().to_string().as_bytes());
-    responses.extend_from_slice(b"\r\n");
-
-    let mut args = [ArgSlice::EMPTY; 64];
-    for frame in queued {
-        let mut item_response = Vec::new();
-        match parse_resp_command_arg_slices(&frame, &mut args) {
-            Ok(meta) if meta.bytes_consumed == frame.len() => {
-                if let Err(error) =
-                    processor.execute(&args[..meta.argument_count], &mut item_response)
-                {
-                    error.append_resp_error(&mut item_response);
-                }
-            }
-            _ => item_response.extend_from_slice(b"-ERR protocol error\r\n"),
-        }
-        responses.extend_from_slice(&item_response);
     }
 }
 
@@ -1466,6 +1372,12 @@ fn append_error_line(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(b"\r\n");
 }
 
+fn append_wrong_arity_error(output: &mut Vec<u8>, command_upper: &[u8]) {
+    output.extend_from_slice(b"-ERR wrong number of arguments for '");
+    output.extend_from_slice(command_upper);
+    output.extend_from_slice(b"' command\r\n");
+}
+
 fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
     input.len() == expected_upper.len()
         && input
@@ -1489,10 +1401,6 @@ fn parse_u16_ascii(value: &[u8]) -> Option<u16> {
     } else {
         None
     }
-}
-
-fn is_mutating_command_for_replication(command: CommandId) -> bool {
-    command_is_mutating(command)
 }
 
 fn cluster_error_for_command(

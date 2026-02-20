@@ -38,11 +38,11 @@ const STORAGE_FAILURE_LOG_LIMIT: usize = 64;
 static STORAGE_FAILURE_LOG_ENABLED: OnceLock<bool> = OnceLock::new();
 static STORAGE_FAILURE_LOG_COUNT: AtomicUsize = AtomicUsize::new(0);
 
-mod server_commands;
-mod string_commands;
 mod hash_commands;
 mod list_commands;
+mod server_commands;
 mod set_commands;
+mod string_commands;
 mod zset_commands;
 
 #[derive(Debug, Clone, Copy)]

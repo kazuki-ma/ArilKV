@@ -10,10 +10,67 @@ pub enum KeyAccessPattern {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ArityPolicy {
+    Exact(usize),
+    Min(usize),
+}
+
+impl ArityPolicy {
+    pub fn matches(self, argument_count: usize) -> bool {
+        match self {
+            Self::Exact(value) => argument_count == value,
+            Self::Min(value) => argument_count >= value,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionControlCommand {
+    None,
+    Asking,
+    Multi,
+    Exec,
+    Discard,
+    Watch,
+    Unwatch,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum OwnerRoutingPolicy {
     Never,
     FirstKey,
     SingleKeyOnly,
+}
+
+pub fn command_transaction_control(command: CommandId) -> TransactionControlCommand {
+    match command {
+        CommandId::Asking => TransactionControlCommand::Asking,
+        CommandId::Multi => TransactionControlCommand::Multi,
+        CommandId::Exec => TransactionControlCommand::Exec,
+        CommandId::Discard => TransactionControlCommand::Discard,
+        CommandId::Watch => TransactionControlCommand::Watch,
+        CommandId::Unwatch => TransactionControlCommand::Unwatch,
+        _ => TransactionControlCommand::None,
+    }
+}
+
+pub fn command_arity_policy(command: CommandId) -> Option<ArityPolicy> {
+    match command {
+        CommandId::Asking
+        | CommandId::Multi
+        | CommandId::Exec
+        | CommandId::Discard
+        | CommandId::Unwatch => Some(ArityPolicy::Exact(1)),
+        CommandId::Watch => Some(ArityPolicy::Min(2)),
+        _ => None,
+    }
+}
+
+pub fn command_has_valid_arity(command: CommandId, argument_count: usize) -> bool {
+    match command_arity_policy(command) {
+        Some(policy) => policy.matches(argument_count),
+        None => true,
+    }
 }
 
 pub fn command_key_access_pattern(command: CommandId) -> KeyAccessPattern {
@@ -180,6 +237,48 @@ mod tests {
             command_key_access_pattern(CommandId::Ping),
             KeyAccessPattern::None
         );
+    }
+
+    #[test]
+    fn transaction_control_classification_matches_expected_commands() {
+        assert_eq!(
+            command_transaction_control(CommandId::Asking),
+            TransactionControlCommand::Asking
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Multi),
+            TransactionControlCommand::Multi
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Exec),
+            TransactionControlCommand::Exec
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Discard),
+            TransactionControlCommand::Discard
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Watch),
+            TransactionControlCommand::Watch
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Unwatch),
+            TransactionControlCommand::Unwatch
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Set),
+            TransactionControlCommand::None
+        );
+    }
+
+    #[test]
+    fn transaction_related_arity_policies_match_expected_rules() {
+        assert!(command_has_valid_arity(CommandId::Asking, 1));
+        assert!(!command_has_valid_arity(CommandId::Asking, 2));
+        assert!(command_has_valid_arity(CommandId::Watch, 2));
+        assert!(command_has_valid_arity(CommandId::Watch, 3));
+        assert!(!command_has_valid_arity(CommandId::Watch, 1));
+        assert!(command_has_valid_arity(CommandId::Set, 2));
     }
 
     #[test]

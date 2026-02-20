@@ -73,12 +73,13 @@ A new command currently needs changes in multiple files/branches:
     - `request_lifecycle/zset_commands.rs`
 - `garnet-rs/crates/garnet-server/src/lib.rs`
   - transaction-loop handling (if special behavior)
-  - transaction-loop handling (if special behavior)
   - now uses `command_spec` for:
     - cluster key-routing policy
     - owner-thread routing eligibility
     - transaction slot extraction policy
     - replication mutating checks
+    - transaction control-class classification (`ASKING/MULTI/EXEC/DISCARD/WATCH/UNWATCH`)
+    - transaction/control-command arity policy checks
 
 Conclusion:
 
@@ -95,7 +96,7 @@ Conclusion:
    - cluster routability checks
    - owner-thread routability checks
    - transaction slot extraction policy.
-   - Status: **partially complete** (`COMMAND`, key extraction/routing, replication mutating checks are now derived from `command_spec`).
+   - Status: **partially complete** (`COMMAND`, key extraction/routing, replication mutating checks, and transaction-control/arity policy checks are now derived from `command_spec`).
 3. Add compatibility-focused command batches:
    - Phase C1: `EXISTS/TYPE/MGET/MSET/INCRBY/DECRBY/GETEX/GETDEL`
    - Phase C2: `SCAN/HSCAN/SSCAN/ZSCAN`
@@ -134,7 +135,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-005150`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-010520`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
