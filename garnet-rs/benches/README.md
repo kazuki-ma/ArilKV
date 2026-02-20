@@ -215,6 +215,26 @@ Nightly/dispatch CI automation is defined in:
 
 - `.github/workflows/garnet-rs-perf-gate.yml`
 
+## Linux Differential Profiling (`perf`)
+
+Use `linux_perf_diff_profile.sh` on a Linux host to capture `perf record`
+profiles for `garnet` and `dragonfly` under matching memtier workload settings.
+
+```bash
+cd garnet-rs
+chmod +x benches/linux_perf_diff_profile.sh
+DRAGONFLY_BIN=/usr/local/bin/dragonfly \
+THREADS=8 CONNS=16 REQUESTS=50000 PIPELINE=1 \
+./benches/linux_perf_diff_profile.sh
+```
+
+Outputs under `/tmp/garnet-linux-perf-diff-<timestamp>/`:
+
+- `<target>/<workload>/perf.data`
+- `<target>/<workload>/perf-report-<workload>.txt`
+- `<target>/<workload>/perf-script-<workload>.txt`
+- optional `flame-<target>-<workload>.svg` when `FLAMEGRAPH_DIR` is set
+
 ## Allocator A/B (default vs mimalloc)
 
 `allocator_ab_local.sh` builds two `garnet-server` binaries (default allocator

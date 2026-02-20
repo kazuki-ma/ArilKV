@@ -1,0 +1,259 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+MANIFEST_PATH="${REPO_ROOT}/Cargo.toml"
+
+GARNET_BIN="${GARNET_BIN:-${REPO_ROOT}/target/release/garnet-server}"
+DRAGONFLY_BIN="${DRAGONFLY_BIN:-$(command -v dragonfly || true)}"
+MEMTIER_BIN="${MEMTIER_BIN:-$(command -v memtier_benchmark || true)}"
+FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-}"
+
+TARGETS="${TARGETS:-garnet dragonfly}"
+WORKLOADS="${WORKLOADS:-set get}"
+SERVER_CPU_SET="${SERVER_CPU_SET:-0-7}"
+CLIENT_CPU_SET="${CLIENT_CPU_SET:-8-15}"
+THREADS="${THREADS:-8}"
+CONNS="${CONNS:-16}"
+REQUESTS="${REQUESTS:-50000}"
+PRELOAD_REQUESTS="${PRELOAD_REQUESTS:-${REQUESTS}}"
+PIPELINE="${PIPELINE:-1}"
+SIZE_RANGE="${SIZE_RANGE:-1-1024}"
+PERF_FREQ="${PERF_FREQ:-99}"
+PORT_BASE="${PORT_BASE:-16389}"
+OUTDIR="${OUTDIR:-/tmp/garnet-linux-perf-diff-$(date +%Y%m%d-%H%M%S)}"
+
+SERVER_PID=""
+
+require_command() {
+    local command="$1"
+    if ! command -v "${command}" >/dev/null 2>&1; then
+        echo "missing required command: ${command}" >&2
+        exit 1
+    fi
+}
+
+cleanup() {
+    if [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
+        kill "${SERVER_PID}" 2>/dev/null || true
+        wait "${SERVER_PID}" 2>/dev/null || true
+    fi
+}
+trap cleanup EXIT
+
+if [[ "$(uname -s)" != "Linux" ]]; then
+    echo "linux_perf_diff_profile.sh must run on Linux." >&2
+    exit 1
+fi
+
+require_command nc
+require_command taskset
+require_command perf
+if [[ -z "${MEMTIER_BIN}" ]]; then
+    echo "missing required command: memtier_benchmark" >&2
+    exit 1
+fi
+
+if [[ ! -x "${GARNET_BIN}" ]]; then
+    cargo build -p garnet-server --release --manifest-path "${MANIFEST_PATH}" >/dev/null
+fi
+if [[ ! -x "${GARNET_BIN}" ]]; then
+    echo "garnet-server binary not found: ${GARNET_BIN}" >&2
+    exit 1
+fi
+
+mkdir -p "${OUTDIR}"
+
+validate_memtier_log() {
+    local mode="$1"
+    local expected_requests="$2"
+    local log_file="$3"
+
+    local got_threads got_conns got_requests
+    got_threads="$(awk '/Threads$/{print $1; exit}' "${log_file}")"
+    got_conns="$(awk '/Connections per thread$/{print $1; exit}' "${log_file}")"
+    got_requests="$(awk '/Requests per client$/{print $1; exit}' "${log_file}")"
+    if [[ "${got_threads}" != "${THREADS}" ]]; then
+        echo "unexpected thread count in ${log_file}: expected ${THREADS}, got ${got_threads}" >&2
+        exit 1
+    fi
+    if [[ "${got_conns}" != "${CONNS}" ]]; then
+        echo "unexpected connection count in ${log_file}: expected ${CONNS}, got ${got_conns}" >&2
+        exit 1
+    fi
+    if [[ "${got_requests}" != "${expected_requests}" ]]; then
+        echo "unexpected request count in ${log_file}: expected ${expected_requests}, got ${got_requests}" >&2
+        exit 1
+    fi
+
+    local run_avg_ops
+    run_avg_ops="$(perl -ne 'if (/\[RUN #1.*avg:\s*([0-9.]+)\)\s*ops\/sec/) { $ops = $1; } END { print $ops if defined $ops; }' "${log_file}")"
+    if ! awk -v avg="${run_avg_ops:-0}" 'BEGIN { exit !(avg > 0) }'; then
+        echo "RUN avg Ops/sec was non-positive in ${log_file}" >&2
+        exit 1
+    fi
+
+    if [[ "${mode}" == "set" ]]; then
+        if ! awk '/^Sets[[:space:]]/{ok=($2 > 0)} END{exit !(ok)}' "${log_file}" 2>/dev/null; then
+            echo "SET Ops/sec was non-positive in ${log_file}" >&2
+            exit 1
+        fi
+    fi
+    if [[ "${mode}" == "get" ]]; then
+        if ! awk '/^Gets[[:space:]]/{ok=($2 > 0)} END{exit !(ok)}' "${log_file}" 2>/dev/null; then
+            echo "GET Ops/sec was non-positive in ${log_file}" >&2
+            exit 1
+        fi
+    fi
+}
+
+run_memtier() {
+    local mode="$1"
+    local requests="$2"
+    local port="$3"
+    local out_log="$4"
+    local ratio="1:0"
+    if [[ "${mode}" == "get" ]]; then
+        ratio="0:1"
+    fi
+
+    taskset -c "${CLIENT_CPU_SET}" \
+        "${MEMTIER_BIN}" \
+        -p "${port}" \
+        -t "${THREADS}" \
+        -c "${CONNS}" \
+        -n "${requests}" \
+        --ratio "${ratio}" \
+        --pipeline "${PIPELINE}" \
+        --data-size-range "${SIZE_RANGE}" \
+        --distinct-client-seed \
+        --hide-histogram \
+        --key-pattern=P:P \
+        --key-prefix "" \
+        --print-percentiles 50,90,99,99.9,99.99 \
+        >"${out_log}" 2>&1
+
+    validate_memtier_log "${mode}" "${requests}" "${out_log}"
+}
+
+stop_server() {
+    if [[ -n "${SERVER_PID}" ]] && kill -0 "${SERVER_PID}" 2>/dev/null; then
+        kill "${SERVER_PID}" 2>/dev/null || true
+        wait "${SERVER_PID}" 2>/dev/null || true
+    fi
+    SERVER_PID=""
+}
+
+start_target_server() {
+    local target="$1"
+    local port="$2"
+    local server_log="$3"
+
+    stop_server
+
+    if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
+        echo "port ${port} already in use; adjust PORT_BASE or stop the existing process" >&2
+        exit 1
+    fi
+
+    if [[ "${target}" == "garnet" ]]; then
+        taskset -c "${SERVER_CPU_SET}" env \
+            GARNET_BIND_ADDR="127.0.0.1:${port}" \
+            GARNET_TSAVORITE_STRING_STORE_SHARDS="${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}" \
+            "${GARNET_BIN}" >"${server_log}" 2>&1 &
+        SERVER_PID=$!
+    elif [[ "${target}" == "dragonfly" ]]; then
+        if [[ -z "${DRAGONFLY_BIN}" ]]; then
+            echo "dragonfly binary not found; set DRAGONFLY_BIN=/path/to/dragonfly" >&2
+            exit 1
+        fi
+        taskset -c "${SERVER_CPU_SET}" \
+            "${DRAGONFLY_BIN}" --bind 127.0.0.1 --port "${port}" --dbfilename "" >"${server_log}" 2>&1 &
+        SERVER_PID=$!
+    else
+        echo "unknown target: ${target}" >&2
+        exit 1
+    fi
+
+    for _ in $(seq 1 200); do
+        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo "${target} server exited before ready (see ${server_log})" >&2
+            exit 1
+        fi
+        if nc -z 127.0.0.1 "${port}" 2>/dev/null; then
+            return 0
+        fi
+        sleep 0.05
+    done
+
+    echo "${target} server did not become ready on port ${port}" >&2
+    exit 1
+}
+
+capture_perf_profile() {
+    local target="$1"
+    local mode="$2"
+    local run_dir="$3"
+    local port="$4"
+    local perf_data="${run_dir}/perf.data"
+    local bench_log="${run_dir}/memtier-${mode}.log"
+    local perf_report="${run_dir}/perf-report-${mode}.txt"
+    local perf_script="${run_dir}/perf-script-${mode}.txt"
+
+    run_memtier "set" "${PRELOAD_REQUESTS}" "${port}" "${run_dir}/preload.log"
+
+    taskset -c "${CLIENT_CPU_SET}" \
+        "${MEMTIER_BIN}" \
+        -p "${port}" \
+        -t "${THREADS}" \
+        -c "${CONNS}" \
+        -n "${REQUESTS}" \
+        --ratio "$([[ "${mode}" == "set" ]] && echo "1:0" || echo "0:1")" \
+        --pipeline "${PIPELINE}" \
+        --data-size-range "${SIZE_RANGE}" \
+        --distinct-client-seed \
+        --hide-histogram \
+        --key-pattern=P:P \
+        --key-prefix "" \
+        --print-percentiles 50,90,99,99.9,99.99 \
+        >"${bench_log}" 2>&1 &
+    local bench_pid=$!
+
+    sudo perf record -F "${PERF_FREQ}" -g -p "${SERVER_PID}" -o "${perf_data}" >/dev/null 2>&1 &
+    local perf_pid=$!
+
+    wait "${bench_pid}"
+    validate_memtier_log "${mode}" "${REQUESTS}" "${bench_log}"
+
+    if kill -0 "${perf_pid}" 2>/dev/null; then
+        kill -INT "${perf_pid}" 2>/dev/null || true
+    fi
+    wait "${perf_pid}" 2>/dev/null || true
+
+    perf report --stdio --no-children -i "${perf_data}" >"${perf_report}" 2>&1 || true
+    perf script -i "${perf_data}" >"${perf_script}" 2>&1 || true
+
+    if [[ -n "${FLAMEGRAPH_DIR}" ]] && [[ -f "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" ]] && [[ -f "${FLAMEGRAPH_DIR}/flamegraph.pl" ]]; then
+        "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" "${perf_script}" | \
+            "${FLAMEGRAPH_DIR}/flamegraph.pl" >"${run_dir}/flame-${target}-${mode}.svg"
+    fi
+}
+
+target_index=0
+for target in ${TARGETS}; do
+    port=$((PORT_BASE + target_index))
+    target_dir="${OUTDIR}/${target}"
+    mkdir -p "${target_dir}"
+    start_target_server "${target}" "${port}" "${target_dir}/server.log"
+    for workload in ${WORKLOADS}; do
+        run_dir="${target_dir}/${workload}"
+        mkdir -p "${run_dir}"
+        capture_perf_profile "${target}" "${workload}" "${run_dir}" "${port}"
+    done
+    stop_server
+    target_index=$((target_index + 1))
+done
+
+echo "linux perf differential profiling completed"
+echo "outdir=${OUTDIR}"

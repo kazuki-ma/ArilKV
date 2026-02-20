@@ -229,6 +229,8 @@ Rust側でフレームポインタが必要なら、Brendan Greggが述べる通
 - Local command used for reproducible capture:
   - `cd garnet-rs && ./benches/local_hotspot_framegraph_macos.sh`
   - `cd garnet-rs && SHARD_COUNTS='1 2 4 8 16' REQUESTS=20000 ./benches/sweep_string_store_shards_local.sh`
+  - Linux differential profiling harness:
+    `cd garnet-rs && ./benches/linux_perf_diff_profile.sh`
 
 ### Local findings mapped to this report
 
