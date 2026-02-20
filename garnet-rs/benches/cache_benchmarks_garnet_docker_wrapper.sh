@@ -12,6 +12,8 @@ READ_BUFFER_SIZE="${CACHE_BENCH_GARNET_READ_BUFFER_SIZE:-}"
 VERSION_STRING="${CACHE_BENCH_GARNET_VERSION:-garnet-rs (docker:${IMAGE})}"
 PAGE_SIZE_BITS="${CACHE_BENCH_GARNET_PAGE_SIZE_BITS:-${GARNET_TSAVORITE_PAGE_SIZE_BITS:-12}}"
 HASH_INDEX_SIZE_BITS="${CACHE_BENCH_GARNET_HASH_INDEX_SIZE_BITS:-${GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS:-}}"
+STRING_STORE_SHARDS="${CACHE_BENCH_GARNET_STRING_STORE_SHARDS:-${GARNET_TSAVORITE_STRING_STORE_SHARDS:-}}"
+THREAD_HINT_RAW=""
 MEMORY_LIMIT_RAW=""
 INDEX_LIMIT_RAW=""
 
@@ -81,7 +83,11 @@ while [[ $# -gt 0 ]]; do
             echo "unix socket mode is not supported by garnet-rs docker wrapper" >&2
             exit 2
             ;;
-        --miniothreads|--maxiothreads|--minthreads|--maxthreads|--readcache)
+        --miniothreads|--maxiothreads|--readcache)
+            shift 2
+            ;;
+        --minthreads|--maxthreads)
+            THREAD_HINT_RAW="${2:-}"
             shift 2
             ;;
         --no-obj|--aof-null-device)
@@ -148,6 +154,12 @@ if [[ -n "${READ_BUFFER_SIZE}" ]]; then
 fi
 if [[ -n "${HASH_INDEX_SIZE_BITS}" ]]; then
     RUN_ARGS+=( -e "GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS=${HASH_INDEX_SIZE_BITS}" )
+fi
+if [[ -z "${STRING_STORE_SHARDS}" && "${THREAD_HINT_RAW}" =~ ^[0-9]+$ ]] && (( THREAD_HINT_RAW > 0 )); then
+    STRING_STORE_SHARDS="${THREAD_HINT_RAW}"
+fi
+if [[ -n "${STRING_STORE_SHARDS}" ]]; then
+    RUN_ARGS+=( -e "GARNET_TSAVORITE_STRING_STORE_SHARDS=${STRING_STORE_SHARDS}" )
 fi
 if [[ -n "${PAGE_SIZE_BITS}" ]]; then
     RUN_ARGS+=( -e "GARNET_TSAVORITE_PAGE_SIZE_BITS=${PAGE_SIZE_BITS}" )

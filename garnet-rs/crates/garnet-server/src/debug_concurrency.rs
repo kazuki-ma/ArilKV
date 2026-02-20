@@ -17,6 +17,7 @@ pub enum LockClass {
 }
 
 impl LockClass {
+    #[cfg(any(debug_assertions, test))]
     #[inline]
     fn order(self) -> u8 {
         match self {
@@ -113,6 +114,8 @@ fn before_lock(class: LockClass, name: &'static str) {
             );
         }
     });
+    #[cfg(not(any(debug_assertions, test)))]
+    let _ = (class, name);
 }
 
 #[inline]
@@ -121,6 +124,8 @@ fn lock_acquired(class: LockClass, name: &'static str) {
     HELD_LOCKS.with(|held| {
         held.borrow_mut().push((class, name));
     });
+    #[cfg(not(any(debug_assertions, test)))]
+    let _ = (class, name);
 }
 
 #[inline]
@@ -137,6 +142,8 @@ fn lock_released(class: LockClass, name: &'static str) {
             "lock tracker mismatch on release"
         );
     });
+    #[cfg(not(any(debug_assertions, test)))]
+    let _ = (class, name);
 }
 
 #[cfg(any(debug_assertions, test))]

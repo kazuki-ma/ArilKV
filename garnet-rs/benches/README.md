@@ -43,8 +43,11 @@ Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark config
 
 The wrapper maps `cache-benchmarks` `--memory` into
 `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES` and `--index` into
-`GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS` automatically, so high-volume SET
-warmups do not hit tiny default capacities.
+`GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS` automatically.
+
+It also maps thread hints (`--minthreads` / `--maxthreads`) into
+`GARNET_TSAVORITE_STRING_STORE_SHARDS` when that variable is not explicitly set.
+This activates string-store lock striping during cache-benchmarks runs.
 
 For lock-striping experiments on string keys, set
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `1`) to a higher value, e.g.
