@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 135
+> **Current Iteration**: 136
 
 ---
 
@@ -208,6 +208,7 @@
 | 11.17 | Fix hotspot capture fidelity by stopping macOS `sample` when benchmark ends | DONE | 11.13 | Updated `local_hotspot_framegraph_macos.sh` to run sampling in background and terminate it when memtier finishes, avoiding idle-tail stack pollution on short/fast runs. Documented behavior in `garnet-rs/benches/README.md`. |
 | 11.18 | Integrate optional owner-thread routing for hot single-key string commands | DONE | 11.16 | Added optional routing in `handle_connection` gated by `GARNET_STRING_OWNER_THREADS` (clamped to shard count). Routed commands: `GET/SET/INCR/DECR/EXPIRE/PEXPIRE/TTL/PTTL/PERSIST` and single-key `DEL`. Added helper tests (`owner_routed_shard_selection_handles_single_and_multi_key_commands`, `execute_frame_via_processor_matches_direct_execution`) and verified compatibility path with `GARNET_STRING_OWNER_THREADS=2 cargo test -p garnet-server --test redis_cli_compat`. |
 | 11.19 | Measure owner-thread routing sensitivity vs owner-thread count (local, shard=16) | DONE | 11.18 | Local sweep (`threads=8`, `conns=16`, `requests=20000`, `shards=16`) with `GARNET_STRING_OWNER_THREADS={0,4,8,16}`: `0 => SET/GET 224291/290076`, `4 => 231361/287302`, `8 => 235927/274015`, `16 => 257485/288272`. For low-contention `shards=1`, enabling owner routing showed small regression (`330746/330764` -> `320563/328595` with owners=8). Current position: keep owner routing opt-in; use for high-contention/high-shard experiments. |
+| 11.20 | Run shard sweep under owner-thread routing to identify practical shard band | DONE | 11.19 | Local sweep (`threads=8`, `conns=16`, `requests=20000`, `GARNET_STRING_OWNER_THREADS=16`) over `shards=1/2/4/8/16`: `1 => 314106/333952`, `2 => 329537/333944`, `4 => 321031/335535`, `8 => 300223/329379`, `16 => 251922/287843` (SET/GET). Best observed band is `2-4` shards; high shard counts still regress materially. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.9 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). Local macOS pre-check is complete via 11.9; this task remains Linux-native differential profiling. |
 | 11.6 | Add automated performance regression gate | TODO | 11.5 | Add repeatable benchmark harness (median of N runs) with thresholds on ops/sec and p99 latency in CI/nightly. |
 
