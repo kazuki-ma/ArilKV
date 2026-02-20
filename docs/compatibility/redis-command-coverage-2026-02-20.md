@@ -90,6 +90,7 @@ A new command currently needs changes in multiple files/branches:
   - inline unit tests have been moved to `garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs` for faster production-code review.
   - error handling and storage error mapping have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/errors.rs`.
   - stored/object value codec and numeric parser utilities have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/value_codec.rs`.
+  - RESP formatting and ASCII command option helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/resp.rs`.
 
 Conclusion:
 
@@ -146,7 +147,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-062255`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-062408`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified

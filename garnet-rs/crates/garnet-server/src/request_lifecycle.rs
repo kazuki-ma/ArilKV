@@ -33,6 +33,7 @@ const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 mod errors;
 mod hash_commands;
 mod list_commands;
+mod resp;
 mod server_commands;
 mod set_commands;
 mod string_commands;
@@ -42,6 +43,10 @@ mod zset_commands;
 pub use self::errors::RequestExecutionError;
 use self::errors::{
     map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
+};
+use self::resp::{
+    append_bulk_array, append_bulk_string, append_integer, append_null_bulk_string,
+    append_simple_string, ascii_eq_ignore_case,
 };
 use self::value_codec::{
     decode_object_value, decode_stored_value, deserialize_hash_object_payload,
@@ -1155,49 +1160,6 @@ fn instant_from_unix_millis(unix_millis: u64) -> Option<Instant> {
     }
     let delta_millis = unix_millis.checked_sub(now_unix_millis)?;
     now.checked_add(Duration::from_millis(delta_millis))
-}
-
-fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
-    if input.len() != expected_upper.len() {
-        return false;
-    }
-    input
-        .iter()
-        .zip(expected_upper.iter())
-        .all(|(lhs, rhs)| lhs.to_ascii_uppercase() == *rhs)
-}
-
-fn append_simple_string(response_out: &mut Vec<u8>, value: &[u8]) {
-    response_out.push(b'+');
-    response_out.extend_from_slice(value);
-    response_out.extend_from_slice(b"\r\n");
-}
-
-fn append_bulk_string(response_out: &mut Vec<u8>, value: &[u8]) {
-    response_out.extend_from_slice(b"$");
-    response_out.extend_from_slice(value.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
-    response_out.extend_from_slice(value);
-    response_out.extend_from_slice(b"\r\n");
-}
-
-fn append_bulk_array(response_out: &mut Vec<u8>, items: &[&[u8]]) {
-    response_out.push(b'*');
-    response_out.extend_from_slice(items.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
-    for item in items {
-        append_bulk_string(response_out, item);
-    }
-}
-
-fn append_null_bulk_string(response_out: &mut Vec<u8>) {
-    response_out.extend_from_slice(b"$-1\r\n");
-}
-
-fn append_integer(response_out: &mut Vec<u8>, value: i64) {
-    response_out.push(b':');
-    response_out.extend_from_slice(value.to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
 }
 
 struct KvSessionFunctions;
