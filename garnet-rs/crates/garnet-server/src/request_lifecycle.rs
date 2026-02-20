@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
     DeleteInfo, DeleteOperationStatus, ReadInfo, ReadOperationStatus, RmwOperationStatus,
-    TsavoriteKV, TsavoriteKvConfig, TsavoriteKvInitError, UpsertInfo,
+    TsavoriteKV, TsavoriteKvInitError, UpsertInfo,
 };
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
@@ -28,6 +28,7 @@ const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 
+mod config;
 mod errors;
 mod hash_commands;
 mod list_commands;
@@ -41,6 +42,11 @@ mod string_commands;
 mod value_codec;
 mod zset_commands;
 
+use self::config::{
+    scale_hash_index_bits_for_shards, string_store_shard_count_from_env, tsavorite_config_from_env,
+};
+#[cfg(test)]
+use self::config::{string_store_shard_count_from_values, tsavorite_config_from_values};
 pub use self::errors::RequestExecutionError;
 use self::errors::{
     map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
@@ -667,78 +673,6 @@ impl RequestProcessor {
         let slot = watch_version_slot(key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
     }
-}
-
-fn tsavorite_config_from_env() -> TsavoriteKvConfig {
-    tsavorite_config_from_values(
-        parse_env_u8(GARNET_HASH_INDEX_SIZE_BITS_ENV),
-        parse_env_u8(GARNET_PAGE_SIZE_BITS_ENV),
-        parse_env_usize(GARNET_MAX_IN_MEMORY_PAGES_ENV),
-    )
-}
-
-fn tsavorite_config_from_values(
-    hash_index_size_bits: Option<u8>,
-    page_size_bits: Option<u8>,
-    max_in_memory_pages: Option<usize>,
-) -> TsavoriteKvConfig {
-    let mut config = TsavoriteKvConfig::default();
-    config.hash_index_size_bits = DEFAULT_SERVER_HASH_INDEX_SIZE_BITS;
-    if let Some(bits) = hash_index_size_bits {
-        if (1..=30).contains(&bits) {
-            config.hash_index_size_bits = bits;
-        }
-    }
-    if let Some(bits) = page_size_bits {
-        if (1..=30).contains(&bits) {
-            config.page_size_bits = bits;
-        }
-    }
-    if let Some(max_pages) = max_in_memory_pages {
-        if max_pages > 0 {
-            config.max_in_memory_pages = max_pages;
-        }
-    }
-    config
-}
-
-fn string_store_shard_count_from_env() -> usize {
-    let explicit_shards =
-        parse_env_usize(GARNET_STRING_STORE_SHARDS_ENV).filter(|count| *count > 0);
-    let owner_threads = parse_env_usize(GARNET_STRING_OWNER_THREADS_ENV).filter(|count| *count > 0);
-    string_store_shard_count_from_values(explicit_shards, owner_threads)
-}
-
-fn string_store_shard_count_from_values(
-    explicit_shards: Option<usize>,
-    owner_threads: Option<usize>,
-) -> usize {
-    if let Some(explicit) = explicit_shards {
-        return explicit;
-    }
-
-    match owner_threads {
-        Some(1) => SINGLE_OWNER_THREAD_STRING_STORE_SHARDS,
-        Some(_) => DEFAULT_STRING_STORE_SHARDS,
-        None => DEFAULT_STRING_STORE_SHARDS,
-    }
-}
-
-fn scale_hash_index_bits_for_shards(base_bits: u8, shard_count: usize) -> u8 {
-    if shard_count <= 1 {
-        return base_bits;
-    }
-
-    let shard_shift = usize::BITS - (shard_count.saturating_sub(1)).leading_zeros();
-    base_bits.saturating_sub(shard_shift as u8).max(1)
-}
-
-fn parse_env_u8(key: &str) -> Option<u8> {
-    std::env::var(key).ok()?.parse::<u8>().ok()
-}
-
-fn parse_env_usize(key: &str) -> Option<usize> {
-    std::env::var(key).ok()?.parse::<usize>().ok()
 }
 
 #[inline]

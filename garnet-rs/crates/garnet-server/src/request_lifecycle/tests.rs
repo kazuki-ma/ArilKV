@@ -7,7 +7,8 @@ use std::thread;
 use std::time::Duration;
 use tsavorite::{
     DeleteOperationError, ISessionFunctions, PageManagerError, PageResidencyError,
-    ReadOperationError, RecordInfo, RmwOperationError, UpsertOperationError, WriteReason,
+    ReadOperationError, RecordInfo, RmwOperationError, TsavoriteKvConfig, UpsertOperationError,
+    WriteReason,
 };
 
 fn parse_integer_response(response: &[u8]) -> i64 {

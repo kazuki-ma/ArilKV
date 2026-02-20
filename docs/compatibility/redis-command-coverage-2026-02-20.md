@@ -94,6 +94,7 @@ A new command currently needs changes in multiple files/branches:
   - Tsavorite session callback implementations have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/session_functions.rs`.
   - object-store access and object payload persistence helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/object_store.rs`.
   - migration export/import and slot-migration helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/migration.rs`.
+  - tsavorite/environment configuration helpers have been split to `garnet-rs/crates/garnet-server/src/request_lifecycle/config.rs`.
 
 Conclusion:
 
@@ -150,7 +151,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-063054`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-063342`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
