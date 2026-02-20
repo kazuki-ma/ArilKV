@@ -44,6 +44,7 @@ Each run writes `redis-official-benchmark-<timestamp>.txt` with benchmark config
 - `GARNET_BIND_ADDR` (single base bind, default `127.0.0.1:6379`)
 - `GARNET_BIND_ADDRS` (comma-separated explicit binds; takes priority over `GARNET_BIND_ADDR`)
 - `GARNET_OWNER_NODE_COUNT` (optional, default `1`; when `>1`, expands from `GARNET_BIND_ADDR` to sequential ports)
+- `GARNET_MULTI_PORT_CLUSTER_MODE` (optional bool, default `0`; when enabled with multi-port launch, each port gets a local cluster view and slot-based `MOVED` routing)
 - `GARNET_READ_BUFFER_SIZE`
 
 Examples:
@@ -57,6 +58,10 @@ GARNET_BIND_ADDR=127.0.0.1:6389 GARNET_OWNER_NODE_COUNT=4 cargo run -p garnet-se
 
 # explicit multi-port list
 GARNET_BIND_ADDRS=127.0.0.1:6389,127.0.0.1:7390 cargo run -p garnet-server
+
+# 2-node in-process cluster routing (slot modulo split)
+GARNET_BIND_ADDR=127.0.0.1:6389 GARNET_OWNER_NODE_COUNT=2 \
+  GARNET_MULTI_PORT_CLUSTER_MODE=1 cargo run -p garnet-server
 ```
 
 ## `tidwall/cache-benchmarks` integration

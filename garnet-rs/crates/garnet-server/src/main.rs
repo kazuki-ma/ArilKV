@@ -1,4 +1,7 @@
-use garnet_server::{run, run_with_shutdown, ServerConfig, ServerMetrics};
+use garnet_cluster::{
+    ClusterConfig, ClusterConfigStore, SlotState, Worker, WorkerRole, HASH_SLOT_COUNT,
+};
+use garnet_server::{run, run_with_shutdown_and_cluster_config, ServerConfig, ServerMetrics};
 use std::net::SocketAddr;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -31,6 +34,7 @@ fn parse_server_config_from_values(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ServerLaunchConfig {
     bind_addrs: Vec<SocketAddr>,
+    multi_port_cluster_mode: bool,
     read_buffer_size: usize,
 }
 
@@ -52,6 +56,25 @@ fn parse_read_buffer_size(read_buffer_size: Option<&str>) -> std::io::Result<usi
             )
         }),
         None => Ok(ServerConfig::default().read_buffer_size),
+    }
+}
+
+fn parse_bool_env_flag(raw: Option<&str>, key: &str) -> std::io::Result<bool> {
+    match raw {
+        None => Ok(false),
+        Some(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "1" | "true" | "yes" | "on" => Ok(true),
+                "0" | "false" | "no" | "off" => Ok(false),
+                _ => Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "invalid {key} `{value}`: expected one of 1/0/true/false/yes/no/on/off"
+                    ),
+                )),
+            }
+        }
     }
 }
 
@@ -151,12 +174,16 @@ fn parse_server_launch_config_from_values(
     bind_addr: Option<&str>,
     bind_addrs: Option<&str>,
     owner_node_count: Option<&str>,
+    multi_port_cluster_mode: Option<&str>,
     read_buffer_size: Option<&str>,
 ) -> std::io::Result<ServerLaunchConfig> {
     let bind_addrs = parse_bind_addrs_from_values(bind_addrs, bind_addr, owner_node_count)?;
+    let multi_port_cluster_mode =
+        parse_bool_env_flag(multi_port_cluster_mode, "GARNET_MULTI_PORT_CLUSTER_MODE")?;
     let read_buffer_size = parse_read_buffer_size(read_buffer_size)?;
     Ok(ServerLaunchConfig {
         bind_addrs,
+        multi_port_cluster_mode,
         read_buffer_size,
     })
 }
@@ -166,6 +193,9 @@ fn parse_server_launch_config_from_env() -> std::io::Result<ServerLaunchConfig> 
         std::env::var("GARNET_BIND_ADDR").ok().as_deref(),
         std::env::var("GARNET_BIND_ADDRS").ok().as_deref(),
         std::env::var("GARNET_OWNER_NODE_COUNT").ok().as_deref(),
+        std::env::var("GARNET_MULTI_PORT_CLUSTER_MODE")
+            .ok()
+            .as_deref(),
         std::env::var("GARNET_READ_BUFFER_SIZE").ok().as_deref(),
     )
 }
@@ -181,9 +211,73 @@ struct ListenerThreadResult {
     result: std::io::Result<()>,
 }
 
+fn cluster_config_error_to_io(context: &str, error: impl core::fmt::Display) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, format!("{context}: {error}"))
+}
+
+fn build_cluster_store_for_local_index(
+    bind_addrs: &[SocketAddr],
+    local_index: usize,
+) -> std::io::Result<Arc<ClusterConfigStore>> {
+    let local_addr = bind_addrs[local_index];
+    let mut config = ClusterConfig::new_local(
+        format!("node-{local_index}"),
+        local_addr.ip().to_string(),
+        local_addr.port(),
+    );
+
+    let mut worker_ids_by_index = vec![0u16; bind_addrs.len()];
+    worker_ids_by_index[local_index] = config
+        .local_worker()
+        .map_err(|error| cluster_config_error_to_io("failed to read local worker", error))?
+        .id;
+
+    for (index, bind_addr) in bind_addrs.iter().enumerate() {
+        if index == local_index {
+            continue;
+        }
+        let (next, worker_id) = config
+            .add_worker(Worker::new(
+                format!("node-{index}"),
+                bind_addr.ip().to_string(),
+                bind_addr.port(),
+                WorkerRole::Primary,
+            ))
+            .map_err(|error| cluster_config_error_to_io("failed to add cluster worker", error))?;
+        config = next;
+        worker_ids_by_index[index] = worker_id;
+    }
+
+    for slot in 0..HASH_SLOT_COUNT {
+        let owner_index = slot % bind_addrs.len();
+        let owner_worker_id = worker_ids_by_index[owner_index];
+        config = config
+            .set_slot_state(slot as u16, owner_worker_id, SlotState::Stable)
+            .map_err(|error| {
+                cluster_config_error_to_io("failed to set cluster slot owner", error)
+            })?;
+    }
+
+    Ok(Arc::new(ClusterConfigStore::new(config)))
+}
+
+fn build_multi_port_cluster_stores(
+    bind_addrs: &[SocketAddr],
+) -> std::io::Result<Vec<Arc<ClusterConfigStore>>> {
+    let mut stores = Vec::with_capacity(bind_addrs.len());
+    for local_index in 0..bind_addrs.len() {
+        stores.push(build_cluster_store_for_local_index(
+            bind_addrs,
+            local_index,
+        )?);
+    }
+    Ok(stores)
+}
+
 fn spawn_listener_thread(
     bind_addr: SocketAddr,
     read_buffer_size: usize,
+    cluster_config: Option<Arc<ClusterConfigStore>>,
     result_tx: mpsc::Sender<ListenerThreadResult>,
 ) -> std::io::Result<ListenerThread> {
     let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
@@ -200,9 +294,14 @@ fn spawn_listener_thread(
                         read_buffer_size,
                     };
                     let metrics = Arc::new(ServerMetrics::default());
-                    run_with_shutdown(config, metrics, async move {
-                        let _ = shutdown_rx.await;
-                    })
+                    run_with_shutdown_and_cluster_config(
+                        config,
+                        metrics,
+                        async move {
+                            let _ = shutdown_rx.await;
+                        },
+                        cluster_config,
+                    )
                     .await
                 }),
                 Err(error) => Err(std::io::Error::new(
@@ -254,8 +353,22 @@ fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Result<()> {
     let (result_tx, result_rx) = mpsc::channel::<ListenerThreadResult>();
     let mut listeners = Vec::with_capacity(launch.bind_addrs.len());
 
-    for bind_addr in launch.bind_addrs {
-        match spawn_listener_thread(bind_addr, launch.read_buffer_size, result_tx.clone()) {
+    let cluster_stores = if launch.multi_port_cluster_mode {
+        Some(build_multi_port_cluster_stores(&launch.bind_addrs)?)
+    } else {
+        None
+    };
+
+    for (index, bind_addr) in launch.bind_addrs.into_iter().enumerate() {
+        let cluster_store = cluster_stores
+            .as_ref()
+            .and_then(|stores| stores.get(index).cloned());
+        match spawn_listener_thread(
+            bind_addr,
+            launch.read_buffer_size,
+            cluster_store,
+            result_tx.clone(),
+        ) {
             Ok(listener) => listeners.push(listener),
             Err(error) => {
                 let _ = shutdown_and_join_listener_threads(listeners);
@@ -331,9 +444,10 @@ mod tests {
 
     #[test]
     fn parse_server_launch_config_defaults_to_single_default_bind_addr() {
-        let config = parse_server_launch_config_from_values(None, None, None, None).unwrap();
+        let config = parse_server_launch_config_from_values(None, None, None, None, None).unwrap();
         assert_eq!(config.bind_addrs.len(), 1);
         assert_eq!(config.bind_addrs[0], ServerConfig::default().bind_addr);
+        assert!(!config.multi_port_cluster_mode);
         assert_eq!(
             config.read_buffer_size,
             ServerConfig::default().read_buffer_size
@@ -346,6 +460,7 @@ mod tests {
             Some("127.0.0.1:7001"),
             Some("127.0.0.1:7101,127.0.0.1:7102"),
             Some("4"),
+            Some("true"),
             Some("2048"),
         )
         .unwrap();
@@ -357,6 +472,7 @@ mod tests {
                 "127.0.0.1:7102".parse::<SocketAddr>().unwrap()
             ]
         );
+        assert!(config.multi_port_cluster_mode);
         assert_eq!(config.read_buffer_size, 2048);
     }
 
@@ -365,6 +481,7 @@ mod tests {
         let error = parse_server_launch_config_from_values(
             None,
             Some("127.0.0.1:7101,127.0.0.1:7101"),
+            None,
             None,
             None,
         )
@@ -380,6 +497,7 @@ mod tests {
             Some("127.0.0.1:7101, ,127.0.0.1:7102"),
             None,
             None,
+            None,
         )
         .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
@@ -388,9 +506,14 @@ mod tests {
 
     #[test]
     fn parse_server_launch_config_expands_owner_node_count_from_bind_addr() {
-        let config =
-            parse_server_launch_config_from_values(Some("127.0.0.1:7300"), None, Some("4"), None)
-                .unwrap();
+        let config = parse_server_launch_config_from_values(
+            Some("127.0.0.1:7300"),
+            None,
+            Some("4"),
+            None,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             config.bind_addrs,
             vec![
@@ -404,8 +527,9 @@ mod tests {
 
     #[test]
     fn parse_server_launch_config_rejects_invalid_owner_node_count() {
-        let error = parse_server_launch_config_from_values(None, None, Some("not-a-number"), None)
-            .unwrap_err();
+        let error =
+            parse_server_launch_config_from_values(None, None, Some("not-a-number"), None, None)
+                .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("GARNET_OWNER_NODE_COUNT"));
     }
@@ -413,16 +537,21 @@ mod tests {
     #[test]
     fn parse_server_launch_config_rejects_zero_owner_node_count() {
         let error =
-            parse_server_launch_config_from_values(None, None, Some("0"), None).unwrap_err();
+            parse_server_launch_config_from_values(None, None, Some("0"), None, None).unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("must be >= 1"));
     }
 
     #[test]
     fn parse_server_launch_config_rejects_owner_node_count_port_overflow() {
-        let error =
-            parse_server_launch_config_from_values(Some("127.0.0.1:65535"), None, Some("2"), None)
-                .unwrap_err();
+        let error = parse_server_launch_config_from_values(
+            Some("127.0.0.1:65535"),
+            None,
+            Some("2"),
+            None,
+            None,
+        )
+        .unwrap_err();
         assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
         assert!(error.to_string().contains("exceeds 65535"));
     }
@@ -433,6 +562,7 @@ mod tests {
             Some("127.0.0.1:7400"),
             Some("127.0.0.1:7501,127.0.0.1:7502"),
             Some("8"),
+            Some("false"),
             None,
         )
         .unwrap();
@@ -442,6 +572,43 @@ mod tests {
                 "127.0.0.1:7501".parse::<SocketAddr>().unwrap(),
                 "127.0.0.1:7502".parse::<SocketAddr>().unwrap(),
             ]
+        );
+    }
+
+    #[test]
+    fn parse_server_launch_config_rejects_invalid_cluster_mode_flag() {
+        let error = parse_server_launch_config_from_values(None, None, None, Some("maybe"), None)
+            .unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("GARNET_MULTI_PORT_CLUSTER_MODE"));
+    }
+
+    #[test]
+    fn build_multi_port_cluster_stores_assigns_slot_owners_by_modulo() {
+        let bind_addrs = vec![
+            "127.0.0.1:8101".parse::<SocketAddr>().unwrap(),
+            "127.0.0.1:8102".parse::<SocketAddr>().unwrap(),
+            "127.0.0.1:8103".parse::<SocketAddr>().unwrap(),
+        ];
+        let stores = build_multi_port_cluster_stores(&bind_addrs).unwrap();
+        assert_eq!(stores.len(), 3);
+
+        let local0 = stores[0].load();
+        let local1 = stores[1].load();
+
+        assert_eq!(local0.local_worker().unwrap().endpoint(), "127.0.0.1:8101");
+        assert_eq!(local1.local_worker().unwrap().endpoint(), "127.0.0.1:8102");
+
+        let moved_from_0_for_slot_1 = local0.redirection_error_for_slot(1).unwrap();
+        assert_eq!(
+            moved_from_0_for_slot_1.as_deref(),
+            Some("MOVED 1 127.0.0.1:8102")
+        );
+
+        let moved_from_1_for_slot_2 = local1.redirection_error_for_slot(2).unwrap();
+        assert_eq!(
+            moved_from_1_for_slot_2.as_deref(),
+            Some("MOVED 2 127.0.0.1:8103")
         );
     }
 }
