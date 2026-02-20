@@ -50,6 +50,11 @@ It can map thread hints (`--minthreads` / `--maxthreads`) into
 `CACHE_BENCH_GARNET_AUTO_STRING_STORE_SHARDS=1` is set and
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` is not explicitly set.
 
+It can also map thread hints into owner-thread routing via
+`GARNET_STRING_OWNER_THREADS` when
+`CACHE_BENCH_GARNET_AUTO_OWNER_THREADS=1` is set and
+`GARNET_STRING_OWNER_THREADS` is not explicitly set.
+
 For lock-striping experiments on string keys, set
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `1`) to a higher value, e.g.
 `8` or `16`.
