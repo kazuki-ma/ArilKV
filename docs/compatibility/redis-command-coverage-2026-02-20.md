@@ -85,6 +85,7 @@ Conclusion:
 
 - `CommandSpec` centralization is in place for key policies and mutating/routing classification.
 - Handler dispatch and arity validation are still split between `command_dispatch.rs` + per-handler logic.
+- `RequestProcessor::execute` now uses explicit `CommandId` arms (no wildcard), so newly added `CommandId` variants trigger compile-time exhaustiveness checks.
 - The architecture is not yet a full registry-driven command engine.
 
 ## TODO (prioritized, non-Lua focus)

@@ -220,7 +220,13 @@ impl RequestProcessor {
             CommandId::Info => self.handle_info(args, response_out),
             CommandId::Dbsize => self.handle_dbsize(args, response_out),
             CommandId::Command => self.handle_command(args, response_out),
-            _ => Err(RequestExecutionError::UnknownCommand),
+            CommandId::Multi
+            | CommandId::Exec
+            | CommandId::Discard
+            | CommandId::Watch
+            | CommandId::Unwatch
+            | CommandId::Asking
+            | CommandId::Unknown => Err(RequestExecutionError::UnknownCommand),
         }
     }
 
