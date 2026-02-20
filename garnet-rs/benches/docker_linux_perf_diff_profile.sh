@@ -24,7 +24,9 @@ GARNET_TSAVORITE_STRING_STORE_SHARDS="${GARNET_TSAVORITE_STRING_STORE_SHARDS:-2}
 GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-262144}"
 
 OUTDIR_HOST="${OUTDIR_HOST:-${REPO_ROOT}/benches/results/linux-perf-diff-docker-$(date +%Y%m%d-%H%M%S)}"
-OUTDIR_CONTAINER="/work/garnet-rs/benches/results/$(basename "${OUTDIR_HOST}")"
+OUTDIR_BASENAME="$(basename "${OUTDIR_HOST}")"
+OUTDIR_PARENT_HOST="$(cd "$(dirname "${OUTDIR_HOST}")" && pwd)"
+OUTDIR_CONTAINER="/out-host/${OUTDIR_BASENAME}"
 
 if ! command -v docker >/dev/null 2>&1; then
     echo "missing required command: docker" >&2
@@ -40,6 +42,7 @@ mkdir -p "${OUTDIR_HOST}"
 
 docker run --rm --privileged --security-opt seccomp=unconfined \
     -v "${WORKSPACE_ROOT}:/work" \
+    -v "${OUTDIR_PARENT_HOST}:/out-host" \
     -w /work \
     "${DOCKER_IMAGE}" bash -lc "
 set -euo pipefail

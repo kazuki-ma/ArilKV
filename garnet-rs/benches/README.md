@@ -58,6 +58,9 @@ It can also map thread hints into owner-thread routing via
 For lock-striping experiments on string keys, set
 `GARNET_TSAVORITE_STRING_STORE_SHARDS` (default `2`) to a higher value, e.g.
 `8` or `16`.
+Server-side hash-index default sizing is
+`GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS=16` (when unset); override it explicitly
+for A/B runs.
 
 For fiber-free owner-thread routing experiments, set
 `GARNET_STRING_OWNER_THREADS=<n>` (optional, disabled by default). This routes

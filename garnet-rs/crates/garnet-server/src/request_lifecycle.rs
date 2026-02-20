@@ -30,6 +30,7 @@ const GARNET_PAGE_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_PAGE_SIZE_BITS";
 const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES";
 const GARNET_STRING_STORE_SHARDS_ENV: &str = "GARNET_TSAVORITE_STRING_STORE_SHARDS";
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
+const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const GARNET_LOG_STORAGE_FAILURES_ENV: &str = "GARNET_LOG_STORAGE_FAILURES";
@@ -2031,18 +2032,31 @@ impl RequestProcessor {
 }
 
 fn tsavorite_config_from_env() -> TsavoriteKvConfig {
+    tsavorite_config_from_values(
+        parse_env_u8(GARNET_HASH_INDEX_SIZE_BITS_ENV),
+        parse_env_u8(GARNET_PAGE_SIZE_BITS_ENV),
+        parse_env_usize(GARNET_MAX_IN_MEMORY_PAGES_ENV),
+    )
+}
+
+fn tsavorite_config_from_values(
+    hash_index_size_bits: Option<u8>,
+    page_size_bits: Option<u8>,
+    max_in_memory_pages: Option<usize>,
+) -> TsavoriteKvConfig {
     let mut config = TsavoriteKvConfig::default();
-    if let Some(bits) = parse_env_u8(GARNET_HASH_INDEX_SIZE_BITS_ENV) {
+    config.hash_index_size_bits = DEFAULT_SERVER_HASH_INDEX_SIZE_BITS;
+    if let Some(bits) = hash_index_size_bits {
         if (1..=30).contains(&bits) {
             config.hash_index_size_bits = bits;
         }
     }
-    if let Some(bits) = parse_env_u8(GARNET_PAGE_SIZE_BITS_ENV) {
+    if let Some(bits) = page_size_bits {
         if (1..=30).contains(&bits) {
             config.page_size_bits = bits;
         }
     }
-    if let Some(max_pages) = parse_env_usize(GARNET_MAX_IN_MEMORY_PAGES_ENV) {
+    if let Some(max_pages) = max_in_memory_pages {
         if max_pages > 0 {
             config.max_in_memory_pages = max_pages;
         }
@@ -3114,6 +3128,40 @@ mod tests {
         assert_eq!(scale_hash_index_bits_for_shards(25, 16), 21);
         assert_eq!(scale_hash_index_bits_for_shards(25, 17), 20);
         assert_eq!(scale_hash_index_bits_for_shards(3, 16), 1);
+    }
+
+    #[test]
+    fn tsavorite_config_values_use_server_hash_index_default() {
+        let config = tsavorite_config_from_values(None, None, None);
+        assert_eq!(
+            config.hash_index_size_bits,
+            DEFAULT_SERVER_HASH_INDEX_SIZE_BITS
+        );
+    }
+
+    #[test]
+    fn tsavorite_config_values_apply_valid_overrides() {
+        let config = tsavorite_config_from_values(Some(20), Some(14), Some(4096));
+        assert_eq!(config.hash_index_size_bits, 20);
+        assert_eq!(config.page_size_bits, 14);
+        assert_eq!(config.max_in_memory_pages, 4096);
+    }
+
+    #[test]
+    fn tsavorite_config_values_ignore_invalid_overrides() {
+        let config = tsavorite_config_from_values(Some(31), Some(31), Some(0));
+        assert_eq!(
+            config.hash_index_size_bits,
+            DEFAULT_SERVER_HASH_INDEX_SIZE_BITS
+        );
+        assert_eq!(
+            config.page_size_bits,
+            TsavoriteKvConfig::default().page_size_bits
+        );
+        assert_eq!(
+            config.max_in_memory_pages,
+            TsavoriteKvConfig::default().max_in_memory_pages
+        );
     }
 
     #[test]

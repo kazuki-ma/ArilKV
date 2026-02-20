@@ -9,7 +9,7 @@
 - Script: `garnet-rs/benches/linux_perf_diff_profile.sh`
 - Wrapper: `garnet-rs/benches/docker_linux_perf_diff_profile.sh`
 - Artifact root:
-  `garnet-rs/benches/results/linux-perf-diff-docker-20260220-035325`
+  `garnet-rs/benches/results/garnet-linux-perf-diff-post-hash-default-20260220-130508`
 
 ## Workload
 
@@ -26,10 +26,14 @@
 
 | Target | Workload | Ops/sec | Avg Lat (ms) | p99 (ms) |
 |---|---:|---:|---:|---:|
-| garnet | SET | 203,786 | 0.639 | 1.567 |
-| garnet | GET | 216,806 | 0.590 | 1.455 |
-| dragonfly | SET | 651,512 | 0.195 | 0.679 |
-| dragonfly | GET | 649,569 | 0.197 | 0.679 |
+| garnet | SET | 396,717 | 0.322 | 0.687 |
+| garnet | GET | 450,434 | 0.283 | 0.615 |
+| dragonfly | SET | 706,612 | 0.184 | 0.663 |
+| dragonfly | GET | 678,794 | 0.190 | 0.719 |
+
+Compared with the earlier same-day run using low hash-index default sizing, this
+reduced the throughput gap materially (roughly from ~3x to ~1.5-1.8x in this
+environment).
 
 ## `perf report` Hotspot Notes
 
@@ -39,8 +43,8 @@ sample tables and `perf script` traces are present.
 
 ### Garnet (user-space symbols)
 
-- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~9.9%)
-- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~8.5%)
+- SET: `tsavorite::hash_index::HashIndex::find_tag_entry` (~1.2%)
+- GET: `tsavorite::hash_index::HashIndex::find_tag_address` (~1.6%)
 - Shared: `std::sys::sync::mutex::futex::Mutex::lock_contended`
 - Shared: `garnet_cluster::redis_hash_slot`
 - Kernel-side dominant buckets include wakeups (`__wake_up_sync_key`,
@@ -60,7 +64,8 @@ This run indicates the gap is not dominated by a single allocator function.
 For Garnet, visible concentration is in:
 
 1. kernel wake/scheduling overhead
-2. hash-index lookup/update path (`find_tag_*`)
+2. command-path hashing/routing (`redis_hash_slot`) and remaining hash-index
+   lookup/update path (`find_tag_*`)
 3. contended mutex path
 
 Dragonfly shows more distributed io_uring/proactor + parser/hash hotspots with
@@ -72,4 +77,6 @@ higher aggregate throughput under the same load shape.
 - Benchmark run fails on memtier `handle error response:`
 - Garnet profile run uses higher default capacity:
   `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=262144`
-
+- Server-side default hash index sizing is set to
+  `DEFAULT_SERVER_HASH_INDEX_SIZE_BITS=16` (override via
+  `GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS`).
