@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-20
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 137
+> **Current Iteration**: 138
 
 ---
 
@@ -213,6 +213,7 @@
 | 11.22 | Add allocator A/B benchmark harness (default vs `mimalloc`) | DONE | 11.6 | Added optional `mimalloc` feature to `garnet-server` and new script `garnet-rs/benches/allocator_ab_local.sh` to build both allocators and compare median gate summaries (`comparison.txt`). Initial run (`/tmp/garnet-allocator-ab-u4-20260220-105849`) was near-neutral on throughput (`SET +0.23%`, `GET +0.44%`) with slight SET p99 improvement (`-5.3%`). |
 | 11.23 | Harden benchmark-run integrity checks (readiness + connection-error fail-fast) | DONE | 11.6 | Updated local benchmark/profile scripts (`sweep_string_store_shards_local.sh`, `perf_regression_gate_local.sh`, `local_hotspot_framegraph_macos.sh`, `linux_perf_diff_profile.sh`) with explicit `PING` readiness probes, fixed host targeting (`HOST=127.0.0.1` default), and strict memtier `Connection error:` detection to reject noisy/partial runs. |
 | 11.24 | Re-validate owner-thread default policy under clean runs (`shards=2`) | DONE | 11.23 | Clean local sweep (`threads=8`, `conns=16`, `requests=5000`, `shards=2`) with `owner_threads={0,1,2}` remained best at owner-disabled (`owner0 SET/GET 165361/165682`, `owner1 146488/154504`, `owner2 158124/157263`), so owner routing stays opt-in. |
+| 11.25 | Add local Docker instability recovery runbook and document local-only execution fallback | DONE | 11.23 | Added `garnet-rs/benches/DOCKER_TROUBLESHOOTING_LOCAL.md` with soft/hard restart flow, daemon/socket checks, and log inspection commands; linked from benchmark README and clarified GitHub Actions is unavailable in this environment so local scripts are the default path. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | TODO | 11.9 | Capture set/get workloads with identical parameters and publish top-hotspot delta analysis (CPU, lock wait, allocation, parser, network). Local macOS pre-check is complete via 11.9 and a fresh shard=`2` capture (`/tmp/garnet-hotspots-u3-20260220-105458`) shows leaf hotspots dominated by network+sync (`GET`: ~59.8% network / ~35.2% sync, `SET`: ~44.9% network / ~49.5% sync in top-20 leaves). Added Linux execution harness `garnet-rs/benches/linux_perf_diff_profile.sh`; Linux-native `perf` delta capture is still pending execution in a stable Linux runtime. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -234,6 +235,7 @@
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-20 | Treat benchmark/profiling automation as local-first in this execution environment and keep Docker recovery steps versioned next to benchmark scripts. | This environment cannot execute GitHub Actions directly; a checked-in local runbook reduces downtime from Docker daemon instability and keeps benchmark procedure reproducible. |
 | 2026-02-20 | Gate perf regressions using median-of-N memtier runs plus threshold checks, not single-run values. | Shared CI runners are noisy; median-of-N with explicit throughput/p99 thresholds reduces false positives while still catching material regressions. |
 | 2026-02-20 | Set string-store shard default policy to `2` (or `1` only when owner threads are explicitly `1`) based on matrix sweep medians. | Broader workload data showed shard `2` is the most stable throughput/latency balance across owner-routing modes, while high shard counts still regress due storage-path overhead. |
 | 2026-02-20 | Introduce debug/test-only lock-order and sync-point instrumentation in `garnet-server`, and gate new concurrency behavior with deterministic multi-thread tests. | Upcoming owner-thread / sharding changes increase concurrency complexity; deterministic schedule control and lock-order assertions are required to catch regressions before benchmark-only validation. |
@@ -505,3 +507,4 @@
 | 135 | 2026-02-20 | 11.5 | DONE | Added `garnet-rs/benches/linux_perf_diff_profile.sh` and README usage docs to standardize Linux differential profiling capture (`perf.data`, `perf report`, optional flamegraph) for `garnet` vs `dragonfly`; execution remains pending on stable Linux runtime. |
 | 136 | 2026-02-20 | 11.23 | DONE | Root-caused memtier startup noise to implicit `localhost` resolution; benchmark/profile scripts now enforce `HOST=127.0.0.1`, add explicit `PING` readiness checks, and fail runs on `Connection error:` to avoid polluted throughput numbers. |
 | 137 | 2026-02-20 | 11.24 | DONE | Revalidated owner-thread policy under clean-run harness (`/tmp/garnet-owner-default-check3-20260220-121223`) and confirmed owner-thread routing should remain opt-in for current shard=`2` default. |
+| 138 | 2026-02-20 | 11.25 | DONE | Added local Docker instability runbook (`garnet-rs/benches/DOCKER_TROUBLESHOOTING_LOCAL.md`), linked it from benchmark docs, and codified local-first benchmark execution when GitHub Actions is unavailable. |

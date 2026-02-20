@@ -114,6 +114,10 @@ JSON
 For investigation planning and unknown-item closure, see:
 `garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md`.
 
+If Docker Desktop is unstable (daemon socket unavailable, intermittent startup
+failure), use:
+`garnet-rs/benches/DOCKER_TROUBLESHOOTING_LOCAL.md`.
+
 ## Local GET/SET hotspot framegraph (macOS)
 
 Use `local_hotspot_framegraph_macos.sh` to capture GET-only and SET-only
@@ -218,6 +222,9 @@ Nightly/dispatch CI automation is defined in:
 
 - `.github/workflows/garnet-rs-perf-gate.yml`
 
+In this environment, GitHub Actions is not available, so run the local gate
+script directly.
+
 ## Linux Differential Profiling (`perf`)
 
 Use `linux_perf_diff_profile.sh` on a Linux host to capture `perf record`
@@ -240,6 +247,9 @@ Outputs under `/tmp/garnet-linux-perf-diff-<timestamp>/`:
 
 `HOST` defaults to `127.0.0.1` and is applied to server bind/probe and memtier
 targeting for consistent runs.
+`SERVER_CPU_SET` / `CLIENT_CPU_SET` now default to an automatic split from
+`nproc` when not specified, and non-root runs auto-prefix `perf record` with
+`sudo` if available.
 
 ## Allocator A/B (default vs mimalloc)
 

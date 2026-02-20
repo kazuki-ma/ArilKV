@@ -13,8 +13,8 @@ FLAMEGRAPH_DIR="${FLAMEGRAPH_DIR:-}"
 
 TARGETS="${TARGETS:-garnet dragonfly}"
 WORKLOADS="${WORKLOADS:-set get}"
-SERVER_CPU_SET="${SERVER_CPU_SET:-0-7}"
-CLIENT_CPU_SET="${CLIENT_CPU_SET:-8-15}"
+SERVER_CPU_SET="${SERVER_CPU_SET:-}"
+CLIENT_CPU_SET="${CLIENT_CPU_SET:-}"
 THREADS="${THREADS:-8}"
 CONNS="${CONNS:-16}"
 REQUESTS="${REQUESTS:-50000}"
@@ -26,6 +26,7 @@ PORT_BASE="${PORT_BASE:-16389}"
 OUTDIR="${OUTDIR:-/tmp/garnet-linux-perf-diff-$(date +%Y%m%d-%H%M%S)}"
 
 SERVER_PID=""
+PERF_PREFIX=()
 
 require_command() {
     local command="$1"
@@ -65,6 +66,51 @@ if [[ ! -x "${GARNET_BIN}" ]]; then
 fi
 
 mkdir -p "${OUTDIR}"
+
+assign_default_cpu_sets() {
+    if [[ -n "${SERVER_CPU_SET}" && -n "${CLIENT_CPU_SET}" ]]; then
+        return 0
+    fi
+
+    local cpu_count split server_default client_default
+    cpu_count="$(nproc)"
+    if (( cpu_count <= 1 )); then
+        server_default="0"
+        client_default="0"
+    elif (( cpu_count == 2 )); then
+        server_default="0"
+        client_default="1"
+    else
+        split=$((cpu_count / 2))
+        if (( split < 1 )); then
+            split=1
+        fi
+        server_default="0-$((split - 1))"
+        client_default="${split}-$((cpu_count - 1))"
+    fi
+
+    if [[ -z "${SERVER_CPU_SET}" ]]; then
+        SERVER_CPU_SET="${server_default}"
+    fi
+    if [[ -z "${CLIENT_CPU_SET}" ]]; then
+        CLIENT_CPU_SET="${client_default}"
+    fi
+}
+
+configure_perf_prefix() {
+    if [[ "$(id -u)" -eq 0 ]]; then
+        PERF_PREFIX=()
+        return 0
+    fi
+    if command -v sudo >/dev/null 2>&1; then
+        PERF_PREFIX=(sudo)
+        return 0
+    fi
+    PERF_PREFIX=()
+}
+
+assign_default_cpu_sets
+configure_perf_prefix
 
 validate_memtier_log() {
     local mode="$1"
@@ -240,7 +286,7 @@ capture_perf_profile() {
         >"${bench_log}" 2>&1 &
     local bench_pid=$!
 
-    sudo perf record -F "${PERF_FREQ}" -g -p "${SERVER_PID}" -o "${perf_data}" >/dev/null 2>&1 &
+    "${PERF_PREFIX[@]}" perf record -F "${PERF_FREQ}" -g -p "${SERVER_PID}" -o "${perf_data}" >/dev/null 2>&1 &
     local perf_pid=$!
 
     wait "${bench_pid}"
