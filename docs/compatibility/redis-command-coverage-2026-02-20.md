@@ -161,7 +161,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-065942`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-085145`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
@@ -171,3 +171,12 @@ Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-202
   - Garnet accepts `REPLICAOF` and replicates `SET/GET` from Redis master.
 - Garnet master -> Redis replica: `PASS`
   - Redis replica reaches `master_link_status=up` and receives probe writes from Garnet master.
+
+## Recent compatibility corrections (2026-02-21)
+
+- `GET` now returns `WRONGTYPE` when only an object key exists at the target key.
+- `SET` now evaluates `NX/XX` existence against both string/object stores and runs that check with the write in one critical section.
+- `SET` now overwrites existing object keys (Redis-compatible replacement semantics).
+- `DEL` now removes object keys as well as string keys.
+- `INCR/DECR` now return `WRONGTYPE` for object keys.
+- `EXPIRE/PEXPIRE/TTL/PTTL/PERSIST` now recognize object-key existence and operate correctly for object keys.

@@ -369,7 +369,7 @@ fn set_and_get_supports_1kb_payload_without_storage_failure() {
 }
 
 #[test]
-fn object_store_roundtrip_is_isolated_from_main_store() {
+fn object_store_roundtrip_respects_redis_type_semantics() {
     let processor = RequestProcessor::new().unwrap();
 
     processor.object_upsert(b"obj", 3, b"payload").unwrap();
@@ -381,10 +381,15 @@ fn object_store_roundtrip_is_isolated_from_main_store() {
     let mut response = Vec::new();
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nobj\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
-    processor
+    let err = processor
         .execute(&args[..meta.argument_count], &mut response)
+        .err()
         .unwrap();
-    assert_eq!(response, b"$-1\r\n");
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
 
     response.clear();
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nobj\r\n$3\r\nstr\r\n";
@@ -394,11 +399,6 @@ fn object_store_roundtrip_is_isolated_from_main_store() {
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
-    let (object_type, payload) = processor.object_read(b"obj").unwrap().unwrap();
-    assert_eq!(object_type, 3);
-    assert_eq!(payload, b"payload");
-
-    assert!(processor.object_delete(b"obj").unwrap());
     assert!(processor.object_read(b"obj").unwrap().is_none());
 
     response.clear();
@@ -1027,6 +1027,33 @@ fn executes_incr_command() {
 }
 
 #[test]
+fn incr_returns_wrongtype_for_object_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let incr = b"*2\r\n$4\r\nINCR\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(incr, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+}
+
+#[test]
 fn executes_del_command() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 3];
@@ -1044,6 +1071,36 @@ fn executes_del_command() {
         .execute(&args[..del_meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":1\r\n");
+}
+
+#[test]
+fn del_removes_object_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nobj\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let del = b"*2\r\n$3\r\nDEL\r\n$3\r\nobj\r\n";
+    let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nobj\r\n$5\r\nfield\r\n";
+    let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
 }
 
 #[test]
@@ -1115,6 +1172,57 @@ fn set_supports_nx_and_xx_conditions() {
 }
 
 #[test]
+fn set_nx_and_xx_respect_object_key_existence() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let set_nx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nstr\r\n$2\r\nNX\r\n";
+    let meta = parse_resp_command_arg_slices(set_nx, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let set_xx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nstr\r\n$2\r\nXX\r\n";
+    let meta = parse_resp_command_arg_slices(set_xx, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\nstr\r\n");
+
+    response.clear();
+    let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
+    let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+}
+
+#[test]
 fn set_with_px_expires_key() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -1158,6 +1266,40 @@ fn expiration_scan_removes_expired_keys_in_background_style() {
     response.clear();
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn expiration_scan_removes_expired_object_keys_in_background_style() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let pexpire = b"*3\r\n$7\r\nPEXPIRE\r\n$3\r\nkey\r\n$2\r\n10\r\n";
+    let meta = parse_resp_command_arg_slices(pexpire, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    thread::sleep(Duration::from_millis(20));
+    let removed = processor.expire_stale_keys(16).unwrap();
+    assert_eq!(removed, 1);
+
+    response.clear();
+    let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
+    let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
@@ -1241,6 +1383,76 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":-2\r\n");
+}
+
+#[test]
+fn expire_ttl_and_persist_apply_to_object_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":-1\r\n");
+
+    response.clear();
+    let expire = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let remaining = parse_integer_response(&response);
+    assert!((0..=1000).contains(&remaining));
+
+    response.clear();
+    let persist = b"*2\r\n$7\r\nPERSIST\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(persist, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":-1\r\n");
+
+    response.clear();
+    let pexpire_now = b"*3\r\n$7\r\nPEXPIRE\r\n$3\r\nkey\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(pexpire_now, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
+    let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
 }
 
 #[test]

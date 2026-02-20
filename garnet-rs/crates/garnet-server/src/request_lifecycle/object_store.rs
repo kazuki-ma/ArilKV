@@ -60,6 +60,7 @@ impl RequestProcessor {
         let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+                self.set_string_expiration_deadline(&key, None);
                 self.object_key_registry
                     .lock()
                     .expect("object key registry mutex poisoned")
@@ -82,6 +83,7 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<BTreeMap<Vec<u8>, Vec<u8>>>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -114,6 +116,7 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<Vec<Vec<u8>>>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -146,6 +149,7 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<BTreeSet<Vec<u8>>>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -176,6 +180,7 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {

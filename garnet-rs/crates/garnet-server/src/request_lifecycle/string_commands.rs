@@ -35,6 +35,9 @@ impl RequestProcessor {
                 Ok(())
             }
             ReadOperationStatus::NotFound => {
+                if self.object_key_exists(&key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
                 append_null_bulk_string(response_out);
                 Ok(())
             }
@@ -64,21 +67,57 @@ impl RequestProcessor {
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
+        let mut store = self.lock_string_store_for_shard(shard_index);
+        crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
+        let mut session = store.session(&self.functions);
+        let mut object_store = self
+            .object_store
+            .lock()
+            .expect("object store mutex poisoned");
+        let mut object_session = object_store.session(&self.object_functions);
+
+        let mut existence_output = Vec::new();
+        let string_exists = match session
+            .read(
+                &key,
+                &Vec::new(),
+                &mut existence_output,
+                &ReadInfo::default(),
+            )
+            .map_err(map_read_error)?
+        {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
+            ReadOperationStatus::NotFound => false,
+            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
+        };
+
+        existence_output.clear();
+        let object_exists = match object_session
+            .read(
+                &key,
+                &Vec::new(),
+                &mut existence_output,
+                &ReadInfo::default(),
+            )
+            .map_err(map_read_error)?
+        {
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
+            ReadOperationStatus::NotFound => false,
+            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
+        };
+
         if options.only_if_absent || options.only_if_present {
-            let exists = self.key_exists(&key)?;
-            if options.only_if_absent && exists {
+            let exists_any = string_exists || object_exists;
+            if options.only_if_absent && exists_any {
                 append_null_bulk_string(response_out);
                 return Ok(());
             }
-            if options.only_if_present && !exists {
+            if options.only_if_present && !exists_any {
                 append_null_bulk_string(response_out);
                 return Ok(());
             }
         }
 
-        let mut store = self.lock_string_store_for_shard(shard_index);
-        crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
-        let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         let stored_value = encode_stored_value(
@@ -91,10 +130,27 @@ impl RequestProcessor {
         session
             .upsert(&key, &stored_value, &mut output, &mut info)
             .map_err(map_upsert_error)?;
+        if object_exists {
+            let mut delete_info = DeleteInfo::default();
+            let status = object_session
+                .delete(&key, &mut delete_info)
+                .map_err(map_delete_error)?;
+            if matches!(status, DeleteOperationStatus::RetryLater) {
+                return Err(RequestExecutionError::StorageBusy);
+            }
+        }
+        drop(object_session);
+        drop(object_store);
         drop(session);
         drop(store);
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
+        if object_exists {
+            self.object_key_registry
+                .lock()
+                .expect("object key registry mutex poisoned")
+                .remove(&key);
+        }
         self.set_string_expiration_deadline_in_shard(
             &key,
             shard_index,
@@ -133,6 +189,7 @@ impl RequestProcessor {
 
         let mut deleted = 0i64;
         for key in keys {
+            let mut string_deleted = false;
             let mut store = self.lock_string_store_for_key(&key);
             let mut session = store.session(&self.functions);
             let mut info = DeleteInfo::default();
@@ -140,14 +197,21 @@ impl RequestProcessor {
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
-                    deleted += 1;
+                    string_deleted = true;
                     self.remove_string_key_metadata(&key);
-                    self.bump_watch_version(&key);
                 }
                 DeleteOperationStatus::NotFound => {}
                 DeleteOperationStatus::RetryLater => {
                     return Err(RequestExecutionError::StorageBusy);
                 }
+            }
+
+            let object_deleted = self.object_delete(&key)?;
+            if string_deleted || object_deleted {
+                deleted += 1;
+            }
+            if string_deleted && !object_deleted {
+                self.bump_watch_version(&key);
             }
         }
 
@@ -171,6 +235,9 @@ impl RequestProcessor {
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         self.expire_key_if_needed(&key)?;
+        if !self.key_exists(&key)? && self.object_key_exists(&key)? {
+            return Err(RequestExecutionError::WrongType);
+        }
         let input = delta.to_string().into_bytes();
         let mut output = Vec::new();
         let mut info = RmwInfo::default();
@@ -191,6 +258,9 @@ impl RequestProcessor {
             }
             Ok(RmwOperationStatus::RetryLater) => Err(RequestExecutionError::StorageBusy),
             Ok(RmwOperationStatus::NotFound) => {
+                if self.object_key_exists(&key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
                 let mut upsert_info = UpsertInfo::default();
                 let mut upsert_output = Vec::new();
                 let stored_value = encode_stored_value(&input, None);
@@ -247,31 +317,45 @@ impl RequestProcessor {
         let key = unsafe { args[1].as_slice() }.to_vec();
 
         self.expire_key_if_needed(&key)?;
-        if !self.key_exists(&key)? {
+        let string_exists = self.key_exists(&key)?;
+        let object_exists = self.object_key_exists(&key)?;
+        if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
         }
 
         if amount <= 0 {
-            let mut store = self.lock_string_store_for_key(&key);
-            let mut session = store.session(&self.functions);
-            let mut info = DeleteInfo::default();
-            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
-            match status {
-                DeleteOperationStatus::TombstonedInPlace
-                | DeleteOperationStatus::AppendedTombstone => {
-                    self.remove_string_key_metadata(&key);
+            let mut string_deleted = false;
+            if string_exists {
+                let mut store = self.lock_string_store_for_key(&key);
+                let mut session = store.session(&self.functions);
+                let mut info = DeleteInfo::default();
+                let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
+                match status {
+                    DeleteOperationStatus::TombstonedInPlace
+                    | DeleteOperationStatus::AppendedTombstone => {
+                        string_deleted = true;
+                    }
+                    DeleteOperationStatus::NotFound => {}
+                    DeleteOperationStatus::RetryLater => {
+                        return Err(RequestExecutionError::StorageBusy);
+                    }
+                }
+                self.remove_string_key_metadata(&key);
+            }
+            let object_deleted = if object_exists {
+                self.object_delete(&key)?
+            } else {
+                false
+            };
+            if string_deleted || object_deleted {
+                if string_deleted && !object_deleted {
                     self.bump_watch_version(&key);
-                    append_integer(response_out, 1);
-                    Ok(())
                 }
-                DeleteOperationStatus::NotFound => {
-                    self.remove_string_key_metadata(&key);
-                    append_integer(response_out, 0);
-                    Ok(())
-                }
-                DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
-            }?;
+                append_integer(response_out, 1);
+            } else {
+                append_integer(response_out, 0);
+            }
             return Ok(());
         }
 
@@ -283,7 +367,9 @@ impl RequestProcessor {
         let expiration = expiration_metadata_from_duration(duration)
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         self.set_string_expiration_deadline(&key, Some(expiration.deadline));
-        if !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))? {
+        if string_exists
+            && !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))?
+        {
             self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
             return Ok(());
@@ -328,7 +414,7 @@ impl RequestProcessor {
         let key = unsafe { args[1].as_slice() }.to_vec();
         self.expire_key_if_needed(&key)?;
 
-        if !self.key_exists(&key)? {
+        if !self.key_exists_any(&key)? {
             append_integer(response_out, -2);
             return Ok(());
         }
@@ -370,7 +456,9 @@ impl RequestProcessor {
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         self.expire_key_if_needed(&key)?;
-        if !self.key_exists(&key)? {
+        let string_exists = self.key_exists(&key)?;
+        let object_exists = self.object_key_exists(&key)?;
+        if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
         }
@@ -389,7 +477,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if !self.rewrite_existing_value_expiration(&key, None)? {
+        if string_exists && !self.rewrite_existing_value_expiration(&key, None)? {
             append_integer(response_out, 0);
             return Ok(());
         }

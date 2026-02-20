@@ -42,14 +42,21 @@ impl RequestProcessor {
             };
 
             self.remove_string_key_metadata(&key);
+            let object_deleted = self.object_delete(&key)?;
 
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     removed += 1;
-                    self.bump_watch_version(&key);
+                    if !object_deleted {
+                        self.bump_watch_version(&key);
+                    }
                 }
-                DeleteOperationStatus::NotFound => {}
+                DeleteOperationStatus::NotFound => {
+                    if object_deleted {
+                        removed += 1;
+                    }
+                }
                 DeleteOperationStatus::RetryLater => {
                     return Err(RequestExecutionError::StorageBusy);
                 }
@@ -120,6 +127,13 @@ impl RequestProcessor {
             ReadOperationStatus::NotFound => Ok(false),
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
+    }
+
+    pub(super) fn key_exists_any(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        if self.key_exists(key)? {
+            return Ok(true);
+        }
+        self.object_key_exists(key)
     }
 
     pub(super) fn upsert_string_value_for_migration(
@@ -264,6 +278,7 @@ impl RequestProcessor {
             self.bump_watch_version(key);
         }
         self.untrack_string_key_in_shard(key, shard_index);
+        let _ = self.object_delete(key)?;
         Ok(())
     }
 
