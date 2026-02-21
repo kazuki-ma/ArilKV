@@ -3552,7 +3552,7 @@ fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {
     owned
 }
 
-fn owned_frame_args_from_frame(frame: &[u8]) -> crate::connection_handler::OwnedFrameArgs {
+fn owned_frame_args_from_frame(frame: &[u8]) -> crate::connection_owner_routing::OwnedFrameArgs {
     let mut args = [ArgSlice::EMPTY; 64];
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     capture_owned_frame_args(frame, &args[..meta.argument_count]).unwrap()

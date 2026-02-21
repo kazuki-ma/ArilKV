@@ -9,6 +9,7 @@ mod cluster_control_plane;
 pub mod command_dispatch;
 pub mod command_spec;
 mod connection_handler;
+mod connection_owner_routing;
 mod connection_protocol;
 mod connection_routing;
 mod connection_transaction;
@@ -39,7 +40,7 @@ pub use command_dispatch::{
 };
 pub(crate) use connection_handler::{build_owner_thread_pool, handle_connection};
 #[cfg(test)]
-pub(crate) use connection_handler::{
+pub(crate) use connection_owner_routing::{
     capture_owned_frame_args, execute_frame_via_processor, execute_owned_args_via_processor,
     execute_owned_frame_args_via_processor, RoutedExecutionError,
 };

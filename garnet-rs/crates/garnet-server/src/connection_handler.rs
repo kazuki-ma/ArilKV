@@ -12,6 +12,9 @@ use crate::command_spec::{
     command_has_valid_arity, command_is_mutating, command_transaction_control,
     TransactionControlCommand,
 };
+use crate::connection_owner_routing::{
+    capture_owned_frame_args, execute_owned_frame_args_via_processor, RoutedExecutionError,
+};
 use crate::connection_protocol::{
     append_error_line, append_simple_string, append_wrong_arity_error_for_command,
     ascii_eq_ignore_case, parse_u16_ascii,
@@ -21,7 +24,7 @@ use crate::connection_routing::{
 };
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
-use crate::{RequestExecutionError, RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
+use crate::{RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
 
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 
@@ -361,123 +364,6 @@ pub(crate) async fn handle_connection(
             stream.write_all(&responses).await?;
         }
     }
-}
-
-#[derive(Debug)]
-pub(crate) enum RoutedExecutionError {
-    Protocol,
-    Request(RequestExecutionError),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct OwnedFrameArgs {
-    frame: Vec<u8>,
-    arg_offsets_and_lengths: Vec<(usize, usize)>,
-}
-
-pub(crate) fn capture_owned_frame_args(
-    frame: &[u8],
-    args: &[ArgSlice],
-) -> Result<OwnedFrameArgs, RoutedExecutionError> {
-    if args.is_empty() || args.len() > 64 {
-        return Err(RoutedExecutionError::Protocol);
-    }
-
-    let frame_start = frame.as_ptr() as usize;
-    let frame_end = frame_start + frame.len();
-    let mut arg_offsets_and_lengths = Vec::with_capacity(args.len());
-    for arg in args {
-        let arg_ptr = arg.as_ptr() as usize;
-        let arg_len = arg.len();
-        let arg_end = arg_ptr
-            .checked_add(arg_len)
-            .ok_or(RoutedExecutionError::Protocol)?;
-        if arg_ptr < frame_start || arg_ptr > frame_end || arg_end > frame_end {
-            return Err(RoutedExecutionError::Protocol);
-        }
-        arg_offsets_and_lengths.push((arg_ptr - frame_start, arg_len));
-    }
-
-    Ok(OwnedFrameArgs {
-        frame: frame.to_vec(),
-        arg_offsets_and_lengths,
-    })
-}
-
-pub(crate) fn execute_owned_frame_args_via_processor(
-    processor: &RequestProcessor,
-    owned_args: &OwnedFrameArgs,
-) -> Result<Vec<u8>, RoutedExecutionError> {
-    if owned_args.arg_offsets_and_lengths.is_empty()
-        || owned_args.arg_offsets_and_lengths.len() > 64
-    {
-        return Err(RoutedExecutionError::Protocol);
-    }
-
-    let mut args = [ArgSlice::EMPTY; 64];
-    for (index, (offset, len)) in owned_args
-        .arg_offsets_and_lengths
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        let end = offset
-            .checked_add(len)
-            .ok_or(RoutedExecutionError::Protocol)?;
-        let slice = owned_args
-            .frame
-            .get(offset..end)
-            .ok_or(RoutedExecutionError::Protocol)?;
-        args[index] = ArgSlice::from_slice(slice).map_err(|_| RoutedExecutionError::Protocol)?;
-    }
-
-    let mut response = Vec::new();
-    processor
-        .execute(
-            &args[..owned_args.arg_offsets_and_lengths.len()],
-            &mut response,
-        )
-        .map_err(RoutedExecutionError::Request)?;
-    Ok(response)
-}
-
-#[cfg(test)]
-pub(crate) fn execute_owned_args_via_processor(
-    processor: &RequestProcessor,
-    owned_args: &[Vec<u8>],
-) -> Result<Vec<u8>, RoutedExecutionError> {
-    if owned_args.is_empty() || owned_args.len() > 64 {
-        return Err(RoutedExecutionError::Protocol);
-    }
-
-    let mut args = [ArgSlice::EMPTY; 64];
-    for (index, arg) in owned_args.iter().enumerate() {
-        args[index] = ArgSlice::from_slice(arg).map_err(|_| RoutedExecutionError::Protocol)?;
-    }
-
-    let mut response = Vec::new();
-    processor
-        .execute(&args[..owned_args.len()], &mut response)
-        .map_err(RoutedExecutionError::Request)?;
-    Ok(response)
-}
-
-#[cfg(test)]
-pub(crate) fn execute_frame_via_processor(
-    processor: &RequestProcessor,
-    frame: &[u8],
-) -> Result<Vec<u8>, RoutedExecutionError> {
-    let mut args = [ArgSlice::EMPTY; 64];
-    let meta = parse_resp_command_arg_slices(frame, &mut args)
-        .map_err(|_| RoutedExecutionError::Protocol)?;
-    if meta.bytes_consumed != frame.len() {
-        return Err(RoutedExecutionError::Protocol);
-    }
-    let mut response = Vec::new();
-    processor
-        .execute(&args[..meta.argument_count], &mut response)
-        .map_err(RoutedExecutionError::Request)?;
-    Ok(response)
 }
 
 pub(crate) fn build_owner_thread_pool(

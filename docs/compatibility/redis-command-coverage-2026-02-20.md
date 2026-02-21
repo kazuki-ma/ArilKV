@@ -161,7 +161,7 @@ Replication compatibility is tracked via:
 
 - `garnet-rs/tests/interop/replication_capability_matrix.sh`
 
-Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-090431`):
+Latest run snapshot (`garnet-rs/tests/interop/results/replication-capability-20260221-092547`):
 
 - Redis <-> Redis: `PASS`
   - master->replica `SET/GET` verified
