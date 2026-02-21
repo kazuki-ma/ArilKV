@@ -2,50 +2,8 @@
 //!
 //! Fast path uses fixed byte-pattern checks for hot commands.
 
+use crate::command_spec::{command_id_from_name, CommandId};
 use garnet_common::ArgSlice;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CommandId {
-    Get,
-    Set,
-    Del,
-    Incr,
-    Decr,
-    Expire,
-    Ttl,
-    Pexpire,
-    Pttl,
-    Persist,
-    Hset,
-    Hget,
-    Hdel,
-    Hgetall,
-    Lpush,
-    Rpush,
-    Lpop,
-    Rpop,
-    Lrange,
-    Sadd,
-    Srem,
-    Smembers,
-    Sismember,
-    Zadd,
-    Zrem,
-    Zrange,
-    Zscore,
-    Multi,
-    Exec,
-    Discard,
-    Watch,
-    Unwatch,
-    Asking,
-    Ping,
-    Echo,
-    Info,
-    Dbsize,
-    Command,
-    Unknown,
-}
 
 pub fn dispatch_command_name(command: &[u8]) -> CommandId {
     if is_ascii_eq_3(command, b"GET") {
@@ -60,7 +18,7 @@ pub fn dispatch_command_name(command: &[u8]) -> CommandId {
     if is_ascii_eq_4(command, b"INCR") {
         return CommandId::Incr;
     }
-    dispatch_command_name_slow(command)
+    command_id_from_name(command).unwrap_or(CommandId::Unknown)
 }
 
 pub fn dispatch_from_resp_args(args: &[&[u8]]) -> CommandId {
@@ -81,112 +39,6 @@ pub unsafe fn dispatch_from_arg_slices(args: &[ArgSlice]) -> CommandId {
     // SAFETY: guaranteed by caller per function contract.
     let command = unsafe { args[0].as_slice() };
     dispatch_command_name(command)
-}
-
-fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
-    if is_ascii_eq_4(command, b"DECR") {
-        return CommandId::Decr;
-    }
-    if is_ascii_eq_4(command, b"HSET") {
-        return CommandId::Hset;
-    }
-    if is_ascii_eq_4(command, b"HGET") {
-        return CommandId::Hget;
-    }
-    if is_ascii_eq_4(command, b"HDEL") {
-        return CommandId::Hdel;
-    }
-    if is_ascii_eq_7(command, b"HGETALL") {
-        return CommandId::Hgetall;
-    }
-    if is_ascii_eq_5(command, b"LPUSH") {
-        return CommandId::Lpush;
-    }
-    if is_ascii_eq_5(command, b"RPUSH") {
-        return CommandId::Rpush;
-    }
-    if is_ascii_eq_4(command, b"LPOP") {
-        return CommandId::Lpop;
-    }
-    if is_ascii_eq_4(command, b"RPOP") {
-        return CommandId::Rpop;
-    }
-    if is_ascii_eq_6(command, b"LRANGE") {
-        return CommandId::Lrange;
-    }
-    if is_ascii_eq_4(command, b"SADD") {
-        return CommandId::Sadd;
-    }
-    if is_ascii_eq_4(command, b"SREM") {
-        return CommandId::Srem;
-    }
-    if is_ascii_eq_8(command, b"SMEMBERS") {
-        return CommandId::Smembers;
-    }
-    if is_ascii_eq_9(command, b"SISMEMBER") {
-        return CommandId::Sismember;
-    }
-    if is_ascii_eq_4(command, b"ZADD") {
-        return CommandId::Zadd;
-    }
-    if is_ascii_eq_4(command, b"ZREM") {
-        return CommandId::Zrem;
-    }
-    if is_ascii_eq_6(command, b"ZRANGE") {
-        return CommandId::Zrange;
-    }
-    if is_ascii_eq_6(command, b"ZSCORE") {
-        return CommandId::Zscore;
-    }
-    if is_ascii_eq_5(command, b"MULTI") {
-        return CommandId::Multi;
-    }
-    if is_ascii_eq_4(command, b"EXEC") {
-        return CommandId::Exec;
-    }
-    if is_ascii_eq_7(command, b"DISCARD") {
-        return CommandId::Discard;
-    }
-    if is_ascii_eq_5(command, b"WATCH") {
-        return CommandId::Watch;
-    }
-    if is_ascii_eq_7(command, b"UNWATCH") {
-        return CommandId::Unwatch;
-    }
-    if is_ascii_eq_6(command, b"ASKING") {
-        return CommandId::Asking;
-    }
-    if is_ascii_eq_6(command, b"EXPIRE") {
-        return CommandId::Expire;
-    }
-    if is_ascii_eq_3(command, b"TTL") {
-        return CommandId::Ttl;
-    }
-    if is_ascii_eq_7(command, b"PEXPIRE") {
-        return CommandId::Pexpire;
-    }
-    if is_ascii_eq_4(command, b"PTTL") {
-        return CommandId::Pttl;
-    }
-    if is_ascii_eq_7(command, b"PERSIST") {
-        return CommandId::Persist;
-    }
-    if is_ascii_eq_4(command, b"PING") {
-        return CommandId::Ping;
-    }
-    if is_ascii_eq_4(command, b"ECHO") {
-        return CommandId::Echo;
-    }
-    if is_ascii_eq_4(command, b"INFO") {
-        return CommandId::Info;
-    }
-    if is_ascii_eq_6(command, b"DBSIZE") {
-        return CommandId::Dbsize;
-    }
-    if is_ascii_eq_7(command, b"COMMAND") {
-        return CommandId::Command;
-    }
-    CommandId::Unknown
 }
 
 fn ascii_upper(byte: u8) -> u8 {
@@ -210,61 +62,6 @@ fn is_ascii_eq_4(input: &[u8], expected_upper: &[u8; 4]) -> bool {
         && ascii_upper(input[1]) == expected_upper[1]
         && ascii_upper(input[2]) == expected_upper[2]
         && ascii_upper(input[3]) == expected_upper[3]
-}
-
-fn is_ascii_eq_5(input: &[u8], expected_upper: &[u8; 5]) -> bool {
-    input.len() == 5
-        && ascii_upper(input[0]) == expected_upper[0]
-        && ascii_upper(input[1]) == expected_upper[1]
-        && ascii_upper(input[2]) == expected_upper[2]
-        && ascii_upper(input[3]) == expected_upper[3]
-        && ascii_upper(input[4]) == expected_upper[4]
-}
-
-fn is_ascii_eq_6(input: &[u8], expected_upper: &[u8; 6]) -> bool {
-    input.len() == 6
-        && ascii_upper(input[0]) == expected_upper[0]
-        && ascii_upper(input[1]) == expected_upper[1]
-        && ascii_upper(input[2]) == expected_upper[2]
-        && ascii_upper(input[3]) == expected_upper[3]
-        && ascii_upper(input[4]) == expected_upper[4]
-        && ascii_upper(input[5]) == expected_upper[5]
-}
-
-fn is_ascii_eq_7(input: &[u8], expected_upper: &[u8; 7]) -> bool {
-    input.len() == 7
-        && ascii_upper(input[0]) == expected_upper[0]
-        && ascii_upper(input[1]) == expected_upper[1]
-        && ascii_upper(input[2]) == expected_upper[2]
-        && ascii_upper(input[3]) == expected_upper[3]
-        && ascii_upper(input[4]) == expected_upper[4]
-        && ascii_upper(input[5]) == expected_upper[5]
-        && ascii_upper(input[6]) == expected_upper[6]
-}
-
-fn is_ascii_eq_8(input: &[u8], expected_upper: &[u8; 8]) -> bool {
-    input.len() == 8
-        && ascii_upper(input[0]) == expected_upper[0]
-        && ascii_upper(input[1]) == expected_upper[1]
-        && ascii_upper(input[2]) == expected_upper[2]
-        && ascii_upper(input[3]) == expected_upper[3]
-        && ascii_upper(input[4]) == expected_upper[4]
-        && ascii_upper(input[5]) == expected_upper[5]
-        && ascii_upper(input[6]) == expected_upper[6]
-        && ascii_upper(input[7]) == expected_upper[7]
-}
-
-fn is_ascii_eq_9(input: &[u8], expected_upper: &[u8; 9]) -> bool {
-    input.len() == 9
-        && ascii_upper(input[0]) == expected_upper[0]
-        && ascii_upper(input[1]) == expected_upper[1]
-        && ascii_upper(input[2]) == expected_upper[2]
-        && ascii_upper(input[3]) == expected_upper[3]
-        && ascii_upper(input[4]) == expected_upper[4]
-        && ascii_upper(input[5]) == expected_upper[5]
-        && ascii_upper(input[6]) == expected_upper[6]
-        && ascii_upper(input[7]) == expected_upper[7]
-        && ascii_upper(input[8]) == expected_upper[8]
 }
 
 #[cfg(test)]

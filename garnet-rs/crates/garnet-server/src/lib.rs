@@ -36,8 +36,9 @@ pub use cluster_control_plane::{
     LiveSlotMigrationsRunReport,
 };
 pub use command_dispatch::{
-    dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args, CommandId,
+    dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args,
 };
+pub use command_spec::CommandId;
 pub(crate) use connection_handler::{build_owner_thread_pool, handle_connection};
 #[cfg(test)]
 pub(crate) use connection_owner_routing::{
