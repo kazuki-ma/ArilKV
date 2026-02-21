@@ -114,14 +114,20 @@ where
 {
     let mut tasks = JoinSet::new();
     let owner_thread_pool = build_owner_thread_pool(&processor)?;
-    let replication = Arc::new(RedisReplicationCoordinator::new(Arc::clone(&processor)));
+    let replication = Arc::new(RedisReplicationCoordinator::new(
+        Arc::clone(&processor),
+        Arc::clone(&owner_thread_pool),
+    ));
     let expiration_processor = Arc::clone(&processor);
+    let expiration_owner_thread_pool = Arc::clone(&owner_thread_pool);
     let expiration_task = tokio::spawn(async move {
         let mut interval = tokio::time::interval(std::time::Duration::from_millis(50));
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            let _ = expiration_processor.expire_stale_keys(128);
+            let routed_processor = Arc::clone(&expiration_processor);
+            let _ = expiration_owner_thread_pool
+                .execute_sync(0, move || routed_processor.expire_stale_keys(128));
         }
     });
     tokio::pin!(shutdown);

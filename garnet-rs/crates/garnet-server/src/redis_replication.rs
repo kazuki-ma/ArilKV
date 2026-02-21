@@ -2,10 +2,13 @@
 
 mod protocol;
 
+use crate::connection_owner_routing::{execute_frame_via_processor, RoutedExecutionError};
+use crate::connection_routing::owner_shard_for_command;
 use crate::redis_replication::protocol::{
     decode_hex_bytes, discard_bulk_payload, generate_repl_id, parse_bulk_length, read_line,
     starts_with_ascii_no_case, write_resp_command,
 };
+use crate::ShardOwnerThreadPool;
 use crate::{dispatch_from_arg_slices, CommandId, RequestProcessor};
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
 use std::io;
@@ -30,6 +33,7 @@ struct MasterEndpoint {
 
 struct ReplicationInner {
     processor: Arc<RequestProcessor>,
+    owner_thread_pool: Arc<ShardOwnerThreadPool>,
     downstream_tx: broadcast::Sender<Arc<[u8]>>,
     upstream_task: Mutex<Option<JoinHandle<()>>>,
     upstream_endpoint: RwLock<Option<MasterEndpoint>>,
@@ -46,10 +50,14 @@ pub(crate) struct RedisReplicationCoordinator {
 }
 
 impl RedisReplicationCoordinator {
-    pub(crate) fn new(processor: Arc<RequestProcessor>) -> Self {
+    pub(crate) fn new(
+        processor: Arc<RequestProcessor>,
+        owner_thread_pool: Arc<ShardOwnerThreadPool>,
+    ) -> Self {
         let (downstream_tx, _) = broadcast::channel(DOWNSTREAM_BROADCAST_CAPACITY);
         let inner = ReplicationInner {
             processor,
+            owner_thread_pool,
             downstream_tx,
             upstream_task: Mutex::new(None),
             upstream_endpoint: RwLock::new(None),
@@ -271,6 +279,7 @@ async fn sync_once_from_upstream(
                     process_upstream_frame(
                         &mut stream,
                         inner,
+                        &receive_buffer[consumed..consumed + meta.bytes_consumed],
                         &args[..meta.argument_count],
                         meta.bytes_consumed,
                         &mut applied_offset,
@@ -308,6 +317,7 @@ async fn sync_once_from_upstream(
 async fn process_upstream_frame(
     stream: &mut TcpStream,
     inner: &ReplicationInner,
+    frame: &[u8],
     args: &[ArgSlice],
     frame_len: usize,
     applied_offset: &mut u64,
@@ -347,9 +357,29 @@ async fn process_upstream_frame(
     if !is_replicated_mutating_command(command_id) {
         return Ok(());
     }
-
-    let mut ignored_response = Vec::new();
-    let _ = inner.processor.execute(args, &mut ignored_response);
+    let shard_index = owner_shard_for_command(&inner.processor, args, command_id);
+    let routed_processor = Arc::clone(&inner.processor);
+    let frame = frame.to_vec();
+    match inner.owner_thread_pool.execute_sync(shard_index, move || {
+        execute_frame_via_processor(&routed_processor, &frame)
+    }) {
+        Ok(Ok(_)) => {}
+        Ok(Err(RoutedExecutionError::Request(error))) => {
+            eprintln!("replication apply command failed: {error:?}");
+        }
+        Ok(Err(RoutedExecutionError::Protocol)) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "replication apply failed: protocol error",
+            ));
+        }
+        Err(error) => {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("replication apply failed: owner routing execution failed ({error})"),
+            ));
+        }
+    }
     Ok(())
 }
 

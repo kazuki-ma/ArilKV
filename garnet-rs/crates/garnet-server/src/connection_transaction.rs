@@ -1,6 +1,10 @@
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice};
+use std::sync::Arc;
 
-use crate::RequestProcessor;
+use crate::connection_owner_routing::{execute_frame_via_processor, RoutedExecutionError};
+use crate::connection_routing::owner_shard_for_command;
+use crate::dispatch_from_arg_slices;
+use crate::{RequestProcessor, ShardOwnerThreadPool};
 
 #[derive(Default)]
 pub(crate) struct ConnectionTransactionState {
@@ -52,7 +56,8 @@ impl ConnectionTransactionState {
 }
 
 pub(crate) fn execute_transaction_queue(
-    processor: &RequestProcessor,
+    processor: &Arc<RequestProcessor>,
+    owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     transaction: &mut ConnectionTransactionState,
     responses: &mut Vec<u8>,
 ) {
@@ -71,10 +76,25 @@ pub(crate) fn execute_transaction_queue(
         let mut item_response = Vec::new();
         match parse_resp_command_arg_slices(&frame, &mut args) {
             Ok(meta) if meta.bytes_consumed == frame.len() => {
-                if let Err(error) =
-                    processor.execute(&args[..meta.argument_count], &mut item_response)
-                {
-                    error.append_resp_error(&mut item_response);
+                // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
+                let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                let shard_index =
+                    owner_shard_for_command(processor, &args[..meta.argument_count], command);
+                let routed_processor = Arc::clone(processor);
+                let owned_frame = frame;
+                match owner_thread_pool.execute_sync(shard_index, move || {
+                    execute_frame_via_processor(&routed_processor, &owned_frame)
+                }) {
+                    Ok(Ok(response)) => item_response.extend_from_slice(&response),
+                    Ok(Err(RoutedExecutionError::Request(error))) => {
+                        error.append_resp_error(&mut item_response);
+                    }
+                    Ok(Err(RoutedExecutionError::Protocol)) => {
+                        item_response.extend_from_slice(b"-ERR protocol error\r\n");
+                    }
+                    Err(_) => {
+                        item_response.extend_from_slice(b"-ERR owner routing execution failed\r\n");
+                    }
                 }
             }
             _ => item_response.extend_from_slice(b"-ERR protocol error\r\n"),

@@ -2,11 +2,12 @@ use garnet_cluster::{redis_hash_slot, ClusterConfigError, ClusterConfigStore, Sl
 use garnet_common::ArgSlice;
 use std::io;
 
-use crate::command_spec::{
-    command_is_owner_routable, command_key_access_pattern, KeyAccessPattern,
-};
+#[cfg(test)]
+use crate::command_spec::command_is_owner_routable;
+use crate::command_spec::{command_key_access_pattern, KeyAccessPattern};
 use crate::{CommandId, RequestProcessor};
 
+#[cfg(test)]
 pub(crate) fn owner_routed_shard_for_command(
     processor: &RequestProcessor,
     args: &[ArgSlice],
@@ -19,6 +20,25 @@ pub(crate) fn owner_routed_shard_for_command(
     // SAFETY: ArgSlice memory is owned by the live receive buffer in the caller.
     let key = unsafe { args[1].as_slice() };
     Some(processor.string_store_shard_index(key))
+}
+
+pub(crate) fn owner_shard_for_command(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    command: CommandId,
+) -> usize {
+    if args.len() < 2 {
+        return 0;
+    }
+
+    match command_key_access_pattern(command) {
+        KeyAccessPattern::FirstKey | KeyAccessPattern::AllKeysFromArg1 => {
+            // SAFETY: ArgSlice memory is owned by the live request buffer in the caller.
+            let key = unsafe { args[1].as_slice() };
+            processor.string_store_shard_index(key)
+        }
+        KeyAccessPattern::None => 0,
+    }
 }
 
 pub(crate) fn cluster_error_for_command(
@@ -108,5 +128,29 @@ pub(crate) fn command_hash_slot_for_transaction(
             Some(redis_hash_slot(key))
         }
         KeyAccessPattern::None => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn owner_shard_for_command_routes_multikey_del_by_first_key() {
+        let processor = RequestProcessor::new().unwrap();
+        let args = vec![
+            ArgSlice::from_slice(b"DEL").unwrap(),
+            ArgSlice::from_slice(b"k1").unwrap(),
+            ArgSlice::from_slice(b"k2").unwrap(),
+        ];
+        let shard = owner_shard_for_command(&processor, &args, CommandId::Del);
+        assert_eq!(shard, processor.string_store_shard_index(b"k1"));
+    }
+
+    #[test]
+    fn owner_shard_for_command_routes_keyless_commands_to_shard_zero() {
+        let processor = RequestProcessor::new().unwrap();
+        let args = vec![ArgSlice::from_slice(b"PING").unwrap()];
+        assert_eq!(owner_shard_for_command(&processor, &args, CommandId::Ping), 0);
     }
 }

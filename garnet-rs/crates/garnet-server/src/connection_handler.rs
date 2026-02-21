@@ -20,12 +20,13 @@ use crate::connection_protocol::{
     ascii_eq_ignore_case, parse_u16_ascii,
 };
 use crate::connection_routing::{
-    cluster_error_for_command, command_hash_slot_for_transaction, owner_routed_shard_for_command,
+    cluster_error_for_command, command_hash_slot_for_transaction, owner_shard_for_command,
 };
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::{RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
 
+const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 
 pub(crate) async fn handle_connection(
@@ -34,7 +35,7 @@ pub(crate) async fn handle_connection(
     metrics: Arc<ServerMetrics>,
     processor: Arc<RequestProcessor>,
     cluster_config: Option<Arc<ClusterConfigStore>>,
-    owner_thread_pool: Option<Arc<ShardOwnerThreadPool>>,
+    owner_thread_pool: Arc<ShardOwnerThreadPool>,
     replication: Arc<RedisReplicationCoordinator>,
 ) -> io::Result<()> {
     let _lifecycle = ConnectionLifecycle { metrics: &metrics };
@@ -164,6 +165,7 @@ pub(crate) async fn handle_connection(
                                 } else {
                                     execute_transaction_queue(
                                         &processor,
+                                        &owner_thread_pool,
                                         &mut transaction,
                                         &mut responses,
                                     );
@@ -267,68 +269,54 @@ pub(crate) async fn handle_connection(
                                     consumed += meta.bytes_consumed;
                                     continue;
                                 }
-
-                                if let Some(owner_pool) = owner_thread_pool.as_ref() {
-                                    if let Some(shard_index) = owner_routed_shard_for_command(
-                                        &processor,
-                                        &args[..meta.argument_count],
-                                        command,
-                                    ) {
-                                        let owned_args = match capture_owned_frame_args(
-                                            &receive_buffer[frame_start..frame_end],
-                                            &args[..meta.argument_count],
-                                        ) {
-                                            Ok(owned_args) => owned_args,
-                                            Err(_) => {
-                                                responses
-                                                    .extend_from_slice(b"-ERR protocol error\r\n");
-                                                consumed += meta.bytes_consumed;
-                                                continue;
-                                            }
-                                        };
-                                        let routed_processor = Arc::clone(&processor);
-                                        match owner_pool.execute_sync(shard_index, move || {
-                                            execute_owned_frame_args_via_processor(
-                                                &routed_processor,
-                                                &owned_args,
-                                            )
-                                        }) {
-                                            Ok(Ok(frame_response)) => {
-                                                responses.extend_from_slice(&frame_response);
-                                                if command_is_mutating(command) {
-                                                    propagate_frame = true;
-                                                }
-                                            }
-                                            Ok(Err(RoutedExecutionError::Request(error))) => {
-                                                error.append_resp_error(&mut responses);
-                                            }
-                                            Ok(Err(RoutedExecutionError::Protocol)) => {
-                                                responses
-                                                    .extend_from_slice(b"-ERR protocol error\r\n");
-                                            }
-                                            Err(_) => {
-                                                responses.extend_from_slice(
-                                                    b"-ERR owner routing execution failed\r\n",
-                                                );
-                                            }
-                                        }
-                                        if propagate_frame {
-                                            replication.publish_write_frame(
-                                                &receive_buffer[frame_start..frame_end],
-                                            );
-                                        }
+                                let shard_index = owner_shard_for_command(
+                                    &processor,
+                                    &args[..meta.argument_count],
+                                    command,
+                                );
+                                let owned_args = match capture_owned_frame_args(
+                                    &receive_buffer[frame_start..frame_end],
+                                    &args[..meta.argument_count],
+                                ) {
+                                    Ok(owned_args) => owned_args,
+                                    Err(_) => {
+                                        responses.extend_from_slice(b"-ERR protocol error\r\n");
                                         consumed += meta.bytes_consumed;
                                         continue;
                                     }
+                                };
+                                let routed_processor = Arc::clone(&processor);
+                                match owner_thread_pool.execute_sync(shard_index, move || {
+                                    execute_owned_frame_args_via_processor(
+                                        &routed_processor,
+                                        &owned_args,
+                                    )
+                                }) {
+                                    Ok(Ok(frame_response)) => {
+                                        responses.extend_from_slice(&frame_response);
+                                        if command_is_mutating(command) {
+                                            propagate_frame = true;
+                                        }
+                                    }
+                                    Ok(Err(RoutedExecutionError::Request(error))) => {
+                                        error.append_resp_error(&mut responses);
+                                    }
+                                    Ok(Err(RoutedExecutionError::Protocol)) => {
+                                        responses.extend_from_slice(b"-ERR protocol error\r\n");
+                                    }
+                                    Err(_) => {
+                                        responses.extend_from_slice(
+                                            b"-ERR owner routing execution failed\r\n",
+                                        );
+                                    }
                                 }
-
-                                if let Err(error) =
-                                    processor.execute(&args[..meta.argument_count], &mut responses)
-                                {
-                                    error.append_resp_error(&mut responses);
-                                } else if command_is_mutating(command) {
-                                    propagate_frame = true;
+                                if propagate_frame {
+                                    replication.publish_write_frame(
+                                        &receive_buffer[frame_start..frame_end],
+                                    );
                                 }
+                                consumed += meta.bytes_consumed;
+                                continue;
                             }
                         }
                     }
@@ -368,11 +356,9 @@ pub(crate) async fn handle_connection(
 
 pub(crate) fn build_owner_thread_pool(
     processor: &Arc<RequestProcessor>,
-) -> io::Result<Option<Arc<ShardOwnerThreadPool>>> {
-    let owner_threads = match parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV) {
-        Some(value) => value,
-        None => return Ok(None),
-    };
+) -> io::Result<Arc<ShardOwnerThreadPool>> {
+    let owner_threads = parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV)
+        .unwrap_or(DEFAULT_OWNER_THREAD_COUNT);
     let shard_count = processor.string_store_shard_count();
     let owner_threads = owner_threads.min(shard_count);
     let pool = ShardOwnerThreadPool::new(owner_threads, shard_count).map_err(|error| {
@@ -384,7 +370,7 @@ pub(crate) fn build_owner_thread_pool(
             ),
         )
     })?;
-    Ok(Some(Arc::new(pool)))
+    Ok(Arc::new(pool))
 }
 
 fn parse_positive_env_usize(key: &str) -> Option<usize> {

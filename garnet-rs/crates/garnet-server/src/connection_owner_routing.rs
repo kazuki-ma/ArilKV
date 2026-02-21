@@ -103,7 +103,6 @@ pub(crate) fn execute_owned_args_via_processor(
     Ok(response)
 }
 
-#[cfg(test)]
 pub(crate) fn execute_frame_via_processor(
     processor: &RequestProcessor,
     frame: &[u8],
