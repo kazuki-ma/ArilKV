@@ -3464,6 +3464,38 @@ fn execute_owned_args_via_processor_matches_direct_execution() {
     ));
 }
 
+#[test]
+fn execute_owned_frame_args_via_processor_matches_direct_execution() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let set_frame = encode_resp_command(&[b"SET", b"k", b"v"]);
+    let set_owned_args = owned_frame_args_from_frame(&set_frame);
+    let routed_set = execute_owned_frame_args_via_processor(&processor, &set_owned_args).unwrap();
+    let direct_set = execute_processor_frame(&processor, &set_frame);
+    assert_eq!(routed_set, direct_set);
+
+    let get_frame = encode_resp_command(&[b"GET", b"k"]);
+    let get_owned_args = owned_frame_args_from_frame(&get_frame);
+    let routed_get = execute_owned_frame_args_via_processor(&processor, &get_owned_args).unwrap();
+    let direct_get = execute_processor_frame(&processor, &get_frame);
+    assert_eq!(routed_get, direct_get);
+}
+
+#[test]
+fn capture_owned_frame_args_rejects_invalid_argument_views() {
+    let frame = encode_resp_command(&[b"GET", b"k"]);
+    assert!(matches!(
+        capture_owned_frame_args(&frame, &[]),
+        Err(RoutedExecutionError::Protocol)
+    ));
+
+    let foreign_arg = ArgSlice::from_slice(b"foreign").unwrap();
+    assert!(matches!(
+        capture_owned_frame_args(&frame, &[foreign_arg]),
+        Err(RoutedExecutionError::Protocol)
+    ));
+}
+
 async fn wait_until<P>(mut predicate: P, timeout: Duration)
 where
     P: FnMut() -> bool,
@@ -3518,4 +3550,10 @@ fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {
         owned.push(unsafe { arg.as_slice() }.to_vec());
     }
     owned
+}
+
+fn owned_frame_args_from_frame(frame: &[u8]) -> crate::connection_handler::OwnedFrameArgs {
+    let mut args = [ArgSlice::EMPTY; 64];
+    let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+    capture_owned_frame_args(frame, &args[..meta.argument_count]).unwrap()
 }

@@ -30,7 +30,7 @@ struct MasterEndpoint {
 
 struct ReplicationInner {
     processor: Arc<RequestProcessor>,
-    downstream_tx: broadcast::Sender<Vec<u8>>,
+    downstream_tx: broadcast::Sender<Arc<[u8]>>,
     upstream_task: Mutex<Option<JoinHandle<()>>>,
     upstream_endpoint: RwLock<Option<MasterEndpoint>>,
     is_replica_mode: AtomicBool,
@@ -108,7 +108,7 @@ impl RedisReplicationCoordinator {
         self.inner
             .master_repl_offset
             .fetch_add(frame.len() as u64, Ordering::Relaxed);
-        let _ = self.inner.downstream_tx.send(frame.to_vec());
+        let _ = self.inner.downstream_tx.send(Arc::from(frame.to_vec()));
     }
 
     pub(crate) fn build_fullresync_payload(&self) -> Vec<u8> {

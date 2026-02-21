@@ -40,7 +40,8 @@ pub use command_dispatch::{
 pub(crate) use connection_handler::{build_owner_thread_pool, handle_connection};
 #[cfg(test)]
 pub(crate) use connection_handler::{
-    execute_frame_via_processor, execute_owned_args_via_processor, RoutedExecutionError,
+    capture_owned_frame_args, execute_frame_via_processor, execute_owned_args_via_processor,
+    execute_owned_frame_args_via_processor, RoutedExecutionError,
 };
 pub use limited_fixed_buffer_pool::{
     LimitedFixedBufferPool, LimitedFixedBufferPoolConfig, LimitedFixedBufferPoolError, PoolEntry,

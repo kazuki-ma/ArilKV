@@ -271,15 +271,21 @@ pub(crate) async fn handle_connection(
                                         &args[..meta.argument_count],
                                         command,
                                     ) {
-                                        let mut owned_args =
-                                            Vec::with_capacity(meta.argument_count);
-                                        for arg in &args[..meta.argument_count] {
-                                            // SAFETY: `args` points to the live receive buffer.
-                                            owned_args.push(unsafe { arg.as_slice() }.to_vec());
-                                        }
+                                        let owned_args = match capture_owned_frame_args(
+                                            &receive_buffer[frame_start..frame_end],
+                                            &args[..meta.argument_count],
+                                        ) {
+                                            Ok(owned_args) => owned_args,
+                                            Err(_) => {
+                                                responses
+                                                    .extend_from_slice(b"-ERR protocol error\r\n");
+                                                consumed += meta.bytes_consumed;
+                                                continue;
+                                            }
+                                        };
                                         let routed_processor = Arc::clone(&processor);
                                         match owner_pool.execute_sync(shard_index, move || {
-                                            execute_owned_args_via_processor(
+                                            execute_owned_frame_args_via_processor(
                                                 &routed_processor,
                                                 &owned_args,
                                             )
@@ -363,6 +369,79 @@ pub(crate) enum RoutedExecutionError {
     Request(RequestExecutionError),
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct OwnedFrameArgs {
+    frame: Vec<u8>,
+    arg_offsets_and_lengths: Vec<(usize, usize)>,
+}
+
+pub(crate) fn capture_owned_frame_args(
+    frame: &[u8],
+    args: &[ArgSlice],
+) -> Result<OwnedFrameArgs, RoutedExecutionError> {
+    if args.is_empty() || args.len() > 64 {
+        return Err(RoutedExecutionError::Protocol);
+    }
+
+    let frame_start = frame.as_ptr() as usize;
+    let frame_end = frame_start + frame.len();
+    let mut arg_offsets_and_lengths = Vec::with_capacity(args.len());
+    for arg in args {
+        let arg_ptr = arg.as_ptr() as usize;
+        let arg_len = arg.len();
+        let arg_end = arg_ptr
+            .checked_add(arg_len)
+            .ok_or(RoutedExecutionError::Protocol)?;
+        if arg_ptr < frame_start || arg_ptr > frame_end || arg_end > frame_end {
+            return Err(RoutedExecutionError::Protocol);
+        }
+        arg_offsets_and_lengths.push((arg_ptr - frame_start, arg_len));
+    }
+
+    Ok(OwnedFrameArgs {
+        frame: frame.to_vec(),
+        arg_offsets_and_lengths,
+    })
+}
+
+pub(crate) fn execute_owned_frame_args_via_processor(
+    processor: &RequestProcessor,
+    owned_args: &OwnedFrameArgs,
+) -> Result<Vec<u8>, RoutedExecutionError> {
+    if owned_args.arg_offsets_and_lengths.is_empty()
+        || owned_args.arg_offsets_and_lengths.len() > 64
+    {
+        return Err(RoutedExecutionError::Protocol);
+    }
+
+    let mut args = [ArgSlice::EMPTY; 64];
+    for (index, (offset, len)) in owned_args
+        .arg_offsets_and_lengths
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let end = offset
+            .checked_add(len)
+            .ok_or(RoutedExecutionError::Protocol)?;
+        let slice = owned_args
+            .frame
+            .get(offset..end)
+            .ok_or(RoutedExecutionError::Protocol)?;
+        args[index] = ArgSlice::from_slice(slice).map_err(|_| RoutedExecutionError::Protocol)?;
+    }
+
+    let mut response = Vec::new();
+    processor
+        .execute(
+            &args[..owned_args.arg_offsets_and_lengths.len()],
+            &mut response,
+        )
+        .map_err(RoutedExecutionError::Request)?;
+    Ok(response)
+}
+
+#[cfg(test)]
 pub(crate) fn execute_owned_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &[Vec<u8>],
