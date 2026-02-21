@@ -17,6 +17,7 @@ Garnet is a new remote cache-store from Microsoft Research, that offers several 
   state-of-the-art performance on both Linux and Windows.
 
 This repo contains the code to build and run Garnet. For more information and documentation, check out our website at [https://microsoft.github.io/garnet](https://microsoft.github.io/garnet).
+For repository contribution/agent workflow (tests, performance gates, DeepResearch tracking), see [AGENTS.md](AGENTS.md).
 
 **Looking for a fully managed service?** [Azure Cosmos DB Garnet Cache](https://microsoft.github.io/garnet/docs/azure/overview) provides Garnet as a fully managed, enterprise-ready caching solution with built-in high availability, performance guarantees and zero infrastructure management.
 

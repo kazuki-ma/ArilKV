@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-21
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 165
+> **Current Iteration**: 166
 
 ---
 
@@ -240,6 +240,7 @@
 | 11.49 | Add replication interoperability matrix with master-switch and bidirectional master-state probes | DONE | 11.48 | Added `garnet-rs/tests/interop/replication_capability_matrix.sh` and extended interop docs. The script validates Redis<->Redis master-switch replication (`SET`/`GET` both master states) and records current Redis<->Garnet replication interoperability status. |
 | 11.50 | Track human-owned ChatGPT DeepResearch requests and pending returns in TODO | DONE | 11.49 | Added Phase 11B tracker with explicit request state (`REQUESTED_WAITING`/`RECEIVED`) and seeded current backlog from in-repo instruction/result artifacts. |
 | 11.51 | Define and document policy for when to trigger DeepResearch requests | DONE | 11.50 | Added `docs/performance/deepresearch-request-guidelines-2026-02-21.md` with trigger criteria, non-trigger cases, request quality checklist, and required repo workflow integration. |
+| 11.52 | Add top-level contributor/agent operations guide (`AGENTS.md`) and surface it from README | DONE | 11.51 | Added top-level `AGENTS.md` consolidating required workflow (TODO updates, fine-grained commits, test-count verification, perf regression gate, experiment reporting, DeepResearch lifecycle), and linked it from `README.md` for fast discoverability. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -277,6 +278,7 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-21 | Keep a top-level `AGENTS.md` as the single quick-entry operational guide and link it from `README.md`. | Ensures contributors/agents can quickly find mandatory workflow rules (tests, perf gates, DeepResearch tracking, reporting) without scanning the full tracker. |
 | 2026-02-21 | Trigger DeepResearch at architecture/concurrency/compatibility decision points, and always track request lifecycle in-repo. | Keeps high-risk decisions evidence-based while preventing hidden human-side research backlog. |
 | 2026-02-21 | Track all human-owned ChatGPT DeepResearch requests and pending returns directly in `TODO_AND_STATUS.md` (Phase 11B). | Prevents external-research drift and makes “requested but not yet returned” items explicit before implementation planning. |
 | 2026-02-20 | Keep `OrderedMutex` on `std::sync::Mutex`; do not switch to `parking_lot` globally without per-workload proof. | The parking_lot swap removed futex symbols but increased scheduler-yield hotspots and reduced GET/SET throughput in measured local runs; lock backend changes must be judged by end-to-end throughput/p99, not single-symbol disappearance. |
@@ -594,3 +596,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 163 | 2026-02-21 | 11.50 | DONE | Added Phase 11B DeepResearch tracker to `TODO_AND_STATUS.md` and registered current backlog states; pending list now explicitly includes `DR-002` (actor lock minimization, waiting on human-returned report). |
 | 164 | 2026-02-21 | DR-002 | DONE | Imported returned DeepResearch report to `docs/performance/actor-lock-minimization-deepresearch-2026-02-21.md`, changed `DR-002` status to `RECEIVED`, and added actionable-note digest `docs/performance/actor-lock-minimization-notes-2026-02-21.md`. |
 | 165 | 2026-02-21 | 11.51 | DONE | Added DeepResearch request policy note `docs/performance/deepresearch-request-guidelines-2026-02-21.md` and recorded explicit trigger criteria for future architecture/concurrency/compatibility investigations. |
+| 166 | 2026-02-21 | 11.52 | DONE | Added top-level `AGENTS.md` with operational rules and linked it from `README.md` so key workflow requirements are immediately discoverable. |
