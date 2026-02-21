@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-21
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 164
+> **Current Iteration**: 165
 
 ---
 
@@ -239,6 +239,7 @@
 | 11.48 | Add Redis/Dragonfly/Garnet interoperability scripts (command + cluster capability matrix) | DONE | 11.46 | Added `garnet-rs/tests/interop/command_coverage_audit.sh`, `cluster_capability_matrix.sh`, and `interop/README.md` to automate command-surface diffs and cluster-capability checks (including explicit unsupported-state classification). |
 | 11.49 | Add replication interoperability matrix with master-switch and bidirectional master-state probes | DONE | 11.48 | Added `garnet-rs/tests/interop/replication_capability_matrix.sh` and extended interop docs. The script validates Redis<->Redis master-switch replication (`SET`/`GET` both master states) and records current Redis<->Garnet replication interoperability status. |
 | 11.50 | Track human-owned ChatGPT DeepResearch requests and pending returns in TODO | DONE | 11.49 | Added Phase 11B tracker with explicit request state (`REQUESTED_WAITING`/`RECEIVED`) and seeded current backlog from in-repo instruction/result artifacts. |
+| 11.51 | Define and document policy for when to trigger DeepResearch requests | DONE | 11.50 | Added `docs/performance/deepresearch-request-guidelines-2026-02-21.md` with trigger criteria, non-trigger cases, request quality checklist, and required repo workflow integration. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -263,6 +264,8 @@ DeepResearch request status legend for this section:
 - `REQUESTED_WAITING`: instruction is created and request has been submitted by human; result not returned/imported yet.
 - `RECEIVED`: result returned and imported to repo notes/docs.
 
+Current pending (`REQUESTED_WAITING`) count: `0`
+
 | ID | Requested At | Topic | Instruction Path | Owner | Status | Result Path | Notes |
 |---|---|---|---|---|---|---|---|
 | DR-001 | 2026-02-19 | Dragonfly performance-gap analysis | `garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md` | Human | RECEIVED | `docs/performance/dragonfly-performance-gap-analysis-deepresearch-2026-02-20.md` | Imported from `/Users/kazuki-matsuda/Downloads/deep-research-report (1).md`. |
@@ -274,6 +277,7 @@ DeepResearch request status legend for this section:
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-21 | Trigger DeepResearch at architecture/concurrency/compatibility decision points, and always track request lifecycle in-repo. | Keeps high-risk decisions evidence-based while preventing hidden human-side research backlog. |
 | 2026-02-21 | Track all human-owned ChatGPT DeepResearch requests and pending returns directly in `TODO_AND_STATUS.md` (Phase 11B). | Prevents external-research drift and makes “requested but not yet returned” items explicit before implementation planning. |
 | 2026-02-20 | Keep `OrderedMutex` on `std::sync::Mutex`; do not switch to `parking_lot` globally without per-workload proof. | The parking_lot swap removed futex symbols but increased scheduler-yield hotspots and reduced GET/SET throughput in measured local runs; lock backend changes must be judged by end-to-end throughput/p99, not single-symbol disappearance. |
 | 2026-02-20 | Use median-of-N aggregation as the default interpretation layer for Dockerized Linux differential comparisons. | Single-run Dragonfly/Garnet differentials showed non-trivial noise; codifying a repeated-run wrapper with median summaries reduces the risk of overfitting decisions to one noisy sample. |
@@ -589,3 +593,4 @@ DeepResearch request status legend for this section:
 | 162 | 2026-02-20 | 11.49 | DONE | Added replication interoperability matrix script `garnet-rs/tests/interop/replication_capability_matrix.sh` with explicit master-switch validation for Redis<->Redis and bidirectional Redis<->Garnet replication probes (each side as master), including `SET`/`GET` verification when handshake is established. |
 | 163 | 2026-02-21 | 11.50 | DONE | Added Phase 11B DeepResearch tracker to `TODO_AND_STATUS.md` and registered current backlog states; pending list now explicitly includes `DR-002` (actor lock minimization, waiting on human-returned report). |
 | 164 | 2026-02-21 | DR-002 | DONE | Imported returned DeepResearch report to `docs/performance/actor-lock-minimization-deepresearch-2026-02-21.md`, changed `DR-002` status to `RECEIVED`, and added actionable-note digest `docs/performance/actor-lock-minimization-notes-2026-02-21.md`. |
+| 165 | 2026-02-21 | 11.51 | DONE | Added DeepResearch request policy note `docs/performance/deepresearch-request-guidelines-2026-02-21.md` and recorded explicit trigger criteria for future architecture/concurrency/compatibility investigations. |
