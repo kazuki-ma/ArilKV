@@ -2,8 +2,7 @@
 
 mod protocol;
 
-use crate::connection_owner_routing::{execute_frame_via_processor, RoutedExecutionError};
-use crate::connection_routing::owner_shard_for_command;
+use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
 use crate::redis_replication::protocol::{
     decode_hex_bytes, discard_bulk_payload, generate_repl_id, parse_bulk_length, read_line,
     starts_with_ascii_no_case, write_resp_command,
@@ -357,26 +356,27 @@ async fn process_upstream_frame(
     if !is_replicated_mutating_command(command_id) {
         return Ok(());
     }
-    let shard_index = owner_shard_for_command(&inner.processor, args, command_id);
-    let routed_processor = Arc::clone(&inner.processor);
-    let frame = frame.to_vec();
-    match inner.owner_thread_pool.execute_sync(shard_index, move || {
-        execute_frame_via_processor(&routed_processor, &frame)
-    }) {
-        Ok(Ok(_)) => {}
-        Ok(Err(RoutedExecutionError::Request(error))) => {
+    match execute_frame_on_owner_thread(
+        &inner.processor,
+        &inner.owner_thread_pool,
+        args,
+        command_id,
+        frame,
+    ) {
+        Ok(_) => {}
+        Err(OwnerThreadExecutionError::Request(error)) => {
             eprintln!("replication apply command failed: {error:?}");
         }
-        Ok(Err(RoutedExecutionError::Protocol)) => {
+        Err(OwnerThreadExecutionError::Protocol) => {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
                 "replication apply failed: protocol error",
             ));
         }
-        Err(error) => {
+        Err(OwnerThreadExecutionError::OwnerThreadUnavailable) => {
             return Err(io::Error::new(
                 io::ErrorKind::Other,
-                format!("replication apply failed: owner routing execution failed ({error})"),
+                "replication apply failed: owner routing execution failed",
             ));
         }
     }

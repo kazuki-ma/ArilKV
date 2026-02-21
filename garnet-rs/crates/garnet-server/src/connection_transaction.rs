@@ -1,8 +1,7 @@
 use garnet_common::{parse_resp_command_arg_slices, ArgSlice};
 use std::sync::Arc;
 
-use crate::connection_owner_routing::{execute_frame_via_processor, RoutedExecutionError};
-use crate::connection_routing::owner_shard_for_command;
+use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
 use crate::dispatch_from_arg_slices;
 use crate::{RequestProcessor, ShardOwnerThreadPool};
 
@@ -78,21 +77,21 @@ pub(crate) fn execute_transaction_queue(
             Ok(meta) if meta.bytes_consumed == frame.len() => {
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                let shard_index =
-                    owner_shard_for_command(processor, &args[..meta.argument_count], command);
-                let routed_processor = Arc::clone(processor);
-                let owned_frame = frame;
-                match owner_thread_pool.execute_sync(shard_index, move || {
-                    execute_frame_via_processor(&routed_processor, &owned_frame)
-                }) {
-                    Ok(Ok(response)) => item_response.extend_from_slice(&response),
-                    Ok(Err(RoutedExecutionError::Request(error))) => {
+                match execute_frame_on_owner_thread(
+                    processor,
+                    owner_thread_pool,
+                    &args[..meta.argument_count],
+                    command,
+                    &frame,
+                ) {
+                    Ok(response) => item_response.extend_from_slice(&response),
+                    Err(OwnerThreadExecutionError::Request(error)) => {
                         error.append_resp_error(&mut item_response);
                     }
-                    Ok(Err(RoutedExecutionError::Protocol)) => {
+                    Err(OwnerThreadExecutionError::Protocol) => {
                         item_response.extend_from_slice(b"-ERR protocol error\r\n");
                     }
-                    Err(_) => {
+                    Err(OwnerThreadExecutionError::OwnerThreadUnavailable) => {
                         item_response.extend_from_slice(b"-ERR owner routing execution failed\r\n");
                     }
                 }

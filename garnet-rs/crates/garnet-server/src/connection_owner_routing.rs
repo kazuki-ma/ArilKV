@@ -1,6 +1,8 @@
 use garnet_common::ArgSlice;
+use std::sync::Arc;
 
-use crate::{RequestExecutionError, RequestProcessor};
+use crate::connection_routing::owner_shard_for_command;
+use crate::{CommandId, RequestExecutionError, RequestProcessor, ShardOwnerThreadPool};
 
 const MAX_ROUTED_ARGUMENTS: usize = 64;
 
@@ -8,6 +10,13 @@ const MAX_ROUTED_ARGUMENTS: usize = 64;
 pub(crate) enum RoutedExecutionError {
     Protocol,
     Request(RequestExecutionError),
+}
+
+#[derive(Debug)]
+pub(crate) enum OwnerThreadExecutionError {
+    Protocol,
+    Request(RequestExecutionError),
+    OwnerThreadUnavailable,
 }
 
 #[derive(Clone, Debug)]
@@ -82,6 +91,34 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     Ok(response)
 }
 
+pub(crate) fn execute_frame_on_owner_thread(
+    processor: &Arc<RequestProcessor>,
+    owner_thread_pool: &Arc<ShardOwnerThreadPool>,
+    args: &[ArgSlice],
+    command: CommandId,
+    frame: &[u8],
+) -> Result<Vec<u8>, OwnerThreadExecutionError> {
+    let shard_index = owner_shard_for_command(processor, args, command);
+    let owned_args = capture_owned_frame_args(frame, args).map_err(|error| match error {
+        RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,
+        RoutedExecutionError::Request(request_error) => {
+            OwnerThreadExecutionError::Request(request_error)
+        }
+    })?;
+    let routed_processor = Arc::clone(processor);
+    owner_thread_pool
+        .execute_sync(shard_index, move || {
+            execute_owned_frame_args_via_processor(&routed_processor, &owned_args)
+        })
+        .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?
+        .map_err(|error| match error {
+            RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,
+            RoutedExecutionError::Request(request_error) => {
+                OwnerThreadExecutionError::Request(request_error)
+            }
+        })
+}
+
 #[cfg(test)]
 pub(crate) fn execute_owned_args_via_processor(
     processor: &RequestProcessor,
@@ -103,6 +140,7 @@ pub(crate) fn execute_owned_args_via_processor(
     Ok(response)
 }
 
+#[cfg(test)]
 pub(crate) fn execute_frame_via_processor(
     processor: &RequestProcessor,
     frame: &[u8],

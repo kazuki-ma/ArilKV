@@ -12,16 +12,12 @@ use crate::command_spec::{
     command_has_valid_arity, command_is_mutating, command_transaction_control,
     TransactionControlCommand,
 };
-use crate::connection_owner_routing::{
-    capture_owned_frame_args, execute_owned_frame_args_via_processor, RoutedExecutionError,
-};
+use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
 use crate::connection_protocol::{
     append_error_line, append_simple_string, append_wrong_arity_error_for_command,
     ascii_eq_ignore_case, parse_u16_ascii,
 };
-use crate::connection_routing::{
-    cluster_error_for_command, command_hash_slot_for_transaction, owner_shard_for_command,
-};
+use crate::connection_routing::{cluster_error_for_command, command_hash_slot_for_transaction};
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::{RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
@@ -269,42 +265,26 @@ pub(crate) async fn handle_connection(
                                     consumed += meta.bytes_consumed;
                                     continue;
                                 }
-                                let shard_index = owner_shard_for_command(
+                                match execute_frame_on_owner_thread(
                                     &processor,
+                                    &owner_thread_pool,
                                     &args[..meta.argument_count],
                                     command,
-                                );
-                                let owned_args = match capture_owned_frame_args(
                                     &receive_buffer[frame_start..frame_end],
-                                    &args[..meta.argument_count],
                                 ) {
-                                    Ok(owned_args) => owned_args,
-                                    Err(_) => {
-                                        responses.extend_from_slice(b"-ERR protocol error\r\n");
-                                        consumed += meta.bytes_consumed;
-                                        continue;
-                                    }
-                                };
-                                let routed_processor = Arc::clone(&processor);
-                                match owner_thread_pool.execute_sync(shard_index, move || {
-                                    execute_owned_frame_args_via_processor(
-                                        &routed_processor,
-                                        &owned_args,
-                                    )
-                                }) {
-                                    Ok(Ok(frame_response)) => {
+                                    Ok(frame_response) => {
                                         responses.extend_from_slice(&frame_response);
                                         if command_is_mutating(command) {
                                             propagate_frame = true;
                                         }
                                     }
-                                    Ok(Err(RoutedExecutionError::Request(error))) => {
+                                    Err(OwnerThreadExecutionError::Request(error)) => {
                                         error.append_resp_error(&mut responses);
                                     }
-                                    Ok(Err(RoutedExecutionError::Protocol)) => {
+                                    Err(OwnerThreadExecutionError::Protocol) => {
                                         responses.extend_from_slice(b"-ERR protocol error\r\n");
                                     }
-                                    Err(_) => {
+                                    Err(OwnerThreadExecutionError::OwnerThreadUnavailable) => {
                                         responses.extend_from_slice(
                                             b"-ERR owner routing execution failed\r\n",
                                         );
