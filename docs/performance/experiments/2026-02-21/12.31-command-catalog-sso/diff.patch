@@ -1,0 +1,982 @@
+commit 01dbc5f528963145696ee88d3a8f722571328adb
+Author:     Kazuki MATSUDA / 松田一樹 <matsuda.kazuki@gmail.com>
+AuthorDate: Sat Feb 21 22:06:44 2026 +0900
+Commit:     Kazuki MATSUDA / 松田一樹 <matsuda.kazuki@gmail.com>
+CommitDate: Sat Feb 21 22:06:44 2026 +0900
+
+    refactor: unify command metadata for dispatch and routing specs
+
+diff --git a/garnet-rs/crates/garnet-server/src/command_dispatch.rs b/garnet-rs/crates/garnet-server/src/command_dispatch.rs
+index 3f0c15f854..a1493fa149 100644
+--- a/garnet-rs/crates/garnet-server/src/command_dispatch.rs
++++ b/garnet-rs/crates/garnet-server/src/command_dispatch.rs
+@@ -2,51 +2,9 @@
+ //!
+ //! Fast path uses fixed byte-pattern checks for hot commands.
+ 
++use crate::command_spec::{command_id_from_name, CommandId};
+ use garnet_common::ArgSlice;
+ 
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum CommandId {
+-    Get,
+-    Set,
+-    Del,
+-    Incr,
+-    Decr,
+-    Expire,
+-    Ttl,
+-    Pexpire,
+-    Pttl,
+-    Persist,
+-    Hset,
+-    Hget,
+-    Hdel,
+-    Hgetall,
+-    Lpush,
+-    Rpush,
+-    Lpop,
+-    Rpop,
+-    Lrange,
+-    Sadd,
+-    Srem,
+-    Smembers,
+-    Sismember,
+-    Zadd,
+-    Zrem,
+-    Zrange,
+-    Zscore,
+-    Multi,
+-    Exec,
+-    Discard,
+-    Watch,
+-    Unwatch,
+-    Asking,
+-    Ping,
+-    Echo,
+-    Info,
+-    Dbsize,
+-    Command,
+-    Unknown,
+-}
+-
+ pub fn dispatch_command_name(command: &[u8]) -> CommandId {
+     if is_ascii_eq_3(command, b"GET") {
+         return CommandId::Get;
+@@ -60,7 +18,7 @@ pub fn dispatch_command_name(command: &[u8]) -> CommandId {
+     if is_ascii_eq_4(command, b"INCR") {
+         return CommandId::Incr;
+     }
+-    dispatch_command_name_slow(command)
++    command_id_from_name(command).unwrap_or(CommandId::Unknown)
+ }
+ 
+ pub fn dispatch_from_resp_args(args: &[&[u8]]) -> CommandId {
+@@ -83,112 +41,6 @@ pub unsafe fn dispatch_from_arg_slices(args: &[ArgSlice]) -> CommandId {
+     dispatch_command_name(command)
+ }
+ 
+-fn dispatch_command_name_slow(command: &[u8]) -> CommandId {
+-    if is_ascii_eq_4(command, b"DECR") {
+-        return CommandId::Decr;
+-    }
+-    if is_ascii_eq_4(command, b"HSET") {
+-        return CommandId::Hset;
+-    }
+-    if is_ascii_eq_4(command, b"HGET") {
+-        return CommandId::Hget;
+-    }
+-    if is_ascii_eq_4(command, b"HDEL") {
+-        return CommandId::Hdel;
+-    }
+-    if is_ascii_eq_7(command, b"HGETALL") {
+-        return CommandId::Hgetall;
+-    }
+-    if is_ascii_eq_5(command, b"LPUSH") {
+-        return CommandId::Lpush;
+-    }
+-    if is_ascii_eq_5(command, b"RPUSH") {
+-        return CommandId::Rpush;
+-    }
+-    if is_ascii_eq_4(command, b"LPOP") {
+-        return CommandId::Lpop;
+-    }
+-    if is_ascii_eq_4(command, b"RPOP") {
+-        return CommandId::Rpop;
+-    }
+-    if is_ascii_eq_6(command, b"LRANGE") {
+-        return CommandId::Lrange;
+-    }
+-    if is_ascii_eq_4(command, b"SADD") {
+-        return CommandId::Sadd;
+-    }
+-    if is_ascii_eq_4(command, b"SREM") {
+-        return CommandId::Srem;
+-    }
+-    if is_ascii_eq_8(command, b"SMEMBERS") {
+-        return CommandId::Smembers;
+-    }
+-    if is_ascii_eq_9(command, b"SISMEMBER") {
+-        return CommandId::Sismember;
+-    }
+-    if is_ascii_eq_4(command, b"ZADD") {
+-        return CommandId::Zadd;
+-    }
+-    if is_ascii_eq_4(command, b"ZREM") {
+-        return CommandId::Zrem;
+-    }
+-    if is_ascii_eq_6(command, b"ZRANGE") {
+-        return CommandId::Zrange;
+-    }
+-    if is_ascii_eq_6(command, b"ZSCORE") {
+-        return CommandId::Zscore;
+-    }
+-    if is_ascii_eq_5(command, b"MULTI") {
+-        return CommandId::Multi;
+-    }
+-    if is_ascii_eq_4(command, b"EXEC") {
+-        return CommandId::Exec;
+-    }
+-    if is_ascii_eq_7(command, b"DISCARD") {
+-        return CommandId::Discard;
+-    }
+-    if is_ascii_eq_5(command, b"WATCH") {
+-        return CommandId::Watch;
+-    }
+-    if is_ascii_eq_7(command, b"UNWATCH") {
+-        return CommandId::Unwatch;
+-    }
+-    if is_ascii_eq_6(command, b"ASKING") {
+-        return CommandId::Asking;
+-    }
+-    if is_ascii_eq_6(command, b"EXPIRE") {
+-        return CommandId::Expire;
+-    }
+-    if is_ascii_eq_3(command, b"TTL") {
+-        return CommandId::Ttl;
+-    }
+-    if is_ascii_eq_7(command, b"PEXPIRE") {
+-        return CommandId::Pexpire;
+-    }
+-    if is_ascii_eq_4(command, b"PTTL") {
+-        return CommandId::Pttl;
+-    }
+-    if is_ascii_eq_7(command, b"PERSIST") {
+-        return CommandId::Persist;
+-    }
+-    if is_ascii_eq_4(command, b"PING") {
+-        return CommandId::Ping;
+-    }
+-    if is_ascii_eq_4(command, b"ECHO") {
+-        return CommandId::Echo;
+-    }
+-    if is_ascii_eq_4(command, b"INFO") {
+-        return CommandId::Info;
+-    }
+-    if is_ascii_eq_6(command, b"DBSIZE") {
+-        return CommandId::Dbsize;
+-    }
+-    if is_ascii_eq_7(command, b"COMMAND") {
+-        return CommandId::Command;
+-    }
+-    CommandId::Unknown
+-}
+-
+ fn ascii_upper(byte: u8) -> u8 {
+     if byte.is_ascii_lowercase() {
+         byte - 32
+@@ -212,61 +64,6 @@ fn is_ascii_eq_4(input: &[u8], expected_upper: &[u8; 4]) -> bool {
+         && ascii_upper(input[3]) == expected_upper[3]
+ }
+ 
+-fn is_ascii_eq_5(input: &[u8], expected_upper: &[u8; 5]) -> bool {
+-    input.len() == 5
+-        && ascii_upper(input[0]) == expected_upper[0]
+-        && ascii_upper(input[1]) == expected_upper[1]
+-        && ascii_upper(input[2]) == expected_upper[2]
+-        && ascii_upper(input[3]) == expected_upper[3]
+-        && ascii_upper(input[4]) == expected_upper[4]
+-}
+-
+-fn is_ascii_eq_6(input: &[u8], expected_upper: &[u8; 6]) -> bool {
+-    input.len() == 6
+-        && ascii_upper(input[0]) == expected_upper[0]
+-        && ascii_upper(input[1]) == expected_upper[1]
+-        && ascii_upper(input[2]) == expected_upper[2]
+-        && ascii_upper(input[3]) == expected_upper[3]
+-        && ascii_upper(input[4]) == expected_upper[4]
+-        && ascii_upper(input[5]) == expected_upper[5]
+-}
+-
+-fn is_ascii_eq_7(input: &[u8], expected_upper: &[u8; 7]) -> bool {
+-    input.len() == 7
+-        && ascii_upper(input[0]) == expected_upper[0]
+-        && ascii_upper(input[1]) == expected_upper[1]
+-        && ascii_upper(input[2]) == expected_upper[2]
+-        && ascii_upper(input[3]) == expected_upper[3]
+-        && ascii_upper(input[4]) == expected_upper[4]
+-        && ascii_upper(input[5]) == expected_upper[5]
+-        && ascii_upper(input[6]) == expected_upper[6]
+-}
+-
+-fn is_ascii_eq_8(input: &[u8], expected_upper: &[u8; 8]) -> bool {
+-    input.len() == 8
+-        && ascii_upper(input[0]) == expected_upper[0]
+-        && ascii_upper(input[1]) == expected_upper[1]
+-        && ascii_upper(input[2]) == expected_upper[2]
+-        && ascii_upper(input[3]) == expected_upper[3]
+-        && ascii_upper(input[4]) == expected_upper[4]
+-        && ascii_upper(input[5]) == expected_upper[5]
+-        && ascii_upper(input[6]) == expected_upper[6]
+-        && ascii_upper(input[7]) == expected_upper[7]
+-}
+-
+-fn is_ascii_eq_9(input: &[u8], expected_upper: &[u8; 9]) -> bool {
+-    input.len() == 9
+-        && ascii_upper(input[0]) == expected_upper[0]
+-        && ascii_upper(input[1]) == expected_upper[1]
+-        && ascii_upper(input[2]) == expected_upper[2]
+-        && ascii_upper(input[3]) == expected_upper[3]
+-        && ascii_upper(input[4]) == expected_upper[4]
+-        && ascii_upper(input[5]) == expected_upper[5]
+-        && ascii_upper(input[6]) == expected_upper[6]
+-        && ascii_upper(input[7]) == expected_upper[7]
+-        && ascii_upper(input[8]) == expected_upper[8]
+-}
+-
+ #[cfg(test)]
+ mod tests {
+     use super::*;
+diff --git a/garnet-rs/crates/garnet-server/src/command_spec.rs b/garnet-rs/crates/garnet-server/src/command_spec.rs
+index 3b3323fb1a..ac06913a62 100644
+--- a/garnet-rs/crates/garnet-server/src/command_spec.rs
++++ b/garnet-rs/crates/garnet-server/src/command_spec.rs
+@@ -1,6 +1,51 @@
+-//! Centralized command metadata used by routing, replication, and COMMAND output.
++//! Centralized command metadata used by dispatch, routing, replication, and
++//! COMMAND output.
+ 
+-use crate::command_dispatch::CommandId;
++use std::sync::OnceLock;
++
++#[derive(Debug, Clone, Copy, PartialEq, Eq)]
++#[repr(u8)]
++pub enum CommandId {
++    Get,
++    Set,
++    Del,
++    Incr,
++    Decr,
++    Expire,
++    Ttl,
++    Pexpire,
++    Pttl,
++    Persist,
++    Hset,
++    Hget,
++    Hdel,
++    Hgetall,
++    Lpush,
++    Rpush,
++    Lpop,
++    Rpop,
++    Lrange,
++    Sadd,
++    Srem,
++    Smembers,
++    Sismember,
++    Zadd,
++    Zrem,
++    Zrange,
++    Zscore,
++    Multi,
++    Exec,
++    Discard,
++    Watch,
++    Unwatch,
++    Asking,
++    Ping,
++    Echo,
++    Info,
++    Dbsize,
++    Command,
++    Unknown,
++}
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum KeyAccessPattern {
+@@ -42,28 +87,451 @@ enum OwnerRoutingPolicy {
+     SingleKeyOnly,
+ }
+ 
+-pub fn command_transaction_control(command: CommandId) -> TransactionControlCommand {
+-    match command {
+-        CommandId::Asking => TransactionControlCommand::Asking,
+-        CommandId::Multi => TransactionControlCommand::Multi,
+-        CommandId::Exec => TransactionControlCommand::Exec,
+-        CommandId::Discard => TransactionControlCommand::Discard,
+-        CommandId::Watch => TransactionControlCommand::Watch,
+-        CommandId::Unwatch => TransactionControlCommand::Unwatch,
+-        _ => TransactionControlCommand::None,
++#[derive(Debug, Clone, Copy)]
++struct CommandSpecEntry {
++    id: CommandId,
++    name_upper: &'static [u8],
++    key_access_pattern: KeyAccessPattern,
++    owner_routing_policy: OwnerRoutingPolicy,
++    is_mutating: bool,
++    transaction_control: TransactionControlCommand,
++    arity_policy: Option<ArityPolicy>,
++    include_in_command_response: bool,
++}
++
++const REPLICATION_PROTOCOL_COMMANDS: [&[u8]; 4] = [b"REPLICAOF", b"REPLCONF", b"PSYNC", b"SYNC"];
++const COMMAND_ID_COUNT: usize = CommandId::Unknown as usize + 1;
++
++const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
++    CommandSpecEntry {
++        id: CommandId::Get,
++        name_upper: b"GET",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Set,
++        name_upper: b"SET",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Del,
++        name_upper: b"DEL",
++        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
++        owner_routing_policy: OwnerRoutingPolicy::SingleKeyOnly,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Incr,
++        name_upper: b"INCR",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Decr,
++        name_upper: b"DECR",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Expire,
++        name_upper: b"EXPIRE",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Ttl,
++        name_upper: b"TTL",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Pexpire,
++        name_upper: b"PEXPIRE",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Pttl,
++        name_upper: b"PTTL",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Persist,
++        name_upper: b"PERSIST",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Hset,
++        name_upper: b"HSET",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Hget,
++        name_upper: b"HGET",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Hdel,
++        name_upper: b"HDEL",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Hgetall,
++        name_upper: b"HGETALL",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Lpush,
++        name_upper: b"LPUSH",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Rpush,
++        name_upper: b"RPUSH",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Lpop,
++        name_upper: b"LPOP",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Rpop,
++        name_upper: b"RPOP",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Lrange,
++        name_upper: b"LRANGE",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Sadd,
++        name_upper: b"SADD",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Srem,
++        name_upper: b"SREM",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Smembers,
++        name_upper: b"SMEMBERS",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Sismember,
++        name_upper: b"SISMEMBER",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Zadd,
++        name_upper: b"ZADD",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Zrem,
++        name_upper: b"ZREM",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: true,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Zrange,
++        name_upper: b"ZRANGE",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Zscore,
++        name_upper: b"ZSCORE",
++        key_access_pattern: KeyAccessPattern::FirstKey,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Multi,
++        name_upper: b"MULTI",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::Multi,
++        arity_policy: Some(ArityPolicy::Exact(1)),
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Exec,
++        name_upper: b"EXEC",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::Exec,
++        arity_policy: Some(ArityPolicy::Exact(1)),
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Discard,
++        name_upper: b"DISCARD",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::Discard,
++        arity_policy: Some(ArityPolicy::Exact(1)),
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Watch,
++        name_upper: b"WATCH",
++        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::Watch,
++        arity_policy: Some(ArityPolicy::Min(2)),
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Unwatch,
++        name_upper: b"UNWATCH",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::Unwatch,
++        arity_policy: Some(ArityPolicy::Exact(1)),
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Asking,
++        name_upper: b"ASKING",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::Asking,
++        arity_policy: Some(ArityPolicy::Exact(1)),
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Ping,
++        name_upper: b"PING",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Echo,
++        name_upper: b"ECHO",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Info,
++        name_upper: b"INFO",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Dbsize,
++        name_upper: b"DBSIZE",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Command,
++        name_upper: b"COMMAND",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: true,
++    },
++    CommandSpecEntry {
++        id: CommandId::Unknown,
++        name_upper: b"UNKNOWN",
++        key_access_pattern: KeyAccessPattern::None,
++        owner_routing_policy: OwnerRoutingPolicy::Never,
++        is_mutating: false,
++        transaction_control: TransactionControlCommand::None,
++        arity_policy: None,
++        include_in_command_response: false,
++    },
++];
++
++static COMMAND_RESPONSE_NAMES: OnceLock<Box<[&'static [u8]]>> = OnceLock::new();
++
++#[inline]
++fn spec_for(command: CommandId) -> &'static CommandSpecEntry {
++    &COMMAND_SPECS[command as usize]
++}
++
++#[inline]
++fn ascii_upper(byte: u8) -> u8 {
++    if byte.is_ascii_lowercase() {
++        byte - 32
++    } else {
++        byte
+     }
+ }
+ 
++fn ascii_eq_ignore_case(input: &[u8], expected_upper: &[u8]) -> bool {
++    input.len() == expected_upper.len()
++        && input
++            .iter()
++            .zip(expected_upper)
++            .all(|(left, right)| ascii_upper(*left) == *right)
++}
++
++pub(crate) fn command_id_from_name(command_name: &[u8]) -> Option<CommandId> {
++    COMMAND_SPECS[..CommandId::Unknown as usize]
++        .iter()
++        .find(|entry| ascii_eq_ignore_case(command_name, entry.name_upper))
++        .map(|entry| entry.id)
++}
++
++pub fn command_transaction_control(command: CommandId) -> TransactionControlCommand {
++    spec_for(command).transaction_control
++}
++
+ pub fn command_arity_policy(command: CommandId) -> Option<ArityPolicy> {
+-    match command {
+-        CommandId::Asking
+-        | CommandId::Multi
+-        | CommandId::Exec
+-        | CommandId::Discard
+-        | CommandId::Unwatch => Some(ArityPolicy::Exact(1)),
+-        CommandId::Watch => Some(ArityPolicy::Min(2)),
+-        _ => None,
+-    }
++    spec_for(command).arity_policy
+ }
+ 
+ pub fn command_has_valid_arity(command: CommandId, argument_count: usize) -> bool {
+@@ -74,98 +542,15 @@ pub fn command_has_valid_arity(command: CommandId, argument_count: usize) -> boo
+ }
+ 
+ pub fn command_name_upper(command: CommandId) -> &'static [u8] {
+-    match command {
+-        CommandId::Get => b"GET",
+-        CommandId::Set => b"SET",
+-        CommandId::Del => b"DEL",
+-        CommandId::Incr => b"INCR",
+-        CommandId::Decr => b"DECR",
+-        CommandId::Expire => b"EXPIRE",
+-        CommandId::Ttl => b"TTL",
+-        CommandId::Pexpire => b"PEXPIRE",
+-        CommandId::Pttl => b"PTTL",
+-        CommandId::Persist => b"PERSIST",
+-        CommandId::Hset => b"HSET",
+-        CommandId::Hget => b"HGET",
+-        CommandId::Hdel => b"HDEL",
+-        CommandId::Hgetall => b"HGETALL",
+-        CommandId::Lpush => b"LPUSH",
+-        CommandId::Rpush => b"RPUSH",
+-        CommandId::Lpop => b"LPOP",
+-        CommandId::Rpop => b"RPOP",
+-        CommandId::Lrange => b"LRANGE",
+-        CommandId::Sadd => b"SADD",
+-        CommandId::Srem => b"SREM",
+-        CommandId::Smembers => b"SMEMBERS",
+-        CommandId::Sismember => b"SISMEMBER",
+-        CommandId::Zadd => b"ZADD",
+-        CommandId::Zrem => b"ZREM",
+-        CommandId::Zrange => b"ZRANGE",
+-        CommandId::Zscore => b"ZSCORE",
+-        CommandId::Multi => b"MULTI",
+-        CommandId::Exec => b"EXEC",
+-        CommandId::Discard => b"DISCARD",
+-        CommandId::Watch => b"WATCH",
+-        CommandId::Unwatch => b"UNWATCH",
+-        CommandId::Asking => b"ASKING",
+-        CommandId::Ping => b"PING",
+-        CommandId::Echo => b"ECHO",
+-        CommandId::Info => b"INFO",
+-        CommandId::Dbsize => b"DBSIZE",
+-        CommandId::Command => b"COMMAND",
+-        CommandId::Unknown => b"UNKNOWN",
+-    }
++    spec_for(command).name_upper
+ }
+ 
+ pub fn command_key_access_pattern(command: CommandId) -> KeyAccessPattern {
+-    match command {
+-        CommandId::Del | CommandId::Watch => KeyAccessPattern::AllKeysFromArg1,
+-        CommandId::Get
+-        | CommandId::Set
+-        | CommandId::Incr
+-        | CommandId::Decr
+-        | CommandId::Expire
+-        | CommandId::Ttl
+-        | CommandId::Pexpire
+-        | CommandId::Pttl
+-        | CommandId::Persist
+-        | CommandId::Hset
+-        | CommandId::Hget
+-        | CommandId::Hdel
+-        | CommandId::Hgetall
+-        | CommandId::Lpush
+-        | CommandId::Rpush
+-        | CommandId::Lpop
+-        | CommandId::Rpop
+-        | CommandId::Lrange
+-        | CommandId::Sadd
+-        | CommandId::Srem
+-        | CommandId::Smembers
+-        | CommandId::Sismember
+-        | CommandId::Zadd
+-        | CommandId::Zrem
+-        | CommandId::Zrange
+-        | CommandId::Zscore => KeyAccessPattern::FirstKey,
+-        _ => KeyAccessPattern::None,
+-    }
++    spec_for(command).key_access_pattern
+ }
+ 
+ pub fn command_is_owner_routable(command: CommandId, argument_count: usize) -> bool {
+-    let routing_policy = match command {
+-        CommandId::Get
+-        | CommandId::Set
+-        | CommandId::Incr
+-        | CommandId::Decr
+-        | CommandId::Expire
+-        | CommandId::Pexpire
+-        | CommandId::Ttl
+-        | CommandId::Pttl
+-        | CommandId::Persist => OwnerRoutingPolicy::FirstKey,
+-        CommandId::Del => OwnerRoutingPolicy::SingleKeyOnly,
+-        _ => OwnerRoutingPolicy::Never,
+-    };
+-
+-    match routing_policy {
++    match spec_for(command).owner_routing_policy {
+         OwnerRoutingPolicy::Never => false,
+         OwnerRoutingPolicy::FirstKey => argument_count >= 2,
+         OwnerRoutingPolicy::SingleKeyOnly => argument_count == 2,
+@@ -173,73 +558,23 @@ pub fn command_is_owner_routable(command: CommandId, argument_count: usize) -> b
+ }
+ 
+ pub fn command_is_mutating(command: CommandId) -> bool {
+-    matches!(
+-        command,
+-        CommandId::Set
+-            | CommandId::Del
+-            | CommandId::Incr
+-            | CommandId::Decr
+-            | CommandId::Expire
+-            | CommandId::Pexpire
+-            | CommandId::Persist
+-            | CommandId::Hset
+-            | CommandId::Hdel
+-            | CommandId::Lpush
+-            | CommandId::Rpush
+-            | CommandId::Lpop
+-            | CommandId::Rpop
+-            | CommandId::Sadd
+-            | CommandId::Srem
+-            | CommandId::Zadd
+-            | CommandId::Zrem
+-    )
++    spec_for(command).is_mutating
+ }
+ 
+ pub fn command_names_for_command_response() -> &'static [&'static [u8]] {
+-    &[
+-        b"GET",
+-        b"SET",
+-        b"DEL",
+-        b"INCR",
+-        b"DECR",
+-        b"EXPIRE",
+-        b"TTL",
+-        b"PEXPIRE",
+-        b"PTTL",
+-        b"PERSIST",
+-        b"HSET",
+-        b"HGET",
+-        b"HDEL",
+-        b"HGETALL",
+-        b"LPUSH",
+-        b"RPUSH",
+-        b"LPOP",
+-        b"RPOP",
+-        b"LRANGE",
+-        b"SADD",
+-        b"SREM",
+-        b"SMEMBERS",
+-        b"SISMEMBER",
+-        b"ZADD",
+-        b"ZREM",
+-        b"ZRANGE",
+-        b"ZSCORE",
+-        b"MULTI",
+-        b"EXEC",
+-        b"DISCARD",
+-        b"WATCH",
+-        b"UNWATCH",
+-        b"ASKING",
+-        b"PING",
+-        b"ECHO",
+-        b"INFO",
+-        b"DBSIZE",
+-        b"COMMAND",
+-        b"REPLICAOF",
+-        b"REPLCONF",
+-        b"PSYNC",
+-        b"SYNC",
+-    ]
++    COMMAND_RESPONSE_NAMES
++        .get_or_init(|| {
++            let mut names =
++                Vec::with_capacity(COMMAND_ID_COUNT + REPLICATION_PROTOCOL_COMMANDS.len() - 1);
++            for spec in COMMAND_SPECS {
++                if spec.include_in_command_response {
++                    names.push(spec.name_upper);
++                }
++            }
++            names.extend_from_slice(&REPLICATION_PROTOCOL_COMMANDS);
++            names.into_boxed_slice()
++        })
++        .as_ref()
+ }
+ 
+ #[cfg(test)]
+diff --git a/garnet-rs/crates/garnet-server/src/lib.rs b/garnet-rs/crates/garnet-server/src/lib.rs
+index 02bf127b89..c2bb37332b 100644
+--- a/garnet-rs/crates/garnet-server/src/lib.rs
++++ b/garnet-rs/crates/garnet-server/src/lib.rs
+@@ -36,8 +36,9 @@ pub use cluster_control_plane::{
+     LiveSlotMigrationsRunReport,
+ };
+ pub use command_dispatch::{
+-    dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args, CommandId,
++    dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args,
+ };
++pub use command_spec::CommandId;
+ pub(crate) use connection_handler::{build_owner_thread_pool, handle_connection};
+ #[cfg(test)]
+ pub(crate) use connection_owner_routing::{

@@ -15,3 +15,4 @@
 5. `docs/performance/experiments/2026-02-20/11.45-stepwise-single-vs-multiport-benchmark/`
 6. `docs/performance/experiments/2026-02-20/rxbuf-copy-rewrite-rejected/`
 7. `docs/performance/experiments/2026-02-21/12.30-actor-debt-cleanup-regression-check/`
+8. `docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/`

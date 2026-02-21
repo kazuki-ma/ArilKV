@@ -1,0 +1,18 @@
+Running before_ae3db76 benchmark gate...
+Running after_command_catalog_sso benchmark gate...
+binary_ab_comparison
+base_label=before_ae3db76
+new_label=after_command_catalog_sso
+before_ae3db76.median_set_ops=164618.000
+before_ae3db76.median_get_ops=170816.000
+before_ae3db76.median_set_p99_ms=0.39100
+before_ae3db76.median_get_p99_ms=0.33500
+after_command_catalog_sso.median_set_ops=165667.000
+after_command_catalog_sso.median_get_ops=170203.000
+after_command_catalog_sso.median_set_p99_ms=0.38300
+after_command_catalog_sso.median_get_p99_ms=0.34300
+delta.set_ops_pct=0.64
+delta.get_ops_pct=-0.36
+delta.set_p99_ms_pct=-2.05
+delta.get_p99_ms_pct=2.39
+comparison_path=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/artifacts/ab_r5/comparison.txt

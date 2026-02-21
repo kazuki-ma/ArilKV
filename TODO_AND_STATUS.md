@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-21
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 166
+> **Current Iteration**: 167
 
 ---
 
@@ -241,6 +241,7 @@
 | 11.50 | Track human-owned ChatGPT DeepResearch requests and pending returns in TODO | DONE | 11.49 | Added Phase 11B tracker with explicit request state (`REQUESTED_WAITING`/`RECEIVED`) and seeded current backlog from in-repo instruction/result artifacts. |
 | 11.51 | Define and document policy for when to trigger DeepResearch requests | DONE | 11.50 | Added `docs/performance/deepresearch-request-guidelines-2026-02-21.md` with trigger criteria, non-trigger cases, request quality checklist, and required repo workflow integration. |
 | 11.52 | Add top-level contributor/agent operations guide (`AGENTS.md`) and surface it from README | DONE | 11.51 | Added top-level `AGENTS.md` consolidating required workflow (TODO updates, fine-grained commits, test-count verification, perf regression gate, experiment reporting, DeepResearch lifecycle), and linked it from `README.md` for fast discoverability. |
+| 11.53 | Refactor command metadata to a single source of truth before command-surface expansion | DONE | 11.52 | Moved `CommandId` ownership and command metadata into `command_spec`, switched dispatch slow-path lookup to `command_id_from_name`, and recorded no-material-regression A/B evidence under `docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/`. |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
@@ -278,6 +279,7 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 
 | Date | Decision | Rationale |
 |------|----------|-----------|
+| 2026-02-21 | Keep command metadata (`CommandId`, name mapping, routing/arity/mutating flags) in one catalog and make dispatch slow path consume it. | Reduces drift when adding commands, shrinks duplicated edits across `command_dispatch` and `command_spec`, and keeps command-surface expansion lower risk. |
 | 2026-02-21 | Keep a top-level `AGENTS.md` as the single quick-entry operational guide and link it from `README.md`. | Ensures contributors/agents can quickly find mandatory workflow rules (tests, perf gates, DeepResearch tracking, reporting) without scanning the full tracker. |
 | 2026-02-21 | Trigger DeepResearch at architecture/concurrency/compatibility decision points, and always track request lifecycle in-repo. | Keeps high-risk decisions evidence-based while preventing hidden human-side research backlog. |
 | 2026-02-21 | Track all human-owned ChatGPT DeepResearch requests and pending returns directly in `TODO_AND_STATUS.md` (Phase 11B). | Prevents external-research drift and makes “requested but not yet returned” items explicit before implementation planning. |
@@ -597,3 +599,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 164 | 2026-02-21 | DR-002 | DONE | Imported returned DeepResearch report to `docs/performance/actor-lock-minimization-deepresearch-2026-02-21.md`, changed `DR-002` status to `RECEIVED`, and added actionable-note digest `docs/performance/actor-lock-minimization-notes-2026-02-21.md`. |
 | 165 | 2026-02-21 | 11.51 | DONE | Added DeepResearch request policy note `docs/performance/deepresearch-request-guidelines-2026-02-21.md` and recorded explicit trigger criteria for future architecture/concurrency/compatibility investigations. |
 | 166 | 2026-02-21 | 11.52 | DONE | Added top-level `AGENTS.md` with operational rules and linked it from `README.md` so key workflow requirements are immediately discoverable. |
+| 167 | 2026-02-21 | 11.53 | DONE | Unified command catalog metadata (`CommandId` + lookup/spec flags) and switched dispatch slow path to catalog lookup; validated with `cargo test -p garnet-server` (`121 + 23 + 1` pass) and A/B benchmark report `12.31-command-catalog-sso` (RUNS=5, near-neutral deltas). |

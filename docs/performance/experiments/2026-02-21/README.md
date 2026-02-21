@@ -3,6 +3,7 @@
 ## Included Experiments
 
 1. `12.30-actor-debt-cleanup-regression-check`
+2. `12.31-command-catalog-sso`
 
 ## Policy
 
