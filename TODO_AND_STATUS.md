@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-21
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 163
+> **Current Iteration**: 164
 
 ---
 
@@ -266,7 +266,7 @@ DeepResearch request status legend for this section:
 | ID | Requested At | Topic | Instruction Path | Owner | Status | Result Path | Notes |
 |---|---|---|---|---|---|---|---|
 | DR-001 | 2026-02-19 | Dragonfly performance-gap analysis | `garnet-rs/benches/DEEPRESEARCH_DRAGONFLY_INSTRUCTION.md` | Human | RECEIVED | `docs/performance/dragonfly-performance-gap-analysis-deepresearch-2026-02-20.md` | Imported from `/Users/kazuki-matsuda/Downloads/deep-research-report (1).md`. |
-| DR-002 | 2026-02-21 | Actor model + lock minimization for owner-thread architecture | `docs/performance/DEEPRESEARCH_ACTOR_LOCK_MINIMIZATION_INSTRUCTION_2026-02-21.md` | Human | REQUESTED_WAITING | - | User stated research was started; waiting for returned report. |
+| DR-002 | 2026-02-21 | Actor model + lock minimization for owner-thread architecture | `docs/performance/DEEPRESEARCH_ACTOR_LOCK_MINIMIZATION_INSTRUCTION_2026-02-21.md` | Human | RECEIVED | `docs/performance/actor-lock-minimization-deepresearch-2026-02-21.md` | Imported report and extracted actionable notes to `docs/performance/actor-lock-minimization-notes-2026-02-21.md`. |
 
 ---
 
@@ -588,3 +588,4 @@ DeepResearch request status legend for this section:
 | 161 | 2026-02-20 | 11.48 | DONE | Added interoperability scripts under `garnet-rs/tests/interop/` for command-surface diff (`command_coverage_audit.sh`) and cluster capability matrix (`cluster_capability_matrix.sh`) across Redis/Dragonfly/Garnet. |
 | 162 | 2026-02-20 | 11.49 | DONE | Added replication interoperability matrix script `garnet-rs/tests/interop/replication_capability_matrix.sh` with explicit master-switch validation for Redis<->Redis and bidirectional Redis<->Garnet replication probes (each side as master), including `SET`/`GET` verification when handshake is established. |
 | 163 | 2026-02-21 | 11.50 | DONE | Added Phase 11B DeepResearch tracker to `TODO_AND_STATUS.md` and registered current backlog states; pending list now explicitly includes `DR-002` (actor lock minimization, waiting on human-returned report). |
+| 164 | 2026-02-21 | DR-002 | DONE | Imported returned DeepResearch report to `docs/performance/actor-lock-minimization-deepresearch-2026-02-21.md`, changed `DR-002` status to `RECEIVED`, and added actionable-note digest `docs/performance/actor-lock-minimization-notes-2026-02-21.md`. |
