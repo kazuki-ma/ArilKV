@@ -8,42 +8,163 @@ use std::sync::OnceLock;
 pub enum CommandId {
     Get,
     Set,
+    Setex,
+    Setnx,
+    Strlen,
+    Getrange,
+    Substr,
+    Getbit,
+    Setbit,
+    Setrange,
+    Bitcount,
     Del,
+    Rename,
+    Renamenx,
+    Copy,
     Incr,
     Decr,
+    Incrby,
+    Decrby,
+    Exists,
+    Type,
+    Mget,
+    Mset,
     Expire,
+    Expireat,
+    Expiretime,
     Ttl,
     Pexpire,
+    Pexpireat,
+    Pexpiretime,
     Pttl,
     Persist,
     Hset,
     Hget,
     Hdel,
     Hgetall,
+    Hlen,
+    Hmget,
+    Hmset,
+    Hsetnx,
+    Hexists,
+    Hkeys,
+    Hvals,
+    Hstrlen,
+    Hincrby,
+    Hincrbyfloat,
+    Hrandfield,
     Lpush,
     Rpush,
     Lpop,
     Rpop,
     Lrange,
+    Llen,
+    Lindex,
+    Lset,
+    Ltrim,
+    Lpushx,
+    Rpushx,
+    Lrem,
+    Linsert,
+    Lmove,
+    Rpoplpush,
     Sadd,
     Srem,
     Smembers,
     Sismember,
+    Scard,
+    Smismember,
+    Srandmember,
+    Spop,
+    Smove,
+    Sdiff,
+    Sdiffstore,
+    Sinter,
+    Sintercard,
+    Sinterstore,
+    Sunion,
+    Sunionstore,
     Zadd,
     Zrem,
     Zrange,
+    Zrevrange,
+    Zrangebyscore,
+    Zrevrangebyscore,
     Zscore,
+    Zcard,
+    Zcount,
+    Zrank,
+    Zrevrank,
+    Zincrby,
+    Zremrangebyrank,
+    Zremrangebyscore,
+    Zmscore,
+    Zrandmember,
+    Zpopmin,
+    Zpopmax,
+    Zdiff,
+    Zdiffstore,
+    Zinter,
+    Zinterstore,
+    Zlexcount,
+    Zrangestore,
+    Zrangebylex,
+    Zrevrangebylex,
+    Zremrangebylex,
+    Zintercard,
+    Zmpop,
+    Zunion,
+    Zunionstore,
+    Xadd,
+    Xdel,
+    Xgroup,
+    Xreadgroup,
+    Xinfo,
+    Xlen,
+    Xrange,
+    Xrevrange,
     Multi,
     Exec,
     Discard,
     Watch,
     Unwatch,
     Asking,
+    Hello,
+    Lastsave,
+    Readonly,
+    Readwrite,
+    Reset,
+    Lolwut,
     Ping,
     Echo,
     Info,
+    Memory,
     Dbsize,
+    Debug,
+    Object,
+    Keys,
+    Randomkey,
+    Scan,
+    Hscan,
+    Sscan,
+    Zscan,
+    Flushdb,
+    Flushall,
+    Function,
+    Script,
+    Config,
     Command,
+    Getdel,
+    Getset,
+    Psetex,
+    Append,
+    Getex,
+    Incrbyfloat,
+    Msetnx,
+    Quit,
+    Time,
+    Touch,
+    Unlink,
     Unknown,
 }
 
@@ -124,6 +245,96 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Setex,
+        name_upper: b"SETEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Setnx,
+        name_upper: b"SETNX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Strlen,
+        name_upper: b"STRLEN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Getrange,
+        name_upper: b"GETRANGE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Substr,
+        name_upper: b"SUBSTR",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Getbit,
+        name_upper: b"GETBIT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Setbit,
+        name_upper: b"SETBIT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Setrange,
+        name_upper: b"SETRANGE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bitcount,
+        name_upper: b"BITCOUNT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Del,
         name_upper: b"DEL",
         key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
@@ -131,6 +342,36 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Rename,
+        name_upper: b"RENAME",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Renamenx,
+        name_upper: b"RENAMENX",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Copy,
+        name_upper: b"COPY",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -154,6 +395,66 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Incrby,
+        name_upper: b"INCRBY",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Decrby,
+        name_upper: b"DECRBY",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Exists,
+        name_upper: b"EXISTS",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::SingleKeyOnly,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Type,
+        name_upper: b"TYPE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Mget,
+        name_upper: b"MGET",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::SingleKeyOnly,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Mset,
+        name_upper: b"MSET",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Expire,
         name_upper: b"EXPIRE",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -161,6 +462,26 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Expireat,
+        name_upper: b"EXPIREAT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Expiretime,
+        name_upper: b"EXPIRETIME",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -181,6 +502,26 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pexpireat,
+        name_upper: b"PEXPIREAT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pexpiretime,
+        name_upper: b"PEXPIRETIME",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -244,6 +585,116 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Hlen,
+        name_upper: b"HLEN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hmget,
+        name_upper: b"HMGET",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hmset,
+        name_upper: b"HMSET",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hsetnx,
+        name_upper: b"HSETNX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hexists,
+        name_upper: b"HEXISTS",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hkeys,
+        name_upper: b"HKEYS",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hvals,
+        name_upper: b"HVALS",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hstrlen,
+        name_upper: b"HSTRLEN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hincrby,
+        name_upper: b"HINCRBY",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hincrbyfloat,
+        name_upper: b"HINCRBYFLOAT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hrandfield,
+        name_upper: b"HRANDFIELD",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Lpush,
         name_upper: b"LPUSH",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -294,6 +745,106 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Llen,
+        name_upper: b"LLEN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lindex,
+        name_upper: b"LINDEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lset,
+        name_upper: b"LSET",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Ltrim,
+        name_upper: b"LTRIM",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lpushx,
+        name_upper: b"LPUSHX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Rpushx,
+        name_upper: b"RPUSHX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lrem,
+        name_upper: b"LREM",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Linsert,
+        name_upper: b"LINSERT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lmove,
+        name_upper: b"LMOVE",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Rpoplpush,
+        name_upper: b"RPOPLPUSH",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Sadd,
         name_upper: b"SADD",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -334,6 +885,126 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Scard,
+        name_upper: b"SCARD",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Smismember,
+        name_upper: b"SMISMEMBER",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Srandmember,
+        name_upper: b"SRANDMEMBER",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Spop,
+        name_upper: b"SPOP",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Smove,
+        name_upper: b"SMOVE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sdiff,
+        name_upper: b"SDIFF",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sdiffstore,
+        name_upper: b"SDIFFSTORE",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sinter,
+        name_upper: b"SINTER",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sintercard,
+        name_upper: b"SINTERCARD",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sinterstore,
+        name_upper: b"SINTERSTORE",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sunion,
+        name_upper: b"SUNION",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sunionstore,
+        name_upper: b"SUNIONSTORE",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Zadd,
         name_upper: b"ZADD",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -364,6 +1035,36 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Zrevrange,
+        name_upper: b"ZREVRANGE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrangebyscore,
+        name_upper: b"ZRANGEBYSCORE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrevrangebyscore,
+        name_upper: b"ZREVRANGEBYSCORE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Zscore,
         name_upper: b"ZSCORE",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -371,6 +1072,326 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zcard,
+        name_upper: b"ZCARD",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zcount,
+        name_upper: b"ZCOUNT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrank,
+        name_upper: b"ZRANK",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrevrank,
+        name_upper: b"ZREVRANK",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zincrby,
+        name_upper: b"ZINCRBY",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zremrangebyrank,
+        name_upper: b"ZREMRANGEBYRANK",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zremrangebyscore,
+        name_upper: b"ZREMRANGEBYSCORE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zmscore,
+        name_upper: b"ZMSCORE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrandmember,
+        name_upper: b"ZRANDMEMBER",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zpopmin,
+        name_upper: b"ZPOPMIN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zpopmax,
+        name_upper: b"ZPOPMAX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zdiff,
+        name_upper: b"ZDIFF",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zdiffstore,
+        name_upper: b"ZDIFFSTORE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zinter,
+        name_upper: b"ZINTER",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zinterstore,
+        name_upper: b"ZINTERSTORE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zlexcount,
+        name_upper: b"ZLEXCOUNT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrangestore,
+        name_upper: b"ZRANGESTORE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrangebylex,
+        name_upper: b"ZRANGEBYLEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zrevrangebylex,
+        name_upper: b"ZREVRANGEBYLEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zremrangebylex,
+        name_upper: b"ZREMRANGEBYLEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zintercard,
+        name_upper: b"ZINTERCARD",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zmpop,
+        name_upper: b"ZMPOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zunion,
+        name_upper: b"ZUNION",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zunionstore,
+        name_upper: b"ZUNIONSTORE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xadd,
+        name_upper: b"XADD",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xdel,
+        name_upper: b"XDEL",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xgroup,
+        name_upper: b"XGROUP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xreadgroup,
+        name_upper: b"XREADGROUP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(8)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xinfo,
+        name_upper: b"XINFO",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xlen,
+        name_upper: b"XLEN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xrange,
+        name_upper: b"XRANGE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xrevrange,
+        name_upper: b"XREVRANGE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -434,6 +1455,66 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Hello,
+        name_upper: b"HELLO",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lastsave,
+        name_upper: b"LASTSAVE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Readonly,
+        name_upper: b"READONLY",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Readwrite,
+        name_upper: b"READWRITE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Reset,
+        name_upper: b"RESET",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lolwut,
+        name_upper: b"LOLWUT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Ping,
         name_upper: b"PING",
         key_access_pattern: KeyAccessPattern::None,
@@ -464,6 +1545,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Memory,
+        name_upper: b"MEMORY",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Dbsize,
         name_upper: b"DBSIZE",
         key_access_pattern: KeyAccessPattern::None,
@@ -474,6 +1565,136 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Debug,
+        name_upper: b"DEBUG",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Object,
+        name_upper: b"OBJECT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Keys,
+        name_upper: b"KEYS",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Randomkey,
+        name_upper: b"RANDOMKEY",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Scan,
+        name_upper: b"SCAN",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Hscan,
+        name_upper: b"HSCAN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sscan,
+        name_upper: b"SSCAN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Zscan,
+        name_upper: b"ZSCAN",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Flushdb,
+        name_upper: b"FLUSHDB",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Flushall,
+        name_upper: b"FLUSHALL",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Function,
+        name_upper: b"FUNCTION",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Script,
+        name_upper: b"SCRIPT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Config,
+        name_upper: b"CONFIG",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Command,
         name_upper: b"COMMAND",
         key_access_pattern: KeyAccessPattern::None,
@@ -481,6 +1702,116 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Getdel,
+        name_upper: b"GETDEL",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Getset,
+        name_upper: b"GETSET",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Psetex,
+        name_upper: b"PSETEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Append,
+        name_upper: b"APPEND",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Getex,
+        name_upper: b"GETEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Incrbyfloat,
+        name_upper: b"INCRBYFLOAT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Msetnx,
+        name_upper: b"MSETNX",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Quit,
+        name_upper: b"QUIT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Time,
+        name_upper: b"TIME",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Touch,
+        name_upper: b"TOUCH",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::SingleKeyOnly,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Unlink,
+        name_upper: b"UNLINK",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::SingleKeyOnly,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -596,6 +1927,10 @@ mod tests {
         assert!(command_is_owner_routable(CommandId::Del, 2));
         assert!(!command_is_owner_routable(CommandId::Del, 3));
         assert!(command_is_owner_routable(CommandId::Set, 3));
+        assert!(command_is_owner_routable(CommandId::Exists, 2));
+        assert!(!command_is_owner_routable(CommandId::Exists, 3));
+        assert!(command_is_owner_routable(CommandId::Mget, 2));
+        assert!(!command_is_owner_routable(CommandId::Mget, 3));
     }
 
     #[test]
@@ -606,6 +1941,10 @@ mod tests {
         );
         assert_eq!(
             command_key_access_pattern(CommandId::Watch),
+            KeyAccessPattern::AllKeysFromArg1
+        );
+        assert_eq!(
+            command_key_access_pattern(CommandId::Mset),
             KeyAccessPattern::AllKeysFromArg1
         );
         assert_eq!(
@@ -657,13 +1996,372 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Watch, 2));
         assert!(command_has_valid_arity(CommandId::Watch, 3));
         assert!(!command_has_valid_arity(CommandId::Watch, 1));
+        assert!(command_has_valid_arity(CommandId::Incrby, 3));
+        assert!(!command_has_valid_arity(CommandId::Incrby, 2));
+        assert!(command_has_valid_arity(CommandId::Rename, 3));
+        assert!(!command_has_valid_arity(CommandId::Rename, 2));
+        assert!(command_has_valid_arity(CommandId::Renamenx, 3));
+        assert!(!command_has_valid_arity(CommandId::Renamenx, 2));
+        assert!(command_has_valid_arity(CommandId::Copy, 3));
+        assert!(command_has_valid_arity(CommandId::Copy, 5));
+        assert!(!command_has_valid_arity(CommandId::Copy, 2));
+        assert!(command_has_valid_arity(CommandId::Setex, 4));
+        assert!(!command_has_valid_arity(CommandId::Setex, 3));
+        assert!(command_has_valid_arity(CommandId::Setnx, 3));
+        assert!(!command_has_valid_arity(CommandId::Setnx, 2));
+        assert!(command_has_valid_arity(CommandId::Strlen, 2));
+        assert!(!command_has_valid_arity(CommandId::Strlen, 3));
+        assert!(command_has_valid_arity(CommandId::Getrange, 4));
+        assert!(command_has_valid_arity(CommandId::Substr, 4));
+        assert!(!command_has_valid_arity(CommandId::Substr, 3));
+        assert!(command_has_valid_arity(CommandId::Getbit, 3));
+        assert!(!command_has_valid_arity(CommandId::Getbit, 2));
+        assert!(command_has_valid_arity(CommandId::Setbit, 4));
+        assert!(!command_has_valid_arity(CommandId::Setbit, 3));
+        assert!(command_has_valid_arity(CommandId::Setrange, 4));
+        assert!(!command_has_valid_arity(CommandId::Setrange, 3));
+        assert!(command_has_valid_arity(CommandId::Bitcount, 2));
+        assert!(command_has_valid_arity(CommandId::Bitcount, 4));
+        assert!(command_has_valid_arity(CommandId::Bitcount, 5));
+        assert!(!command_has_valid_arity(CommandId::Bitcount, 1));
+        assert!(command_has_valid_arity(CommandId::Exists, 2));
+        assert!(command_has_valid_arity(CommandId::Exists, 3));
+        assert!(!command_has_valid_arity(CommandId::Type, 3));
+        assert!(command_has_valid_arity(CommandId::Type, 2));
+        assert!(command_has_valid_arity(CommandId::Expiretime, 2));
+        assert!(!command_has_valid_arity(CommandId::Expiretime, 3));
+        assert!(command_has_valid_arity(CommandId::Pexpiretime, 2));
+        assert!(!command_has_valid_arity(CommandId::Pexpiretime, 3));
+        assert!(!command_has_valid_arity(CommandId::Mset, 2));
+        assert!(command_has_valid_arity(CommandId::Mset, 3));
+        assert!(command_has_valid_arity(CommandId::Hlen, 2));
+        assert!(!command_has_valid_arity(CommandId::Hlen, 3));
+        assert!(!command_has_valid_arity(CommandId::Hmset, 3));
+        assert!(command_has_valid_arity(CommandId::Hmset, 4));
+        assert!(command_has_valid_arity(CommandId::Hmset, 6));
+        assert!(!command_has_valid_arity(CommandId::Hmget, 2));
+        assert!(command_has_valid_arity(CommandId::Hmget, 3));
+        assert!(!command_has_valid_arity(CommandId::Hrandfield, 1));
+        assert!(command_has_valid_arity(CommandId::Hrandfield, 2));
+        assert!(command_has_valid_arity(CommandId::Hrandfield, 4));
+        assert!(!command_has_valid_arity(CommandId::Hello, 0));
+        assert!(command_has_valid_arity(CommandId::Hello, 1));
+        assert!(command_has_valid_arity(CommandId::Hello, 2));
+        assert!(command_has_valid_arity(CommandId::Lastsave, 1));
+        assert!(!command_has_valid_arity(CommandId::Lastsave, 2));
+        assert!(command_has_valid_arity(CommandId::Readonly, 1));
+        assert!(!command_has_valid_arity(CommandId::Readonly, 2));
+        assert!(command_has_valid_arity(CommandId::Readwrite, 1));
+        assert!(!command_has_valid_arity(CommandId::Readwrite, 2));
+        assert!(command_has_valid_arity(CommandId::Reset, 1));
+        assert!(!command_has_valid_arity(CommandId::Reset, 2));
+        assert!(command_has_valid_arity(CommandId::Lolwut, 1));
+        assert!(command_has_valid_arity(CommandId::Lolwut, 3));
+        assert!(!command_has_valid_arity(CommandId::Lolwut, 0));
+        assert!(!command_has_valid_arity(CommandId::Memory, 1));
+        assert!(command_has_valid_arity(CommandId::Memory, 2));
+        assert!(command_has_valid_arity(CommandId::Memory, 3));
+        assert!(command_has_valid_arity(CommandId::Flushdb, 1));
+        assert!(!command_has_valid_arity(CommandId::Flushdb, 2));
+        assert!(command_has_valid_arity(CommandId::Flushall, 1));
+        assert!(command_has_valid_arity(CommandId::Function, 2));
+        assert!(!command_has_valid_arity(CommandId::Function, 1));
+        assert!(command_has_valid_arity(CommandId::Script, 2));
+        assert!(command_has_valid_arity(CommandId::Script, 3));
+        assert!(!command_has_valid_arity(CommandId::Script, 1));
+        assert!(command_has_valid_arity(CommandId::Config, 2));
+        assert!(command_has_valid_arity(CommandId::Config, 3));
+        assert!(!command_has_valid_arity(CommandId::Config, 1));
+        assert!(command_has_valid_arity(CommandId::Keys, 2));
+        assert!(!command_has_valid_arity(CommandId::Keys, 1));
+        assert!(!command_has_valid_arity(CommandId::Keys, 3));
+        assert!(command_has_valid_arity(CommandId::Randomkey, 1));
+        assert!(!command_has_valid_arity(CommandId::Randomkey, 2));
+        assert!(command_has_valid_arity(CommandId::Scan, 2));
+        assert!(command_has_valid_arity(CommandId::Scan, 6));
+        assert!(!command_has_valid_arity(CommandId::Scan, 1));
+        assert!(command_has_valid_arity(CommandId::Hscan, 3));
+        assert!(command_has_valid_arity(CommandId::Hscan, 7));
+        assert!(!command_has_valid_arity(CommandId::Hscan, 2));
+        assert!(command_has_valid_arity(CommandId::Sscan, 3));
+        assert!(command_has_valid_arity(CommandId::Sscan, 7));
+        assert!(!command_has_valid_arity(CommandId::Sscan, 2));
+        assert!(command_has_valid_arity(CommandId::Zscan, 3));
+        assert!(command_has_valid_arity(CommandId::Zscan, 7));
+        assert!(!command_has_valid_arity(CommandId::Zscan, 2));
+        assert!(command_has_valid_arity(CommandId::Debug, 2));
+        assert!(command_has_valid_arity(CommandId::Debug, 3));
+        assert!(!command_has_valid_arity(CommandId::Debug, 1));
         assert!(command_has_valid_arity(CommandId::Set, 2));
+        assert!(command_has_valid_arity(CommandId::Getdel, 2));
+        assert!(!command_has_valid_arity(CommandId::Getdel, 3));
+        assert!(command_has_valid_arity(CommandId::Getset, 3));
+        assert!(!command_has_valid_arity(CommandId::Getset, 2));
+        assert!(command_has_valid_arity(CommandId::Psetex, 4));
+        assert!(!command_has_valid_arity(CommandId::Psetex, 3));
+        assert!(command_has_valid_arity(CommandId::Append, 3));
+        assert!(!command_has_valid_arity(CommandId::Append, 2));
+        assert!(command_has_valid_arity(CommandId::Getex, 2));
+        assert!(command_has_valid_arity(CommandId::Getex, 4));
+        assert!(!command_has_valid_arity(CommandId::Getex, 1));
+        assert!(command_has_valid_arity(CommandId::Incrbyfloat, 3));
+        assert!(!command_has_valid_arity(CommandId::Incrbyfloat, 2));
+        assert!(command_has_valid_arity(CommandId::Msetnx, 3));
+        assert!(command_has_valid_arity(CommandId::Msetnx, 5));
+        assert!(!command_has_valid_arity(CommandId::Msetnx, 2));
+        assert!(command_has_valid_arity(CommandId::Llen, 2));
+        assert!(!command_has_valid_arity(CommandId::Llen, 3));
+        assert!(command_has_valid_arity(CommandId::Lindex, 3));
+        assert!(!command_has_valid_arity(CommandId::Lindex, 2));
+        assert!(command_has_valid_arity(CommandId::Lset, 4));
+        assert!(!command_has_valid_arity(CommandId::Lset, 3));
+        assert!(command_has_valid_arity(CommandId::Ltrim, 4));
+        assert!(!command_has_valid_arity(CommandId::Ltrim, 3));
+        assert!(command_has_valid_arity(CommandId::Lpushx, 3));
+        assert!(command_has_valid_arity(CommandId::Lpushx, 4));
+        assert!(!command_has_valid_arity(CommandId::Lpushx, 2));
+        assert!(command_has_valid_arity(CommandId::Rpushx, 3));
+        assert!(command_has_valid_arity(CommandId::Rpushx, 4));
+        assert!(!command_has_valid_arity(CommandId::Rpushx, 2));
+        assert!(command_has_valid_arity(CommandId::Lrem, 4));
+        assert!(!command_has_valid_arity(CommandId::Lrem, 3));
+        assert!(command_has_valid_arity(CommandId::Linsert, 5));
+        assert!(!command_has_valid_arity(CommandId::Linsert, 4));
+        assert!(command_has_valid_arity(CommandId::Lmove, 5));
+        assert!(!command_has_valid_arity(CommandId::Lmove, 4));
+        assert!(command_has_valid_arity(CommandId::Rpoplpush, 3));
+        assert!(!command_has_valid_arity(CommandId::Rpoplpush, 2));
+        assert!(command_has_valid_arity(CommandId::Scard, 2));
+        assert!(!command_has_valid_arity(CommandId::Scard, 3));
+        assert!(command_has_valid_arity(CommandId::Smismember, 3));
+        assert!(command_has_valid_arity(CommandId::Smismember, 4));
+        assert!(!command_has_valid_arity(CommandId::Smismember, 2));
+        assert!(command_has_valid_arity(CommandId::Srandmember, 2));
+        assert!(command_has_valid_arity(CommandId::Srandmember, 3));
+        assert!(!command_has_valid_arity(CommandId::Srandmember, 1));
+        assert!(command_has_valid_arity(CommandId::Spop, 2));
+        assert!(command_has_valid_arity(CommandId::Spop, 3));
+        assert!(!command_has_valid_arity(CommandId::Spop, 1));
+        assert!(command_has_valid_arity(CommandId::Smove, 4));
+        assert!(!command_has_valid_arity(CommandId::Smove, 3));
+        assert!(command_has_valid_arity(CommandId::Sdiff, 2));
+        assert!(command_has_valid_arity(CommandId::Sdiff, 4));
+        assert!(!command_has_valid_arity(CommandId::Sdiff, 1));
+        assert!(command_has_valid_arity(CommandId::Sdiffstore, 3));
+        assert!(command_has_valid_arity(CommandId::Sdiffstore, 5));
+        assert!(!command_has_valid_arity(CommandId::Sdiffstore, 2));
+        assert!(command_has_valid_arity(CommandId::Sinter, 2));
+        assert!(command_has_valid_arity(CommandId::Sinter, 4));
+        assert!(!command_has_valid_arity(CommandId::Sinter, 1));
+        assert!(command_has_valid_arity(CommandId::Sintercard, 3));
+        assert!(command_has_valid_arity(CommandId::Sintercard, 6));
+        assert!(!command_has_valid_arity(CommandId::Sintercard, 2));
+        assert!(command_has_valid_arity(CommandId::Sinterstore, 3));
+        assert!(command_has_valid_arity(CommandId::Sinterstore, 5));
+        assert!(!command_has_valid_arity(CommandId::Sinterstore, 2));
+        assert!(command_has_valid_arity(CommandId::Sunion, 2));
+        assert!(command_has_valid_arity(CommandId::Sunion, 4));
+        assert!(!command_has_valid_arity(CommandId::Sunion, 1));
+        assert!(command_has_valid_arity(CommandId::Sunionstore, 3));
+        assert!(command_has_valid_arity(CommandId::Sunionstore, 5));
+        assert!(!command_has_valid_arity(CommandId::Sunionstore, 2));
+        assert!(command_has_valid_arity(CommandId::Zcard, 2));
+        assert!(!command_has_valid_arity(CommandId::Zcard, 3));
+        assert!(command_has_valid_arity(CommandId::Zcount, 4));
+        assert!(!command_has_valid_arity(CommandId::Zcount, 3));
+        assert!(command_has_valid_arity(CommandId::Zrevrange, 4));
+        assert!(command_has_valid_arity(CommandId::Zrevrange, 5));
+        assert!(!command_has_valid_arity(CommandId::Zrevrange, 3));
+        assert!(command_has_valid_arity(CommandId::Zrangebyscore, 4));
+        assert!(command_has_valid_arity(CommandId::Zrangebyscore, 7));
+        assert!(!command_has_valid_arity(CommandId::Zrangebyscore, 3));
+        assert!(command_has_valid_arity(CommandId::Zrevrangebyscore, 4));
+        assert!(command_has_valid_arity(CommandId::Zrevrangebyscore, 7));
+        assert!(!command_has_valid_arity(CommandId::Zrevrangebyscore, 3));
+        assert!(command_has_valid_arity(CommandId::Zrank, 3));
+        assert!(!command_has_valid_arity(CommandId::Zrank, 2));
+        assert!(command_has_valid_arity(CommandId::Zrevrank, 3));
+        assert!(!command_has_valid_arity(CommandId::Zrevrank, 2));
+        assert!(command_has_valid_arity(CommandId::Zincrby, 4));
+        assert!(!command_has_valid_arity(CommandId::Zincrby, 3));
+        assert!(command_has_valid_arity(CommandId::Zremrangebyrank, 4));
+        assert!(!command_has_valid_arity(CommandId::Zremrangebyrank, 3));
+        assert!(command_has_valid_arity(CommandId::Zremrangebyscore, 4));
+        assert!(!command_has_valid_arity(CommandId::Zremrangebyscore, 3));
+        assert!(command_has_valid_arity(CommandId::Zmscore, 3));
+        assert!(command_has_valid_arity(CommandId::Zmscore, 5));
+        assert!(!command_has_valid_arity(CommandId::Zmscore, 2));
+        assert!(command_has_valid_arity(CommandId::Zrandmember, 2));
+        assert!(command_has_valid_arity(CommandId::Zrandmember, 4));
+        assert!(!command_has_valid_arity(CommandId::Zrandmember, 1));
+        assert!(command_has_valid_arity(CommandId::Zpopmin, 2));
+        assert!(command_has_valid_arity(CommandId::Zpopmin, 3));
+        assert!(!command_has_valid_arity(CommandId::Zpopmin, 1));
+        assert!(command_has_valid_arity(CommandId::Zpopmax, 2));
+        assert!(command_has_valid_arity(CommandId::Zpopmax, 3));
+        assert!(!command_has_valid_arity(CommandId::Zpopmax, 1));
+        assert!(command_has_valid_arity(CommandId::Zdiff, 3));
+        assert!(command_has_valid_arity(CommandId::Zdiff, 7));
+        assert!(!command_has_valid_arity(CommandId::Zdiff, 2));
+        assert!(command_has_valid_arity(CommandId::Zdiffstore, 4));
+        assert!(command_has_valid_arity(CommandId::Zdiffstore, 7));
+        assert!(!command_has_valid_arity(CommandId::Zdiffstore, 3));
+        assert!(command_has_valid_arity(CommandId::Zinter, 3));
+        assert!(command_has_valid_arity(CommandId::Zinter, 8));
+        assert!(!command_has_valid_arity(CommandId::Zinter, 2));
+        assert!(command_has_valid_arity(CommandId::Zinterstore, 4));
+        assert!(command_has_valid_arity(CommandId::Zinterstore, 9));
+        assert!(!command_has_valid_arity(CommandId::Zinterstore, 3));
+        assert!(command_has_valid_arity(CommandId::Zlexcount, 4));
+        assert!(!command_has_valid_arity(CommandId::Zlexcount, 3));
+        assert!(command_has_valid_arity(CommandId::Zrangestore, 5));
+        assert!(command_has_valid_arity(CommandId::Zrangestore, 9));
+        assert!(!command_has_valid_arity(CommandId::Zrangestore, 4));
+        assert!(command_has_valid_arity(CommandId::Zrangebylex, 4));
+        assert!(command_has_valid_arity(CommandId::Zrangebylex, 7));
+        assert!(!command_has_valid_arity(CommandId::Zrangebylex, 3));
+        assert!(command_has_valid_arity(CommandId::Zrevrangebylex, 4));
+        assert!(command_has_valid_arity(CommandId::Zrevrangebylex, 7));
+        assert!(!command_has_valid_arity(CommandId::Zrevrangebylex, 3));
+        assert!(command_has_valid_arity(CommandId::Zremrangebylex, 4));
+        assert!(!command_has_valid_arity(CommandId::Zremrangebylex, 3));
+        assert!(command_has_valid_arity(CommandId::Zintercard, 3));
+        assert!(command_has_valid_arity(CommandId::Zintercard, 6));
+        assert!(!command_has_valid_arity(CommandId::Zintercard, 2));
+        assert!(command_has_valid_arity(CommandId::Zmpop, 4));
+        assert!(command_has_valid_arity(CommandId::Zmpop, 8));
+        assert!(!command_has_valid_arity(CommandId::Zmpop, 3));
+        assert!(command_has_valid_arity(CommandId::Zunion, 3));
+        assert!(command_has_valid_arity(CommandId::Zunion, 8));
+        assert!(!command_has_valid_arity(CommandId::Zunion, 2));
+        assert!(command_has_valid_arity(CommandId::Zunionstore, 4));
+        assert!(command_has_valid_arity(CommandId::Zunionstore, 9));
+        assert!(!command_has_valid_arity(CommandId::Zunionstore, 3));
+        assert!(command_has_valid_arity(CommandId::Xlen, 2));
+        assert!(!command_has_valid_arity(CommandId::Xlen, 3));
+        assert!(command_has_valid_arity(CommandId::Xrange, 4));
+        assert!(command_has_valid_arity(CommandId::Xrange, 6));
+        assert!(!command_has_valid_arity(CommandId::Xrange, 3));
+        assert!(command_has_valid_arity(CommandId::Xrevrange, 4));
+        assert!(command_has_valid_arity(CommandId::Xrevrange, 6));
+        assert!(!command_has_valid_arity(CommandId::Xrevrange, 3));
+        assert!(command_has_valid_arity(CommandId::Quit, 1));
+        assert!(!command_has_valid_arity(CommandId::Quit, 2));
+        assert!(command_has_valid_arity(CommandId::Time, 1));
+        assert!(!command_has_valid_arity(CommandId::Time, 2));
+        assert!(command_has_valid_arity(CommandId::Touch, 2));
+        assert!(command_has_valid_arity(CommandId::Touch, 3));
+        assert!(!command_has_valid_arity(CommandId::Touch, 1));
+        assert!(command_has_valid_arity(CommandId::Unlink, 2));
+        assert!(command_has_valid_arity(CommandId::Unlink, 4));
+        assert!(!command_has_valid_arity(CommandId::Unlink, 1));
     }
 
     #[test]
     fn command_name_upper_maps_known_and_unknown_commands() {
         assert_eq!(command_name_upper(CommandId::Set), b"SET");
+        assert_eq!(command_name_upper(CommandId::Setnx), b"SETNX");
+        assert_eq!(command_name_upper(CommandId::Strlen), b"STRLEN");
+        assert_eq!(command_name_upper(CommandId::Getrange), b"GETRANGE");
+        assert_eq!(command_name_upper(CommandId::Substr), b"SUBSTR");
+        assert_eq!(command_name_upper(CommandId::Getbit), b"GETBIT");
+        assert_eq!(command_name_upper(CommandId::Setbit), b"SETBIT");
+        assert_eq!(command_name_upper(CommandId::Setrange), b"SETRANGE");
+        assert_eq!(command_name_upper(CommandId::Bitcount), b"BITCOUNT");
+        assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
+        assert_eq!(command_name_upper(CommandId::Readonly), b"READONLY");
+        assert_eq!(command_name_upper(CommandId::Readwrite), b"READWRITE");
+        assert_eq!(command_name_upper(CommandId::Reset), b"RESET");
+        assert_eq!(command_name_upper(CommandId::Lolwut), b"LOLWUT");
+        assert_eq!(command_name_upper(CommandId::Expireat), b"EXPIREAT");
+        assert_eq!(command_name_upper(CommandId::Pexpiretime), b"PEXPIRETIME");
+        assert_eq!(command_name_upper(CommandId::Getdel), b"GETDEL");
+        assert_eq!(command_name_upper(CommandId::Getset), b"GETSET");
+        assert_eq!(command_name_upper(CommandId::Psetex), b"PSETEX");
+        assert_eq!(command_name_upper(CommandId::Append), b"APPEND");
+        assert_eq!(command_name_upper(CommandId::Getex), b"GETEX");
+        assert_eq!(command_name_upper(CommandId::Incrbyfloat), b"INCRBYFLOAT");
+        assert_eq!(command_name_upper(CommandId::Msetnx), b"MSETNX");
+        assert_eq!(command_name_upper(CommandId::Llen), b"LLEN");
+        assert_eq!(command_name_upper(CommandId::Lindex), b"LINDEX");
+        assert_eq!(command_name_upper(CommandId::Lset), b"LSET");
+        assert_eq!(command_name_upper(CommandId::Ltrim), b"LTRIM");
+        assert_eq!(command_name_upper(CommandId::Lpushx), b"LPUSHX");
+        assert_eq!(command_name_upper(CommandId::Rpushx), b"RPUSHX");
+        assert_eq!(command_name_upper(CommandId::Lrem), b"LREM");
+        assert_eq!(command_name_upper(CommandId::Linsert), b"LINSERT");
+        assert_eq!(command_name_upper(CommandId::Lmove), b"LMOVE");
+        assert_eq!(command_name_upper(CommandId::Rpoplpush), b"RPOPLPUSH");
+        assert_eq!(command_name_upper(CommandId::Scard), b"SCARD");
+        assert_eq!(command_name_upper(CommandId::Smismember), b"SMISMEMBER");
+        assert_eq!(command_name_upper(CommandId::Srandmember), b"SRANDMEMBER");
+        assert_eq!(command_name_upper(CommandId::Spop), b"SPOP");
+        assert_eq!(command_name_upper(CommandId::Smove), b"SMOVE");
+        assert_eq!(command_name_upper(CommandId::Sdiff), b"SDIFF");
+        assert_eq!(command_name_upper(CommandId::Sdiffstore), b"SDIFFSTORE");
+        assert_eq!(command_name_upper(CommandId::Sinter), b"SINTER");
+        assert_eq!(command_name_upper(CommandId::Sintercard), b"SINTERCARD");
+        assert_eq!(command_name_upper(CommandId::Sinterstore), b"SINTERSTORE");
+        assert_eq!(command_name_upper(CommandId::Sunion), b"SUNION");
+        assert_eq!(command_name_upper(CommandId::Sunionstore), b"SUNIONSTORE");
+        assert_eq!(command_name_upper(CommandId::Zcard), b"ZCARD");
+        assert_eq!(command_name_upper(CommandId::Zcount), b"ZCOUNT");
+        assert_eq!(command_name_upper(CommandId::Zrevrange), b"ZREVRANGE");
+        assert_eq!(
+            command_name_upper(CommandId::Zrangebyscore),
+            b"ZRANGEBYSCORE"
+        );
+        assert_eq!(
+            command_name_upper(CommandId::Zrevrangebyscore),
+            b"ZREVRANGEBYSCORE"
+        );
+        assert_eq!(command_name_upper(CommandId::Zrank), b"ZRANK");
+        assert_eq!(command_name_upper(CommandId::Zrevrank), b"ZREVRANK");
+        assert_eq!(command_name_upper(CommandId::Zincrby), b"ZINCRBY");
+        assert_eq!(
+            command_name_upper(CommandId::Zremrangebyrank),
+            b"ZREMRANGEBYRANK"
+        );
+        assert_eq!(
+            command_name_upper(CommandId::Zremrangebyscore),
+            b"ZREMRANGEBYSCORE"
+        );
+        assert_eq!(command_name_upper(CommandId::Zmscore), b"ZMSCORE");
+        assert_eq!(command_name_upper(CommandId::Zrandmember), b"ZRANDMEMBER");
+        assert_eq!(command_name_upper(CommandId::Zpopmin), b"ZPOPMIN");
+        assert_eq!(command_name_upper(CommandId::Zpopmax), b"ZPOPMAX");
+        assert_eq!(command_name_upper(CommandId::Zdiff), b"ZDIFF");
+        assert_eq!(command_name_upper(CommandId::Zdiffstore), b"ZDIFFSTORE");
+        assert_eq!(command_name_upper(CommandId::Zinter), b"ZINTER");
+        assert_eq!(command_name_upper(CommandId::Zinterstore), b"ZINTERSTORE");
+        assert_eq!(command_name_upper(CommandId::Zlexcount), b"ZLEXCOUNT");
+        assert_eq!(command_name_upper(CommandId::Zrangestore), b"ZRANGESTORE");
+        assert_eq!(command_name_upper(CommandId::Zrangebylex), b"ZRANGEBYLEX");
+        assert_eq!(
+            command_name_upper(CommandId::Zrevrangebylex),
+            b"ZREVRANGEBYLEX"
+        );
+        assert_eq!(
+            command_name_upper(CommandId::Zremrangebylex),
+            b"ZREMRANGEBYLEX"
+        );
+        assert_eq!(command_name_upper(CommandId::Zintercard), b"ZINTERCARD");
+        assert_eq!(command_name_upper(CommandId::Zmpop), b"ZMPOP");
+        assert_eq!(command_name_upper(CommandId::Zunion), b"ZUNION");
+        assert_eq!(command_name_upper(CommandId::Zunionstore), b"ZUNIONSTORE");
+        assert_eq!(command_name_upper(CommandId::Xlen), b"XLEN");
+        assert_eq!(command_name_upper(CommandId::Xrange), b"XRANGE");
+        assert_eq!(command_name_upper(CommandId::Xrevrange), b"XREVRANGE");
+        assert_eq!(command_name_upper(CommandId::Quit), b"QUIT");
+        assert_eq!(command_name_upper(CommandId::Time), b"TIME");
+        assert_eq!(command_name_upper(CommandId::Touch), b"TOUCH");
+        assert_eq!(command_name_upper(CommandId::Unlink), b"UNLINK");
+        assert_eq!(command_name_upper(CommandId::Scan), b"SCAN");
+        assert_eq!(command_name_upper(CommandId::Hscan), b"HSCAN");
+        assert_eq!(command_name_upper(CommandId::Sscan), b"SSCAN");
+        assert_eq!(command_name_upper(CommandId::Zscan), b"ZSCAN");
         assert_eq!(command_name_upper(CommandId::Watch), b"WATCH");
+        assert_eq!(command_name_upper(CommandId::Mget), b"MGET");
         assert_eq!(command_name_upper(CommandId::Unknown), b"UNKNOWN");
     }
 

@@ -6,12 +6,13 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 4 || ((args.len() - 2) % 2 != 0) {
-            return Err(RequestExecutionError::WrongArity {
-                command: "ZADD",
-                expected: "ZADD key score member [score member ...]",
-            });
-        }
+        ensure_paired_arity_after(
+            args,
+            4,
+            2,
+            "ZADD",
+            "ZADD key score member [score member ...]",
+        )?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -41,12 +42,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "ZREM",
-                expected: "ZREM key member [member ...]",
-            });
-        }
+        ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -80,12 +76,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "ZRANGE",
-                expected: "ZRANGE key start stop",
-            });
-        }
+        require_exact_arity(args, 4, "ZRANGE", "ZRANGE key start stop")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -103,48 +94,104 @@ impl RequestProcessor {
             }
         };
 
-        let mut entries: Vec<(&Vec<u8>, f64)> = zset
-            .iter()
-            .map(|(member, score)| (member, *score))
-            .collect();
-        entries.sort_by(|(lhs_member, lhs_score), (rhs_member, rhs_score)| {
-            lhs_score
-                .partial_cmp(rhs_score)
-                .expect("zset scores are finite")
-                .then_with(|| lhs_member.cmp(rhs_member))
-        });
-
-        let len = entries.len() as i64;
-        if len == 0 {
+        let entries = sorted_zset_entries_by_score(&zset);
+        let Some((start_index, stop_index)) =
+            normalize_zset_index_range(entries.len(), start, stop)
+        else {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
-        }
+        };
 
-        let mut normalized_start = if start < 0 { len + start } else { start };
-        let mut normalized_stop = if stop < 0 { len + stop } else { stop };
-        if normalized_start < 0 {
-            normalized_start = 0;
-        }
-        if normalized_stop < 0 || normalized_start >= len {
-            response_out.extend_from_slice(b"*0\r\n");
-            return Ok(());
-        }
-        if normalized_stop >= len {
-            normalized_stop = len - 1;
-        }
-        if normalized_start > normalized_stop {
-            response_out.extend_from_slice(b"*0\r\n");
-            return Ok(());
-        }
-
-        let count = (normalized_stop - normalized_start + 1) as usize;
+        let count = stop_index - start_index + 1;
         response_out.push(b'*');
         response_out.extend_from_slice(count.to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
-        for index in normalized_start..=normalized_stop {
-            append_bulk_string(response_out, entries[index as usize].0);
+        for (member, _score) in &entries[start_index..=stop_index] {
+            append_bulk_string(response_out, member);
         }
         Ok(())
+    }
+
+    pub(super) fn handle_zrevrange(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_ranged_arity(
+            args,
+            4,
+            5,
+            "ZREVRANGE",
+            "ZREVRANGE key start stop [WITHSCORES]",
+        )?;
+        let with_scores = if args.len() == 5 {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let option = unsafe { args[4].as_slice() };
+            if !ascii_eq_ignore_case(option, b"WITHSCORES") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            true
+        } else {
+            false
+        };
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let mut entries = sorted_zset_entries_by_score(&zset);
+        entries.reverse();
+        let Some((start_index, stop_index)) =
+            normalize_zset_index_range(entries.len(), start, stop)
+        else {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        };
+
+        let selected = &entries[start_index..=stop_index];
+        let item_count = if with_scores {
+            selected.len() * 2
+        } else {
+            selected.len()
+        };
+        response_out.push(b'*');
+        response_out.extend_from_slice(item_count.to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (member, score) in selected {
+            append_bulk_string(response_out, member);
+            if with_scores {
+                append_bulk_string(response_out, score.to_string().as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_zrangebyscore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zrangebyscore_like(args, response_out, false)
+    }
+
+    pub(super) fn handle_zrevrangebyscore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zrangebyscore_like(args, response_out, true)
     }
 
     pub(super) fn handle_zscore(
@@ -152,12 +199,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "ZSCORE",
-                expected: "ZSCORE key member",
-            });
-        }
+        require_exact_arity(args, 3, "ZSCORE", "ZSCORE key member")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -177,4 +219,1763 @@ impl RequestProcessor {
         }
         Ok(())
     }
+
+    pub(super) fn handle_zcard(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 2, "ZCARD", "ZCARD key")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let count = self
+            .load_zset_object(&key)?
+            .map_or(0usize, |zset| zset.len());
+        append_integer(response_out, count as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zcount(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let min = parse_zscore_bound(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let max = parse_zscore_bound(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let count = zset
+            .values()
+            .filter(|score| score_in_bound(**score, min, max))
+            .count();
+        append_integer(response_out, count as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zlexcount(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let min = parse_zlex_bound(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let max = parse_zlex_bound(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+
+        let count = match self.load_zset_object(&key)? {
+            Some(zset) => zset
+                .keys()
+                .filter(|member| zlex_member_in_bounds(member.as_slice(), min, max))
+                .count(),
+            None => 0usize,
+        };
+        append_integer(response_out, count as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zrangebylex(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zrangebylex_like(args, response_out, false)
+    }
+
+    pub(super) fn handle_zrevrangebylex(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zrangebylex_like(args, response_out, true)
+    }
+
+    pub(super) fn handle_zremrangebylex(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let min = parse_zlex_bound(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let max = parse_zlex_bound(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+
+        let mut zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let to_remove: Vec<Vec<u8>> = zset
+            .keys()
+            .filter(|member| zlex_member_in_bounds(member.as_slice(), min, max))
+            .cloned()
+            .collect();
+        let removed = to_remove
+            .into_iter()
+            .filter(|member| zset.remove(member).is_some())
+            .count() as i64;
+        if removed == 0 {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if zset.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_zset_object(&key, &zset)?;
+        }
+        append_integer(response_out, removed);
+        Ok(())
+    }
+
+    pub(super) fn handle_zintercard(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "ZINTERCARD",
+            "ZINTERCARD numkeys key [key ...] [LIMIT limit]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let num_keys = parse_u64_ascii(unsafe { args[1].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if num_keys == 0 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let num_keys =
+            usize::try_from(num_keys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        let key_start = 2usize;
+        let key_end = key_start + num_keys;
+        if args.len() < key_end {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let mut limit = 0usize;
+        if args.len() > key_end {
+            if args.len() != key_end + 2 {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let option = unsafe { args[key_end].as_slice() };
+            if !ascii_eq_ignore_case(option, b"LIMIT") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let parsed_limit = parse_u64_ascii(unsafe { args[key_end + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            limit = usize::try_from(parsed_limit)
+                .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        }
+
+        let keys: Vec<Vec<u8>> = args[key_start..key_end]
+            .iter()
+            .map(|key| {
+                // SAFETY: caller guarantees argument backing memory validity.
+                unsafe { key.as_slice() }.to_vec()
+            })
+            .collect();
+        let mut cardinality = compute_zinter_cardinality(self, &keys)?;
+        if limit > 0 {
+            cardinality = cardinality.min(limit);
+        }
+        append_integer(response_out, cardinality as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zdiff(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 3, "ZDIFF", "ZDIFF numkeys key [key ...] [WITHSCORES]")?;
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
+        let with_scores = parse_zdiff_withscores(args, option_start)?;
+        let diff = compute_zdiff(self, &keys)?;
+        append_zset_combine_response(response_out, &diff, with_scores);
+        Ok(())
+    }
+
+    pub(super) fn handle_zdiffstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "ZDIFFSTORE",
+            "ZDIFFSTORE destination numkeys key [key ...]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
+        if option_start != args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let diff = compute_zdiff(self, &keys)?;
+        store_zset_result(self, &destination, &diff)?;
+        append_integer(response_out, diff.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zinter(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "ZINTER",
+            "ZINTER numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
+        )?;
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
+        let combine_options = parse_zset_combine_options(
+            args,
+            option_start,
+            keys.len(),
+            /*allow_with_scores=*/ true,
+        )?;
+        let inter = compute_zinter(
+            self,
+            &keys,
+            &combine_options.weights,
+            combine_options.aggregate,
+        )?;
+        append_zset_combine_response(response_out, &inter, combine_options.with_scores);
+        Ok(())
+    }
+
+    pub(super) fn handle_zinterstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "ZINTERSTORE",
+            "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
+        let combine_options = parse_zset_combine_options(
+            args,
+            option_start,
+            keys.len(),
+            /*allow_with_scores=*/ false,
+        )?;
+        let inter = compute_zinter(
+            self,
+            &keys,
+            &combine_options.weights,
+            combine_options.aggregate,
+        )?;
+        store_zset_result(self, &destination, &inter)?;
+        append_integer(response_out, inter.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zunion(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "ZUNION",
+            "ZUNION numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
+        )?;
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
+        let combine_options = parse_zset_combine_options(
+            args,
+            option_start,
+            keys.len(),
+            /*allow_with_scores=*/ true,
+        )?;
+        let union = compute_zunion(
+            self,
+            &keys,
+            &combine_options.weights,
+            combine_options.aggregate,
+        )?;
+        append_zset_combine_response(response_out, &union, combine_options.with_scores);
+        Ok(())
+    }
+
+    pub(super) fn handle_zunionstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "ZUNIONSTORE",
+            "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
+        let combine_options = parse_zset_combine_options(
+            args,
+            option_start,
+            keys.len(),
+            /*allow_with_scores=*/ false,
+        )?;
+        let union = compute_zunion(
+            self,
+            &keys,
+            &combine_options.weights,
+            combine_options.aggregate,
+        )?;
+        store_zset_result(self, &destination, &union)?;
+        append_integer(response_out, union.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zmpop(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "ZMPOP",
+            "ZMPOP numkeys key [key ...] <MIN|MAX> [COUNT count]",
+        )?;
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
+        if option_start >= args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let direction = unsafe { args[option_start].as_slice() };
+        let pop_max = if ascii_eq_ignore_case(direction, b"MAX") {
+            true
+        } else if ascii_eq_ignore_case(direction, b"MIN") {
+            false
+        } else {
+            return Err(RequestExecutionError::SyntaxError);
+        };
+
+        let count = if option_start + 1 == args.len() {
+            1usize
+        } else {
+            if option_start + 3 != args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let count_token = unsafe { args[option_start + 1].as_slice() };
+            if !ascii_eq_ignore_case(count_token, b"COUNT") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let parsed = parse_u64_ascii(unsafe { args[option_start + 2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed == 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            usize::try_from(parsed).unwrap_or(usize::MAX)
+        };
+
+        for key in keys {
+            let mut zset = match self.load_zset_object(&key)? {
+                Some(zset) => zset,
+                None => continue,
+            };
+            if zset.is_empty() {
+                let _ = self.object_delete(&key)?;
+                continue;
+            }
+            let mut entries = sorted_zset_entries_by_score(&zset);
+            if pop_max {
+                entries.reverse();
+            }
+            let selected_count = count.min(entries.len());
+            let selected: Vec<(Vec<u8>, f64)> = entries
+                .into_iter()
+                .take(selected_count)
+                .map(|(member, score)| (member.clone(), score))
+                .collect();
+            for (member, _score) in &selected {
+                zset.remove(member);
+            }
+            if zset.is_empty() {
+                let _ = self.object_delete(&key)?;
+            } else {
+                self.save_zset_object(&key, &zset)?;
+            }
+            append_zmpop_response(response_out, &key, &selected);
+            return Ok(());
+        }
+
+        response_out.extend_from_slice(b"*-1\r\n");
+        Ok(())
+    }
+
+    pub(super) fn handle_zrangestore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "ZRANGESTORE",
+            "ZRANGESTORE dst src min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let source = unsafe { args[2].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let left = unsafe { args[3].as_slice() };
+        // SAFETY: caller guarantees argument backing memory validity.
+        let right = unsafe { args[4].as_slice() };
+        let options = parse_zrangestore_options(args, 5)?;
+
+        let selected = match self.load_zset_object(&source)? {
+            Some(zset) => collect_zrangestore_entries(&zset, left, right, options)?,
+            None => Vec::new(),
+        };
+        let result = zset_map_from_entries(selected);
+        store_zset_result(self, &destination, &result)?;
+        append_integer(response_out, result.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_zscan(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "ZSCAN",
+            "ZSCAN key cursor [MATCH pattern] [COUNT count]",
+        )?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let cursor = parse_u64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let scan_options = parse_scan_match_count_options(args, 3)?;
+
+        let Some(zset) = self.load_zset_object(&key)? else {
+            append_zset_scan_response(response_out, cursor, scan_options.count, &[]);
+            return Ok(());
+        };
+
+        let mut matched = Vec::new();
+        for (member, score) in &zset {
+            if let Some(pattern) = scan_options.pattern {
+                if !super::server_commands::redis_glob_match(pattern, member, false, 0) {
+                    continue;
+                }
+            }
+            matched.push((member.as_slice(), *score));
+        }
+        append_zset_scan_response(response_out, cursor, scan_options.count, &matched);
+        Ok(())
+    }
+
+    pub(super) fn handle_zrank(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zrank_like(args, response_out, false)
+    }
+
+    pub(super) fn handle_zrevrank(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zrank_like(args, response_out, true)
+    }
+
+    pub(super) fn handle_zincrby(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let increment = parse_f64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member = unsafe { args[3].as_slice() }.to_vec();
+
+        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
+        let current = zset.get(&member).copied().unwrap_or(0.0);
+        let updated = current + increment;
+        if !updated.is_finite() {
+            return Err(RequestExecutionError::ValueNotFloat);
+        }
+        zset.insert(member, updated);
+        self.save_zset_object(&key, &zset)?;
+        append_bulk_string(response_out, updated.to_string().as_bytes());
+        Ok(())
+    }
+
+    pub(super) fn handle_zremrangebyrank(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+
+        let mut zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let entries = sorted_zset_entries_by_score(&zset);
+        let Some((start_index, stop_index)) =
+            normalize_zset_index_range(entries.len(), start, stop)
+        else {
+            append_integer(response_out, 0);
+            return Ok(());
+        };
+        let to_remove: Vec<Vec<u8>> = entries[start_index..=stop_index]
+            .iter()
+            .map(|(member, _score)| (*member).clone())
+            .collect();
+        let removed = to_remove
+            .into_iter()
+            .filter(|member| zset.remove(member).is_some())
+            .count() as i64;
+
+        if zset.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_zset_object(&key, &zset)?;
+        }
+        append_integer(response_out, removed);
+        Ok(())
+    }
+
+    pub(super) fn handle_zremrangebyscore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let min = parse_zscore_bound(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let max = parse_zscore_bound(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+
+        let mut zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        let to_remove: Vec<Vec<u8>> = zset
+            .iter()
+            .filter(|(_member, score)| score_in_bound(**score, min, max))
+            .map(|(member, _score)| member.clone())
+            .collect();
+        let removed = to_remove
+            .into_iter()
+            .filter(|member| zset.remove(member).is_some())
+            .count() as i64;
+
+        if removed == 0 {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if zset.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_zset_object(&key, &zset)?;
+        }
+        append_integer(response_out, removed);
+        Ok(())
+    }
+
+    fn handle_zrangebyscore_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        reverse: bool,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            if reverse {
+                "ZREVRANGEBYSCORE"
+            } else {
+                "ZRANGEBYSCORE"
+            },
+            if reverse {
+                "ZREVRANGEBYSCORE key max min [WITHSCORES] [LIMIT offset count]"
+            } else {
+                "ZRANGEBYSCORE key min max [WITHSCORES] [LIMIT offset count]"
+            },
+        )?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let left_bound = parse_zscore_bound(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let right_bound = parse_zscore_bound(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let options = parse_zrange_by_score_options(args, 4)?;
+
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let (min_bound, max_bound) = if reverse {
+            (right_bound, left_bound)
+        } else {
+            (left_bound, right_bound)
+        };
+        let mut matched: Vec<(&Vec<u8>, f64)> = sorted_zset_entries_by_score(&zset)
+            .into_iter()
+            .filter(|(_member, score)| score_in_bound(*score, min_bound, max_bound))
+            .collect();
+        if reverse {
+            matched.reverse();
+        }
+
+        let selected: Vec<(&Vec<u8>, f64)> = if let Some((offset, count)) = options.limit {
+            matched.into_iter().skip(offset).take(count).collect()
+        } else {
+            matched
+        };
+        append_zrange_score_entries(response_out, &selected, options.with_scores);
+        Ok(())
+    }
+
+    fn handle_zrangebylex_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        reverse: bool,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            if reverse {
+                "ZREVRANGEBYLEX"
+            } else {
+                "ZRANGEBYLEX"
+            },
+            if reverse {
+                "ZREVRANGEBYLEX key max min [LIMIT offset count]"
+            } else {
+                "ZRANGEBYLEX key min max [LIMIT offset count]"
+            },
+        )?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let left_bound = parse_zlex_bound(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let right_bound = parse_zlex_bound(unsafe { args[3].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        let limit = parse_zrangebylex_limit(args, 4)?;
+        let (min_bound, max_bound) = if reverse {
+            (right_bound, left_bound)
+        } else {
+            (left_bound, right_bound)
+        };
+
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let mut matched = Vec::new();
+        if reverse {
+            for member in zset.keys().rev() {
+                if zlex_member_in_bounds(member.as_slice(), min_bound, max_bound) {
+                    matched.push(member);
+                }
+            }
+        } else {
+            for member in zset.keys() {
+                if zlex_member_in_bounds(member.as_slice(), min_bound, max_bound) {
+                    matched.push(member);
+                }
+            }
+        }
+
+        let selected: Vec<&Vec<u8>> = if let Some((offset, count)) = limit {
+            matched.into_iter().skip(offset).take(count).collect()
+        } else {
+            matched
+        };
+        response_out.push(b'*');
+        response_out.extend_from_slice(selected.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for member in selected {
+            append_bulk_string(response_out, member);
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_zmscore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let zset = self.load_zset_object(&key)?;
+        let members = &args[2..];
+
+        response_out.push(b'*');
+        response_out.extend_from_slice(members.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for member in members {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let member = unsafe { member.as_slice() };
+            let score = zset.as_ref().and_then(|zset| zset.get(member));
+            match score {
+                Some(score) => append_bulk_string(response_out, score.to_string().as_bytes()),
+                None => append_null_bulk_string(response_out),
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_zrandmember(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_ranged_arity(
+            args,
+            2,
+            4,
+            "ZRANDMEMBER",
+            "ZRANDMEMBER key [count [WITHSCORES]]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let zset = self.load_zset_object(&key)?;
+        if args.len() == 2 {
+            let Some(zset) = zset else {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            };
+            if zset.is_empty() {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            let sampled = select_random_zset_entries_distinct(self, &zset, 1);
+            append_bulk_string(response_out, sampled[0].0.as_slice());
+            return Ok(());
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let count = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let with_scores = if args.len() == 4 {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let option = unsafe { args[3].as_slice() };
+            if !ascii_eq_ignore_case(option, b"WITHSCORES") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            true
+        } else {
+            false
+        };
+
+        let Some(zset) = zset else {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        };
+        if zset.is_empty() || count == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let sampled = if count > 0 {
+            let requested = usize::try_from(count).unwrap_or(usize::MAX);
+            select_random_zset_entries_distinct(self, &zset, requested)
+        } else {
+            let requested = usize::try_from(count.unsigned_abs())
+                .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+            select_random_zset_entries_with_replacement(self, &zset, requested)
+        };
+
+        let response_items = if with_scores {
+            sampled.len() * 2
+        } else {
+            sampled.len()
+        };
+        response_out.push(b'*');
+        response_out.extend_from_slice(response_items.to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (member, score) in sampled {
+            append_bulk_string(response_out, member.as_slice());
+            if with_scores {
+                append_bulk_string(response_out, score.to_string().as_bytes());
+            }
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_zpopmin(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zpop_like(args, response_out, false)
+    }
+
+    pub(super) fn handle_zpopmax(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_zpop_like(args, response_out, true)
+    }
+
+    fn handle_zrank_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        reverse: bool,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(
+            args,
+            3,
+            if reverse { "ZREVRANK" } else { "ZRANK" },
+            if reverse {
+                "ZREVRANK key member"
+            } else {
+                "ZRANK key member"
+            },
+        )?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member = unsafe { args[2].as_slice() };
+        let zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+        let entries = sorted_zset_entries_by_score(&zset);
+        let Some(index) = entries
+            .iter()
+            .position(|(candidate_member, _score)| candidate_member.as_slice() == member)
+        else {
+            append_null_bulk_string(response_out);
+            return Ok(());
+        };
+        let rank = if reverse {
+            entries.len() - 1 - index
+        } else {
+            index
+        };
+        append_integer(response_out, rank as i64);
+        Ok(())
+    }
+
+    fn handle_zpop_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        pop_max: bool,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_ranged_arity(
+            args,
+            2,
+            3,
+            if pop_max { "ZPOPMAX" } else { "ZPOPMIN" },
+            if pop_max {
+                "ZPOPMAX key [count]"
+            } else {
+                "ZPOPMIN key [count]"
+            },
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut zset = match self.load_zset_object(&key)? {
+            Some(zset) => zset,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+        let count = if args.len() == 3 {
+            // SAFETY: caller guarantees argument backing memory validity.
+            parse_u64_ascii(unsafe { args[2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?
+        } else {
+            1
+        };
+        if count == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let mut entries = sorted_zset_entries_by_score(&zset);
+        if pop_max {
+            entries.reverse();
+        }
+        let requested = usize::try_from(count).unwrap_or(usize::MAX);
+        let selected_count = requested.min(entries.len());
+        if selected_count == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        let selected: Vec<(Vec<u8>, f64)> = entries
+            .into_iter()
+            .take(selected_count)
+            .map(|(member, score)| (member.clone(), score))
+            .collect();
+        for (member, _) in &selected {
+            zset.remove(member);
+        }
+        if zset.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_zset_object(&key, &zset)?;
+        }
+
+        response_out.push(b'*');
+        response_out.extend_from_slice((selected.len() * 2).to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (member, score) in selected {
+            append_bulk_string(response_out, member.as_slice());
+            append_bulk_string(response_out, score.to_string().as_bytes());
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ZscoreBound {
+    NegInf,
+    PosInf,
+    Inclusive(f64),
+    Exclusive(f64),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ZlexBound<'a> {
+    NegInf,
+    PosInf,
+    Inclusive(&'a [u8]),
+    Exclusive(&'a [u8]),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ZsetAggregateMode {
+    Sum,
+    Min,
+    Max,
+}
+
+#[derive(Debug)]
+struct ZsetCombineOptions {
+    weights: Vec<f64>,
+    aggregate: ZsetAggregateMode,
+    with_scores: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ZrangeStoreMode {
+    Rank,
+    Score,
+    Lex,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ZrangeStoreOptions {
+    mode: ZrangeStoreMode,
+    reverse: bool,
+    limit: Option<(usize, usize)>,
+}
+
+fn sorted_zset_entries_by_score(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<(&Vec<u8>, f64)> {
+    let mut entries: Vec<(&Vec<u8>, f64)> = zset
+        .iter()
+        .map(|(member, score)| (member, *score))
+        .collect();
+    entries.sort_by(|(lhs_member, lhs_score), (rhs_member, rhs_score)| {
+        lhs_score
+            .partial_cmp(rhs_score)
+            .expect("zset scores are finite")
+            .then_with(|| lhs_member.cmp(rhs_member))
+    });
+    entries
+}
+
+fn append_zset_scan_response(
+    response_out: &mut Vec<u8>,
+    cursor: u64,
+    count: usize,
+    entries: &[(&[u8], f64)],
+) {
+    let start = usize::try_from(cursor)
+        .unwrap_or(usize::MAX)
+        .min(entries.len());
+    let end = start.saturating_add(count).min(entries.len());
+    let next_cursor = if end >= entries.len() { 0 } else { end };
+
+    response_out.push(b'*');
+    response_out.extend_from_slice(b"2\r\n");
+    let next_cursor_bytes = next_cursor.to_string();
+    append_bulk_string(response_out, next_cursor_bytes.as_bytes());
+    response_out.push(b'*');
+    response_out.extend_from_slice(((end - start) * 2).to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for (member, score) in &entries[start..end] {
+        append_bulk_string(response_out, member);
+        append_bulk_string(response_out, score.to_string().as_bytes());
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct ZrangeByScoreOptions {
+    with_scores: bool,
+    limit: Option<(usize, usize)>,
+}
+
+fn parse_zrange_by_score_options(
+    args: &[ArgSlice],
+    start_index: usize,
+) -> Result<ZrangeByScoreOptions, RequestExecutionError> {
+    let mut options = ZrangeByScoreOptions::default();
+    let mut index = start_index;
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+        if ascii_eq_ignore_case(token, b"WITHSCORES") {
+            if options.with_scores {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.with_scores = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"LIMIT") {
+            if options.limit.is_some() || index + 2 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let offset = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let count = parse_u64_ascii(unsafe { args[index + 2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            options.limit = Some((
+                usize::try_from(offset).unwrap_or(usize::MAX),
+                usize::try_from(count).unwrap_or(usize::MAX),
+            ));
+            index += 3;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(options)
+}
+
+fn append_zrange_score_entries(
+    response_out: &mut Vec<u8>,
+    entries: &[(&Vec<u8>, f64)],
+    with_scores: bool,
+) {
+    let item_count = if with_scores {
+        entries.len() * 2
+    } else {
+        entries.len()
+    };
+    response_out.push(b'*');
+    response_out.extend_from_slice(item_count.to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for (member, score) in entries {
+        append_bulk_string(response_out, member);
+        if with_scores {
+            append_bulk_string(response_out, score.to_string().as_bytes());
+        }
+    }
+}
+
+fn normalize_zset_index_range(len: usize, start: i64, stop: i64) -> Option<(usize, usize)> {
+    if len == 0 {
+        return None;
+    }
+    let len_i = i64::try_from(len).ok()?;
+    let mut normalized_start = if start < 0 { len_i + start } else { start };
+    let mut normalized_stop = if stop < 0 { len_i + stop } else { stop };
+    if normalized_start < 0 {
+        normalized_start = 0;
+    }
+    if normalized_stop < 0 || normalized_start >= len_i {
+        return None;
+    }
+    if normalized_stop >= len_i {
+        normalized_stop = len_i - 1;
+    }
+    if normalized_start > normalized_stop {
+        return None;
+    }
+    Some((normalized_start as usize, normalized_stop as usize))
+}
+
+fn parse_zscore_bound(input: &[u8]) -> Option<ZscoreBound> {
+    if ascii_eq_ignore_case(input, b"-INF") {
+        return Some(ZscoreBound::NegInf);
+    }
+    if ascii_eq_ignore_case(input, b"+INF") || ascii_eq_ignore_case(input, b"INF") {
+        return Some(ZscoreBound::PosInf);
+    }
+    if let Some(exclusive) = input.strip_prefix(b"(") {
+        return parse_f64_ascii(exclusive).map(ZscoreBound::Exclusive);
+    }
+    parse_f64_ascii(input).map(ZscoreBound::Inclusive)
+}
+
+fn parse_zlex_bound(input: &[u8]) -> Option<ZlexBound<'_>> {
+    if input == b"-" {
+        return Some(ZlexBound::NegInf);
+    }
+    if input == b"+" {
+        return Some(ZlexBound::PosInf);
+    }
+    if let Some(value) = input.strip_prefix(b"[") {
+        return Some(ZlexBound::Inclusive(value));
+    }
+    if let Some(value) = input.strip_prefix(b"(") {
+        return Some(ZlexBound::Exclusive(value));
+    }
+    None
+}
+
+fn zlex_member_in_bounds(member: &[u8], min: ZlexBound<'_>, max: ZlexBound<'_>) -> bool {
+    let lower_ok = match min {
+        ZlexBound::NegInf => true,
+        ZlexBound::PosInf => false,
+        ZlexBound::Inclusive(value) => member >= value,
+        ZlexBound::Exclusive(value) => member > value,
+    };
+    if !lower_ok {
+        return false;
+    }
+    match max {
+        ZlexBound::NegInf => false,
+        ZlexBound::PosInf => true,
+        ZlexBound::Inclusive(value) => member <= value,
+        ZlexBound::Exclusive(value) => member < value,
+    }
+}
+
+fn parse_zrangebylex_limit(
+    args: &[ArgSlice],
+    start_index: usize,
+) -> Result<Option<(usize, usize)>, RequestExecutionError> {
+    if args.len() == start_index {
+        return Ok(None);
+    }
+    if args.len() != start_index + 3 {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let option = unsafe { args[start_index].as_slice() };
+    if !ascii_eq_ignore_case(option, b"LIMIT") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let offset = parse_u64_ascii(unsafe { args[start_index + 1].as_slice() })
+        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    // SAFETY: caller guarantees argument backing memory validity.
+    let count = parse_u64_ascii(unsafe { args[start_index + 2].as_slice() })
+        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    Ok(Some((
+        usize::try_from(offset).unwrap_or(usize::MAX),
+        usize::try_from(count).unwrap_or(usize::MAX),
+    )))
+}
+
+fn parse_zset_numkeys_and_keys(
+    args: &[ArgSlice],
+    numkeys_index: usize,
+) -> Result<(Vec<Vec<u8>>, usize), RequestExecutionError> {
+    if numkeys_index >= args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let numkeys = parse_u64_ascii(unsafe { args[numkeys_index].as_slice() })
+        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    if numkeys == 0 {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let numkeys = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    let key_start = numkeys_index + 1;
+    let key_end = key_start
+        .checked_add(numkeys)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    if key_end > args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let keys = args[key_start..key_end]
+        .iter()
+        .map(|key| {
+            // SAFETY: caller guarantees argument backing memory validity.
+            unsafe { key.as_slice() }.to_vec()
+        })
+        .collect();
+    Ok((keys, key_end))
+}
+
+fn parse_zdiff_withscores(
+    args: &[ArgSlice],
+    start_index: usize,
+) -> Result<bool, RequestExecutionError> {
+    if start_index == args.len() {
+        return Ok(false);
+    }
+    if start_index + 1 != args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let token = unsafe { args[start_index].as_slice() };
+    if !ascii_eq_ignore_case(token, b"WITHSCORES") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(true)
+}
+
+fn parse_zset_combine_options(
+    args: &[ArgSlice],
+    start_index: usize,
+    num_keys: usize,
+    allow_with_scores: bool,
+) -> Result<ZsetCombineOptions, RequestExecutionError> {
+    let mut weights = vec![1.0f64; num_keys];
+    let mut aggregate = ZsetAggregateMode::Sum;
+    let mut with_scores = false;
+    let mut seen_weights = false;
+    let mut seen_aggregate = false;
+    let mut index = start_index;
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+        if ascii_eq_ignore_case(token, b"WEIGHTS") {
+            if seen_weights {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            if args.len().saturating_sub(index + 1) < num_keys {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            for (weight_index, weight_arg) in
+                args[index + 1..index + 1 + num_keys].iter().enumerate()
+            {
+                // SAFETY: caller guarantees argument backing memory validity.
+                let parsed = parse_f64_ascii(unsafe { weight_arg.as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotFloat)?;
+                weights[weight_index] = parsed;
+            }
+            seen_weights = true;
+            index += 1 + num_keys;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"AGGREGATE") {
+            if seen_aggregate || index + 1 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let aggregate_token = unsafe { args[index + 1].as_slice() };
+            aggregate = if ascii_eq_ignore_case(aggregate_token, b"SUM") {
+                ZsetAggregateMode::Sum
+            } else if ascii_eq_ignore_case(aggregate_token, b"MIN") {
+                ZsetAggregateMode::Min
+            } else if ascii_eq_ignore_case(aggregate_token, b"MAX") {
+                ZsetAggregateMode::Max
+            } else {
+                return Err(RequestExecutionError::SyntaxError);
+            };
+            seen_aggregate = true;
+            index += 2;
+            continue;
+        }
+        if allow_with_scores && ascii_eq_ignore_case(token, b"WITHSCORES") {
+            if with_scores {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            with_scores = true;
+            index += 1;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(ZsetCombineOptions {
+        weights,
+        aggregate,
+        with_scores,
+    })
+}
+
+fn aggregate_zset_scores(current: f64, incoming: f64, mode: ZsetAggregateMode) -> f64 {
+    match mode {
+        ZsetAggregateMode::Sum => current + incoming,
+        ZsetAggregateMode::Min => current.min(incoming),
+        ZsetAggregateMode::Max => current.max(incoming),
+    }
+}
+
+fn compute_zdiff(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+) -> Result<BTreeMap<Vec<u8>, f64>, RequestExecutionError> {
+    let Some((first_key, remaining_keys)) = keys.split_first() else {
+        return Ok(BTreeMap::new());
+    };
+    let mut diff = match processor.load_zset_object(first_key)? {
+        Some(zset) => zset,
+        None => return Ok(BTreeMap::new()),
+    };
+    for key in remaining_keys {
+        let Some(other) = processor.load_zset_object(key)? else {
+            continue;
+        };
+        diff.retain(|member, _score| !other.contains_key(member));
+        if diff.is_empty() {
+            break;
+        }
+    }
+    Ok(diff)
+}
+
+fn compute_zinter(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+    weights: &[f64],
+    aggregate_mode: ZsetAggregateMode,
+) -> Result<BTreeMap<Vec<u8>, f64>, RequestExecutionError> {
+    let Some((first_key, remaining_keys)) = keys.split_first() else {
+        return Ok(BTreeMap::new());
+    };
+    let Some(first_set) = processor.load_zset_object(first_key)? else {
+        return Ok(BTreeMap::new());
+    };
+    let mut inter: BTreeMap<Vec<u8>, f64> = first_set
+        .into_iter()
+        .map(|(member, score)| (member, score * weights[0]))
+        .collect();
+
+    for (index, key) in remaining_keys.iter().enumerate() {
+        let Some(other) = processor.load_zset_object(key)? else {
+            return Ok(BTreeMap::new());
+        };
+        let weight = weights[index + 1];
+        inter.retain(|member, score| {
+            let Some(other_score) = other.get(member) else {
+                return false;
+            };
+            let weighted_other = *other_score * weight;
+            *score = aggregate_zset_scores(*score, weighted_other, aggregate_mode);
+            true
+        });
+        if inter.is_empty() {
+            break;
+        }
+    }
+    Ok(inter)
+}
+
+fn compute_zunion(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+    weights: &[f64],
+    aggregate_mode: ZsetAggregateMode,
+) -> Result<BTreeMap<Vec<u8>, f64>, RequestExecutionError> {
+    let mut union = BTreeMap::new();
+    for (index, key) in keys.iter().enumerate() {
+        let Some(zset) = processor.load_zset_object(key)? else {
+            continue;
+        };
+        let weight = weights[index];
+        for (member, score) in zset {
+            let weighted = score * weight;
+            match union.get_mut(&member) {
+                Some(existing) => {
+                    *existing = aggregate_zset_scores(*existing, weighted, aggregate_mode);
+                }
+                None => {
+                    union.insert(member, weighted);
+                }
+            }
+        }
+    }
+    Ok(union)
+}
+
+fn append_zset_combine_response(
+    response_out: &mut Vec<u8>,
+    zset: &BTreeMap<Vec<u8>, f64>,
+    with_scores: bool,
+) {
+    let entries = sorted_zset_entries_by_score(zset);
+    append_zrange_score_entries(response_out, &entries, with_scores);
+}
+
+fn append_zmpop_response(response_out: &mut Vec<u8>, key: &[u8], entries: &[(Vec<u8>, f64)]) {
+    response_out.extend_from_slice(b"*2\r\n");
+    append_bulk_string(response_out, key);
+    response_out.push(b'*');
+    response_out.extend_from_slice(entries.len().to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for (member, score) in entries {
+        response_out.extend_from_slice(b"*2\r\n");
+        append_bulk_string(response_out, member);
+        append_bulk_string(response_out, score.to_string().as_bytes());
+    }
+}
+
+fn parse_zrangestore_options(
+    args: &[ArgSlice],
+    start_index: usize,
+) -> Result<ZrangeStoreOptions, RequestExecutionError> {
+    let mut mode = ZrangeStoreMode::Rank;
+    let mut reverse = false;
+    let mut limit = None;
+    let mut index = start_index;
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+        if ascii_eq_ignore_case(token, b"BYSCORE") {
+            if mode != ZrangeStoreMode::Rank {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            mode = ZrangeStoreMode::Score;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"BYLEX") {
+            if mode != ZrangeStoreMode::Rank {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            mode = ZrangeStoreMode::Lex;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"REV") {
+            if reverse {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            reverse = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"LIMIT") {
+            if limit.is_some() || index + 2 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let offset = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let count = parse_u64_ascii(unsafe { args[index + 2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            limit = Some((
+                usize::try_from(offset).unwrap_or(usize::MAX),
+                usize::try_from(count).unwrap_or(usize::MAX),
+            ));
+            index += 3;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(ZrangeStoreOptions {
+        mode,
+        reverse,
+        limit,
+    })
+}
+
+fn apply_optional_limit(
+    entries: Vec<(Vec<u8>, f64)>,
+    limit: Option<(usize, usize)>,
+) -> Vec<(Vec<u8>, f64)> {
+    match limit {
+        Some((offset, count)) => entries.into_iter().skip(offset).take(count).collect(),
+        None => entries,
+    }
+}
+
+fn collect_zrangestore_entries(
+    zset: &BTreeMap<Vec<u8>, f64>,
+    left: &[u8],
+    right: &[u8],
+    options: ZrangeStoreOptions,
+) -> Result<Vec<(Vec<u8>, f64)>, RequestExecutionError> {
+    let selected = match options.mode {
+        ZrangeStoreMode::Rank => {
+            let start = parse_i64_ascii(left).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let stop = parse_i64_ascii(right).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let mut entries = sorted_zset_entries_by_score(zset);
+            if options.reverse {
+                entries.reverse();
+            }
+            let Some((start_index, stop_index)) =
+                normalize_zset_index_range(entries.len(), start, stop)
+            else {
+                return Ok(Vec::new());
+            };
+            entries[start_index..=stop_index]
+                .iter()
+                .map(|(member, score)| ((*member).clone(), *score))
+                .collect::<Vec<_>>()
+        }
+        ZrangeStoreMode::Score => {
+            let left_bound =
+                parse_zscore_bound(left).ok_or(RequestExecutionError::ValueNotFloat)?;
+            let right_bound =
+                parse_zscore_bound(right).ok_or(RequestExecutionError::ValueNotFloat)?;
+            let (min_bound, max_bound) = if options.reverse {
+                (right_bound, left_bound)
+            } else {
+                (left_bound, right_bound)
+            };
+            let mut entries: Vec<(Vec<u8>, f64)> = sorted_zset_entries_by_score(zset)
+                .into_iter()
+                .filter(|(_member, score)| score_in_bound(*score, min_bound, max_bound))
+                .map(|(member, score)| (member.clone(), score))
+                .collect();
+            if options.reverse {
+                entries.reverse();
+            }
+            entries
+        }
+        ZrangeStoreMode::Lex => {
+            let left_bound = parse_zlex_bound(left).ok_or(RequestExecutionError::SyntaxError)?;
+            let right_bound = parse_zlex_bound(right).ok_or(RequestExecutionError::SyntaxError)?;
+            let (min_bound, max_bound) = if options.reverse {
+                (right_bound, left_bound)
+            } else {
+                (left_bound, right_bound)
+            };
+            let mut entries = Vec::new();
+            if options.reverse {
+                for (member, score) in zset.iter().rev() {
+                    if zlex_member_in_bounds(member.as_slice(), min_bound, max_bound) {
+                        entries.push((member.clone(), *score));
+                    }
+                }
+            } else {
+                for (member, score) in zset {
+                    if zlex_member_in_bounds(member.as_slice(), min_bound, max_bound) {
+                        entries.push((member.clone(), *score));
+                    }
+                }
+            }
+            entries
+        }
+    };
+    Ok(apply_optional_limit(selected, options.limit))
+}
+
+fn zset_map_from_entries(entries: Vec<(Vec<u8>, f64)>) -> BTreeMap<Vec<u8>, f64> {
+    entries.into_iter().collect()
+}
+
+fn score_in_bound(score: f64, min: ZscoreBound, max: ZscoreBound) -> bool {
+    let lower_ok = match min {
+        ZscoreBound::NegInf => true,
+        ZscoreBound::PosInf => false,
+        ZscoreBound::Inclusive(value) => score >= value,
+        ZscoreBound::Exclusive(value) => score > value,
+    };
+    if !lower_ok {
+        return false;
+    }
+    match max {
+        ZscoreBound::NegInf => false,
+        ZscoreBound::PosInf => true,
+        ZscoreBound::Inclusive(value) => score <= value,
+        ZscoreBound::Exclusive(value) => score < value,
+    }
+}
+
+fn compute_zinter_cardinality(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+) -> Result<usize, RequestExecutionError> {
+    let Some((first_key, remaining_keys)) = keys.split_first() else {
+        return Ok(0);
+    };
+    let mut intersection: BTreeSet<Vec<u8>> = match processor.load_zset_object(first_key)? {
+        Some(zset) => zset.keys().cloned().collect(),
+        None => return Ok(0),
+    };
+
+    for key in remaining_keys {
+        let Some(other_zset) = processor.load_zset_object(key)? else {
+            return Ok(0);
+        };
+        intersection.retain(|member| other_zset.contains_key(member));
+        if intersection.is_empty() {
+            break;
+        }
+    }
+    Ok(intersection.len())
+}
+
+fn store_zset_result(
+    processor: &RequestProcessor,
+    destination: &[u8],
+    result_zset: &BTreeMap<Vec<u8>, f64>,
+) -> Result<(), RequestExecutionError> {
+    processor.expire_key_if_needed(destination)?;
+    let destination_had_string = processor.key_exists(destination)?;
+    let string_deleted = if destination_had_string {
+        delete_string_value_for_object_overwrite(processor, destination)?
+    } else {
+        false
+    };
+
+    if result_zset.is_empty() {
+        let object_deleted = processor.object_delete(destination)?;
+        if string_deleted && !object_deleted {
+            processor.bump_watch_version(destination);
+        }
+        return Ok(());
+    }
+
+    processor.save_zset_object(destination, result_zset)
+}
+
+fn delete_string_value_for_object_overwrite(
+    processor: &RequestProcessor,
+    key: &[u8],
+) -> Result<bool, RequestExecutionError> {
+    let key_vec = key.to_vec();
+    let mut store = processor.lock_string_store_for_key(key);
+    let mut session = store.session(&processor.functions);
+    let mut info = DeleteInfo::default();
+    let status = session
+        .delete(&key_vec, &mut info)
+        .map_err(map_delete_error)?;
+    match status {
+        DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+            processor.remove_string_key_metadata(key);
+            Ok(true)
+        }
+        DeleteOperationStatus::NotFound => {
+            processor.remove_string_key_metadata(key);
+            Ok(false)
+        }
+        DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+    }
+}
+
+fn zset_entries_snapshot(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<(Vec<u8>, f64)> {
+    zset.iter()
+        .map(|(member, score)| (member.clone(), *score))
+        .collect()
+}
+
+fn select_random_zset_entries_distinct(
+    processor: &RequestProcessor,
+    zset: &BTreeMap<Vec<u8>, f64>,
+    count: usize,
+) -> Vec<(Vec<u8>, f64)> {
+    let mut entries = zset_entries_snapshot(zset);
+    if entries.len() <= 1 {
+        entries.truncate(count.min(entries.len()));
+        return entries;
+    }
+    for index in (1..entries.len()).rev() {
+        let random_index = (processor.next_random_u64() as usize) % (index + 1);
+        entries.swap(index, random_index);
+    }
+    entries.truncate(count.min(entries.len()));
+    entries
+}
+
+fn select_random_zset_entries_with_replacement(
+    processor: &RequestProcessor,
+    zset: &BTreeMap<Vec<u8>, f64>,
+    count: usize,
+) -> Vec<(Vec<u8>, f64)> {
+    let entries = zset_entries_snapshot(zset);
+    if entries.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let mut sampled = Vec::with_capacity(count);
+    for _ in 0..count {
+        let index = (processor.next_random_u64() as usize) % entries.len();
+        sampled.push(entries[index].clone());
+    }
+    sampled
 }

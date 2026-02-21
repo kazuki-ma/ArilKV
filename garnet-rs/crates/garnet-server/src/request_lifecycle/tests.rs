@@ -1,6 +1,6 @@
 use super::*;
 use crate::debug_concurrency;
-use crate::testkit::execute_command_line;
+use crate::testkit::{assert_command_integer, assert_command_response};
 use garnet_common::parse_resp_command_arg_slices;
 use std::sync::Arc;
 use std::thread;
@@ -55,22 +55,30 @@ fn find_key_for_shard(processor: &RequestProcessor, shard: usize) -> Vec<u8> {
 #[test]
 fn command_line_testkit_executes_against_in_memory_processor() {
     let processor = RequestProcessor::new().unwrap();
-    assert_eq!(
-        execute_command_line(&processor, "SET alpha one").unwrap(),
-        b"+OK\r\n"
-    );
-    assert_eq!(
-        execute_command_line(&processor, "GET alpha").unwrap(),
-        b"$3\r\none\r\n"
-    );
-    assert_eq!(
-        execute_command_line(&processor, "DEL alpha").unwrap(),
-        b":1\r\n"
-    );
-    assert_eq!(
-        execute_command_line(&processor, "GET alpha").unwrap(),
-        b"$-1\r\n"
-    );
+    assert_command_response(&processor, "SET alpha one", b"+OK\r\n");
+    assert_command_response(&processor, "GET alpha", b"$3\r\none\r\n");
+    assert_command_integer(&processor, "DEL alpha", 1);
+    assert_command_response(&processor, "GET alpha", b"$-1\r\n");
+}
+
+#[test]
+fn parse_scan_match_count_options_supports_match_and_count() {
+    let frame = encode_resp(&[b"SSCAN", b"k", b"0", b"COUNT", b"5", b"MATCH", b"a*"]);
+    let mut args = [ArgSlice::EMPTY; 16];
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let options = parse_scan_match_count_options(&args[..meta.argument_count], 3).unwrap();
+    assert_eq!(options.pattern, Some(b"a*".as_slice()));
+    assert_eq!(options.count, 5);
+}
+
+#[test]
+fn parse_scan_match_count_options_rejects_zero_count() {
+    let frame = encode_resp(&[b"SSCAN", b"k", b"0", b"COUNT", b"0"]);
+    let mut args = [ArgSlice::EMPTY; 16];
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let error =
+        parse_scan_match_count_options(&args[..meta.argument_count], 3).expect_err("must fail");
+    assert_eq!(error, RequestExecutionError::ValueOutOfRange);
 }
 
 #[test]
@@ -366,6 +374,35 @@ fn set_and_get_supports_1kb_payload_without_storage_failure() {
     expected.extend_from_slice(&value);
     expected.extend_from_slice(b"\r\n");
     assert_eq!(response, expected);
+}
+
+#[test]
+fn set_and_get_supports_50kb_key_for_keyspace_regression() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 3];
+    let key = vec![b'a'; 50_000];
+
+    let mut frame_set = format!("*3\r\n$3\r\nSET\r\n${}\r\n", key.len()).into_bytes();
+    frame_set.extend_from_slice(&key);
+    frame_set.extend_from_slice(b"\r\n$1\r\n1\r\n");
+
+    let meta = parse_resp_command_arg_slices(&frame_set, &mut args).unwrap();
+    let mut response = Vec::new();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    let mut frame_get = format!("*2\r\n$3\r\nGET\r\n${}\r\n", key.len()).into_bytes();
+    frame_get.extend_from_slice(&key);
+    frame_get.extend_from_slice(b"\r\n");
+
+    let meta = parse_resp_command_arg_slices(&frame_get, &mut args).unwrap();
+    response.clear();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n1\r\n");
 }
 
 #[test]
@@ -680,6 +717,206 @@ fn hash_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn additional_hash_commands_cover_common_redis_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let hmset =
+        b"*6\r\n$5\r\nHMSET\r\n$3\r\nkey\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n";
+    let meta = parse_resp_command_arg_slices(hmset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let hlen = b"*2\r\n$4\r\nHLEN\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(hlen, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let hmget = b"*4\r\n$5\r\nHMGET\r\n$3\r\nkey\r\n$2\r\nf1\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(hmget, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*2\r\n$2\r\nv1\r\n$-1\r\n");
+
+    response.clear();
+    let hsetnx_exists = b"*4\r\n$6\r\nHSETNX\r\n$3\r\nkey\r\n$2\r\nf1\r\n$2\r\nzz\r\n";
+    let meta = parse_resp_command_arg_slices(hsetnx_exists, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let hsetnx_insert = b"*4\r\n$6\r\nHSETNX\r\n$3\r\nkey\r\n$2\r\nf3\r\n$2\r\nv3\r\n";
+    let meta = parse_resp_command_arg_slices(hsetnx_insert, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let hexists = b"*3\r\n$7\r\nHEXISTS\r\n$3\r\nkey\r\n$2\r\nf3\r\n";
+    let meta = parse_resp_command_arg_slices(hexists, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let hkeys = b"*2\r\n$5\r\nHKEYS\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(hkeys, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n$2\r\nf1\r\n$2\r\nf2\r\n$2\r\nf3\r\n");
+
+    response.clear();
+    let hvals = b"*2\r\n$5\r\nHVALS\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(hvals, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$2\r\nv3\r\n");
+
+    response.clear();
+    let hstrlen = b"*3\r\n$7\r\nHSTRLEN\r\n$3\r\nkey\r\n$2\r\nf2\r\n";
+    let meta = parse_resp_command_arg_slices(hstrlen, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let hincrby = b"*4\r\n$7\r\nHINCRBY\r\n$3\r\nkey\r\n$1\r\nn\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(hincrby, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let hincrby_negative = b"*4\r\n$7\r\nHINCRBY\r\n$3\r\nkey\r\n$1\r\nn\r\n$2\r\n-5\r\n";
+    let meta = parse_resp_command_arg_slices(hincrby_negative, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":-3\r\n");
+
+    response.clear();
+    let hset_max =
+        b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$7\r\novrflow\r\n$19\r\n9223372036854775807\r\n";
+    let meta = parse_resp_command_arg_slices(hset_max, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let hincrby_overflow = b"*4\r\n$7\r\nHINCRBY\r\n$3\r\nkey\r\n$7\r\novrflow\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(hincrby_overflow, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR increment or decrement would overflow\r\n");
+
+    response.clear();
+    let hincrbyfloat = b"*4\r\n$12\r\nHINCRBYFLOAT\r\n$3\r\nkey\r\n$1\r\nf\r\n$3\r\n2.5\r\n";
+    let meta = parse_resp_command_arg_slices(hincrbyfloat, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\n2.5\r\n");
+
+    response.clear();
+    let hincrbyfloat_again = b"*4\r\n$12\r\nHINCRBYFLOAT\r\n$3\r\nkey\r\n$1\r\nf\r\n$3\r\n3.5\r\n";
+    let meta = parse_resp_command_arg_slices(hincrbyfloat_again, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n6\r\n");
+}
+
+#[test]
+fn hrandfield_supports_count_withvalues_and_resp3_shape() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let hset = b"*8\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$2\r\nf1\r\n$1\r\n1\r\n$2\r\nf2\r\n$1\r\n2\r\n$2\r\nf3\r\n$1\r\n3\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let hrand_single = b"*2\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(hrand_single, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+
+    response.clear();
+    let hrand_count = b"*3\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(hrand_count, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*2\r\n"));
+
+    response.clear();
+    let hrand_withvalues =
+        b"*4\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$2\r\n-4\r\n$10\r\nWITHVALUES\r\n";
+    let meta = parse_resp_command_arg_slices(hrand_withvalues, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*8\r\n"));
+
+    response.clear();
+    let hello3 = b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n";
+    let meta = parse_resp_command_arg_slices(hello3, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let hrand_resp3 = b"*4\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n$10\r\nWITHVALUES\r\n";
+    let meta = parse_resp_command_arg_slices(hrand_resp3, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*2\r\n*2\r\n"));
+
+    response.clear();
+    let hello2 = b"*2\r\n$5\r\nHELLO\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(hello2, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(hrand_resp3, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*4\r\n"));
+}
+
+#[test]
 fn hash_commands_return_wrongtype_for_string_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -789,6 +1026,213 @@ fn lrange_supports_negative_indexes() {
 }
 
 #[test]
+fn additional_list_commands_cover_common_redis_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let rpush = b"*5\r\n$5\r\nRPUSH\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(rpush, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let llen = b"*2\r\n$4\r\nLLEN\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(llen, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let lindex_zero = b"*3\r\n$6\r\nLINDEX\r\n$3\r\nkey\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(lindex_zero, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\na\r\n");
+
+    response.clear();
+    let lindex_negative = b"*3\r\n$6\r\nLINDEX\r\n$3\r\nkey\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(lindex_negative, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\nc\r\n");
+
+    response.clear();
+    let lset = b"*4\r\n$4\r\nLSET\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\nz\r\n";
+    let meta = parse_resp_command_arg_slices(lset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let ltrim = b"*4\r\n$5\r\nLTRIM\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(ltrim, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let lpushx = b"*4\r\n$6\r\nLPUSHX\r\n$3\r\nkey\r\n$1\r\nx\r\n$1\r\ny\r\n";
+    let meta = parse_resp_command_arg_slices(lpushx, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":4\r\n");
+
+    response.clear();
+    let rpushx_missing = b"*3\r\n$6\r\nRPUSHX\r\n$7\r\nmissing\r\n$1\r\nq\r\n";
+    let meta = parse_resp_command_arg_slices(rpushx_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let lrem_all_x = b"*4\r\n$4\r\nLREM\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\nx\r\n";
+    let meta = parse_resp_command_arg_slices(lrem_all_x, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let lrem_tail_c = b"*4\r\n$4\r\nLREM\r\n$3\r\nkey\r\n$2\r\n-1\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(lrem_tail_c, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let lrange = b"*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(lrange, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*2\r\n$1\r\ny\r\n$1\r\nz\r\n");
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPUSH", b"lsrc", b"a", b"b", b"c"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LINSERT", b"lsrc", b"BEFORE", b"b", b"x"])
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LINSERT", b"lsrc", b"AFTER", b"c", b"z"])
+        ),
+        b":5\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LINSERT", b"lsrc", b"BEFORE", b"missing", b"m"])
+        ),
+        b":-1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LINSERT", b"no_list", b"BEFORE", b"a", b"m"])
+        ),
+        b":0\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LMOVE", b"lsrc", b"ldst", b"LEFT", b"RIGHT"])
+        ),
+        b"$1\r\na\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LRANGE", b"lsrc", b"0", b"-1"])),
+        b"*4\r\n$1\r\nx\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nz\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LRANGE", b"ldst", b"0", b"-1"])),
+        b"*1\r\n$1\r\na\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"RPOPLPUSH", b"lsrc", b"ldst"])),
+        b"$1\r\nz\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LRANGE", b"ldst", b"0", b"-1"])),
+        b"*2\r\n$1\r\nz\r\n$1\r\na\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPOPLPUSH", b"missing_list", b"ldst"])
+        ),
+        b"$-1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPUSH", b"rot", b"1", b"2", b"3"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LMOVE", b"rot", b"rot", b"LEFT", b"RIGHT"])
+        ),
+        b"$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LRANGE", b"rot", b"0", b"-1"])),
+        b"*3\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n1\r\n"
+    );
+
+    response.clear();
+    let lset_missing = b"*4\r\n$4\r\nLSET\r\n$7\r\nmissing\r\n$1\r\n0\r\n$1\r\nx\r\n";
+    let meta = parse_resp_command_arg_slices(lset_missing, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR no such key\r\n");
+
+    response.clear();
+    let lset_oob = b"*4\r\n$4\r\nLSET\r\n$3\r\nkey\r\n$2\r\n99\r\n$1\r\nx\r\n";
+    let meta = parse_resp_command_arg_slices(lset_oob, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR index out of range\r\n");
+
+    response.clear();
+    let ltrim_missing = b"*4\r\n$5\r\nLTRIM\r\n$7\r\nmissing\r\n$1\r\n0\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(ltrim_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
 fn list_commands_return_wrongtype_for_string_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -804,6 +1248,19 @@ fn list_commands_return_wrongtype_for_string_keys() {
     response.clear();
     let lpush = b"*3\r\n$5\r\nLPUSH\r\n$3\r\nkey\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    response.clear();
+    let lmove = b"*5\r\n$5\r\nLMOVE\r\n$3\r\nkey\r\n$3\r\ndst\r\n$4\r\nLEFT\r\n$4\r\nLEFT\r\n";
+    let meta = parse_resp_command_arg_slices(lmove, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .err()
@@ -884,6 +1341,264 @@ fn set_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn additional_set_commands_cover_common_redis_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 20];
+    let mut response = Vec::new();
+
+    let sadd_src = b"*6\r\n$4\r\nSADD\r\n$3\r\nsrc\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n";
+    let meta = parse_resp_command_arg_slices(sadd_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":4\r\n");
+
+    response.clear();
+    let sadd_dst = b"*3\r\n$4\r\nSADD\r\n$3\r\ndst\r\n$1\r\nz\r\n";
+    let meta = parse_resp_command_arg_slices(sadd_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let scard = b"*2\r\n$5\r\nSCARD\r\n$3\r\nsrc\r\n";
+    let meta = parse_resp_command_arg_slices(scard, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":4\r\n");
+
+    response.clear();
+    let smismember = b"*5\r\n$10\r\nSMISMEMBER\r\n$3\r\nsrc\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(smismember, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n:1\r\n:0\r\n:1\r\n");
+
+    response.clear();
+    let srandmember = b"*3\r\n$11\r\nSRANDMEMBER\r\n$3\r\nsrc\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(srandmember, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*2\r\n"));
+
+    response.clear();
+    let smove = b"*4\r\n$5\r\nSMOVE\r\n$3\r\nsrc\r\n$3\r\ndst\r\n$1\r\na\r\n";
+    let meta = parse_resp_command_arg_slices(smove, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let sismember_dst = b"*3\r\n$9\r\nSISMEMBER\r\n$3\r\ndst\r\n$1\r\na\r\n";
+    let meta = parse_resp_command_arg_slices(sismember_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let spop_count = b"*3\r\n$4\r\nSPOP\r\n$3\r\nsrc\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(spop_count, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*2\r\n"));
+
+    response.clear();
+    let scard_after_pop = b"*2\r\n$5\r\nSCARD\r\n$3\r\nsrc\r\n";
+    let meta = parse_resp_command_arg_slices(scard_after_pop, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let spop_single = b"*2\r\n$4\r\nSPOP\r\n$3\r\nsrc\r\n";
+    let meta = parse_resp_command_arg_slices(spop_single, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+
+    response.clear();
+    let scard_empty = b"*2\r\n$5\r\nSCARD\r\n$3\r\nsrc\r\n";
+    let meta = parse_resp_command_arg_slices(scard_empty, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let spop_negative = b"*3\r\n$4\r\nSPOP\r\n$3\r\ndst\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(spop_negative, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+}
+
+#[test]
+fn set_algebra_commands_cover_union_intersection_difference_and_store_variants() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 20];
+    let mut response = Vec::new();
+
+    let sadd_s1 = encode_resp(&[b"SADD", b"s1", b"a", b"b", b"c"]);
+    let meta = parse_resp_command_arg_slices(&sadd_s1, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let sadd_s2 = encode_resp(&[b"SADD", b"s2", b"b", b"c", b"d"]);
+    let meta = parse_resp_command_arg_slices(&sadd_s2, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let sadd_s3 = encode_resp(&[b"SADD", b"s3", b"c", b"e"]);
+    let meta = parse_resp_command_arg_slices(&sadd_s3, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SUNION", b"s1", b"s2", b"s3"])),
+        b"*5\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n$1\r\ne\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SINTER", b"s1", b"s2", b"s3"])),
+        b"*1\r\n$1\r\nc\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SINTERCARD", b"2", b"s1", b"s2"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SINTERCARD", b"3", b"s1", b"s2", b"s3", b"LIMIT", b"1"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SDIFF", b"s1", b"s2", b"s3"])),
+        b"*1\r\n$1\r\na\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SUNIONSTORE", b"dst_union", b"s1", b"s2"])
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SMEMBERS", b"dst_union"])),
+        b"*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SINTERSTORE", b"dst_inter", b"s1", b"s2", b"s3"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SMEMBERS", b"dst_inter"])),
+        b"*1\r\n$1\r\nc\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SDIFFSTORE", b"dst_diff", b"s1", b"s2", b"s3"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SMEMBERS", b"dst_diff"])),
+        b"*1\r\n$1\r\na\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"to_drop", b"z"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SINTERSTORE", b"to_drop", b"missing1", b"missing2"])
+        ),
+        b":0\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"EXISTS", b"to_drop"])),
+        b":0\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"dst_string", b"value"])),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SUNIONSTORE", b"dst_string", b"s1"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"TYPE", b"dst_string"])),
+        b"+set\r\n"
+    );
+    response.clear();
+    let get_dst_string = encode_resp(&[b"GET", b"dst_string"]);
+    let meta = parse_resp_command_arg_slices(&get_dst_string, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"plain", b"x"])),
+        b"+OK\r\n"
+    );
+    response.clear();
+    let sinter_wrongtype = encode_resp(&[b"SINTER", b"plain", b"s1"]);
+    let meta = parse_resp_command_arg_slices(&sinter_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+}
+
+#[test]
 fn set_commands_return_wrongtype_for_string_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -932,12 +1647,67 @@ fn zset_commands_roundtrip_over_object_store() {
     assert_eq!(response, b"$1\r\n1\r\n");
 
     response.clear();
+    let zcard = b"*2\r\n$5\r\nZCARD\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(zcard, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let zcount_all = encode_resp(&[b"ZCOUNT", b"key", b"-inf", b"+inf"]);
+    let meta = parse_resp_command_arg_slices(&zcount_all, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let zcount_exclusive = encode_resp(&[b"ZCOUNT", b"key", b"(1", b"2"]);
+    let meta = parse_resp_command_arg_slices(&zcount_exclusive, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let zrank_one = b"*3\r\n$5\r\nZRANK\r\n$3\r\nkey\r\n$3\r\none\r\n";
+    let meta = parse_resp_command_arg_slices(zrank_one, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let zrevrank_one = b"*3\r\n$8\r\nZREVRANK\r\n$3\r\nkey\r\n$3\r\none\r\n";
+    let meta = parse_resp_command_arg_slices(zrevrank_one, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let zincrby = b"*4\r\n$7\r\nZINCRBY\r\n$3\r\nkey\r\n$1\r\n2\r\n$3\r\none\r\n";
+    let meta = parse_resp_command_arg_slices(zincrby, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n3\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(zrank_one, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
     let zrange = b"*4\r\n$6\r\nZRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(zrange, &mut args).unwrap();
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert_eq!(response, b"*2\r\n$3\r\none\r\n$3\r\ntwo\r\n");
+    assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
 
     response.clear();
     let zadd_update = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n3\r\n$3\r\none\r\n";
@@ -954,6 +1724,466 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"rangekey", b"1", b"a", b"2", b"b", b"3", b"c"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZREVRANGE", b"rangekey", b"0", b"-1", b"WITHSCORES"])
+        ),
+        b"*6\r\n$1\r\nc\r\n$1\r\n3\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\na\r\n$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZRANGEBYSCORE",
+                b"rangekey",
+                b"(1",
+                b"+inf",
+                b"WITHSCORES",
+                b"LIMIT",
+                b"0",
+                b"1"
+            ])
+        ),
+        b"*2\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZREVRANGEBYSCORE",
+                b"rangekey",
+                b"+inf",
+                b"(2",
+                b"WITHSCORES"
+            ])
+        ),
+        b"*2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZLEXCOUNT", b"rangekey", b"[a", b"[c"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZRANGEBYLEX",
+                b"rangekey",
+                b"-",
+                b"+",
+                b"LIMIT",
+                b"1",
+                b"2"
+            ])
+        ),
+        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZREVRANGEBYLEX",
+                b"rangekey",
+                b"+",
+                b"-",
+                b"LIMIT",
+                b"0",
+                b"2"
+            ])
+        ),
+        b"*2\r\n$1\r\nc\r\n$1\r\nb\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZREMRANGEBYLEX", b"rangekey", b"[b", b"[b"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZCARD", b"rangekey"])),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZREMRANGEBYRANK", b"rangekey", b"0", b"0"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZREMRANGEBYSCORE", b"rangekey", b"-inf", b"2"])
+        ),
+        b":0\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZCARD", b"rangekey"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"iz1", b"1", b"a", b"2", b"b", b"3", b"c"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"iz2", b"2", b"b", b"3", b"c", b"4", b"d"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"iz3", b"3", b"c", b"4", b"e"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZINTERCARD", b"2", b"iz1", b"iz2"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZINTERCARD", b"3", b"iz1", b"iz2", b"iz3", b"LIMIT", b"1"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZDIFF", b"2", b"iz1", b"iz2"])),
+        b"*1\r\n$1\r\na\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZDIFF", b"2", b"iz1", b"iz2", b"WITHSCORES"])
+        ),
+        b"*2\r\n$1\r\na\r\n$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZDIFFSTORE", b"zdst", b"2", b"iz1", b"iz2"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGEBYSCORE", b"zdst", b"-inf", b"+inf", b"WITHSCORES"])
+        ),
+        b"*2\r\n$1\r\na\r\n$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZINTER", b"2", b"iz1", b"iz2"])),
+        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZINTER", b"2", b"iz1", b"iz2", b"WITHSCORES"])
+        ),
+        b"*4\r\n$1\r\nb\r\n$1\r\n4\r\n$1\r\nc\r\n$1\r\n6\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZINTER",
+                b"2",
+                b"iz1",
+                b"iz2",
+                b"WEIGHTS",
+                b"2",
+                b"3",
+                b"WITHSCORES"
+            ])
+        ),
+        b"*4\r\n$1\r\nb\r\n$2\r\n10\r\n$1\r\nc\r\n$2\r\n15\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZINTERSTORE",
+                b"zinterdst",
+                b"2",
+                b"iz1",
+                b"iz2",
+                b"AGGREGATE",
+                b"MAX"
+            ])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZRANGEBYSCORE",
+                b"zinterdst",
+                b"-inf",
+                b"+inf",
+                b"WITHSCORES"
+            ])
+        ),
+        b"*4\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZUNION", b"2", b"iz1", b"iz2"])),
+        b"*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nd\r\n$1\r\nc\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZUNION", b"2", b"iz1", b"iz2", b"WITHSCORES"])
+        ),
+        b"*8\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n4\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\nc\r\n$1\r\n6\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZUNIONSTORE",
+                b"zuniondst",
+                b"2",
+                b"iz1",
+                b"iz2",
+                b"WEIGHTS",
+                b"2",
+                b"1",
+                b"AGGREGATE",
+                b"MIN"
+            ])
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZRANGEBYSCORE",
+                b"zuniondst",
+                b"-inf",
+                b"+inf",
+                b"WITHSCORES"
+            ])
+        ),
+        b"*8\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n3\r\n$1\r\nd\r\n$1\r\n4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"zrsrc", b"1", b"a", b"2", b"b", b"3", b"c", b"4", b"d"])
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGESTORE", b"zrdst", b"zrsrc", b"1", b"2"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGEBYSCORE", b"zrdst", b"-inf", b"+inf", b"WITHSCORES"])
+        ),
+        b"*4\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZRANGESTORE",
+                b"zrdst",
+                b"zrsrc",
+                b"-inf",
+                b"(4",
+                b"BYSCORE",
+                b"LIMIT",
+                b"1",
+                b"2"
+            ])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGEBYSCORE", b"zrdst", b"-inf", b"+inf", b"WITHSCORES"])
+        ),
+        b"*4\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"ZRANGESTORE",
+                b"zrdst",
+                b"zrsrc",
+                b"+",
+                b"-",
+                b"BYLEX",
+                b"REV",
+                b"LIMIT",
+                b"0",
+                b"2"
+            ])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGEBYSCORE", b"zrdst", b"-inf", b"+inf", b"WITHSCORES"])
+        ),
+        b"*4\r\n$1\r\nc\r\n$1\r\n3\r\n$1\r\nd\r\n$1\r\n4\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"zstrdst", b"x"])),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGESTORE", b"zstrdst", b"zrsrc", b"0", b"0"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"TYPE", b"zstrdst"])),
+        b"+zset\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"zm1", b"1", b"a", b"2", b"b"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZADD", b"zm2", b"3", b"c"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZMPOP", b"2", b"missing_zm", b"zm1", b"MIN"])
+        ),
+        b"*2\r\n$3\r\nzm1\r\n*1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZCARD", b"zm1"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZMPOP", b"2", b"zm1", b"zm2", b"MAX", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$3\r\nzm1\r\n*1\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZCARD", b"zm1"])),
+        b":0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZMPOP", b"2", b"zm1", b"zm2", b"MAX", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$3\r\nzm2\r\n*1\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZMPOP", b"1", b"zm2", b"MIN"])),
+        b"*-1\r\n"
+    );
+
+    response.clear();
+    let zmscore =
+        b"*5\r\n$7\r\nZMSCORE\r\n$3\r\nkey\r\n$3\r\none\r\n$7\r\nmissing\r\n$3\r\ntwo\r\n";
+    let meta = parse_resp_command_arg_slices(zmscore, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n$1\r\n3\r\n$-1\r\n$1\r\n2\r\n");
+
+    response.clear();
+    let zrandmember = b"*2\r\n$11\r\nZRANDMEMBER\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(zrandmember, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+
+    response.clear();
+    let zrandmember_withscores =
+        b"*4\r\n$11\r\nZRANDMEMBER\r\n$3\r\nkey\r\n$1\r\n2\r\n$10\r\nWITHSCORES\r\n";
+    let meta = parse_resp_command_arg_slices(zrandmember_withscores, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*4\r\n"));
+    assert!(response.windows(9).any(|w| w == b"$3\r\none\r\n"));
+    assert!(response.windows(9).any(|w| w == b"$3\r\ntwo\r\n"));
+
+    response.clear();
+    let zadd_popkey =
+        b"*8\r\n$4\r\nZADD\r\n$6\r\npopkey\r\n$1\r\n1\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n3\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(zadd_popkey, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let zpopmin = b"*2\r\n$7\r\nZPOPMIN\r\n$6\r\npopkey\r\n";
+    let meta = parse_resp_command_arg_slices(zpopmin, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*2\r\n$1\r\na\r\n$1\r\n1\r\n");
+
+    response.clear();
+    let zpopmax = b"*3\r\n$7\r\nZPOPMAX\r\n$6\r\npopkey\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(zpopmax, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"*4\r\n$1\r\nc\r\n$1\r\n3\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+
+    response.clear();
+    let zcard_popkey = b"*2\r\n$5\r\nZCARD\r\n$6\r\npopkey\r\n";
+    let meta = parse_resp_command_arg_slices(zcard_popkey, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
 
     response.clear();
     let zrem = b"*4\r\n$4\r\nZREM\r\n$3\r\nkey\r\n$3\r\none\r\n$4\r\nnone\r\n";
@@ -1054,6 +2284,158 @@ fn incr_returns_wrongtype_for_object_key() {
 }
 
 #[test]
+fn executes_incrby_and_decrby_commands() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 3];
+    let mut response = Vec::new();
+
+    let incrby = b"*3\r\n$6\r\nINCRBY\r\n$7\r\ncounter\r\n$1\r\n5\r\n";
+    let meta = parse_resp_command_arg_slices(incrby, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":5\r\n");
+
+    response.clear();
+    let decrby = b"*3\r\n$6\r\nDECRBY\r\n$7\r\ncounter\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(decrby, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+}
+
+#[test]
+fn exists_counts_duplicates_and_object_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$1\r\ns\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let hset = b"*4\r\n$4\r\nHSET\r\n$1\r\no\r\n$1\r\nf\r\n$1\r\nv\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let exists = b"*5\r\n$6\r\nEXISTS\r\n$1\r\ns\r\n$1\r\ns\r\n$1\r\no\r\n$1\r\nx\r\n";
+    let meta = parse_resp_command_arg_slices(exists, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+}
+
+#[test]
+fn type_reports_string_object_and_none() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$1\r\ns\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let sadd = b"*4\r\n$4\r\nSADD\r\n$2\r\nst\r\n$1\r\na\r\n$1\r\nb\r\n";
+    let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let type_string = b"*2\r\n$4\r\nTYPE\r\n$1\r\ns\r\n";
+    let meta = parse_resp_command_arg_slices(type_string, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+string\r\n");
+
+    response.clear();
+    let type_set = b"*2\r\n$4\r\nTYPE\r\n$2\r\nst\r\n";
+    let meta = parse_resp_command_arg_slices(type_set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+set\r\n");
+
+    response.clear();
+    let type_none = b"*2\r\n$4\r\nTYPE\r\n$1\r\nx\r\n";
+    let meta = parse_resp_command_arg_slices(type_none, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+none\r\n");
+}
+
+#[test]
+fn mset_and_mget_support_multi_key_and_object_replacement() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 12];
+    let mut response = Vec::new();
+
+    let mset = b"*5\r\n$4\r\nMSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n$2\r\nv2\r\n";
+    let meta = parse_resp_command_arg_slices(mset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let mget = b"*4\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\nk3\r\n";
+    let meta = parse_resp_command_arg_slices(mget, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
+
+    response.clear();
+    let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nobj\r\n$1\r\nf\r\n$1\r\nv\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let mget_obj = b"*2\r\n$4\r\nMGET\r\n$3\r\nobj\r\n";
+    let meta = parse_resp_command_arg_slices(mget_obj, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*1\r\n$-1\r\n");
+
+    response.clear();
+    let mset_overwrite_obj = b"*3\r\n$4\r\nMSET\r\n$3\r\nobj\r\n$3\r\nstr\r\n";
+    let meta = parse_resp_command_arg_slices(mset_overwrite_obj, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nobj\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\nstr\r\n");
+}
+
+#[test]
 fn executes_del_command() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 3];
@@ -1139,6 +2521,179 @@ fn key_can_be_recreated_after_delete() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$7\r\nupdated\r\n");
+}
+
+#[test]
+fn rename_moves_value_and_renamenx_respects_existing_destination() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set_src = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let rename = b"*3\r\n$6\r\nRENAME\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(rename, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get_dst = b"*2\r\n$3\r\nGET\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(get_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let set_src_again = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$6\r\nvalue2\r\n";
+    let meta = parse_resp_command_arg_slices(set_src_again, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let renamenx_existing = b"*3\r\n$8\r\nRENAMENX\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(renamenx_existing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let get_src = b"*2\r\n$3\r\nGET\r\n$3\r\nsrc\r\n";
+    let meta = parse_resp_command_arg_slices(get_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$6\r\nvalue2\r\n");
+}
+
+#[test]
+fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set_src = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let expire_src = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nsrc\r\n$3\r\n100\r\n";
+    let meta = parse_resp_command_arg_slices(expire_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let rename = b"*3\r\n$6\r\nRENAME\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(rename, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let ttl_dst = b"*2\r\n$3\r\nTTL\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(ttl_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    assert!(ttl_value > 0);
+
+    response.clear();
+    let rename_missing = b"*3\r\n$6\r\nRENAME\r\n$7\r\nmissing\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(rename_missing, &mut args).unwrap();
+    let error = processor.execute(&args[..meta.argument_count], &mut response);
+    assert_eq!(error, Err(RequestExecutionError::NoSuchKey));
+}
+
+#[test]
+fn copy_copies_string_and_ttl_with_replace() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 12];
+    let mut response = Vec::new();
+
+    let set_src = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let expire_src = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nsrc\r\n$3\r\n100\r\n";
+    let meta = parse_resp_command_arg_slices(expire_src, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let copy = b"*3\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(copy, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let get_dst = b"*2\r\n$3\r\nGET\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(get_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let ttl_dst = b"*2\r\n$3\r\nTTL\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(ttl_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    assert!(ttl_value > 0);
+
+    response.clear();
+    let set_dst = b"*3\r\n$3\r\nSET\r\n$3\r\ndst\r\n$3\r\nold\r\n";
+    let meta = parse_resp_command_arg_slices(set_dst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let copy_without_replace = b"*3\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
+    let meta = parse_resp_command_arg_slices(copy_without_replace, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let copy_with_replace = b"*4\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n$7\r\nREPLACE\r\n";
+    let meta = parse_resp_command_arg_slices(copy_with_replace, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
 }
 
 #[test]
@@ -1406,6 +2961,52 @@ fn expire_ttl_and_pexpire_commands_work() {
 }
 
 #[test]
+fn set_after_expire_and_del_recreates_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nfoo\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let expire = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$3\r\n100\r\n";
+    let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let del = b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let set_again = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nbar\r\n";
+    let meta = parse_resp_command_arg_slices(set_again, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\nbar\r\n");
+}
+
+#[test]
 fn expire_ttl_and_persist_apply_to_object_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -1514,6 +3115,89 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
 }
 
 #[test]
+fn expireat_and_expiretime_use_unix_seconds() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    let now_secs = current_unix_time_millis().unwrap() / 1000;
+    let expireat_secs = (now_secs + 2).to_string();
+    let expireat = encode_resp(&[b"EXPIREAT", b"key", expireat_secs.as_bytes()]);
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(&expireat, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let expiretime = b"*2\r\n$10\r\nEXPIRETIME\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(expiretime, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let absolute_secs = parse_integer_response(&response);
+    assert!((now_secs as i64..=now_secs as i64 + 3).contains(&absolute_secs));
+}
+
+#[test]
+fn pexpireat_and_pexpiretime_report_expected_codes() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let pexpiretime_missing = b"*2\r\n$11\r\nPEXPIRETIME\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(pexpiretime_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":-2\r\n");
+
+    response.clear();
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pexpiretime_without_expire = b"*2\r\n$11\r\nPEXPIRETIME\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(pexpiretime_without_expire, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":-1\r\n");
+
+    let now_millis = current_unix_time_millis().unwrap();
+    let pexpireat_millis = (now_millis + 1500).to_string();
+    let pexpireat = encode_resp(&[b"PEXPIREAT", b"key", pexpireat_millis.as_bytes()]);
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(&pexpireat, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(pexpiretime_without_expire, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let absolute_millis = parse_integer_response(&response);
+    assert!((now_millis as i64..=now_millis as i64 + 2000).contains(&absolute_millis));
+}
+
+#[test]
 fn expire_with_invalid_timeout_returns_integer_error() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -1608,6 +3292,82 @@ fn dbsize_counts_string_and_object_keys() {
 }
 
 #[test]
+fn flushdb_clears_string_and_object_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let hset = b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let flushdb = b"*1\r\n$7\r\nFLUSHDB\r\n";
+    let meta = parse_resp_command_arg_slices(flushdb, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
+    let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+}
+
+#[test]
+fn flushall_clears_keys_across_string_and_object_store() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let sadd = b"*4\r\n$4\r\nSADD\r\n$4\r\nsset\r\n$1\r\na\r\n$1\r\nb\r\n";
+    let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let flushall = b"*1\r\n$8\r\nFLUSHALL\r\n";
+    let meta = parse_resp_command_arg_slices(flushall, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
+    let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+}
+
+#[test]
 fn info_dbsize_and_command_responses_are_generated() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -1645,6 +3405,1245 @@ fn info_dbsize_and_command_responses_are_generated() {
     assert!(response.starts_with(b"*"));
     assert!(response.windows(7).any(|w| w == b"$3\r\nGET"));
     assert!(response.windows(10).any(|w| w == b"$6\r\nEXPIRE"));
+}
+
+#[test]
+fn memory_usage_reports_positive_values_and_null_for_missing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let memory_missing = b"*3\r\n$6\r\nMEMORY\r\n$5\r\nUSAGE\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(memory_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let memory_string = b"*3\r\n$6\r\nMEMORY\r\n$5\r\nUSAGE\r\n$4\r\nskey\r\n";
+    let meta = parse_resp_command_arg_slices(memory_string, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b":"));
+    assert_ne!(response, b":0\r\n");
+
+    response.clear();
+    let hset = b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let memory_hash = b"*3\r\n$6\r\nMEMORY\r\n$5\r\nUSAGE\r\n$4\r\nhkey\r\n";
+    let meta = parse_resp_command_arg_slices(memory_hash, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b":"));
+    assert_ne!(response, b":0\r\n");
+}
+
+#[test]
+fn keys_returns_glob_matches_across_string_and_object_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set_foo1 = b"*3\r\n$3\r\nSET\r\n$4\r\nfoo1\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(set_foo1, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let set_foo2 = b"*3\r\n$3\r\nSET\r\n$4\r\nfoo2\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(set_foo2, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let set_bar = b"*3\r\n$3\r\nSET\r\n$3\r\nbar\r\n$1\r\n3\r\n";
+    let meta = parse_resp_command_arg_slices(set_bar, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let hset_foo3 = b"*4\r\n$4\r\nHSET\r\n$4\r\nfoo3\r\n$1\r\nf\r\n$1\r\nv\r\n";
+    let meta = parse_resp_command_arg_slices(hset_foo3, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let keys_foo = b"*2\r\n$4\r\nKEYS\r\n$4\r\nfoo*\r\n";
+    let meta = parse_resp_command_arg_slices(keys_foo, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*3\r\n"));
+    assert!(response.windows(10).any(|w| w == b"$4\r\nfoo1\r\n"));
+    assert!(response.windows(10).any(|w| w == b"$4\r\nfoo2\r\n"));
+    assert!(response.windows(10).any(|w| w == b"$4\r\nfoo3\r\n"));
+
+    response.clear();
+    let keys_all = b"*2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n";
+    let meta = parse_resp_command_arg_slices(keys_all, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*4\r\n"));
+}
+
+#[test]
+fn randomkey_returns_existing_keys_and_null_for_empty_db() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let randomkey = b"*1\r\n$9\r\nRANDOMKEY\r\n";
+    let meta = parse_resp_command_arg_slices(randomkey, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let set_foo = b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(set_foo, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let hset_bar = b"*4\r\n$4\r\nHSET\r\n$3\r\nbar\r\n$1\r\nf\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(hset_bar, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    let mut seen_foo = false;
+    let mut seen_bar = false;
+    for _ in 0..8 {
+        response.clear();
+        let meta = parse_resp_command_arg_slices(randomkey, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        if response == b"$3\r\nfoo\r\n" {
+            seen_foo = true;
+        }
+        if response == b"$3\r\nbar\r\n" {
+            seen_bar = true;
+        }
+    }
+    assert!(seen_foo);
+    assert!(seen_bar);
+}
+
+#[test]
+fn scan_supports_cursor_match_count_and_type_filters() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"a_key", b"1"])),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"b_key", b"2"])),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"c_key", b"3"])),
+        b"+OK\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSET", b"hkey", b"field", b"value"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"setkey", b"member"])),
+        b":1\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SCAN", b"0", b"COUNT", b"2"])),
+        b"*2\r\n$1\r\n2\r\n*2\r\n$5\r\na_key\r\n$5\r\nb_key\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SCAN", b"2", b"COUNT", b"2"])),
+        b"*2\r\n$1\r\n4\r\n*2\r\n$5\r\nc_key\r\n$4\r\nhkey\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SCAN", b"0", b"MATCH", b"*key", b"TYPE", b"set"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*1\r\n$6\r\nsetkey\r\n"
+    );
+}
+
+#[test]
+fn hscan_supports_cursor_match_and_count() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSET", b"h", b"a", b"1", b"b", b"2", b"c", b"3"])
+        ),
+        b":3\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSCAN", b"h", b"0", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$1\r\n2\r\n*4\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSCAN", b"h", b"2", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSCAN", b"h", b"0", b"MATCH", b"b*", b"COUNT", b"10"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+}
+
+#[test]
+fn sscan_supports_cursor_match_and_count() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"s", b"c", b"a", b"b"])),
+        b":3\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SSCAN", b"s", b"0", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$1\r\n2\r\n*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SSCAN", b"s", b"0", b"MATCH", b"c*", b"COUNT", b"10"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*1\r\n$1\r\nc\r\n"
+    );
+}
+
+#[test]
+fn zscan_supports_cursor_match_and_count() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"z", b"1", b"a", b"2", b"b", b"3", b"c"])
+        ),
+        b":3\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZSCAN", b"z", b"0", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$1\r\n2\r\n*4\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZSCAN", b"z", b"2", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZSCAN", b"z", b"0", b"MATCH", b"b*", b"COUNT", b"10"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+}
+
+#[test]
+fn setex_sets_value_with_expiration() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let setex = b"*4\r\n$5\r\nSETEX\r\n$3\r\nkey\r\n$2\r\n10\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(setex, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b":"));
+    let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    assert!(ttl_value > 0);
+}
+
+#[test]
+fn setnx_sets_only_when_key_absent() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let setnx_first = b"*3\r\n$5\r\nSETNX\r\n$3\r\nkey\r\n$3\r\none\r\n";
+    let meta = parse_resp_command_arg_slices(setnx_first, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let setnx_second = b"*3\r\n$5\r\nSETNX\r\n$3\r\nkey\r\n$3\r\ntwo\r\n";
+    let meta = parse_resp_command_arg_slices(setnx_second, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\none\r\n");
+}
+
+#[test]
+fn strlen_returns_zero_for_missing_and_length_for_string() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let strlen_missing = b"*2\r\n$6\r\nSTRLEN\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(strlen_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let strlen = b"*2\r\n$6\r\nSTRLEN\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(strlen, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":5\r\n");
+}
+
+#[test]
+fn getrange_and_substr_return_expected_slices() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$10\r\n0123456789\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let getrange = b"*4\r\n$8\r\nGETRANGE\r\n$3\r\nkey\r\n$1\r\n2\r\n$1\r\n5\r\n";
+    let meta = parse_resp_command_arg_slices(getrange, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$4\r\n2345\r\n");
+
+    response.clear();
+    let getrange_negative = b"*4\r\n$8\r\nGETRANGE\r\n$3\r\nkey\r\n$2\r\n-3\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(getrange_negative, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\n789\r\n");
+
+    response.clear();
+    let substr = b"*4\r\n$6\r\nSUBSTR\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\n3\r\n";
+    let meta = parse_resp_command_arg_slices(substr, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\n123\r\n");
+}
+
+#[test]
+fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let setrange = b"*4\r\n$8\r\nSETRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$3\r\nabc\r\n";
+    let meta = parse_resp_command_arg_slices(setrange, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let getbit = b"*3\r\n$6\r\nGETBIT\r\n$3\r\nkey\r\n$1\r\n6\r\n";
+    let meta = parse_resp_command_arg_slices(getbit, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let setbit = b"*4\r\n$6\r\nSETBIT\r\n$3\r\nkey\r\n$1\r\n6\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(setbit, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(getbit, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\ncbc\r\n");
+
+    response.clear();
+    let bitcount = b"*2\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(bitcount, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":11\r\n");
+
+    response.clear();
+    let bitcount_byte =
+        b"*5\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\n0\r\n$4\r\nBYTE\r\n";
+    let meta = parse_resp_command_arg_slices(bitcount_byte, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":4\r\n");
+
+    response.clear();
+    let bitcount_bit = b"*5\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n$1\r\n8\r\n$2\r\n15\r\n$3\r\nBIT\r\n";
+    let meta = parse_resp_command_arg_slices(bitcount_bit, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let setrange_extend = b"*4\r\n$8\r\nSETRANGE\r\n$3\r\nkey\r\n$1\r\n5\r\n$1\r\nZ\r\n";
+    let meta = parse_resp_command_arg_slices(setrange_extend, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":6\r\n");
+
+    response.clear();
+    let getbit_missing = b"*3\r\n$6\r\nGETBIT\r\n$7\r\nmissing\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(getbit_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let bitcount_missing = b"*2\r\n$8\r\nBITCOUNT\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(bitcount_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let bitcount_invalid_mode =
+        b"*5\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\n1\r\n$5\r\nWORDS\r\n";
+    let meta = parse_resp_command_arg_slices(bitcount_invalid_mode, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR syntax error\r\n");
+}
+
+#[test]
+fn psetex_sets_value_with_millisecond_expiration() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let psetex = b"*4\r\n$6\r\nPSETEX\r\n$3\r\nkey\r\n$3\r\n250\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(psetex, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let ttl_millis = parse_integer_response(&response);
+    assert!((0..=250).contains(&ttl_millis));
+}
+
+#[test]
+fn getset_returns_old_value_and_overwrites_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let getset_missing = b"*3\r\n$6\r\nGETSET\r\n$3\r\nkey\r\n$3\r\none\r\n";
+    let meta = parse_resp_command_arg_slices(getset_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let getset_existing = b"*3\r\n$6\r\nGETSET\r\n$3\r\nkey\r\n$3\r\ntwo\r\n";
+    let meta = parse_resp_command_arg_slices(getset_existing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\none\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\ntwo\r\n");
+}
+
+#[test]
+fn getdel_returns_value_then_removes_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let getdel = b"*2\r\n$6\r\nGETDEL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(getdel, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(getdel, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn append_and_incrbyfloat_update_string_values() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$1\r\na\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let append = b"*3\r\n$6\r\nAPPEND\r\n$3\r\nkey\r\n$2\r\nbc\r\n";
+    let meta = parse_resp_command_arg_slices(append, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\nabc\r\n");
+
+    response.clear();
+    let incrbyfloat = b"*3\r\n$11\r\nINCRBYFLOAT\r\n$3\r\nnum\r\n$4\r\n1.25\r\n";
+    let meta = parse_resp_command_arg_slices(incrbyfloat, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$4\r\n1.25\r\n");
+
+    response.clear();
+    let incrbyfloat_again = b"*3\r\n$11\r\nINCRBYFLOAT\r\n$3\r\nnum\r\n$4\r\n0.75\r\n";
+    let meta = parse_resp_command_arg_slices(incrbyfloat_again, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n2\r\n");
+}
+
+#[test]
+fn getex_updates_expiration_and_persist() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let getex_px = b"*4\r\n$5\r\nGETEX\r\n$3\r\nkey\r\n$2\r\nPX\r\n$3\r\n250\r\n";
+    let meta = parse_resp_command_arg_slices(getex_px, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let ttl_millis = parse_integer_response(&response);
+    assert!((0..=250).contains(&ttl_millis));
+
+    response.clear();
+    let getex_persist = b"*3\r\n$5\r\nGETEX\r\n$3\r\nkey\r\n$7\r\nPERSIST\r\n";
+    let meta = parse_resp_command_arg_slices(getex_persist, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":-1\r\n");
+}
+
+#[test]
+fn getex_exat_in_the_past_returns_value_and_deletes_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let getex_exat_past = b"*4\r\n$5\r\nGETEX\r\n$3\r\nkey\r\n$4\r\nEXAT\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(getex_exat_past, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn msetnx_sets_only_when_all_keys_are_absent() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let msetnx_first = b"*5\r\n$6\r\nMSETNX\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n$2\r\nv2\r\n";
+    let meta = parse_resp_command_arg_slices(msetnx_first, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let msetnx_second = b"*5\r\n$6\r\nMSETNX\r\n$2\r\nk2\r\n$1\r\nx\r\n$2\r\nk3\r\n$1\r\ny\r\n";
+    let meta = parse_resp_command_arg_slices(msetnx_second, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let mget = b"*4\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\nk3\r\n";
+    let meta = parse_resp_command_arg_slices(mget, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
+}
+
+#[test]
+fn touch_and_unlink_count_existing_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let set_a = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(set_a, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let set_b = b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(set_b, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let touch = b"*4\r\n$5\r\nTOUCH\r\n$1\r\na\r\n$1\r\nb\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(touch, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let unlink = b"*4\r\n$6\r\nUNLINK\r\n$1\r\na\r\n$1\r\nb\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(unlink, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let get_a = b"*2\r\n$3\r\nGET\r\n$1\r\na\r\n";
+    let meta = parse_resp_command_arg_slices(get_a, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn quit_and_time_commands_return_expected_responses() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let quit = b"*1\r\n$4\r\nQUIT\r\n";
+    let meta = parse_resp_command_arg_slices(quit, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let time = b"*1\r\n$4\r\nTIME\r\n";
+    let meta = parse_resp_command_arg_slices(time, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let tokens: Vec<&str> = std::str::from_utf8(&response)
+        .unwrap()
+        .split("\r\n")
+        .filter(|token| !token.is_empty())
+        .collect();
+    assert_eq!(tokens[0], "*2");
+    assert!(tokens[1].starts_with('$'));
+    assert!(tokens[2].bytes().all(|byte| byte.is_ascii_digit()));
+    assert!(tokens[3].starts_with('$'));
+    assert!(tokens[4].bytes().all(|byte| byte.is_ascii_digit()));
+}
+
+#[test]
+fn server_mode_and_reset_commands_follow_expected_responses() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let lastsave = b"*1\r\n$8\r\nLASTSAVE\r\n";
+    let meta = parse_resp_command_arg_slices(lastsave, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let first_lastsave = parse_integer_response(&response);
+    assert!(first_lastsave > 0);
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(lastsave, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(parse_integer_response(&response), first_lastsave);
+
+    response.clear();
+    let readonly = b"*1\r\n$8\r\nREADONLY\r\n";
+    let meta = parse_resp_command_arg_slices(readonly, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR This instance has cluster support disabled\r\n"
+    );
+
+    response.clear();
+    let readwrite = b"*1\r\n$9\r\nREADWRITE\r\n";
+    let meta = parse_resp_command_arg_slices(readwrite, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR This instance has cluster support disabled\r\n"
+    );
+
+    response.clear();
+    let hello3 = b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n";
+    let meta = parse_resp_command_arg_slices(hello3, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+    assert_eq!(processor.resp_protocol_version(), 3);
+
+    response.clear();
+    let reset = b"*1\r\n$5\r\nRESET\r\n";
+    let meta = parse_resp_command_arg_slices(reset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+RESET\r\n");
+    assert_eq!(processor.resp_protocol_version(), 2);
+
+    response.clear();
+    let lolwut = b"*1\r\n$6\r\nLOLWUT\r\n";
+    let meta = parse_resp_command_arg_slices(lolwut, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+    assert!(response.windows(21).any(|w| w == b"Redis ver. garnet-rs\n"));
+
+    response.clear();
+    let lolwut_bad_version = b"*3\r\n$6\r\nLOLWUT\r\n$7\r\nVERSION\r\n$3\r\nbad\r\n";
+    let meta = parse_resp_command_arg_slices(lolwut_bad_version, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR value is not an integer or out of range\r\n"
+    );
+}
+
+#[test]
+fn function_flush_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let function_flush = b"*2\r\n$8\r\nFUNCTION\r\n$5\r\nFLUSH\r\n";
+    let meta = parse_resp_command_arg_slices(function_flush, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn debug_set_active_expire_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let debug_disable = b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(debug_disable, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let debug_enable = b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(debug_enable, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn object_encoding_and_refcount_report_basic_metadata() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let lpush = b"*5\r\n$5\r\nLPUSH\r\n$4\r\nlist\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let object_encoding = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$4\r\nlist\r\n";
+    let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$8\r\nlistpack\r\n");
+
+    response.clear();
+    let object_refcount = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nREFCOUNT\r\n$4\r\nlist\r\n";
+    let meta = parse_resp_command_arg_slices(object_refcount, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+}
+
+#[test]
+fn debug_digest_value_matches_for_equal_payloads() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set_a = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set_a, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let copy = b"*3\r\n$4\r\nCOPY\r\n$1\r\na\r\n$1\r\nb\r\n";
+    let meta = parse_resp_command_arg_slices(copy, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let digest_a = b"*3\r\n$5\r\nDEBUG\r\n$12\r\nDIGEST-VALUE\r\n$1\r\na\r\n";
+    let meta = parse_resp_command_arg_slices(digest_a, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let digest_a_response = response.clone();
+    assert!(digest_a_response.starts_with(b"$16\r\n"));
+
+    response.clear();
+    let digest_b = b"*3\r\n$5\r\nDEBUG\r\n$12\r\nDIGEST-VALUE\r\n$1\r\nb\r\n";
+    let meta = parse_resp_command_arg_slices(digest_b, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, digest_a_response);
+}
+
+#[test]
+fn stream_commands_support_copy_and_xinfo_full_digest() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 24];
+    let mut response = Vec::new();
+
+    let xadd = b"*5\r\n$4\r\nXADD\r\n$7\r\nstream1\r\n$1\r\n*\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(xadd, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+
+    response.clear();
+    let xlen = b"*2\r\n$4\r\nXLEN\r\n$7\r\nstream1\r\n";
+    let meta = parse_resp_command_arg_slices(xlen, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let xadd_second =
+        b"*5\r\n$4\r\nXADD\r\n$7\r\nstream1\r\n$1\r\n*\r\n$5\r\nfield\r\n$6\r\nvalue2\r\n";
+    let meta = parse_resp_command_arg_slices(xadd_second, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(xlen, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":2\r\n");
+
+    response.clear();
+    let xrange_all = b"*4\r\n$6\r\nXRANGE\r\n$7\r\nstream1\r\n$1\r\n-\r\n$1\r\n+\r\n";
+    let meta = parse_resp_command_arg_slices(xrange_all, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*2\r\n"));
+
+    response.clear();
+    let xrange_count_1 =
+        b"*6\r\n$6\r\nXRANGE\r\n$7\r\nstream1\r\n$1\r\n-\r\n$1\r\n+\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(xrange_count_1, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let xrange_head = response.clone();
+    assert!(xrange_head.starts_with(b"*1\r\n"));
+
+    response.clear();
+    let xrevrange_count_1 = b"*6\r\n$9\r\nXREVRANGE\r\n$7\r\nstream1\r\n$1\r\n+\r\n$1\r\n-\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(xrevrange_count_1, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*1\r\n"));
+    assert_ne!(response, xrange_head);
+
+    response.clear();
+    let xgroup_create =
+        b"*5\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$7\r\nstream1\r\n$2\r\ng1\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(xgroup_create, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let xreadgroup = b"*9\r\n$10\r\nXREADGROUP\r\n$5\r\nGROUP\r\n$2\r\ng1\r\n$8\r\nconsumer\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n$7\r\nSTREAMS\r\n$7\r\nstream1\r\n$1\r\n>\r\n";
+    let meta = parse_resp_command_arg_slices(xreadgroup, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*"));
+
+    response.clear();
+    let xinfo_stream = b"*4\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$7\r\nstream1\r\n$4\r\nFULL\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_stream, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let source_info = response.clone();
+    assert!(source_info.starts_with(b"$16\r\n"));
+
+    response.clear();
+    let copy = b"*3\r\n$4\r\nCOPY\r\n$7\r\nstream1\r\n$7\r\nstream2\r\n";
+    let meta = parse_resp_command_arg_slices(copy, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let xinfo_stream_copy = b"*4\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$7\r\nstream2\r\n$4\r\nFULL\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_stream_copy, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, source_info);
+}
+
+#[test]
+fn script_flush_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let script_flush = b"*2\r\n$6\r\nSCRIPT\r\n$5\r\nFLUSH\r\n";
+    let meta = parse_resp_command_arg_slices(script_flush, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn script_flush_sync_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let script_flush_sync = b"*3\r\n$6\r\nSCRIPT\r\n$5\r\nFLUSH\r\n$4\r\nSYNC\r\n";
+    let meta = parse_resp_command_arg_slices(script_flush_sync, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn config_resetstat_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let config_resetstat = b"*2\r\n$6\r\nCONFIG\r\n$9\r\nRESETSTAT\r\n";
+    let meta = parse_resp_command_arg_slices(config_resetstat, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn config_get_known_and_unknown_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let config_get_appendonly = b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$10\r\nappendonly\r\n";
+    let meta = parse_resp_command_arg_slices(config_get_appendonly, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n");
+
+    response.clear();
+    let config_get_unknown = b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$7\r\nunknown\r\n";
+    let meta = parse_resp_command_arg_slices(config_get_unknown, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+}
+
+#[test]
+fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let config_set =
+        b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$24\r\nzset-max-ziplist-entries\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(config_set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    for member in [b"a", b"b", b"c"] {
+        response.clear();
+        let zadd = encode_resp(&[b"ZADD", b"zset", b"1", member]);
+        let meta = parse_resp_command_arg_slices(&zadd, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert!(response == b":1\r\n" || response == b":0\r\n");
+    }
+
+    response.clear();
+    let object_encoding = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$4\r\nzset\r\n";
+    let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$8\r\nskiplist\r\n");
 }
 
 #[test]

@@ -23,13 +23,14 @@ Results:
 
 - Redis commands: `241`
 - Dragonfly commands: `288`
-- Garnet commands: `42`
-- Redis commands missing in Garnet: `199`
-- Coverage vs Redis baseline: `17.43%` (`42 / 241`)
+- Garnet commands: `163`
+- Redis commands missing in Garnet: `78`
+- Coverage vs Redis baseline: `67.63%` (`163 / 241`)
 
-Current Garnet command set (`42`):
+Current Garnet command set (`162`) is generated and tracked in:
 
-`ASKING, COMMAND, DBSIZE, DECR, DEL, DISCARD, ECHO, EXEC, EXPIRE, GET, HDEL, HGET, HGETALL, HSET, INCR, INFO, LPOP, LPUSH, LRANGE, MULTI, PERSIST, PEXPIRE, PING, PSYNC, PTTL, REPLCONF, REPLICAOF, RPOP, RPUSH, SADD, SET, SISMEMBER, SMEMBERS, SREM, SYNC, TTL, UNWATCH, WATCH, ZADD, ZRANGE, ZREM, ZSCORE`
+- `docs/compatibility/redis-command-status.csv`
+- `docs/compatibility/redis-command-status-summary.md`
 
 ## Coverage interpretation
 
@@ -40,11 +41,11 @@ Current Garnet command set (`42`):
 
 High-impact missing (non-Lua) examples:
 
-- String/key ops: `EXISTS, TYPE, MGET, MSET, GETEX, GETDEL, GETRANGE, SETRANGE, APPEND, INCRBY, DECRBY`
-- Hash/list/set/zset expansion: `HKEYS, HLEN, HMGET, LLEN, LINDEX, LTRIM, SCARD, SRANDMEMBER, ZCARD, ZRANK, ZREVRANGE`
-- Cursor iteration: `SCAN, HSCAN, SSCAN, ZSCAN`
-- Server/config/auth: `AUTH, ACL, CLIENT, CONFIG, FLUSHDB/FLUSHALL, LATENCY`
-- Cluster command surface: `CLUSTER *` (management/configuration verbs)
+- Server/config/auth/ops: `AUTH, ACL, CLIENT, CLUSTER, LATENCY, SLOWLOG, SHUTDOWN`
+- Blocking list/zset ops: `BLPOP, BRPOP, BLMOVE, BLMPOP, BRPOPLPUSH, BZPOPMIN, BZPOPMAX, BZMPOP`
+- Pub/Sub surface: `SUBSCRIBE, UNSUBSCRIBE, PSUBSCRIBE, PUNSUBSCRIBE, PUBLISH, PUBSUB`
+- Stream expansion: `XACK, XAUTOCLAIM, XCLAIM, XPENDING, XREAD, XSETID, XTRIM`
+- Probabilistic/geo: `PFADD/PFCOUNT/PFMERGE` and `GEO*` command family
 
 ## Command abstraction review (today)
 
