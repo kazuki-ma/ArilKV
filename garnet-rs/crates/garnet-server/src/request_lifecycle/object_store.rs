@@ -7,32 +7,24 @@ impl RequestProcessor {
         object_type: u8,
         payload: &[u8],
     ) -> Result<(), RequestExecutionError> {
+        let shard_index = self.object_store_shard_index_for_key(key);
         let key = key.to_vec();
         let value = encode_object_value(object_type, payload);
-        let mut store = self
-            .object_store
-            .lock()
-            .expect("object store mutex poisoned");
+        let mut store = self.lock_object_store_for_shard(shard_index);
         let mut session = store.session(&self.object_functions);
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         session
             .upsert(&key, &value, &mut output, &mut info)
             .map_err(map_upsert_error)?;
-        self.object_key_registry
-            .lock()
-            .expect("object key registry mutex poisoned")
-            .insert(key.clone());
+        self.track_object_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
         Ok(())
     }
 
     pub fn object_read(&self, key: &[u8]) -> Result<Option<(u8, Vec<u8>)>, RequestExecutionError> {
         let key = key.to_vec();
-        let mut store = self
-            .object_store
-            .lock()
-            .expect("object store mutex poisoned");
+        let mut store = self.lock_object_store_for_key(&key);
         let mut session = store.session(&self.object_functions);
         let mut output = Vec::new();
         let status = session
@@ -50,29 +42,21 @@ impl RequestProcessor {
     }
 
     pub fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        let shard_index = self.object_store_shard_index_for_key(key);
         let key = key.to_vec();
-        let mut store = self
-            .object_store
-            .lock()
-            .expect("object store mutex poisoned");
+        let mut store = self.lock_object_store_for_shard(shard_index);
         let mut session = store.session(&self.object_functions);
         let mut info = DeleteInfo::default();
         let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
                 self.set_string_expiration_deadline(&key, None);
-                self.object_key_registry
-                    .lock()
-                    .expect("object key registry mutex poisoned")
-                    .remove(&key);
+                self.untrack_object_key_in_shard(&key, shard_index);
                 self.bump_watch_version(&key);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
-                self.object_key_registry
-                    .lock()
-                    .expect("object key registry mutex poisoned")
-                    .remove(&key);
+                self.untrack_object_key_in_shard(&key, shard_index);
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),

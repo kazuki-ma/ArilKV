@@ -91,13 +91,7 @@ impl RequestProcessor {
             }
         }
 
-        let object_keys: Vec<Vec<u8>> = self
-            .object_key_registry
-            .lock()
-            .expect("object key registry mutex poisoned")
-            .iter()
-            .cloned()
-            .collect();
+        let object_keys = self.object_keys_snapshot();
         for key in object_keys {
             if redis_hash_slot(&key) == slot {
                 slot_keys.insert(key);

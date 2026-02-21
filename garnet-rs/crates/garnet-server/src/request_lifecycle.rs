@@ -107,11 +107,11 @@ pub struct MigrationEntry {
 
 pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    object_store: OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>,
+    object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, Instant>>>,
     string_expiration_counts: Vec<AtomicUsize>,
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
-    object_key_registry: OrderedMutex<HashSet<Vec<u8>>>,
+    object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     watch_versions: Vec<AtomicU64>,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
@@ -130,15 +130,25 @@ impl RequestProcessor {
         let mut string_store_config = store_config;
         string_store_config.hash_index_size_bits =
             scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
+        let mut object_store_config = store_config;
+        object_store_config.hash_index_size_bits =
+            scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
         let mut string_stores = Vec::with_capacity(store_shard_count);
+        let mut object_stores = Vec::with_capacity(store_shard_count);
         let mut string_expirations = Vec::with_capacity(store_shard_count);
         let mut string_expiration_counts = Vec::with_capacity(store_shard_count);
         let mut string_key_registries = Vec::with_capacity(store_shard_count);
+        let mut object_key_registries = Vec::with_capacity(store_shard_count);
         for _ in 0..store_shard_count {
             string_stores.push(OrderedMutex::new(
                 TsavoriteKV::new(string_store_config)?,
                 LockClass::Store,
                 "request_processor.store",
+            ));
+            object_stores.push(OrderedMutex::new(
+                TsavoriteKV::new(object_store_config)?,
+                LockClass::ObjectStore,
+                "request_processor.object_store",
             ));
             string_expirations.push(OrderedMutex::new(
                 HashMap::new(),
@@ -151,22 +161,19 @@ impl RequestProcessor {
                 LockClass::KeyRegistry,
                 "request_processor.key_registry",
             ));
-        }
-        Ok(Self {
-            string_stores,
-            string_expirations,
-            string_expiration_counts,
-            string_key_registries,
-            object_store: OrderedMutex::new(
-                TsavoriteKV::new(store_config)?,
-                LockClass::ObjectStore,
-                "request_processor.object_store",
-            ),
-            object_key_registry: OrderedMutex::new(
+            object_key_registries.push(OrderedMutex::new(
                 HashSet::new(),
                 LockClass::ObjectKeyRegistry,
                 "request_processor.object_key_registry",
-            ),
+            ));
+        }
+        Ok(Self {
+            string_stores,
+            object_stores,
+            string_expirations,
+            string_expiration_counts,
+            string_key_registries,
+            object_key_registries,
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
                 .map(|_| AtomicU64::new(0))
                 .collect(),

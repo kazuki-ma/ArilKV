@@ -1307,6 +1307,26 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
 }
 
 #[test]
+fn expiration_scan_can_target_single_shard() {
+    let processor = RequestProcessor::new_with_string_store_shards(4).unwrap();
+    let key_shard_1 = find_key_for_shard(&processor, 1);
+    let key_shard_2 = find_key_for_shard(&processor, 2);
+    assert_ne!(key_shard_1, key_shard_2);
+    assert_eq!(processor.string_store_shard_index_for_key(&key_shard_1), 1);
+    assert_eq!(processor.string_store_shard_index_for_key(&key_shard_2), 2);
+
+    let set_1 = encode_resp(&[b"SET", key_shard_1.as_slice(), b"v1", b"PX", b"10"]);
+    assert_eq!(execute_frame(&processor, &set_1), b"+OK\r\n");
+    let set_2 = encode_resp(&[b"SET", key_shard_2.as_slice(), b"v2", b"PX", b"10"]);
+    assert_eq!(execute_frame(&processor, &set_2), b"+OK\r\n");
+
+    thread::sleep(Duration::from_millis(20));
+    assert_eq!(processor.expire_stale_keys_in_shard(1, 16).unwrap(), 1);
+    assert_eq!(processor.expire_stale_keys_in_shard(1, 16).unwrap(), 0);
+    assert_eq!(processor.expire_stale_keys_in_shard(2, 16).unwrap(), 1);
+}
+
+#[test]
 fn set_returns_error_for_invalid_expire_time() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

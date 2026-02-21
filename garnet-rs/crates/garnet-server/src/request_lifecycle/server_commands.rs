@@ -93,13 +93,7 @@ impl RequestProcessor {
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
         let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(
-            self.object_key_registry
-                .lock()
-                .expect("object key registry mutex poisoned")
-                .iter()
-                .cloned(),
-        );
+        keys.extend(self.object_keys_snapshot());
 
         let mut count = 0i64;
         for key in keys {
@@ -113,10 +107,7 @@ impl RequestProcessor {
                 self.untrack_string_key(&key);
             }
             if !object_exists {
-                self.object_key_registry
-                    .lock()
-                    .expect("object key registry mutex poisoned")
-                    .remove(&key);
+                self.untrack_object_key(&key);
             }
         }
         Ok(count)

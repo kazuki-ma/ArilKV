@@ -151,6 +151,9 @@ mod tests {
     fn owner_shard_for_command_routes_keyless_commands_to_shard_zero() {
         let processor = RequestProcessor::new().unwrap();
         let args = vec![ArgSlice::from_slice(b"PING").unwrap()];
-        assert_eq!(owner_shard_for_command(&processor, &args, CommandId::Ping), 0);
+        assert_eq!(
+            owner_shard_for_command(&processor, &args, CommandId::Ping),
+            0
+        );
     }
 }

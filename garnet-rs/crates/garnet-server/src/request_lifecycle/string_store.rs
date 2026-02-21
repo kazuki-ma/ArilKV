@@ -6,42 +6,55 @@ impl RequestProcessor {
             return Ok(0);
         }
 
-        let now = Instant::now();
-        let mut expired_keys: Vec<Vec<u8>> = Vec::with_capacity(max_keys);
-        for (shard_index, expirations) in self.string_expirations.iter().enumerate() {
-            if expired_keys.len() >= max_keys {
+        let mut removed = 0usize;
+        for shard_index in 0..self.string_stores.len() {
+            if removed >= max_keys {
                 break;
             }
-            if self.string_expiration_count_for_shard(shard_index) == 0 {
-                continue;
-            }
-            let remaining = max_keys - expired_keys.len();
-            let mut shard_expired: Vec<Vec<u8>> = expirations
-                .lock()
-                .expect("expiration mutex poisoned")
-                .iter()
-                .filter_map(|(key, deadline)| {
-                    if *deadline <= now {
-                        Some(key.clone())
-                    } else {
-                        None
-                    }
-                })
-                .take(remaining)
-                .collect();
-            expired_keys.append(&mut shard_expired);
+            removed += self.expire_stale_keys_in_shard(shard_index, max_keys - removed)?;
         }
+        Ok(removed)
+    }
+
+    pub fn expire_stale_keys_in_shard(
+        &self,
+        shard_index: usize,
+        max_keys: usize,
+    ) -> Result<usize, RequestExecutionError> {
+        if max_keys == 0 {
+            return Ok(0);
+        }
+        if shard_index >= self.string_stores.len() {
+            return Ok(0);
+        }
+        if self.string_expiration_count_for_shard(shard_index) == 0 {
+            return Ok(0);
+        }
+
+        let now = Instant::now();
+        let expired_keys: Vec<Vec<u8>> = self
+            .lock_string_expirations_for_shard(shard_index)
+            .iter()
+            .filter_map(|(key, deadline)| {
+                if *deadline <= now {
+                    Some(key.clone())
+                } else {
+                    None
+                }
+            })
+            .take(max_keys)
+            .collect();
 
         let mut removed = 0usize;
         for key in expired_keys {
             let status = {
-                let mut store = self.lock_string_store_for_key(&key);
+                let mut store = self.lock_string_store_for_shard(shard_index);
                 let mut session = store.session(&self.functions);
                 let mut info = DeleteInfo::default();
                 session.delete(&key, &mut info).map_err(map_delete_error)?
             };
 
-            self.remove_string_key_metadata(&key);
+            self.remove_string_key_metadata_in_shard(&key, shard_index);
             let object_deleted = self.object_delete(&key)?;
 
             match status {
@@ -62,7 +75,6 @@ impl RequestProcessor {
                 }
             }
         }
-
         Ok(removed)
     }
 
@@ -107,10 +119,7 @@ impl RequestProcessor {
     }
 
     pub(super) fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
-        let mut store = self
-            .object_store
-            .lock()
-            .expect("object store mutex poisoned");
+        let mut store = self.lock_object_store_for_key(key);
         let mut session = store.session(&self.object_functions);
         let mut output = Vec::new();
         let status = session
@@ -293,6 +302,11 @@ impl RequestProcessor {
     }
 
     #[inline]
+    pub(super) fn object_store_shard_index_for_key(&self, key: &[u8]) -> usize {
+        self.string_store_shard_index_for_key(key)
+    }
+
+    #[inline]
     pub(super) fn string_expiration_count_for_shard(&self, shard_index: usize) -> usize {
         debug_assert!(shard_index < self.string_expiration_counts.len());
         self.string_expiration_counts[shard_index].load(Ordering::Acquire)
@@ -332,6 +346,26 @@ impl RequestProcessor {
     }
 
     #[inline]
+    pub(super) fn lock_object_store_for_shard(
+        &self,
+        shard_index: usize,
+    ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
+        debug_assert!(shard_index < self.object_stores.len());
+        self.object_stores[shard_index]
+            .lock()
+            .expect("object store mutex poisoned")
+    }
+
+    #[inline]
+    pub(super) fn lock_object_store_for_key(
+        &self,
+        key: &[u8],
+    ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.lock_object_store_for_shard(shard_index)
+    }
+
+    #[inline]
     pub(super) fn lock_string_expirations_for_shard(
         &self,
         shard_index: usize,
@@ -353,6 +387,17 @@ impl RequestProcessor {
             .expect("key registry mutex poisoned")
     }
 
+    #[inline]
+    pub(super) fn lock_object_key_registry_for_shard(
+        &self,
+        shard_index: usize,
+    ) -> OrderedMutexGuard<'_, HashSet<Vec<u8>>> {
+        debug_assert!(shard_index < self.object_key_registries.len());
+        self.object_key_registries[shard_index]
+            .lock()
+            .expect("object key registry mutex poisoned")
+    }
+
     pub(super) fn track_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
         self.lock_string_key_registry_for_shard(shard_index)
             .insert(key.to_vec());
@@ -371,6 +416,21 @@ impl RequestProcessor {
     pub(super) fn untrack_string_key(&self, key: &[u8]) {
         let shard_index = self.string_store_shard_index_for_key(key);
         self.untrack_string_key_in_shard(key, shard_index);
+    }
+
+    pub(super) fn track_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
+        self.lock_object_key_registry_for_shard(shard_index)
+            .insert(key.to_vec());
+    }
+
+    pub(super) fn untrack_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
+        self.lock_object_key_registry_for_shard(shard_index)
+            .remove(key);
+    }
+
+    pub(super) fn untrack_object_key(&self, key: &[u8]) {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.untrack_object_key_in_shard(key, shard_index);
     }
 
     pub(super) fn set_string_expiration_deadline_in_shard(
@@ -435,6 +495,20 @@ impl RequestProcessor {
                 registry
                     .lock()
                     .expect("key registry mutex poisoned")
+                    .iter()
+                    .cloned()
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    pub(super) fn object_keys_snapshot(&self) -> Vec<Vec<u8>> {
+        self.object_key_registries
+            .iter()
+            .flat_map(|registry| {
+                registry
+                    .lock()
+                    .expect("object key registry mutex poisoned")
                     .iter()
                     .cloned()
                     .collect::<Vec<_>>()

@@ -70,10 +70,7 @@ impl RequestProcessor {
         let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
         let mut session = store.session(&self.functions);
-        let mut object_store = self
-            .object_store
-            .lock()
-            .expect("object store mutex poisoned");
+        let mut object_store = self.lock_object_store_for_shard(shard_index);
         let mut object_session = object_store.session(&self.object_functions);
 
         let mut existence_output = Vec::new();
@@ -146,10 +143,7 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
         if object_exists {
-            self.object_key_registry
-                .lock()
-                .expect("object key registry mutex poisoned")
-                .remove(&key);
+            self.untrack_object_key_in_shard(&key, shard_index);
         }
         self.set_string_expiration_deadline_in_shard(
             &key,
