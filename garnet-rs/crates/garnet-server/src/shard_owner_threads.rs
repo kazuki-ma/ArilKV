@@ -49,6 +49,7 @@ impl std::error::Error for ShardOwnerThreadPoolError {}
 pub struct ShardOwnerThreadPool {
     shard_count: usize,
     worker_count: usize,
+    inline_execution: bool,
     senders: Vec<Sender<WorkerMessage>>,
     joins: Vec<JoinHandle<()>>,
 }
@@ -78,8 +79,22 @@ impl ShardOwnerThreadPool {
         Ok(Self {
             shard_count,
             worker_count,
+            inline_execution: false,
             senders,
             joins,
+        })
+    }
+
+    pub fn new_inline(shard_count: usize) -> Result<Self, ShardOwnerThreadPoolError> {
+        if shard_count == 0 {
+            return Err(ShardOwnerThreadPoolError::InvalidShardCount);
+        }
+        Ok(Self {
+            shard_count,
+            worker_count: 1,
+            inline_execution: true,
+            senders: Vec::new(),
+            joins: Vec::new(),
         })
     }
 
@@ -91,6 +106,11 @@ impl ShardOwnerThreadPool {
     #[inline]
     pub fn worker_count(&self) -> usize {
         self.worker_count
+    }
+
+    #[inline]
+    pub fn is_inline_execution(&self) -> bool {
+        self.inline_execution
     }
 
     #[inline]
@@ -116,6 +136,18 @@ impl ShardOwnerThreadPool {
         R: Send + 'static,
         F: FnOnce() -> R + Send + 'static,
     {
+        if self.inline_execution {
+            if shard_index >= self.shard_count {
+                return Err(ShardOwnerThreadPoolError::InvalidShardIndex {
+                    shard_index,
+                    shard_count: self.shard_count,
+                });
+            }
+            let (result_tx, result_rx) = mpsc::channel::<R>();
+            let _ = result_tx.send(op());
+            return Ok(result_rx);
+        }
+
         let owner = self.owner_thread_for_shard(shard_index)?;
         let (result_tx, result_rx) = mpsc::sync_channel::<R>(1);
         let job = Box::new(move || {
@@ -145,6 +177,9 @@ impl ShardOwnerThreadPool {
 
 impl Drop for ShardOwnerThreadPool {
     fn drop(&mut self) {
+        if self.inline_execution {
+            return;
+        }
         for sender in &self.senders {
             let _ = sender.send(WorkerMessage::Stop);
         }
@@ -224,5 +259,14 @@ mod tests {
         let worker = thread::spawn(move || pool_clone.execute_sync(3, || 7u8).unwrap());
         assert_eq!(worker.join().unwrap(), 7);
         assert_eq!(pool.execute_sync(3, || 9u8).unwrap(), 9);
+    }
+
+    #[test]
+    fn inline_pool_executes_on_caller_thread() {
+        let pool = ShardOwnerThreadPool::new_inline(4).unwrap();
+        assert!(pool.is_inline_execution());
+        let caller = thread::current().id();
+        let observed = pool.execute_sync(1, || thread::current().id()).unwrap();
+        assert_eq!(caller, observed);
     }
 }

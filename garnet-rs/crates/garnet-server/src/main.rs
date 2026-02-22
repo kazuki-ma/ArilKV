@@ -15,6 +15,8 @@ use crate::server_launch_config::{
     parse_server_launch_config_from_values, SlotOwnershipPolicy, ThreadPinningConfig,
 };
 
+const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
+
 #[cfg(test)]
 fn parse_server_config_from_values(
     bind_addr: Option<&str>,
@@ -63,6 +65,9 @@ async fn main() -> std::io::Result<()> {
             return run_with_cluster(config, metrics, cluster_store).await;
         }
         return run(config, metrics).await;
+    }
+    if std::env::var_os(GARNET_OWNER_EXECUTION_INLINE_ENV).is_none() {
+        std::env::set_var(GARNET_OWNER_EXECUTION_INLINE_ENV, "1");
     }
     run_multi_bind_addrs(launch)
 }

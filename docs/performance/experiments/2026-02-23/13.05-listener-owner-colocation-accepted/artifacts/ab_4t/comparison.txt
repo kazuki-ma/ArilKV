@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=pinning_before
+new_label=pinning_inline
+pinning_before.median_set_ops=68731.000
+pinning_before.median_get_ops=75377.000
+pinning_before.median_set_p99_ms=0.68700
+pinning_before.median_get_p99_ms=0.63900
+pinning_inline.median_set_ops=137837.000
+pinning_inline.median_get_ops=146530.000
+pinning_inline.median_set_p99_ms=0.33500
+pinning_inline.median_get_p99_ms=0.34300
+delta.set_ops_pct=100.55
+delta.get_ops_pct=94.40
+delta.set_p99_ms_pct=-51.24
+delta.get_p99_ms_pct=-46.32

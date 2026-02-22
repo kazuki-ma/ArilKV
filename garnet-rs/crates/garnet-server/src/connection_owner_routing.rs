@@ -95,6 +95,14 @@ pub(crate) fn execute_frame_on_owner_thread(
     command: CommandId,
     frame: &[u8],
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
+    if owner_thread_pool.is_inline_execution() {
+        let mut response = Vec::new();
+        processor
+            .execute(args, &mut response)
+            .map_err(OwnerThreadExecutionError::Request)?;
+        return Ok(response);
+    }
+
     let shard_index = owner_shard_for_command(processor, args, command);
     let owned_args = capture_owned_frame_args(frame, args).map_err(|error| match error {
         RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,

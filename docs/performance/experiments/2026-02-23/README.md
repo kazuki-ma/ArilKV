@@ -7,6 +7,7 @@
 3. `13.02-docker-linux-median-owner-thread-count`
 4. `13.03-single-port-current-thread-runtime-rejected`
 5. `13.04-owner-result-channel-mode-rejected`
+6. `13.05-listener-owner-colocation-accepted`
 
 ## Policy
 
@@ -19,3 +20,4 @@
 - If isolated gain is unclear, reject the change and keep only measured wins.
 - Avoid global default flips when load-shape results are mixed.
 - Treat runtime/scheduler model changes as high-risk; accept only with clear win.
+- When a design-intent mismatch is hotspot-dominant, validate and prioritize structural fixes first.

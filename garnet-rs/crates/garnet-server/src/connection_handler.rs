@@ -32,6 +32,7 @@ const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
+const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
@@ -1010,9 +1011,27 @@ fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<(usize, usize)> {
 pub(crate) fn build_owner_thread_pool(
     processor: &Arc<RequestProcessor>,
 ) -> io::Result<Arc<ShardOwnerThreadPool>> {
+    let inline_owner_execution = parse_bool_env_flag(
+        std::env::var(GARNET_OWNER_EXECUTION_INLINE_ENV)
+            .ok()
+            .as_deref(),
+        GARNET_OWNER_EXECUTION_INLINE_ENV,
+    )?;
     let owner_threads = parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV)
         .unwrap_or(DEFAULT_OWNER_THREAD_COUNT);
     let shard_count = processor.string_store_shard_count();
+    if inline_owner_execution {
+        let pool = ShardOwnerThreadPool::new_inline(shard_count).map_err(|error| {
+            io::Error::new(
+                io::ErrorKind::Other,
+                format!(
+                    "owner-thread inline initialization failed (shards={}): {}",
+                    shard_count, error
+                ),
+            )
+        })?;
+        return Ok(Arc::new(pool));
+    }
     let owner_threads = owner_threads.min(shard_count);
     let pool = ShardOwnerThreadPool::new(owner_threads, shard_count).map_err(|error| {
         io::Error::new(
@@ -1125,6 +1144,25 @@ fn parse_positive_env_usize(key: &str) -> Option<usize> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
+}
+
+fn parse_bool_env_flag(raw: Option<&str>, key: &str) -> io::Result<bool> {
+    match raw {
+        None => Ok(false),
+        Some(value) => {
+            let normalized = value.trim().to_ascii_lowercase();
+            match normalized.as_str() {
+                "1" | "true" | "yes" | "on" => Ok(true),
+                "0" | "false" | "no" | "off" => Ok(false),
+                _ => Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "invalid {key} `{value}`: expected one of 1/0/true/false/yes/no/on/off"
+                    ),
+                )),
+            }
+        }
+    }
 }
 
 fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usize) {
