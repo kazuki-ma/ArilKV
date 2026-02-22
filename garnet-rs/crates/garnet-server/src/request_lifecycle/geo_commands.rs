@@ -3,6 +3,7 @@ use super::*;
 const GEOADD_USAGE: &str =
     "GEOADD key [NX|XX] [CH] longitude latitude member [longitude latitude member ...]";
 const GEOPOS_USAGE: &str = "GEOPOS key member [member ...]";
+const GEODIST_USAGE: &str = "GEODIST key member1 member2 [M|KM|FT|MI]";
 const GEO_LONGITUDE_MIN: f64 = -180.0;
 const GEO_LONGITUDE_MAX: f64 = 180.0;
 const GEO_LATITUDE_MIN: f64 = -85.051_128_78;
@@ -10,6 +11,7 @@ const GEO_LATITUDE_MAX: f64 = 85.051_128_78;
 const GEO_COORD_BITS: u32 = 26;
 const GEO_COORD_MASK: u64 = (1u64 << GEO_COORD_BITS) - 1;
 const GEO_SCORE_MAX: u64 = (GEO_COORD_MASK << GEO_COORD_BITS) | GEO_COORD_MASK;
+const GEO_EARTH_RADIUS_METERS: f64 = 6_372_797.560_856;
 
 #[derive(Default)]
 struct GeoAddOptions {
@@ -128,6 +130,60 @@ impl RequestProcessor {
         }
         Ok(())
     }
+
+    pub(super) fn handle_geodist(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_ranged_arity(args, 4, 5, "GEODIST", GEODIST_USAGE)?;
+
+        let unit_to_meters = if args.len() == 5 {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let unit = unsafe { args[4].as_slice() };
+            parse_geodist_unit_to_meters(unit)?
+        } else {
+            1.0
+        };
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() };
+        let zset = match self.load_zset_object(key)? {
+            Some(entries) => entries,
+            None => {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        };
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member_a = unsafe { args[2].as_slice() };
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member_b = unsafe { args[3].as_slice() };
+        let Some(score_a) = zset.get(member_a).copied() else {
+            append_null_bulk_string(response_out);
+            return Ok(());
+        };
+        let Some(score_b) = zset.get(member_b).copied() else {
+            append_null_bulk_string(response_out);
+            return Ok(());
+        };
+
+        let Some((lon_a, lat_a)) = decode_geo_score(score_a) else {
+            append_null_bulk_string(response_out);
+            return Ok(());
+        };
+        let Some((lon_b, lat_b)) = decode_geo_score(score_b) else {
+            append_null_bulk_string(response_out);
+            return Ok(());
+        };
+
+        let meters = geo_distance_meters(lon_a, lat_a, lon_b, lat_b);
+        let unit_value = meters / unit_to_meters;
+        let text = format_geo_number(unit_value, 4);
+        append_bulk_string(response_out, text.as_bytes());
+        Ok(())
+    }
 }
 
 fn parse_geoadd_options(
@@ -169,6 +225,22 @@ fn geo_coordinates_in_range(longitude: f64, latitude: f64) -> bool {
         && (GEO_LATITUDE_MIN..=GEO_LATITUDE_MAX).contains(&latitude)
 }
 
+fn parse_geodist_unit_to_meters(unit: &[u8]) -> Result<f64, RequestExecutionError> {
+    if ascii_eq_ignore_case(unit, b"M") {
+        return Ok(1.0);
+    }
+    if ascii_eq_ignore_case(unit, b"KM") {
+        return Ok(1000.0);
+    }
+    if ascii_eq_ignore_case(unit, b"FT") {
+        return Ok(0.3048);
+    }
+    if ascii_eq_ignore_case(unit, b"MI") {
+        return Ok(1609.34);
+    }
+    Err(RequestExecutionError::UnsupportedUnit)
+}
+
 fn encode_geo_score(longitude: f64, latitude: f64) -> f64 {
     let lon_bits =
         quantize_geo_coordinate(longitude, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX) & GEO_COORD_MASK;
@@ -204,8 +276,24 @@ fn dequantize_geo_coordinate(value: u64, min: f64, max: f64) -> f64 {
     min + (max - min) * normalized
 }
 
+fn geo_distance_meters(lon_a: f64, lat_a: f64, lon_b: f64, lat_b: f64) -> f64 {
+    let lat_a = lat_a.to_radians();
+    let lat_b = lat_b.to_radians();
+    let delta_lat = lat_b - lat_a;
+    let delta_lon = (lon_b - lon_a).to_radians();
+    let sin_lat = (delta_lat / 2.0).sin();
+    let sin_lon = (delta_lon / 2.0).sin();
+    let a = sin_lat * sin_lat + lat_a.cos() * lat_b.cos() * sin_lon * sin_lon;
+    let c = 2.0 * a.sqrt().asin();
+    GEO_EARTH_RADIUS_METERS * c
+}
+
 fn format_geo_coordinate(value: f64) -> String {
-    let mut text = format!("{value:.17}");
+    format_geo_number(value, 17)
+}
+
+fn format_geo_number(value: f64, precision: usize) -> String {
+    let mut text = format!("{value:.precision$}");
     if text.contains('.') {
         while text.ends_with('0') {
             text.pop();

@@ -5834,6 +5834,58 @@ fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
 }
 
 #[test]
+fn geodist_supports_units_and_missing_member_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+
+    let meters = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"GEODIST", b"sicily", b"palermo", b"catania"]),
+    ))
+    .expect("distance should exist");
+    let meters = core::str::from_utf8(&meters)
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!(meters > 100000.0);
+
+    let kilometers = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"GEODIST", b"sicily", b"palermo", b"catania", b"km"]),
+    ))
+    .expect("distance should exist");
+    let kilometers = core::str::from_utf8(&kilometers)
+        .unwrap()
+        .parse::<f64>()
+        .unwrap();
+    assert!((meters / 1000.0 - kilometers).abs() < 1.0);
+
+    assert_command_response(&processor, "GEODIST sicily palermo unknown", b"$-1\r\n");
+    assert_command_response(&processor, "GEODIST missing palermo catania", b"$-1\r\n");
+
+    assert_command_response(&processor, "SET plain value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GEODIST plain palermo catania",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEODIST sicily palermo catania parsec",
+        b"-ERR unsupported unit provided. please use M, KM, FT, MI\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEODIST sicily palermo",
+        b"-ERR wrong number of arguments for 'GEODIST' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

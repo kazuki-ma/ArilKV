@@ -488,6 +488,7 @@ impl RequestProcessor {
             CommandId::Pubsub => self.handle_pubsub(args, response_out),
             CommandId::Geoadd => self.handle_geoadd(args, response_out),
             CommandId::Geopos => self.handle_geopos(args, response_out),
+            CommandId::Geodist => self.handle_geodist(args, response_out),
             CommandId::Monitor => self.handle_monitor(args, response_out),
             CommandId::Shutdown => self.handle_shutdown(args, response_out),
             CommandId::Hello => self.handle_hello(args, response_out),

@@ -34,6 +34,7 @@ pub enum RequestExecutionError {
     },
     ValueNotInteger,
     ValueNotFloat,
+    UnsupportedUnit,
     ValueOutOfRange,
     IndexOutOfRange,
     IncrementOverflow,
@@ -85,6 +86,10 @@ impl RequestExecutionError {
                 append_error(response_out, "ERR value is not an integer or out of range")
             }
             Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
+            Self::UnsupportedUnit => append_error(
+                response_out,
+                "ERR unsupported unit provided. please use M, KM, FT, MI",
+            ),
             Self::ValueOutOfRange => append_error(response_out, "ERR value is out of range"),
             Self::IndexOutOfRange => append_error(response_out, "ERR index out of range"),
             Self::IncrementOverflow => {
