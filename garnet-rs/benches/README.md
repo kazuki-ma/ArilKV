@@ -343,6 +343,12 @@ THREADS=8 CONNS=16 REQUESTS=5000 \
   ./benches/docker_linux_perf_diff_profile.sh
 ```
 
+Optional Garnet tuning env vars are forwarded into the container, including:
+
+- `GARNET_TSAVORITE_STRING_STORE_SHARDS`
+- `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES`
+- `GARNET_STRING_OWNER_THREADS`
+
 Outputs are still written under `garnet-rs/benches/results/` on the host.
 Latest published differential analysis:
 `docs/performance/linux-perf-diff-docker-2026-02-20.md`.
