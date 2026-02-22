@@ -4670,6 +4670,62 @@ fn bitfield_and_bitfield_ro_cover_wrap_sat_fail_and_validation_paths() {
 }
 
 #[test]
+fn lcs_supports_sequence_len_idx_and_validation_paths() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET lcs1 ohmytext", b"+OK\r\n");
+    assert_command_response(&processor, "SET lcs2 mynewtext", b"+OK\r\n");
+    assert_command_response(&processor, "LCS lcs1 lcs2", b"$6\r\nmytext\r\n");
+    assert_command_response(&processor, "LCS lcs1 lcs2 LEN", b":6\r\n");
+    assert_command_response(
+        &processor,
+        "LCS lcs1 lcs2 IDX",
+        b"*4\r\n$7\r\nmatches\r\n*2\r\n*2\r\n*2\r\n:2\r\n:3\r\n*2\r\n:0\r\n:1\r\n*2\r\n*2\r\n:4\r\n:7\r\n*2\r\n:5\r\n:8\r\n$3\r\nlen\r\n:6\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "LCS lcs1 lcs2 IDX MINMATCHLEN 3 WITHMATCHLEN",
+        b"*4\r\n$7\r\nmatches\r\n*1\r\n*3\r\n*2\r\n:4\r\n:7\r\n*2\r\n:5\r\n:8\r\n:4\r\n$3\r\nlen\r\n:6\r\n",
+    );
+
+    assert_command_response(&processor, "LCS missing1 missing2", b"$0\r\n\r\n");
+    assert_command_response(&processor, "LCS missing1 missing2 LEN", b":0\r\n");
+
+    assert_command_error(
+        &processor,
+        "LCS lcs1 lcs2 LEN IDX",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "LCS lcs1 lcs2 WITHMATCHLEN",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "LCS lcs1 lcs2 MINMATCHLEN 1",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "LCS lcs1 lcs2 IDX MINMATCHLEN -1",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "LCS lcs1 lcs2 IDX MINMATCHLEN bad",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+
+    assert_command_integer(&processor, "HSET hlcs f v", 1);
+    assert_command_error(
+        &processor,
+        "LCS hlcs lcs2",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+}
+
+#[test]
 fn psetex_sets_value_with_millisecond_expiration() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

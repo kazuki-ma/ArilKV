@@ -301,6 +301,7 @@ impl RequestProcessor {
             CommandId::Bitop => self.handle_bitop(args, response_out),
             CommandId::Bitfield => self.handle_bitfield(args, response_out),
             CommandId::BitfieldRo => self.handle_bitfield_ro(args, response_out),
+            CommandId::Lcs => self.handle_lcs(args, response_out),
             CommandId::Append => self.handle_append(args, response_out),
             CommandId::Getex => self.handle_getex(args, response_out),
             CommandId::Incrbyfloat => self.handle_incrbyfloat(args, response_out),

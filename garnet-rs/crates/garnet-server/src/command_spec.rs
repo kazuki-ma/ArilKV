@@ -21,6 +21,7 @@ pub enum CommandId {
     Bitop,
     Bitfield,
     BitfieldRo,
+    Lcs,
     Del,
     Rename,
     Renamenx,
@@ -427,6 +428,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lcs,
+        name_upper: b"LCS",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2632,6 +2643,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::BitfieldRo, 2));
         assert!(command_has_valid_arity(CommandId::BitfieldRo, 5));
         assert!(!command_has_valid_arity(CommandId::BitfieldRo, 1));
+        assert!(command_has_valid_arity(CommandId::Lcs, 3));
+        assert!(command_has_valid_arity(CommandId::Lcs, 7));
+        assert!(!command_has_valid_arity(CommandId::Lcs, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3017,6 +3031,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Bitop), b"BITOP");
         assert_eq!(command_name_upper(CommandId::Bitfield), b"BITFIELD");
         assert_eq!(command_name_upper(CommandId::BitfieldRo), b"BITFIELD_RO");
+        assert_eq!(command_name_upper(CommandId::Lcs), b"LCS");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

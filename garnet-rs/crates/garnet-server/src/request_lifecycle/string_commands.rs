@@ -34,6 +34,29 @@ enum BitfieldIncrOutcome {
     OverflowFail,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum LcsResponseMode {
+    Sequence,
+    LengthOnly,
+    Indexes,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LcsOptions {
+    mode: LcsResponseMode,
+    min_match_len: usize,
+    with_match_len: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct LcsMatchSegment {
+    start_left: usize,
+    end_left: usize,
+    start_right: usize,
+    end_right: usize,
+    length: usize,
+}
+
 const PF_STRING_PREFIX: &[u8] = b"\x00garnet-pf-v1\x00";
 const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
     b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -828,6 +851,62 @@ impl RequestProcessor {
                 None => append_null_bulk_string(response_out),
             }
         }
+        Ok(())
+    }
+
+    pub(super) fn handle_lcs(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "LCS",
+                expected: "LCS key1 key2 [LEN | IDX [MINMATCHLEN min-match-len] [WITHMATCHLEN]]",
+            });
+        }
+
+        let options = parse_lcs_options(args)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let left_key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let right_key = unsafe { args[2].as_slice() }.to_vec();
+
+        self.expire_key_if_needed(&left_key)?;
+        self.expire_key_if_needed(&right_key)?;
+        let left = match self.read_string_value(&left_key)? {
+            Some(value) => value,
+            None => {
+                if self.object_key_exists(&left_key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                Vec::new()
+            }
+        };
+        let right = match self.read_string_value(&right_key)? {
+            Some(value) => value,
+            None => {
+                if self.object_key_exists(&right_key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                Vec::new()
+            }
+        };
+
+        let (lcs_len, sequence, mut matches) = lcs_sequence_and_matches(&left, &right);
+        if options.mode == LcsResponseMode::LengthOnly {
+            append_integer(response_out, lcs_len as i64);
+            return Ok(());
+        }
+        if options.mode == LcsResponseMode::Sequence {
+            append_bulk_string(response_out, &sequence);
+            return Ok(());
+        }
+
+        if options.min_match_len > 0 {
+            matches.retain(|entry| entry.length >= options.min_match_len);
+        }
+        append_lcs_idx_response(response_out, &matches, lcs_len, options.with_match_len);
         Ok(())
     }
 
@@ -2626,6 +2705,169 @@ fn apply_bitfield_incrby(
         }
         BitfieldOverflowMode::Fail => Ok(BitfieldIncrOutcome::OverflowFail),
     }
+}
+
+fn parse_lcs_options(args: &[ArgSlice]) -> Result<LcsOptions, RequestExecutionError> {
+    let mut mode = LcsResponseMode::Sequence;
+    let mut min_match_len = 0usize;
+    let mut with_match_len = false;
+    let mut index = 3usize;
+
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+        if ascii_eq_ignore_case(token, b"LEN") {
+            if mode != LcsResponseMode::Sequence {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            mode = LcsResponseMode::LengthOnly;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"IDX") {
+            if mode != LcsResponseMode::Sequence {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            mode = LcsResponseMode::Indexes;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"MINMATCHLEN") {
+            if mode != LcsResponseMode::Indexes {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            let value_index = index
+                .checked_add(1)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            if value_index >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let min_token = unsafe { args[value_index].as_slice() };
+            let parsed =
+                parse_i64_ascii(min_token).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed < 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            min_match_len =
+                usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+            index = value_index + 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"WITHMATCHLEN") {
+            if mode != LcsResponseMode::Indexes {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            with_match_len = true;
+            index += 1;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+
+    Ok(LcsOptions {
+        mode,
+        min_match_len,
+        with_match_len,
+    })
+}
+
+fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> (usize, Vec<u8>, Vec<LcsMatchSegment>) {
+    let left_len = left.len();
+    let right_len = right.len();
+    let mut dp = vec![vec![0usize; right_len + 1]; left_len + 1];
+    for i in (0..left_len).rev() {
+        for j in (0..right_len).rev() {
+            dp[i][j] = if left[i] == right[j] {
+                dp[i + 1][j + 1] + 1
+            } else {
+                dp[i + 1][j].max(dp[i][j + 1])
+            };
+        }
+    }
+
+    let mut sequence = Vec::with_capacity(dp[0][0]);
+    let mut matches = Vec::<LcsMatchSegment>::new();
+    let mut i = 0usize;
+    let mut j = 0usize;
+    while i < left_len && j < right_len {
+        if left[i] == right[j] && dp[i][j] == dp[i + 1][j + 1] + 1 {
+            sequence.push(left[i]);
+            if let Some(last) = matches.last_mut() {
+                if i == last.end_left + 1 && j == last.end_right + 1 {
+                    last.end_left = i;
+                    last.end_right = j;
+                    last.length += 1;
+                } else {
+                    matches.push(LcsMatchSegment {
+                        start_left: i,
+                        end_left: i,
+                        start_right: j,
+                        end_right: j,
+                        length: 1,
+                    });
+                }
+            } else {
+                matches.push(LcsMatchSegment {
+                    start_left: i,
+                    end_left: i,
+                    start_right: j,
+                    end_right: j,
+                    length: 1,
+                });
+            }
+            i += 1;
+            j += 1;
+            continue;
+        }
+        if dp[i + 1][j] >= dp[i][j + 1] {
+            i += 1;
+        } else {
+            j += 1;
+        }
+    }
+
+    (dp[0][0], sequence, matches)
+}
+
+fn append_resp_array_len(response_out: &mut Vec<u8>, len: usize) {
+    response_out.extend_from_slice(format!("*{}\r\n", len).as_bytes());
+}
+
+fn append_lcs_match_entry(
+    response_out: &mut Vec<u8>,
+    entry: &LcsMatchSegment,
+    with_match_len: bool,
+) {
+    append_resp_array_len(response_out, if with_match_len { 3 } else { 2 });
+
+    append_resp_array_len(response_out, 2);
+    append_integer(response_out, entry.start_left as i64);
+    append_integer(response_out, entry.end_left as i64);
+
+    append_resp_array_len(response_out, 2);
+    append_integer(response_out, entry.start_right as i64);
+    append_integer(response_out, entry.end_right as i64);
+
+    if with_match_len {
+        append_integer(response_out, entry.length as i64);
+    }
+}
+
+fn append_lcs_idx_response(
+    response_out: &mut Vec<u8>,
+    matches: &[LcsMatchSegment],
+    lcs_len: usize,
+    with_match_len: bool,
+) {
+    append_resp_array_len(response_out, 4);
+    append_bulk_string(response_out, b"matches");
+    append_resp_array_len(response_out, matches.len());
+    for entry in matches {
+        append_lcs_match_entry(response_out, entry, with_match_len);
+    }
+    append_bulk_string(response_out, b"len");
+    append_integer(response_out, lcs_len as i64);
 }
 
 fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> {
