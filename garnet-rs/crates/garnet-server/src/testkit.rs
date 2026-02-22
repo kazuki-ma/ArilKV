@@ -179,6 +179,22 @@ pub(crate) fn assert_command_integer(processor: &RequestProcessor, line: &str, e
 }
 
 #[cfg(test)]
+pub(crate) fn assert_command_error(processor: &RequestProcessor, line: &str, expected: &[u8]) {
+    match execute_command_line(processor, line) {
+        Ok(response) => panic!(
+            "command unexpectedly succeeded: `{line}` -> {:?}",
+            String::from_utf8_lossy(&response)
+        ),
+        Err(CommandHarnessError::Request(error)) => {
+            let mut response = Vec::new();
+            error.append_resp_error(&mut response);
+            assert_eq!(response, expected, "unexpected error response for `{line}`");
+        }
+        Err(error) => panic!("command failed with non-request error for `{line}`: {error}"),
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

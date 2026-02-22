@@ -96,6 +96,12 @@ mod tests {
         assert_eq!(dispatch_command_name(b"flushall"), CommandId::Flushall);
         assert_eq!(dispatch_command_name(b"FUNCTION"), CommandId::Function);
         assert_eq!(dispatch_command_name(b"script"), CommandId::Script);
+        assert_eq!(dispatch_command_name(b"EVAL"), CommandId::Eval);
+        assert_eq!(dispatch_command_name(b"eval_ro"), CommandId::EvalRo);
+        assert_eq!(dispatch_command_name(b"EVALSHA"), CommandId::Evalsha);
+        assert_eq!(dispatch_command_name(b"evalsha_ro"), CommandId::EvalshaRo);
+        assert_eq!(dispatch_command_name(b"FCALL"), CommandId::Fcall);
+        assert_eq!(dispatch_command_name(b"fcall_ro"), CommandId::FcallRo);
         assert_eq!(dispatch_command_name(b"CONFIG"), CommandId::Config);
         assert_eq!(dispatch_command_name(b"command"), CommandId::Command);
         assert_eq!(dispatch_command_name(b"DUMP"), CommandId::Dump);

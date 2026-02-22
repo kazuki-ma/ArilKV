@@ -1,13 +1,13 @@
 # Redis Command Status Summary
 
-- Generated at: 2026-02-22T01:38:40Z
+- Generated at: 2026-02-22T01:44:15Z
 - Source Redis image: `redis:7.2-alpine`
 - Redis command count: `241`
-- Garnet declared command count: `210`
-- Supported (declared): `210`
-- Not implemented: `31`
+- Garnet declared command count: `216`
+- Supported (declared): `216`
+- Not implemented: `25`
 - Garnet extensions: `0`
-- Coverage vs Redis baseline: `87.14%`
+- Coverage vs Redis baseline: `89.63%`
 
 ## Files
 

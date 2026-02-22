@@ -42,6 +42,7 @@ pub enum RequestExecutionError {
     SourceDestinationObjectsSame,
     WaitAofAppendOnlyDisabled,
     ClusterSupportDisabled,
+    ScriptingDisabled,
 }
 
 impl RequestExecutionError {
@@ -108,6 +109,9 @@ impl RequestExecutionError {
                 response_out,
                 "ERR This instance has cluster support disabled",
             ),
+            Self::ScriptingDisabled => {
+                append_error(response_out, "ERR scripting is disabled in this server")
+            }
         }
     }
 }

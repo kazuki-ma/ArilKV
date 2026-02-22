@@ -185,6 +185,12 @@ pub enum CommandId {
     Flushall,
     Function,
     Script,
+    Eval,
+    EvalRo,
+    Evalsha,
+    EvalshaRo,
+    Fcall,
+    FcallRo,
     Config,
     Command,
     Dump,
@@ -2062,6 +2068,66 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Eval,
+        name_upper: b"EVAL",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::EvalRo,
+        name_upper: b"EVAL_RO",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Evalsha,
+        name_upper: b"EVALSHA",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::EvalshaRo,
+        name_upper: b"EVALSHA_RO",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Fcall,
+        name_upper: b"FCALL",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::FcallRo,
+        name_upper: b"FCALL_RO",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Config,
         name_upper: b"CONFIG",
         key_access_pattern: KeyAccessPattern::None,
@@ -2618,6 +2684,24 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Script, 2));
         assert!(command_has_valid_arity(CommandId::Script, 3));
         assert!(!command_has_valid_arity(CommandId::Script, 1));
+        assert!(command_has_valid_arity(CommandId::Eval, 3));
+        assert!(command_has_valid_arity(CommandId::Eval, 6));
+        assert!(!command_has_valid_arity(CommandId::Eval, 2));
+        assert!(command_has_valid_arity(CommandId::EvalRo, 3));
+        assert!(command_has_valid_arity(CommandId::EvalRo, 6));
+        assert!(!command_has_valid_arity(CommandId::EvalRo, 2));
+        assert!(command_has_valid_arity(CommandId::Evalsha, 3));
+        assert!(command_has_valid_arity(CommandId::Evalsha, 6));
+        assert!(!command_has_valid_arity(CommandId::Evalsha, 2));
+        assert!(command_has_valid_arity(CommandId::EvalshaRo, 3));
+        assert!(command_has_valid_arity(CommandId::EvalshaRo, 6));
+        assert!(!command_has_valid_arity(CommandId::EvalshaRo, 2));
+        assert!(command_has_valid_arity(CommandId::Fcall, 3));
+        assert!(command_has_valid_arity(CommandId::Fcall, 6));
+        assert!(!command_has_valid_arity(CommandId::Fcall, 2));
+        assert!(command_has_valid_arity(CommandId::FcallRo, 3));
+        assert!(command_has_valid_arity(CommandId::FcallRo, 6));
+        assert!(!command_has_valid_arity(CommandId::FcallRo, 2));
         assert!(command_has_valid_arity(CommandId::Config, 2));
         assert!(command_has_valid_arity(CommandId::Config, 3));
         assert!(!command_has_valid_arity(CommandId::Config, 1));
@@ -2922,6 +3006,16 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Failover), b"FAILOVER");
         assert_eq!(command_name_upper(CommandId::Monitor), b"MONITOR");
         assert_eq!(command_name_upper(CommandId::Shutdown), b"SHUTDOWN");
+        assert_eq!(command_name_upper(CommandId::Function), b"FUNCTION");
+        assert_eq!(command_name_upper(CommandId::Script), b"SCRIPT");
+        assert_eq!(command_name_upper(CommandId::Eval), b"EVAL");
+        assert_eq!(command_name_upper(CommandId::EvalRo), b"EVAL_RO");
+        assert_eq!(command_name_upper(CommandId::Evalsha), b"EVALSHA");
+        assert_eq!(command_name_upper(CommandId::EvalshaRo), b"EVALSHA_RO");
+        assert_eq!(command_name_upper(CommandId::Fcall), b"FCALL");
+        assert_eq!(command_name_upper(CommandId::FcallRo), b"FCALL_RO");
+        assert_eq!(command_name_upper(CommandId::Config), b"CONFIG");
+        assert_eq!(command_name_upper(CommandId::Command), b"COMMAND");
         assert_eq!(command_name_upper(CommandId::Expireat), b"EXPIREAT");
         assert_eq!(command_name_upper(CommandId::Pexpiretime), b"PEXPIRETIME");
         assert_eq!(command_name_upper(CommandId::Dump), b"DUMP");

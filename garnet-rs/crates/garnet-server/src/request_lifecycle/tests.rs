@@ -1,6 +1,6 @@
 use super::*;
 use crate::debug_concurrency;
-use crate::testkit::{assert_command_integer, assert_command_response};
+use crate::testkit::{assert_command_error, assert_command_integer, assert_command_response};
 use garnet_common::parse_resp_command_arg_slices;
 use std::sync::Arc;
 use std::thread;
@@ -5925,6 +5925,38 @@ fn script_flush_sync_returns_ok() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn scripting_eval_and_fcall_commands_validate_numkeys_then_return_disabled() {
+    let processor = RequestProcessor::new().unwrap();
+
+    for command in [
+        "EVAL \"return 1\" 0",
+        "EVAL_RO \"return 1\" 0",
+        "EVALSHA deadbeef 0",
+        "EVALSHA_RO deadbeef 0",
+        "FCALL fn 0",
+        "FCALL_RO fn 0",
+    ] {
+        assert_command_error(
+            &processor,
+            command,
+            b"-ERR scripting is disabled in this server\r\n",
+        );
+    }
+
+    assert_command_error(
+        &processor,
+        "EVAL \"return 1\" -1",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "EVAL \"return 1\" notint",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(&processor, "EVAL \"return 1\" 1", b"-ERR syntax error\r\n");
 }
 
 #[test]

@@ -1230,6 +1230,72 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_eval(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        validate_scripting_numkeys(args, "EVAL", "EVAL script numkeys [key ...] [arg ...]")?;
+        Err(RequestExecutionError::ScriptingDisabled)
+    }
+
+    pub(super) fn handle_eval_ro(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        validate_scripting_numkeys(
+            args,
+            "EVAL_RO",
+            "EVAL_RO script numkeys [key ...] [arg ...]",
+        )?;
+        Err(RequestExecutionError::ScriptingDisabled)
+    }
+
+    pub(super) fn handle_evalsha(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        validate_scripting_numkeys(args, "EVALSHA", "EVALSHA sha1 numkeys [key ...] [arg ...]")?;
+        Err(RequestExecutionError::ScriptingDisabled)
+    }
+
+    pub(super) fn handle_evalsha_ro(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        validate_scripting_numkeys(
+            args,
+            "EVALSHA_RO",
+            "EVALSHA_RO sha1 numkeys [key ...] [arg ...]",
+        )?;
+        Err(RequestExecutionError::ScriptingDisabled)
+    }
+
+    pub(super) fn handle_fcall(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        validate_scripting_numkeys(args, "FCALL", "FCALL function numkeys [key ...] [arg ...]")?;
+        Err(RequestExecutionError::ScriptingDisabled)
+    }
+
+    pub(super) fn handle_fcall_ro(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        validate_scripting_numkeys(
+            args,
+            "FCALL_RO",
+            "FCALL_RO function numkeys [key ...] [arg ...]",
+        )?;
+        Err(RequestExecutionError::ScriptingDisabled)
+    }
+
     pub(super) fn handle_config(
         &self,
         args: &[ArgSlice],
@@ -1612,6 +1678,25 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
         }
         _ => None,
     }
+}
+
+fn validate_scripting_numkeys(
+    args: &[ArgSlice],
+    command: &'static str,
+    expected: &'static str,
+) -> Result<(), RequestExecutionError> {
+    ensure_min_arity(args, 3, command, expected)?;
+    // SAFETY: caller guarantees argument backing memory validity.
+    let numkeys_raw = unsafe { args[2].as_slice() };
+    let numkeys = parse_i64_ascii(numkeys_raw).ok_or(RequestExecutionError::ValueNotInteger)?;
+    if numkeys < 0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    let key_count = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    if key_count > args.len().saturating_sub(3) {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(())
 }
 
 fn object_encoding_name(
