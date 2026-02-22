@@ -256,6 +256,401 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_xread(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XREAD",
+                expected:
+                    "XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]",
+            });
+        }
+
+        let mut count = usize::MAX;
+        let mut index = 1usize;
+        let streams_index = loop {
+            if index >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { args[index].as_slice() };
+            if ascii_eq_ignore_case(token, b"COUNT") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                let parsed = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                count = usize::try_from(parsed).unwrap_or(usize::MAX);
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"BLOCK") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"STREAMS") {
+                break index + 1;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        };
+
+        if streams_index >= args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let trailing = args.len() - streams_index;
+        if trailing < 2 || trailing % 2 != 0 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let stream_count = trailing / 2;
+
+        let mut remaining = count;
+        let mut stream_results = Vec::new();
+        for stream_index in 0..stream_count {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let key = unsafe { args[streams_index + stream_index].as_slice() }.to_vec();
+            // SAFETY: caller guarantees argument backing memory validity.
+            let raw_id = unsafe { args[streams_index + stream_count + stream_index].as_slice() };
+            let Some(stream) = self.load_stream_object(&key)? else {
+                continue;
+            };
+
+            let pivot = if raw_id == b"$" {
+                stream
+                    .entries
+                    .keys()
+                    .max_by(|lhs, rhs| compare_stream_ids(lhs, rhs))
+                    .cloned()
+                    .unwrap_or_else(|| b"0-0".to_vec())
+            } else {
+                raw_id.to_vec()
+            };
+
+            let per_stream_limit = if remaining == usize::MAX {
+                usize::MAX
+            } else {
+                remaining
+            };
+            let selected = collect_stream_entries_after_id(&stream, &pivot, per_stream_limit);
+            if selected.is_empty() {
+                continue;
+            }
+            if remaining != usize::MAX {
+                remaining = remaining.saturating_sub(selected.len());
+            }
+            stream_results.push((key, selected));
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        if stream_results.is_empty() {
+            append_null_array(response_out);
+            return Ok(());
+        }
+
+        response_out.push(b'*');
+        response_out.extend_from_slice(stream_results.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (key, entries) in stream_results {
+            response_out.extend_from_slice(b"*2\r\n");
+            append_bulk_string(response_out, &key);
+            append_stream_entry_array(response_out, &entries);
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_xack(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XACK",
+                expected: "XACK key group id [id ...]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let group = unsafe { args[2].as_slice() };
+        let Some(stream) = self.load_stream_object(&key)? else {
+            append_integer(response_out, 0);
+            return Ok(());
+        };
+        if !stream.groups.contains_key(group) {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        append_integer(response_out, 0);
+        Ok(())
+    }
+
+    pub(super) fn handle_xpending(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XPENDING",
+                expected: "XPENDING key group [start end count [consumer]]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let group = unsafe { args[2].as_slice() };
+        let Some(stream) = self.load_stream_object(&key)? else {
+            return Err(RequestExecutionError::NoGroup);
+        };
+        if !stream.groups.contains_key(group) {
+            return Err(RequestExecutionError::NoGroup);
+        }
+
+        if args.len() == 3 {
+            response_out.extend_from_slice(b"*4\r\n");
+            append_integer(response_out, 0);
+            append_null_bulk_string(response_out);
+            append_null_bulk_string(response_out);
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if args.len() < 6 || args.len() > 7 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XPENDING",
+                expected: "XPENDING key group [start end count [consumer]]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let parsed_count = parse_i64_ascii(unsafe { args[5].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if parsed_count < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        response_out.extend_from_slice(b"*0\r\n");
+        Ok(())
+    }
+
+    pub(super) fn handle_xclaim(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 6 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XCLAIM",
+                expected: "XCLAIM key group consumer min-idle-time id [id ...] [options]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let group = unsafe { args[2].as_slice() };
+        let Some(stream) = self.load_stream_object(&key)? else {
+            return Err(RequestExecutionError::NoGroup);
+        };
+        if !stream.groups.contains_key(group) {
+            return Err(RequestExecutionError::NoGroup);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        parse_u64_ascii(unsafe { args[4].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+
+        let mut option_start = args.len();
+        for i in 6..args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { args[i].as_slice() };
+            if is_xclaim_option_token(token) {
+                option_start = i;
+                break;
+            }
+        }
+        if option_start <= 5 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        for id_arg in &args[5..option_start] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            if parse_stream_id(unsafe { id_arg.as_slice() }).is_none() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+        }
+
+        let mut index = option_start;
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { args[index].as_slice() };
+            if ascii_eq_ignore_case(token, b"IDLE")
+                || ascii_eq_ignore_case(token, b"TIME")
+                || ascii_eq_ignore_case(token, b"RETRYCOUNT")
+            {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"LASTID") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                if parse_stream_id(unsafe { args[index + 1].as_slice() }).is_none() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"FORCE") || ascii_eq_ignore_case(token, b"JUSTID") {
+                index += 1;
+                continue;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        response_out.extend_from_slice(b"*0\r\n");
+        Ok(())
+    }
+
+    pub(super) fn handle_xautoclaim(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 6 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XAUTOCLAIM",
+                expected:
+                    "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let group = unsafe { args[2].as_slice() };
+        let Some(stream) = self.load_stream_object(&key)? else {
+            return Err(RequestExecutionError::NoGroup);
+        };
+        if !stream.groups.contains_key(group) {
+            return Err(RequestExecutionError::NoGroup);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        parse_u64_ascii(unsafe { args[4].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let start_id = unsafe { args[5].as_slice() };
+        if parse_stream_id(start_id).is_none() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let mut index = 6usize;
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { args[index].as_slice() };
+            if ascii_eq_ignore_case(token, b"COUNT") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"JUSTID") {
+                index += 1;
+                continue;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        response_out.extend_from_slice(b"*3\r\n");
+        append_bulk_string(response_out, start_id);
+        response_out.extend_from_slice(b"*0\r\n");
+        response_out.extend_from_slice(b"*0\r\n");
+        Ok(())
+    }
+
+    pub(super) fn handle_xsetid(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XSETID",
+                expected: "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let last_id = unsafe { args[2].as_slice() };
+        if parse_stream_id(last_id).is_none() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let Some(stream) = self.load_stream_object(&key)? else {
+            return Err(RequestExecutionError::NoSuchKey);
+        };
+
+        let mut seen_ref_mode = false;
+        let mut index = 3usize;
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { args[index].as_slice() };
+            if ascii_eq_ignore_case(token, b"ENTRIESADDED") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"MAXDELETEDID") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                if parse_stream_id(unsafe { args[index + 1].as_slice() }).is_none() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"KEEPREF")
+                || ascii_eq_ignore_case(token, b"DELREF")
+                || ascii_eq_ignore_case(token, b"ACKED")
+            {
+                if seen_ref_mode {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                seen_ref_mode = true;
+                index += 1;
+                continue;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        self.save_stream_object(&key, &stream)?;
+        append_simple_string(response_out, b"OK");
+        Ok(())
+    }
+
     pub(super) fn handle_xinfo(
         &self,
         args: &[ArgSlice],
@@ -473,6 +868,44 @@ fn compare_stream_ids(lhs: &[u8], rhs: &[u8]) -> core::cmp::Ordering {
         (Some(lhs_id), Some(rhs_id)) => lhs_id.cmp(&rhs_id),
         _ => lhs.cmp(rhs),
     }
+}
+
+fn collect_stream_entries_after_id(
+    stream: &StreamObject,
+    pivot: &[u8],
+    count: usize,
+) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
+    let mut entries: Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> = stream
+        .entries
+        .iter()
+        .map(|(id, fields)| (id.clone(), fields.clone()))
+        .collect();
+    entries.sort_by(|(lhs, _), (rhs, _)| compare_stream_ids(lhs, rhs));
+
+    let mut selected = Vec::new();
+    for (id, fields) in entries {
+        if !stream_id_greater(&id, pivot) {
+            continue;
+        }
+        selected.push((id, fields));
+        if selected.len() >= count {
+            break;
+        }
+    }
+    selected
+}
+
+fn is_xclaim_option_token(token: &[u8]) -> bool {
+    ascii_eq_ignore_case(token, b"IDLE")
+        || ascii_eq_ignore_case(token, b"TIME")
+        || ascii_eq_ignore_case(token, b"RETRYCOUNT")
+        || ascii_eq_ignore_case(token, b"FORCE")
+        || ascii_eq_ignore_case(token, b"JUSTID")
+        || ascii_eq_ignore_case(token, b"LASTID")
+}
+
+fn append_null_array(response_out: &mut Vec<u8>) {
+    response_out.extend_from_slice(b"*-1\r\n");
 }
 
 fn parse_stream_count_option(args: &[ArgSlice]) -> Result<usize, RequestExecutionError> {

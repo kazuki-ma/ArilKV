@@ -19,6 +19,7 @@ pub enum RequestExecutionError {
     },
     UnknownCommand,
     NoSuchKey,
+    NoGroup,
     SyntaxError,
     InvalidExpireTime,
     InvalidGetExExpireTime,
@@ -47,6 +48,7 @@ impl RequestExecutionError {
             ),
             Self::UnknownCommand => append_error(response_out, "ERR unknown command"),
             Self::NoSuchKey => append_error(response_out, "ERR no such key"),
+            Self::NoGroup => append_error(response_out, "NOGROUP No such key or consumer group"),
             Self::SyntaxError => append_error(response_out, "ERR syntax error"),
             Self::InvalidExpireTime => {
                 append_error(response_out, "ERR invalid expire time in 'set' command")

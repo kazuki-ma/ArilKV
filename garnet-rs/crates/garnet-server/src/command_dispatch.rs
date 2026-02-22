@@ -283,6 +283,12 @@ mod tests {
         assert_eq!(dispatch_command_name(b"XDEL"), CommandId::Xdel);
         assert_eq!(dispatch_command_name(b"xgroup"), CommandId::Xgroup);
         assert_eq!(dispatch_command_name(b"XREADGROUP"), CommandId::Xreadgroup);
+        assert_eq!(dispatch_command_name(b"xread"), CommandId::Xread);
+        assert_eq!(dispatch_command_name(b"XACK"), CommandId::Xack);
+        assert_eq!(dispatch_command_name(b"xpending"), CommandId::Xpending);
+        assert_eq!(dispatch_command_name(b"XCLAIM"), CommandId::Xclaim);
+        assert_eq!(dispatch_command_name(b"xautoclaim"), CommandId::Xautoclaim);
+        assert_eq!(dispatch_command_name(b"XSETID"), CommandId::Xsetid);
         assert_eq!(dispatch_command_name(b"xinfo"), CommandId::Xinfo);
         assert_eq!(dispatch_command_name(b"XLEN"), CommandId::Xlen);
         assert_eq!(dispatch_command_name(b"xrange"), CommandId::Xrange);

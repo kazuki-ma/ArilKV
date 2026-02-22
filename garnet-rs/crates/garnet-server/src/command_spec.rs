@@ -131,6 +131,12 @@ pub enum CommandId {
     Xdel,
     Xgroup,
     Xreadgroup,
+    Xread,
+    Xack,
+    Xpending,
+    Xclaim,
+    Xautoclaim,
+    Xsetid,
     Xinfo,
     Xlen,
     Xrange,
@@ -1503,6 +1509,66 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Xread,
+        name_upper: b"XREAD",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xack,
+        name_upper: b"XACK",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xpending,
+        name_upper: b"XPENDING",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xclaim,
+        name_upper: b"XCLAIM",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(6)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xautoclaim,
+        name_upper: b"XAUTOCLAIM",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(6)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xsetid,
+        name_upper: b"XSETID",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Xinfo,
         name_upper: b"XINFO",
         key_access_pattern: KeyAccessPattern::None,
@@ -2602,6 +2668,24 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Xtrim, 4));
         assert!(command_has_valid_arity(CommandId::Xtrim, 8));
         assert!(!command_has_valid_arity(CommandId::Xtrim, 3));
+        assert!(command_has_valid_arity(CommandId::Xread, 4));
+        assert!(command_has_valid_arity(CommandId::Xread, 8));
+        assert!(!command_has_valid_arity(CommandId::Xread, 3));
+        assert!(command_has_valid_arity(CommandId::Xack, 4));
+        assert!(command_has_valid_arity(CommandId::Xack, 6));
+        assert!(!command_has_valid_arity(CommandId::Xack, 3));
+        assert!(command_has_valid_arity(CommandId::Xpending, 3));
+        assert!(command_has_valid_arity(CommandId::Xpending, 7));
+        assert!(!command_has_valid_arity(CommandId::Xpending, 2));
+        assert!(command_has_valid_arity(CommandId::Xclaim, 6));
+        assert!(command_has_valid_arity(CommandId::Xclaim, 10));
+        assert!(!command_has_valid_arity(CommandId::Xclaim, 5));
+        assert!(command_has_valid_arity(CommandId::Xautoclaim, 6));
+        assert!(command_has_valid_arity(CommandId::Xautoclaim, 8));
+        assert!(!command_has_valid_arity(CommandId::Xautoclaim, 5));
+        assert!(command_has_valid_arity(CommandId::Xsetid, 3));
+        assert!(command_has_valid_arity(CommandId::Xsetid, 8));
+        assert!(!command_has_valid_arity(CommandId::Xsetid, 2));
         assert!(command_has_valid_arity(CommandId::Quit, 1));
         assert!(!command_has_valid_arity(CommandId::Quit, 2));
         assert!(command_has_valid_arity(CommandId::Time, 1));
@@ -2744,6 +2828,12 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Xrange), b"XRANGE");
         assert_eq!(command_name_upper(CommandId::Xrevrange), b"XREVRANGE");
         assert_eq!(command_name_upper(CommandId::Xtrim), b"XTRIM");
+        assert_eq!(command_name_upper(CommandId::Xread), b"XREAD");
+        assert_eq!(command_name_upper(CommandId::Xack), b"XACK");
+        assert_eq!(command_name_upper(CommandId::Xpending), b"XPENDING");
+        assert_eq!(command_name_upper(CommandId::Xclaim), b"XCLAIM");
+        assert_eq!(command_name_upper(CommandId::Xautoclaim), b"XAUTOCLAIM");
+        assert_eq!(command_name_upper(CommandId::Xsetid), b"XSETID");
         assert_eq!(command_name_upper(CommandId::Quit), b"QUIT");
         assert_eq!(command_name_upper(CommandId::Time), b"TIME");
         assert_eq!(command_name_upper(CommandId::Touch), b"TOUCH");

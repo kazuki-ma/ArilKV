@@ -5385,6 +5385,128 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
 }
 
 #[test]
+fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 24];
+    let mut response = Vec::new();
+
+    let xadd_first =
+        b"*5\r\n$4\r\nXADD\r\n$7\r\nstreamx\r\n$3\r\n1-0\r\n$5\r\nfield\r\n$3\r\none\r\n";
+    let meta = parse_resp_command_arg_slices(xadd_first, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\n1-0\r\n");
+
+    response.clear();
+    let xadd_second =
+        b"*5\r\n$4\r\nXADD\r\n$7\r\nstreamx\r\n$3\r\n2-0\r\n$5\r\nfield\r\n$3\r\ntwo\r\n";
+    let meta = parse_resp_command_arg_slices(xadd_second, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\n2-0\r\n");
+
+    response.clear();
+    let xgroup_create =
+        b"*5\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(xgroup_create, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let xread = b"*6\r\n$5\r\nXREAD\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n$7\r\nSTREAMS\r\n$7\r\nstreamx\r\n$3\r\n0-0\r\n";
+    let meta = parse_resp_command_arg_slices(xread, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*1\r\n"));
+    assert!(response
+        .windows(13)
+        .any(|window| window == b"$7\r\nstreamx\r\n"));
+    assert!(response.windows(9).any(|window| window == b"$3\r\n1-0\r\n"));
+
+    response.clear();
+    let xread_tail = b"*4\r\n$5\r\nXREAD\r\n$7\r\nSTREAMS\r\n$7\r\nstreamx\r\n$1\r\n$\r\n";
+    let meta = parse_resp_command_arg_slices(xread_tail, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*-1\r\n");
+
+    response.clear();
+    let xack = b"*4\r\n$4\r\nXACK\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$3\r\n1-0\r\n";
+    let meta = parse_resp_command_arg_slices(xack, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let xpending_summary = b"*3\r\n$8\r\nXPENDING\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n";
+    let meta = parse_resp_command_arg_slices(xpending_summary, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n");
+
+    response.clear();
+    let xpending_detail =
+        b"*6\r\n$8\r\nXPENDING\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$1\r\n-\r\n$1\r\n+\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(xpending_detail, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let xclaim =
+        b"*7\r\n$6\r\nXCLAIM\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$2\r\nc1\r\n$1\r\n1\r\n$3\r\n1-0\r\n$6\r\nJUSTID\r\n";
+    let meta = parse_resp_command_arg_slices(xclaim, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let xautoclaim = b"*9\r\n$10\r\nXAUTOCLAIM\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$2\r\nc1\r\n$1\r\n1\r\n$3\r\n0-0\r\n$5\r\nCOUNT\r\n$2\r\n10\r\n$6\r\nJUSTID\r\n";
+    let meta = parse_resp_command_arg_slices(xautoclaim, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*3\r\n"));
+    assert!(response.windows(9).any(|window| window == b"$3\r\n0-0\r\n"));
+
+    response.clear();
+    let xsetid = b"*3\r\n$6\r\nXSETID\r\n$7\r\nstreamx\r\n$3\r\n2-0\r\n";
+    let meta = parse_resp_command_arg_slices(xsetid, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let xsetid_missing = b"*3\r\n$6\r\nXSETID\r\n$8\r\nmissing1\r\n$3\r\n1-0\r\n";
+    let meta = parse_resp_command_arg_slices(xsetid_missing, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR no such key\r\n");
+
+    response.clear();
+    let xpending_missing = b"*3\r\n$8\r\nXPENDING\r\n$8\r\nmissing1\r\n$2\r\ng1\r\n";
+    let meta = parse_resp_command_arg_slices(xpending_missing, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-NOGROUP No such key or consumer group\r\n");
+}
+
+#[test]
 fn xtrim_supports_maxlen_minid_and_limit_options() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 24];
