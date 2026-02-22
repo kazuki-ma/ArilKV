@@ -10,6 +10,7 @@
 6. `13.05-listener-owner-colocation-accepted`
 7. `13.06-linux-hotspot-refresh-owner-pinned`
 8. `13.07-owner-pinned-dragonfly-comparison-milestone` (**MILESTONE**)
+9. `13.08-memtier-wide-sweep-owner-pinned`
 
 ## Policy
 
