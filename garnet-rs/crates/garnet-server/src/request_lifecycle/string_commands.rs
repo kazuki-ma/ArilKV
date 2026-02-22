@@ -9,6 +9,18 @@ enum BitopOperation {
     Not,
 }
 
+const PF_STRING_PREFIX: &[u8] = b"\x00garnet-pf-v1\x00";
+const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
+    b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"ENCODING <key>",
+    b"    Return HyperLogLog internal encoding for key.",
+    b"TODENSE <key>",
+    b"    Force sparse-to-dense representation (no-op in garnet-rs).",
+    b"HELP",
+    b"    Print this help.",
+    b"DECODE <key>",
+];
+
 impl RequestProcessor {
     pub(super) fn handle_get(
         &self,
@@ -1525,6 +1537,143 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_pfadd(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "PFADD",
+                expected: "PFADD key element [element ...]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut set = load_pf_set_for_key(self, &key)?.unwrap_or_default();
+        let original_len = set.len();
+        for element in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            set.insert(unsafe { element.as_slice() }.to_vec());
+        }
+        let changed = if set.len() != original_len { 1 } else { 0 };
+        self.upsert_string_value_for_migration(&key, &encode_pf_set(&set), None)?;
+        append_integer(response_out, changed);
+        Ok(())
+    }
+
+    pub(super) fn handle_pfcount(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "PFCOUNT",
+                expected: "PFCOUNT key [key ...]",
+            });
+        }
+        let mut cardinality_union = BTreeSet::new();
+        for key_arg in &args[1..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let key = unsafe { key_arg.as_slice() }.to_vec();
+            if let Some(set) = load_pf_set_for_key(self, &key)? {
+                cardinality_union.extend(set);
+            }
+        }
+        append_integer(response_out, cardinality_union.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_pfmerge(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "PFMERGE",
+                expected: "PFMERGE destkey sourcekey [sourcekey ...]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let _ = load_pf_set_for_key(self, &destination)?;
+
+        let mut merged = BTreeSet::new();
+        for source_arg in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let source = unsafe { source_arg.as_slice() }.to_vec();
+            if let Some(set) = load_pf_set_for_key(self, &source)? {
+                merged.extend(set);
+            }
+        }
+        self.upsert_string_value_for_migration(&destination, &encode_pf_set(&merged), None)?;
+        append_simple_string(response_out, b"OK");
+        Ok(())
+    }
+
+    pub(super) fn handle_pfdebug(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "PFDEBUG",
+                expected: "PFDEBUG <ENCODING|TODENSE|HELP> [key]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            if args.len() != 2 {
+                return Err(RequestExecutionError::WrongArity {
+                    command: "PFDEBUG",
+                    expected: "PFDEBUG HELP",
+                });
+            }
+            append_bulk_array(response_out, &PFDEBUG_HELP_LINES);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"ENCODING") {
+            if args.len() != 3 {
+                return Err(RequestExecutionError::WrongArity {
+                    command: "PFDEBUG",
+                    expected: "PFDEBUG ENCODING key",
+                });
+            }
+            append_bulk_string(response_out, b"sparse");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"TODENSE") {
+            if args.len() != 3 {
+                return Err(RequestExecutionError::WrongArity {
+                    command: "PFDEBUG",
+                    expected: "PFDEBUG TODENSE key",
+                });
+            }
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        Err(RequestExecutionError::UnknownCommand)
+    }
+
+    pub(super) fn handle_pfselftest(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() != 1 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "PFSELFTEST",
+                expected: "PFSELFTEST",
+            });
+        }
+        append_simple_string(response_out, b"OK");
+        Ok(())
+    }
+
     fn mset_single_pair(&self, key: &[u8], value: &[u8]) -> Result<(), RequestExecutionError> {
         let shard_index = self.string_store_shard_index_for_key(key);
         self.expire_key_if_needed_in_shard(key, shard_index)?;
@@ -2079,6 +2228,34 @@ fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> 
             result
         }
     }
+}
+
+fn load_pf_set_for_key(
+    processor: &RequestProcessor,
+    key: &[u8],
+) -> Result<Option<BTreeSet<Vec<u8>>>, RequestExecutionError> {
+    processor.expire_key_if_needed(key)?;
+    let Some(value) = processor.read_string_value(key)? else {
+        if processor.object_key_exists(key)? {
+            return Err(RequestExecutionError::WrongType);
+        }
+        return Ok(None);
+    };
+    decode_pf_set(&value)
+        .map(Some)
+        .ok_or(RequestExecutionError::WrongType)
+}
+
+fn encode_pf_set(values: &BTreeSet<Vec<u8>>) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(PF_STRING_PREFIX.len() + values.len() * 8);
+    encoded.extend_from_slice(PF_STRING_PREFIX);
+    encoded.extend_from_slice(&serialize_set_object_payload(values));
+    encoded
+}
+
+fn decode_pf_set(raw: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
+    let payload = raw.strip_prefix(PF_STRING_PREFIX)?;
+    deserialize_set_object_payload(payload)
 }
 
 fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, usize)> {

@@ -120,6 +120,11 @@ mod tests {
             CommandId::Incrbyfloat
         );
         assert_eq!(dispatch_command_name(b"msetnx"), CommandId::Msetnx);
+        assert_eq!(dispatch_command_name(b"PFADD"), CommandId::Pfadd);
+        assert_eq!(dispatch_command_name(b"pfcount"), CommandId::Pfcount);
+        assert_eq!(dispatch_command_name(b"PFMERGE"), CommandId::Pfmerge);
+        assert_eq!(dispatch_command_name(b"pfdebug"), CommandId::Pfdebug);
+        assert_eq!(dispatch_command_name(b"PFSELFTEST"), CommandId::Pfselftest);
         assert_eq!(dispatch_command_name(b"QUIT"), CommandId::Quit);
         assert_eq!(dispatch_command_name(b"time"), CommandId::Time);
         assert_eq!(dispatch_command_name(b"TOUCH"), CommandId::Touch);

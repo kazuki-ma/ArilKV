@@ -194,6 +194,11 @@ pub enum CommandId {
     Getex,
     Incrbyfloat,
     Msetnx,
+    Pfadd,
+    Pfcount,
+    Pfmerge,
+    Pfdebug,
+    Pfselftest,
     Quit,
     Time,
     Touch,
@@ -2144,6 +2149,56 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Pfadd,
+        name_upper: b"PFADD",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pfcount,
+        name_upper: b"PFCOUNT",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pfmerge,
+        name_upper: b"PFMERGE",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pfdebug,
+        name_upper: b"PFDEBUG",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pfselftest,
+        name_upper: b"PFSELFTEST",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Quit,
         name_upper: b"QUIT",
         key_access_pattern: KeyAccessPattern::None,
@@ -2570,6 +2625,20 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Msetnx, 3));
         assert!(command_has_valid_arity(CommandId::Msetnx, 5));
         assert!(!command_has_valid_arity(CommandId::Msetnx, 2));
+        assert!(command_has_valid_arity(CommandId::Pfadd, 3));
+        assert!(command_has_valid_arity(CommandId::Pfadd, 6));
+        assert!(!command_has_valid_arity(CommandId::Pfadd, 2));
+        assert!(command_has_valid_arity(CommandId::Pfcount, 2));
+        assert!(command_has_valid_arity(CommandId::Pfcount, 4));
+        assert!(!command_has_valid_arity(CommandId::Pfcount, 1));
+        assert!(command_has_valid_arity(CommandId::Pfmerge, 3));
+        assert!(command_has_valid_arity(CommandId::Pfmerge, 6));
+        assert!(!command_has_valid_arity(CommandId::Pfmerge, 2));
+        assert!(command_has_valid_arity(CommandId::Pfdebug, 2));
+        assert!(command_has_valid_arity(CommandId::Pfdebug, 4));
+        assert!(!command_has_valid_arity(CommandId::Pfdebug, 1));
+        assert!(command_has_valid_arity(CommandId::Pfselftest, 1));
+        assert!(!command_has_valid_arity(CommandId::Pfselftest, 2));
         assert!(command_has_valid_arity(CommandId::Llen, 2));
         assert!(!command_has_valid_arity(CommandId::Llen, 3));
         assert!(command_has_valid_arity(CommandId::Lindex, 3));
@@ -2821,6 +2890,11 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Getex), b"GETEX");
         assert_eq!(command_name_upper(CommandId::Incrbyfloat), b"INCRBYFLOAT");
         assert_eq!(command_name_upper(CommandId::Msetnx), b"MSETNX");
+        assert_eq!(command_name_upper(CommandId::Pfadd), b"PFADD");
+        assert_eq!(command_name_upper(CommandId::Pfcount), b"PFCOUNT");
+        assert_eq!(command_name_upper(CommandId::Pfmerge), b"PFMERGE");
+        assert_eq!(command_name_upper(CommandId::Pfdebug), b"PFDEBUG");
+        assert_eq!(command_name_upper(CommandId::Pfselftest), b"PFSELFTEST");
         assert_eq!(command_name_upper(CommandId::Llen), b"LLEN");
         assert_eq!(command_name_upper(CommandId::Lindex), b"LINDEX");
         assert_eq!(command_name_upper(CommandId::Lpos), b"LPOS");

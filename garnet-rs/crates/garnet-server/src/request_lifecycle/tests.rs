@@ -4759,6 +4759,96 @@ fn touch_and_unlink_count_existing_keys() {
 }
 
 #[test]
+fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let pfadd_first = b"*5\r\n$5\r\nPFADD\r\n$2\r\nh1\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(pfadd_first, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let pfadd_second = b"*4\r\n$5\r\nPFADD\r\n$2\r\nh1\r\n$1\r\nb\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(pfadd_second, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let pfcount_single = b"*2\r\n$7\r\nPFCOUNT\r\n$2\r\nh1\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_single, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
+
+    response.clear();
+    let pfadd_other = b"*4\r\n$5\r\nPFADD\r\n$2\r\nh2\r\n$1\r\nc\r\n$1\r\nd\r\n";
+    let meta = parse_resp_command_arg_slices(pfadd_other, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let pfmerge = b"*4\r\n$7\r\nPFMERGE\r\n$2\r\nhm\r\n$2\r\nh1\r\n$2\r\nh2\r\n";
+    let meta = parse_resp_command_arg_slices(pfmerge, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pfcount_merged = b"*2\r\n$7\r\nPFCOUNT\r\n$2\r\nhm\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_merged, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":4\r\n");
+
+    response.clear();
+    let pfdebug_encoding = b"*3\r\n$7\r\nPFDEBUG\r\n$8\r\nENCODING\r\n$2\r\nhm\r\n";
+    let meta = parse_resp_command_arg_slices(pfdebug_encoding, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$6\r\nsparse\r\n");
+
+    response.clear();
+    let pfselftest = b"*1\r\n$10\r\nPFSELFTEST\r\n";
+    let meta = parse_resp_command_arg_slices(pfselftest, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let set_plain = b"*3\r\n$3\r\nSET\r\n$5\r\nplain\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set_plain, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pfcount_wrongtype = b"*2\r\n$7\r\nPFCOUNT\r\n$5\r\nplain\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+}
+
+#[test]
 fn quit_and_time_commands_return_expected_responses() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
