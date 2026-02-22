@@ -1,0 +1,8 @@
+runs=3
+outdir=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-owner1-20260223-014015
+runs_csv=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-owner1-20260223-014015/runs.csv
+median_csv=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-owner1-20260223-014015/median_summary.csv
+
+median dragonfly/garnet throughput ratio:
+  set=1.487
+  get=1.469

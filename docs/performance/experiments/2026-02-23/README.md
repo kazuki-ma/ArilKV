@@ -4,6 +4,7 @@
 
 1. `13.00-evidence-gate-read-drain-and-client-metrics`
 2. `13.01-owner-thread-count-sweep`
+3. `13.02-docker-linux-median-owner-thread-count`
 
 ## Policy
 

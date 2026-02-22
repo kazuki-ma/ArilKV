@@ -20,6 +20,7 @@
 8. `docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/`
 9. `docs/performance/experiments/2026-02-23/13.00-evidence-gate-read-drain-and-client-metrics/`
 10. `docs/performance/experiments/2026-02-23/13.01-owner-thread-count-sweep/`
+11. `docs/performance/experiments/2026-02-23/13.02-docker-linux-median-owner-thread-count/`
 
 ## Patterns To Re-check For New Experiments
 
