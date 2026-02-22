@@ -36,6 +36,8 @@ pub enum RequestExecutionError {
     ValueNotFloat,
     UnsupportedUnit,
     ValueOutOfRange,
+    ValueOutOfRangePositive,
+    LposRankZero,
     IndexOutOfRange,
     IncrementOverflow,
     AuthNotEnabled,
@@ -51,7 +53,10 @@ impl RequestExecutionError {
         match self {
             Self::WrongArity { command, .. } => append_error(
                 response_out,
-                &format!("ERR wrong number of arguments for '{}' command", command),
+                &format!(
+                    "ERR wrong number of arguments for '{}' command",
+                    command.to_ascii_lowercase()
+                ),
             ),
             Self::UnknownCommand => append_error(response_out, "ERR unknown command"),
             Self::NoSuchKey => append_error(response_out, "ERR no such key"),
@@ -91,6 +96,13 @@ impl RequestExecutionError {
                 "ERR unsupported unit provided. please use M, KM, FT, MI",
             ),
             Self::ValueOutOfRange => append_error(response_out, "ERR value is out of range"),
+            Self::ValueOutOfRangePositive => {
+                append_error(response_out, "ERR value is out of range, must be positive")
+            }
+            Self::LposRankZero => append_error(
+                response_out,
+                "ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list",
+            ),
             Self::IndexOutOfRange => append_error(response_out, "ERR index out of range"),
             Self::IncrementOverflow => {
                 append_error(response_out, "ERR increment or decrement would overflow")

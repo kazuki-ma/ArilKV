@@ -65,8 +65,8 @@ use self::errors::{
     map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
 };
 use self::resp::{
-    append_bulk_array, append_bulk_string, append_integer, append_null_bulk_string,
-    append_simple_string, ascii_eq_ignore_case,
+    append_bulk_array, append_bulk_string, append_integer, append_null_array,
+    append_null_bulk_string, append_simple_string, ascii_eq_ignore_case,
 };
 use self::session_functions::{KvSessionFunctions, ObjectSessionFunctions};
 use self::value_codec::{

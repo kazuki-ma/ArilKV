@@ -1038,6 +1038,24 @@ fn list_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn list_pop_commands_support_optional_count() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "LPOP missing 2", b"*-1\r\n");
+    assert_command_response(&processor, "RPOP missing 0", b"*-1\r\n");
+    assert_command_response(&processor, "RPUSH key a b c", b":3\r\n");
+    assert_command_response(&processor, "LPOP key 2", b"*2\r\n$1\r\na\r\n$1\r\nb\r\n");
+    assert_command_response(&processor, "LPOP key 0", b"*0\r\n");
+    assert_command_response(&processor, "RPOP key 2", b"*1\r\n$1\r\nc\r\n");
+    assert_command_response(&processor, "LPOP key 1", b"*-1\r\n");
+    assert_command_error(
+        &processor,
+        "LPOP key -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+}
+
+#[test]
 fn lrange_supports_negative_indexes() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 16];
@@ -1340,6 +1358,19 @@ fn additional_list_commands_cover_common_redis_semantics() {
     response.clear();
     let lpos_rank_zero = b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$4\r\nRANK\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(lpos_rank_zero, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list\r\n"
+    );
+
+    response.clear();
+    let lpos_rank_min = b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$4\r\nRANK\r\n$20\r\n-9223372036854775808\r\n";
+    let meta = parse_resp_command_arg_slices(lpos_rank_min, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .err()
@@ -4596,7 +4627,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     err.append_resp_error(&mut response);
     assert_eq!(
         response,
-        b"-ERR wrong number of arguments for 'BITOP' command\r\n"
+        b"-ERR wrong number of arguments for 'bitop' command\r\n"
     );
 }
 
@@ -5726,7 +5757,7 @@ fn pubsub_commands_cover_minimal_ack_and_introspection_shapes() {
     assert_command_error(
         &processor,
         "SUBSCRIBE",
-        b"-ERR wrong number of arguments for 'SUBSCRIBE' command\r\n",
+        b"-ERR wrong number of arguments for 'subscribe' command\r\n",
     );
     assert_command_error(&processor, "PUBSUB NOPE", b"-ERR unknown command\r\n");
 }
@@ -5791,7 +5822,7 @@ fn geoadd_supports_basic_options_and_validation_paths() {
     assert_command_error(
         &processor,
         "GEOADD sicily 13.5 38.1",
-        b"-ERR wrong number of arguments for 'GEOADD' command\r\n",
+        b"-ERR wrong number of arguments for 'geoadd' command\r\n",
     );
 }
 
@@ -5829,7 +5860,7 @@ fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
     assert_command_error(
         &processor,
         "GEOPOS sicily",
-        b"-ERR wrong number of arguments for 'GEOPOS' command\r\n",
+        b"-ERR wrong number of arguments for 'geopos' command\r\n",
     );
 }
 
@@ -5881,7 +5912,7 @@ fn geodist_supports_units_and_missing_member_semantics() {
     assert_command_error(
         &processor,
         "GEODIST sicily palermo",
-        b"-ERR wrong number of arguments for 'GEODIST' command\r\n",
+        b"-ERR wrong number of arguments for 'geodist' command\r\n",
     );
 }
 
@@ -5911,7 +5942,7 @@ fn geohash_returns_expected_shape_and_null_for_missing_members() {
     assert_command_error(
         &processor,
         "GEOHASH sicily",
-        b"-ERR wrong number of arguments for 'GEOHASH' command\r\n",
+        b"-ERR wrong number of arguments for 'geohash' command\r\n",
     );
 }
 
@@ -5991,7 +6022,7 @@ fn geosearch_supports_radius_box_and_response_options() {
     assert_command_error(
         &processor,
         "GEOSEARCH sicily BYRADIUS 200 km",
-        b"-ERR wrong number of arguments for 'GEOSEARCH' command\r\n",
+        b"-ERR wrong number of arguments for 'geosearch' command\r\n",
     );
 }
 
@@ -6036,7 +6067,7 @@ fn geosearchstore_stores_results_and_clears_destination_on_empty_source() {
     assert_command_error(
         &processor,
         "GEOSEARCHSTORE gdst sicily FROMMEMBER palermo",
-        b"-ERR wrong number of arguments for 'GEOSEARCHSTORE' command\r\n",
+        b"-ERR wrong number of arguments for 'geosearchstore' command\r\n",
     );
 }
 
@@ -6139,12 +6170,12 @@ fn georadius_family_supports_query_and_store_paths() {
     assert_command_error(
         &processor,
         "GEORADIUS_RO sicily 15 37",
-        b"-ERR wrong number of arguments for 'GEORADIUS_RO' command\r\n",
+        b"-ERR wrong number of arguments for 'georadius_ro' command\r\n",
     );
     assert_command_error(
         &processor,
         "GEORADIUSBYMEMBER_RO sicily palermo",
-        b"-ERR wrong number of arguments for 'GEORADIUSBYMEMBER_RO' command\r\n",
+        b"-ERR wrong number of arguments for 'georadiusbymember_ro' command\r\n",
     );
 }
 
@@ -6211,7 +6242,7 @@ fn migrate_command_validates_arguments_before_disabled_response() {
     assert_command_error(
         &processor,
         "MIGRATE 127.0.0.1 6379 key 0",
-        b"-ERR wrong number of arguments for 'MIGRATE' command\r\n",
+        b"-ERR wrong number of arguments for 'migrate' command\r\n",
     );
 }
 

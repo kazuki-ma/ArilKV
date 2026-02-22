@@ -44,31 +44,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 2, "LPOP", "LPOP key")?;
-
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        let mut list = match self.load_list_object(&key)? {
-            Some(list) => list,
-            None => {
-                append_null_bulk_string(response_out);
-                return Ok(());
-            }
-        };
-        if list.is_empty() {
-            let _ = self.object_delete(&key)?;
-            append_null_bulk_string(response_out);
-            return Ok(());
-        }
-
-        let value = list.remove(0);
-        if list.is_empty() {
-            let _ = self.object_delete(&key)?;
-        } else {
-            self.save_list_object(&key, &list)?;
-        }
-        append_bulk_string(response_out, &value);
-        Ok(())
+        self.handle_pop_like(args, response_out, ListSide::Left, "LPOP")
     }
 
     pub(super) fn handle_rpop(
@@ -76,26 +52,85 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 2, "RPOP", "RPOP key")?;
+        self.handle_pop_like(args, response_out, ListSide::Right, "RPOP")
+    }
+
+    fn handle_pop_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        side: ListSide,
+        command: &'static str,
+    ) -> Result<(), RequestExecutionError> {
+        let expected = if matches!(side, ListSide::Left) {
+            "LPOP key [count]"
+        } else {
+            "RPOP key [count]"
+        };
+        ensure_one_of_arities(args, &[2, 3], command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
+        let count = if args.len() == 3 {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let parsed = parse_i64_ascii(unsafe { args[2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed < 0 {
+                return Err(RequestExecutionError::ValueOutOfRangePositive);
+            }
+            Some(usize::try_from(parsed).unwrap_or(usize::MAX))
+        } else {
+            None
+        };
+
         let mut list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
-                append_null_bulk_string(response_out);
+                if count.is_some() {
+                    append_null_array(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };
-        let value = match list.pop() {
-            Some(value) => value,
-            None => {
-                let _ = self.object_delete(&key)?;
+        if list.is_empty() {
+            let _ = self.object_delete(&key)?;
+            if count.is_some() {
+                append_null_array(response_out);
+            } else {
                 append_null_bulk_string(response_out);
-                return Ok(());
             }
-        };
+            return Ok(());
+        }
 
+        if let Some(count) = count {
+            let mut popped: Vec<Vec<u8>> = Vec::new();
+            for _ in 0..count {
+                let Some(value) = pop_list_side(&mut list, side) else {
+                    break;
+                };
+                popped.push(value);
+            }
+            if list.is_empty() {
+                let _ = self.object_delete(&key)?;
+            } else {
+                self.save_list_object(&key, &list)?;
+            }
+            response_out.push(b'*');
+            response_out.extend_from_slice(popped.len().to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for value in &popped {
+                append_bulk_string(response_out, value);
+            }
+            return Ok(());
+        }
+
+        let Some(value) = pop_list_side(&mut list, side) else {
+            let _ = self.object_delete(&key)?;
+            append_null_bulk_string(response_out);
+            return Ok(());
+        };
         if list.is_empty() {
             let _ = self.object_delete(&key)?;
         } else {
@@ -851,8 +886,11 @@ fn parse_lpos_options(
         let value = unsafe { args[index + 1].as_slice() };
         if ascii_eq_ignore_case(option, b"RANK") {
             let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
-            if parsed == 0 {
+            if parsed == i64::MIN {
                 return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            if parsed == 0 {
+                return Err(RequestExecutionError::LposRankZero);
             }
             options.rank = parsed;
         } else if ascii_eq_ignore_case(option, b"COUNT") {

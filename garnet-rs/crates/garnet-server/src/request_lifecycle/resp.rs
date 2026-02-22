@@ -35,6 +35,10 @@ pub(super) fn append_null_bulk_string(response_out: &mut Vec<u8>) {
     response_out.extend_from_slice(b"$-1\r\n");
 }
 
+pub(super) fn append_null_array(response_out: &mut Vec<u8>) {
+    response_out.extend_from_slice(b"*-1\r\n");
+}
+
 pub(super) fn append_integer(response_out: &mut Vec<u8>, value: i64) {
     response_out.push(b':');
     response_out.extend_from_slice(value.to_string().as_bytes());
