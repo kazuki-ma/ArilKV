@@ -351,6 +351,7 @@ impl RequestProcessor {
             CommandId::Lrange => self.handle_lrange(args, response_out),
             CommandId::Llen => self.handle_llen(args, response_out),
             CommandId::Lindex => self.handle_lindex(args, response_out),
+            CommandId::Lpos => self.handle_lpos(args, response_out),
             CommandId::Lset => self.handle_lset(args, response_out),
             CommandId::Ltrim => self.handle_ltrim(args, response_out),
             CommandId::Lpushx => self.handle_lpushx(args, response_out),

@@ -941,6 +941,19 @@ fn hash_commands_return_wrongtype_for_string_keys() {
         response,
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
     );
+
+    response.clear();
+    let lpos = b"*3\r\n$4\r\nLPOS\r\n$3\r\nkey\r\n$1\r\nv\r\n";
+    let meta = parse_resp_command_arg_slices(lpos, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
 }
 
 #[test]
@@ -1230,6 +1243,121 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPUSH", b"lpos", b"a", b"b", b"a", b"c", b"a"])
+        ),
+        b":5\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LPOS", b"lpos", b"a"])),
+        b":0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"RANK", b"2"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"RANK", b"-1"])
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"COUNT", b"2"])
+        ),
+        b"*2\r\n:0\r\n:2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"COUNT", b"0"])
+        ),
+        b"*3\r\n:0\r\n:2\r\n:4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"RANK", b"-2", b"COUNT", b"2"])
+        ),
+        b"*2\r\n:2\r\n:0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"MAXLEN", b"2"])
+        ),
+        b":0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"lpos", b"a", b"RANK", b"2", b"MAXLEN", b"2"])
+        ),
+        b"$-1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LPOS", b"missing", b"a"])),
+        b"$-1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LPOS", b"missing", b"a", b"COUNT", b"2"])
+        ),
+        b"*0\r\n"
+    );
+
+    response.clear();
+    let lpos_rank_zero = b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$4\r\nRANK\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(lpos_rank_zero, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+
+    response.clear();
+    let lpos_count_negative =
+        b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$5\r\nCOUNT\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(lpos_count_negative, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+
+    response.clear();
+    let lpos_maxlen_negative =
+        b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$6\r\nMAXLEN\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(lpos_maxlen_negative, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+
+    response.clear();
+    let lpos_unknown_option =
+        b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$7\r\nUNKNOWN\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(lpos_unknown_option, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR syntax error\r\n");
 }
 
 #[test]

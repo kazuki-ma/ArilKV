@@ -170,6 +170,7 @@ mod tests {
         assert_eq!(dispatch_command_name(b"lrange"), CommandId::Lrange);
         assert_eq!(dispatch_command_name(b"LLEN"), CommandId::Llen);
         assert_eq!(dispatch_command_name(b"lindex"), CommandId::Lindex);
+        assert_eq!(dispatch_command_name(b"LPOS"), CommandId::Lpos);
         assert_eq!(dispatch_command_name(b"LSET"), CommandId::Lset);
         assert_eq!(dispatch_command_name(b"ltrim"), CommandId::Ltrim);
         assert_eq!(dispatch_command_name(b"LPUSHX"), CommandId::Lpushx);

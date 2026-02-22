@@ -238,6 +238,100 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_lpos(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "LPOS",
+                expected: "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let element = unsafe { args[2].as_slice() };
+        let options = parse_lpos_options(args, 3)?;
+        let Some(list) = self.load_list_object(&key)? else {
+            if options.count.is_some() {
+                response_out.extend_from_slice(b"*0\r\n");
+            } else {
+                append_null_bulk_string(response_out);
+            }
+            return Ok(());
+        };
+
+        let rank = options.rank;
+        let mut skip_matches = rank.unsigned_abs() - 1;
+        let count_limit = options
+            .count
+            .map(|value| usize::try_from(value).unwrap_or(usize::MAX))
+            .unwrap_or(1);
+        let unlimited_count = options.count == Some(0);
+        let max_scan = options.maxlen.unwrap_or(usize::MAX);
+
+        let mut positions = Vec::new();
+        if rank > 0 {
+            let mut scanned = 0usize;
+            for (index, value) in list.iter().enumerate() {
+                if scanned >= max_scan {
+                    break;
+                }
+                scanned += 1;
+                if value.as_slice() != element {
+                    continue;
+                }
+                if skip_matches > 0 {
+                    skip_matches -= 1;
+                    continue;
+                }
+                positions.push(index as i64);
+                if options.count.is_none()
+                    || (!unlimited_count && positions.len() >= count_limit)
+                {
+                    break;
+                }
+            }
+        } else {
+            let mut scanned = 0usize;
+            for (index, value) in list.iter().enumerate().rev() {
+                if scanned >= max_scan {
+                    break;
+                }
+                scanned += 1;
+                if value.as_slice() != element {
+                    continue;
+                }
+                if skip_matches > 0 {
+                    skip_matches -= 1;
+                    continue;
+                }
+                positions.push(index as i64);
+                if options.count.is_none()
+                    || (!unlimited_count && positions.len() >= count_limit)
+                {
+                    break;
+                }
+            }
+        }
+
+        if options.count.is_some() {
+            response_out.push(b'*');
+            response_out.extend_from_slice(positions.len().to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for position in positions {
+                append_integer(response_out, position);
+            }
+        } else if let Some(position) = positions.first() {
+            append_integer(response_out, *position);
+        } else {
+            append_null_bulk_string(response_out);
+        }
+        Ok(())
+    }
+
     pub(super) fn handle_lset(
         &self,
         args: &[ArgSlice],
@@ -804,6 +898,13 @@ enum ListSide {
     Right,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct LposOptions {
+    rank: i64,
+    count: Option<u64>,
+    maxlen: Option<usize>,
+}
+
 fn parse_list_side(input: &[u8]) -> Option<ListSide> {
     if ascii_eq_ignore_case(input, b"LEFT") {
         return Some(ListSide::Left);
@@ -812,6 +913,56 @@ fn parse_list_side(input: &[u8]) -> Option<ListSide> {
         return Some(ListSide::Right);
     }
     None
+}
+
+fn parse_lpos_options(
+    args: &[ArgSlice],
+    start_index: usize,
+) -> Result<LposOptions, RequestExecutionError> {
+    let mut options = LposOptions {
+        rank: 1,
+        count: None,
+        maxlen: None,
+    };
+    let mut index = start_index;
+    while index < args.len() {
+        if index + 1 >= args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let option = unsafe { args[index].as_slice() };
+        // SAFETY: caller guarantees argument backing memory validity.
+        let value = unsafe { args[index + 1].as_slice() };
+        if ascii_eq_ignore_case(option, b"RANK") {
+            let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed == 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            options.rank = parsed;
+        } else if ascii_eq_ignore_case(option, b"COUNT") {
+            let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed < 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            options.count = Some(parsed as u64);
+        } else if ascii_eq_ignore_case(option, b"MAXLEN") {
+            let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed < 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            if parsed == 0 {
+                options.maxlen = None;
+            } else {
+                options.maxlen = Some(
+                    usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?,
+                );
+            }
+        } else {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        index += 2;
+    }
+    Ok(options)
 }
 
 fn pop_list_side(list: &mut Vec<Vec<u8>>, side: ListSide) -> Option<Vec<u8>> {

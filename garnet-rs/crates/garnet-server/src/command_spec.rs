@@ -62,6 +62,7 @@ pub enum CommandId {
     Lrange,
     Llen,
     Lindex,
+    Lpos,
     Lset,
     Ltrim,
     Lpushx,
@@ -803,6 +804,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Lpos,
+        name_upper: b"LPOS",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2362,6 +2373,9 @@ mod tests {
         assert!(!command_has_valid_arity(CommandId::Llen, 3));
         assert!(command_has_valid_arity(CommandId::Lindex, 3));
         assert!(!command_has_valid_arity(CommandId::Lindex, 2));
+        assert!(command_has_valid_arity(CommandId::Lpos, 3));
+        assert!(command_has_valid_arity(CommandId::Lpos, 8));
+        assert!(!command_has_valid_arity(CommandId::Lpos, 2));
         assert!(command_has_valid_arity(CommandId::Lset, 4));
         assert!(!command_has_valid_arity(CommandId::Lset, 3));
         assert!(command_has_valid_arity(CommandId::Ltrim, 4));
@@ -2569,6 +2583,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Msetnx), b"MSETNX");
         assert_eq!(command_name_upper(CommandId::Llen), b"LLEN");
         assert_eq!(command_name_upper(CommandId::Lindex), b"LINDEX");
+        assert_eq!(command_name_upper(CommandId::Lpos), b"LPOS");
         assert_eq!(command_name_upper(CommandId::Lset), b"LSET");
         assert_eq!(command_name_upper(CommandId::Ltrim), b"LTRIM");
         assert_eq!(command_name_upper(CommandId::Lpushx), b"LPUSHX");

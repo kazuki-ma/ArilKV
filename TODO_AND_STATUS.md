@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 192
+> **Current Iteration**: 193
 
 ---
 
@@ -649,3 +649,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 190 | 2026-02-22 | 11.77 | DONE | Standardized directory-local README-first guidance by adding `AGENT.md` across active implementation/performance-report directories (`garnet-rs/benches`, `garnet-rs/tests`, `docs/performance/experiments/**`) and expanded local `README.md` files with implementation-time re-check patterns (benchmark integrity checks, command-test flow, experiment reproducibility pitfalls). Scoped out non-essential root-level directories per follow-up direction. |
 | 191 | 2026-02-22 | 11.78 | DONE | Implemented `BITOP` (`AND`/`OR`/`XOR`/`NOT`) end-to-end with strict arity handling for `NOT`, wrongtype detection on source keys, and Redis-compatible destination deletion when result length is zero. Updated command catalog/dispatch/lifecycle wiring, extended string-command lifecycle tests, reran command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-094706` with tests `6/4/2`; command matrix refreshed to `75.52%` coverage). |
 | 192 | 2026-02-22 | 11.79 | DONE | Implemented `BITPOS` end-to-end (catalog/dispatch/lifecycle handler/tests) with support for `start/end` and `BYTE|BIT` mode parsing, missing-key semantics, explicit wrongtype/error paths, and Redis-compatible `BITPOS 0` tail behavior when `end` is omitted. Also added `SLAVEOF` alias support to replication control path and command surface. Revalidated command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-095504` with tests `6/4/2`; command matrix refreshed to `76.35%` coverage). |
+| 193 | 2026-02-22 | 11.80 | DONE | Implemented `LPOS` with `RANK`/`COUNT`/`MAXLEN` option parsing (order-independent), positive/negative rank traversal, no-match/missing-key RESP shape differences (`null` vs empty array when `COUNT` is present), and list wrongtype/validation coverage. Revalidated command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-100039` with tests `6/4/2`; command matrix refreshed to `76.76%` coverage). |
