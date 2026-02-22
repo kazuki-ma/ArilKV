@@ -1,0 +1,5 @@
+target,workload,median_ops_sec,median_avg_lat_ms,median_p99_ms
+garnet,set,196325.12,0.02066,0.06300
+garnet,get,106203.99,0.03840,0.07100
+dragonfly,set,86112.99,0.04703,0.08700
+dragonfly,get,92310.04,0.04363,0.08700

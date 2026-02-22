@@ -9,6 +9,7 @@
 5. `13.04-owner-result-channel-mode-rejected`
 6. `13.05-listener-owner-colocation-accepted`
 7. `13.06-linux-hotspot-refresh-owner-pinned`
+8. `13.07-owner-pinned-dragonfly-comparison-milestone` (**MILESTONE**)
 
 ## Policy
 
@@ -22,3 +23,4 @@
 - Avoid global default flips when load-shape results are mixed.
 - Treat runtime/scheduler model changes as high-risk; accept only with clear win.
 - When a design-intent mismatch is hotspot-dominant, validate and prioritize structural fixes first.
+- Use median-of-N comparisons before declaring milestone wins against external systems.

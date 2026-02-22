@@ -1,0 +1,13 @@
+run,target,workload,ops_sec,avg_lat_ms,p99_ms,outdir
+1,garnet,set,201475.81,0.02066,0.06300,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-1
+1,garnet,get,104773.48,0.03891,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-1
+1,dragonfly,set,86112.99,0.04703,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-1
+1,dragonfly,get,92310.04,0.04363,0.08700,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-1
+2,garnet,set,195464.25,0.02096,0.06300,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-2
+2,garnet,get,114929.65,0.03534,0.07100,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-2
+2,dragonfly,set,85240.77,0.04758,0.08700,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-2
+2,dragonfly,get,84601.35,0.04762,0.08700,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-2
+3,garnet,set,196325.12,0.02061,0.06300,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-3
+3,garnet,get,106203.99,0.03840,0.07100,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-3
+3,dragonfly,set,93502.80,0.04332,0.08700,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-3
+3,dragonfly,get,98211.33,0.04109,0.07900,/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/garnet-rs/benches/results/linux-perf-diff-median-20260223-065532/run-3
