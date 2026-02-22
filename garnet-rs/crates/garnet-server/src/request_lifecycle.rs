@@ -305,6 +305,7 @@ impl RequestProcessor {
             CommandId::Msetnx => self.handle_msetnx(args, response_out),
             CommandId::Touch => self.handle_touch(args, response_out),
             CommandId::Unlink => self.handle_unlink(args, response_out),
+            CommandId::Move => self.handle_move(args, response_out),
             CommandId::Psetex => self.handle_psetex(args, response_out),
             CommandId::Getset => self.handle_getset(args, response_out),
             CommandId::Getdel => self.handle_getdel(args, response_out),
@@ -460,6 +461,7 @@ impl RequestProcessor {
             CommandId::Lolwut => self.handle_lolwut(args, response_out),
             CommandId::Quit => self.handle_quit(args, response_out),
             CommandId::Time => self.handle_time(args, response_out),
+            CommandId::Swapdb => self.handle_swapdb(args, response_out),
             CommandId::Multi
             | CommandId::Exec
             | CommandId::Discard

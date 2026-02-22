@@ -4875,7 +4875,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
 }
 
 #[test]
-fn server_admin_commands_cover_auth_select_client_role_wait_and_save_family() {
+fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save_family() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
     let mut response = Vec::new();
@@ -4902,6 +4902,44 @@ fn server_admin_commands_cover_auth_select_client_role_wait_and_save_family() {
     response.clear();
     let select_one = b"*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(select_one, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR DB index is out of range\r\n");
+
+    response.clear();
+    let move_same_db = b"*3\r\n$4\r\nMOVE\r\n$3\r\nkey\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(move_same_db, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR source and destination objects are the same\r\n"
+    );
+
+    response.clear();
+    let move_other_db = b"*3\r\n$4\r\nMOVE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(move_other_db, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR DB index is out of range\r\n");
+
+    response.clear();
+    let swapdb_zero = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(swapdb_zero, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let swapdb_other = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(swapdb_other, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap_err();

@@ -164,6 +164,40 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_move(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let target_db = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if target_db == 0 {
+            return Err(RequestExecutionError::SourceDestinationObjectsSame);
+        }
+        Err(RequestExecutionError::DbIndexOutOfRange)
+    }
+
+    pub(super) fn handle_swapdb(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 3, "SWAPDB", "SWAPDB index1 index2")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let index1 = parse_i64_ascii(unsafe { args[1].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let index2 = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if index1 != 0 || index2 != 0 {
+            return Err(RequestExecutionError::DbIndexOutOfRange);
+        }
+        append_simple_string(response_out, b"OK");
+        Ok(())
+    }
+
     pub(super) fn handle_client(
         &self,
         args: &[ArgSlice],

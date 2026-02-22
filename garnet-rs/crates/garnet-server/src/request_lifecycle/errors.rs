@@ -33,6 +33,7 @@ pub enum RequestExecutionError {
     IncrementOverflow,
     AuthNotEnabled,
     DbIndexOutOfRange,
+    SourceDestinationObjectsSame,
     WaitAofAppendOnlyDisabled,
     ClusterSupportDisabled,
 }
@@ -79,6 +80,10 @@ impl RequestExecutionError {
             Self::DbIndexOutOfRange => {
                 append_error(response_out, "ERR DB index is out of range")
             }
+            Self::SourceDestinationObjectsSame => append_error(
+                response_out,
+                "ERR source and destination objects are the same",
+            ),
             Self::WaitAofAppendOnlyDisabled => append_error(
                 response_out,
                 "ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled.",

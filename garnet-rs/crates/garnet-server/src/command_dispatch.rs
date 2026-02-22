@@ -124,6 +124,8 @@ mod tests {
         assert_eq!(dispatch_command_name(b"time"), CommandId::Time);
         assert_eq!(dispatch_command_name(b"TOUCH"), CommandId::Touch);
         assert_eq!(dispatch_command_name(b"unlink"), CommandId::Unlink);
+        assert_eq!(dispatch_command_name(b"MOVE"), CommandId::Move);
+        assert_eq!(dispatch_command_name(b"swapdb"), CommandId::Swapdb);
         assert_eq!(dispatch_command_name(b"GETDEL"), CommandId::Getdel);
         assert_eq!(dispatch_command_name(b"getset"), CommandId::Getset);
         assert_eq!(dispatch_command_name(b"PSETEX"), CommandId::Psetex);

@@ -186,6 +186,8 @@ pub enum CommandId {
     Time,
     Touch,
     Unlink,
+    Move,
+    Swapdb,
     Unknown,
 }
 
@@ -2047,6 +2049,26 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Move,
+        name_upper: b"MOVE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Swapdb,
+        name_upper: b"SWAPDB",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Unknown,
         name_upper: b"UNKNOWN",
         key_access_pattern: KeyAccessPattern::None,
@@ -2543,6 +2565,10 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Unlink, 2));
         assert!(command_has_valid_arity(CommandId::Unlink, 4));
         assert!(!command_has_valid_arity(CommandId::Unlink, 1));
+        assert!(command_has_valid_arity(CommandId::Move, 3));
+        assert!(!command_has_valid_arity(CommandId::Move, 2));
+        assert!(command_has_valid_arity(CommandId::Swapdb, 3));
+        assert!(!command_has_valid_arity(CommandId::Swapdb, 2));
     }
 
     #[test]
@@ -2665,6 +2691,8 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Time), b"TIME");
         assert_eq!(command_name_upper(CommandId::Touch), b"TOUCH");
         assert_eq!(command_name_upper(CommandId::Unlink), b"UNLINK");
+        assert_eq!(command_name_upper(CommandId::Move), b"MOVE");
+        assert_eq!(command_name_upper(CommandId::Swapdb), b"SWAPDB");
         assert_eq!(command_name_upper(CommandId::Scan), b"SCAN");
         assert_eq!(command_name_upper(CommandId::Hscan), b"HSCAN");
         assert_eq!(command_name_upper(CommandId::Sscan), b"SSCAN");
