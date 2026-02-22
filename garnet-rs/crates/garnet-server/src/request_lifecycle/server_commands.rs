@@ -83,12 +83,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "QUIT",
-                expected: "QUIT",
-            });
-        }
+        require_exact_arity(args, 1, "QUIT", "QUIT")?;
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -98,12 +93,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "TIME",
-                expected: "TIME",
-            });
-        }
+        require_exact_arity(args, 1, "TIME", "TIME")?;
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -118,21 +108,14 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        match args.len() {
-            1 => {
-                append_simple_string(response_out, b"PONG");
-                Ok(())
-            }
-            2 => {
-                // SAFETY: caller guarantees argument backing memory validity.
-                append_bulk_string(response_out, unsafe { args[1].as_slice() });
-                Ok(())
-            }
-            _ => Err(RequestExecutionError::WrongArity {
-                command: "PING",
-                expected: "PING [message]",
-            }),
+        ensure_ranged_arity(args, 1, 2, "PING", "PING [message]")?;
+        if args.len() == 1 {
+            append_simple_string(response_out, b"PONG");
+            return Ok(());
         }
+        // SAFETY: caller guarantees argument backing memory validity.
+        append_bulk_string(response_out, unsafe { args[1].as_slice() });
+        Ok(())
     }
 
     pub(super) fn handle_echo(
@@ -140,12 +123,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "ECHO",
-                expected: "ECHO message",
-            });
-        }
+        require_exact_arity(args, 2, "ECHO", "ECHO message")?;
         // SAFETY: caller guarantees argument backing memory validity.
         append_bulk_string(response_out, unsafe { args[1].as_slice() });
         Ok(())
@@ -160,12 +138,7 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "HELLO",
-                expected: "HELLO [2|3]",
-            });
-        }
+        require_exact_arity(args, 2, "HELLO", "HELLO [2|3]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let version = parse_u64_ascii(unsafe { args[1].as_slice() })
             .ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -182,12 +155,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "INFO",
-                expected: "INFO",
-            });
-        }
+        require_exact_arity(args, 1, "INFO", "INFO")?;
 
         let dbsize = self.active_key_count()?;
         let payload = format!(
@@ -203,12 +171,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "LASTSAVE",
-                expected: "LASTSAVE",
-            });
-        }
+        require_exact_arity(args, 1, "LASTSAVE", "LASTSAVE")?;
         append_integer(response_out, self.lastsave_unix_seconds() as i64);
         Ok(())
     }
@@ -487,12 +450,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "READONLY",
-                expected: "READONLY",
-            });
-        }
+        require_exact_arity(args, 1, "READONLY", "READONLY")?;
         Err(RequestExecutionError::ClusterSupportDisabled)
     }
 
@@ -501,12 +459,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "READWRITE",
-                expected: "READWRITE",
-            });
-        }
+        require_exact_arity(args, 1, "READWRITE", "READWRITE")?;
         Err(RequestExecutionError::ClusterSupportDisabled)
     }
 
@@ -515,12 +468,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "RESET",
-                expected: "RESET",
-            });
-        }
+        require_exact_arity(args, 1, "RESET", "RESET")?;
         self.set_resp_protocol_version(2);
         append_simple_string(response_out, b"RESET");
         Ok(())
@@ -535,12 +483,7 @@ impl RequestProcessor {
             // SAFETY: caller guarantees argument backing memory validity.
             let first_option = unsafe { args[1].as_slice() };
             if ascii_eq_ignore_case(first_option, b"VERSION") {
-                if args.len() != 3 {
-                    return Err(RequestExecutionError::WrongArity {
-                        command: "LOLWUT",
-                        expected: "LOLWUT [VERSION version]",
-                    });
-                }
+                require_exact_arity(args, 3, "LOLWUT", "LOLWUT [VERSION version]")?;
                 // SAFETY: caller guarantees argument backing memory validity.
                 parse_u64_ascii(unsafe { args[2].as_slice() })
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -555,23 +498,13 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "MEMORY",
-                expected: "MEMORY USAGE key",
-            });
-        }
+        ensure_min_arity(args, 2, "MEMORY", "MEMORY USAGE key")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "MEMORY",
-                expected: "MEMORY USAGE key",
-            });
-        }
+        require_exact_arity(args, 3, "MEMORY", "MEMORY USAGE key")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[2].as_slice() }.to_vec();
@@ -601,12 +534,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "DBSIZE",
-                expected: "DBSIZE",
-            });
-        }
+        require_exact_arity(args, 1, "DBSIZE", "DBSIZE")?;
         append_integer(response_out, self.active_key_count()?);
         Ok(())
     }
@@ -616,21 +544,11 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "DEBUG",
-                expected: "DEBUG subcommand [arguments...]",
-            });
-        }
+        ensure_min_arity(args, 2, "DEBUG", "DEBUG subcommand [arguments...]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
         if ascii_eq_ignore_case(subcommand, b"SET-ACTIVE-EXPIRE") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "DEBUG",
-                    expected: "DEBUG SET-ACTIVE-EXPIRE <0|1>",
-                });
-            }
+            require_exact_arity(args, 3, "DEBUG", "DEBUG SET-ACTIVE-EXPIRE <0|1>")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let enabled = unsafe { args[2].as_slice() };
             if enabled != b"0" && enabled != b"1" {
@@ -640,12 +558,7 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "DEBUG",
-                    expected: "DEBUG DIGEST-VALUE key",
-                });
-            }
+            require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let key = unsafe { args[2].as_slice() }.to_vec();
             self.expire_key_if_needed(&key)?;
@@ -661,22 +574,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "OBJECT",
-                expected: "OBJECT <ENCODING|REFCOUNT> key",
-            });
-        }
+        ensure_min_arity(args, 2, "OBJECT", "OBJECT <ENCODING|REFCOUNT> key")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "OBJECT",
-                    expected: "OBJECT ENCODING key",
-                });
-            }
+            require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let key = unsafe { args[2].as_slice() }.to_vec();
             self.expire_key_if_needed(&key)?;
@@ -695,12 +598,7 @@ impl RequestProcessor {
         }
 
         if ascii_eq_ignore_case(subcommand, b"REFCOUNT") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "OBJECT",
-                    expected: "OBJECT REFCOUNT key",
-                });
-            }
+            require_exact_arity(args, 3, "OBJECT", "OBJECT REFCOUNT key")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let key = unsafe { args[2].as_slice() }.to_vec();
             self.expire_key_if_needed(&key)?;
@@ -720,12 +618,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "KEYS",
-                expected: "KEYS pattern",
-            });
-        }
+        require_exact_arity(args, 2, "KEYS", "KEYS pattern")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let pattern = unsafe { args[1].as_slice() };
 
@@ -766,12 +659,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "RANDOMKEY",
-                expected: "RANDOMKEY",
-            });
-        }
+        require_exact_arity(args, 1, "RANDOMKEY", "RANDOMKEY")?;
 
         let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
@@ -810,12 +698,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SCAN",
-                expected: "SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            2,
+            "SCAN",
+            "SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]",
+        )?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let cursor = parse_u64_ascii(unsafe { args[1].as_slice() })
@@ -927,12 +815,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "COMMAND",
-                expected: "COMMAND",
-            });
-        }
+        require_exact_arity(args, 1, "COMMAND", "COMMAND")?;
         append_bulk_array(response_out, command_names_for_command_response());
         Ok(())
     }
@@ -1410,12 +1293,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "FUNCTION",
-                expected: "FUNCTION FLUSH",
-            });
-        }
+        require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
         if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
@@ -1430,12 +1308,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 && args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SCRIPT",
-                expected: "SCRIPT FLUSH [ASYNC|SYNC]",
-            });
-        }
+        ensure_ranged_arity(args, 2, 3, "SCRIPT", "SCRIPT FLUSH [ASYNC|SYNC]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
         if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
@@ -1525,33 +1398,18 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "CONFIG",
-                expected: "CONFIG <GET|SET|RESETSTAT>",
-            });
-        }
+        ensure_min_arity(args, 2, "CONFIG", "CONFIG <GET|SET|RESETSTAT>")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
 
         if ascii_eq_ignore_case(subcommand, b"RESETSTAT") {
-            if args.len() != 2 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "CONFIG",
-                    expected: "CONFIG RESETSTAT",
-                });
-            }
+            require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
 
         if ascii_eq_ignore_case(subcommand, b"SET") {
-            if args.len() != 4 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "CONFIG",
-                    expected: "CONFIG SET parameter value",
-                });
-            }
+            require_exact_arity(args, 4, "CONFIG", "CONFIG SET parameter value")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let parameter = unsafe { args[2].as_slice() };
             // SAFETY: caller guarantees argument backing memory validity.
@@ -1570,12 +1428,7 @@ impl RequestProcessor {
         }
 
         if ascii_eq_ignore_case(subcommand, b"GET") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "CONFIG",
-                    expected: "CONFIG GET parameter",
-                });
-            }
+            require_exact_arity(args, 3, "CONFIG", "CONFIG GET parameter")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let pattern = unsafe { args[2].as_slice() };
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
@@ -1624,12 +1477,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "FLUSHDB",
-                expected: "FLUSHDB",
-            });
-        }
+        require_exact_arity(args, 1, "FLUSHDB", "FLUSHDB")?;
         self.flush_all_keys()?;
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -1640,12 +1488,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "FLUSHALL",
-                expected: "FLUSHALL",
-            });
-        }
+        require_exact_arity(args, 1, "FLUSHALL", "FLUSHALL")?;
         self.flush_all_keys()?;
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -1745,12 +1588,12 @@ fn restore_from_dump_blob(
     response_out: &mut Vec<u8>,
     command_name: &'static str,
 ) -> Result<(), RequestExecutionError> {
-    if args.len() < 4 {
-        return Err(RequestExecutionError::WrongArity {
-            command: command_name,
-            expected: "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
-        });
-    }
+    ensure_min_arity(
+        args,
+        4,
+        command_name,
+        "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
+    )?;
 
     // SAFETY: caller guarantees argument backing memory validity.
     let key = unsafe { args[1].as_slice() }.to_vec();
@@ -1834,12 +1677,12 @@ fn parse_restore_options(
             continue;
         }
         if ascii_eq_ignore_case(token, b"IDLETIME") || ascii_eq_ignore_case(token, b"FREQ") {
-            if index + 1 >= args.len() {
-                return Err(RequestExecutionError::WrongArity {
-                    command: command_name,
-                    expected: "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
-                });
-            }
+            ensure_min_arity(
+                &args[index..],
+                2,
+                command_name,
+                "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
+            )?;
             // SAFETY: caller guarantees argument backing memory validity.
             parse_u64_ascii(unsafe { args[index + 1].as_slice() })
                 .ok_or(RequestExecutionError::ValueNotInteger)?;

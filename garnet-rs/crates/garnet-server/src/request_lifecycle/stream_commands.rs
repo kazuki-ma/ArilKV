@@ -6,12 +6,13 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 5 || ((args.len() - 3) % 2 != 0) {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XADD",
-                expected: "XADD key id field value [field value ...]",
-            });
-        }
+        ensure_paired_arity_after(
+            args,
+            5,
+            3,
+            "XADD",
+            "XADD key id field value [field value ...]",
+        )?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -47,12 +48,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XDEL",
-                expected: "XDEL key id [id ...]",
-            });
-        }
+        ensure_min_arity(args, 3, "XDEL", "XDEL key id [id ...]")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -86,22 +82,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XGROUP",
-                expected: "XGROUP <CREATE|SETID> key group id",
-            });
-        }
+        ensure_min_arity(args, 2, "XGROUP", "XGROUP <CREATE|SETID> key group id")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
 
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
-            if args.len() != 5 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "XGROUP",
-                    expected: "XGROUP CREATE key group id",
-                });
-            }
+            require_exact_arity(args, 5, "XGROUP", "XGROUP CREATE key group id")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let key = unsafe { args[2].as_slice() }.to_vec();
             // SAFETY: caller guarantees argument backing memory validity.
@@ -116,12 +102,7 @@ impl RequestProcessor {
         }
 
         if ascii_eq_ignore_case(subcommand, b"SETID") {
-            if args.len() != 5 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "XGROUP",
-                    expected: "XGROUP SETID key group id",
-                });
-            }
+            require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
             // SAFETY: caller guarantees argument backing memory validity.
             let key = unsafe { args[2].as_slice() }.to_vec();
             // SAFETY: caller guarantees argument backing memory validity.
@@ -143,12 +124,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 8 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XREADGROUP",
-                expected: "XREADGROUP GROUP group consumer [NOACK] [COUNT count] STREAMS key >",
-            });
-        }
+        ensure_min_arity(
+            args,
+            8,
+            "XREADGROUP",
+            "XREADGROUP GROUP group consumer [NOACK] [COUNT count] STREAMS key >",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         if !ascii_eq_ignore_case(unsafe { args[1].as_slice() }, b"GROUP") {
             return Err(RequestExecutionError::SyntaxError);
@@ -261,13 +242,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XREAD",
-                expected:
-                    "XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            4,
+            "XREAD",
+            "XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]",
+        )?;
 
         let mut count = usize::MAX;
         let mut index = 1usize;
@@ -374,12 +354,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XACK",
-                expected: "XACK key group id [id ...]",
-            });
-        }
+        ensure_min_arity(args, 4, "XACK", "XACK key group id [id ...]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -401,12 +376,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XPENDING",
-                expected: "XPENDING key group [start end count [consumer]]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            3,
+            "XPENDING",
+            "XPENDING key group [start end count [consumer]]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -426,12 +401,13 @@ impl RequestProcessor {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
         }
-        if args.len() < 6 || args.len() > 7 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XPENDING",
-                expected: "XPENDING key group [start end count [consumer]]",
-            });
-        }
+        ensure_ranged_arity(
+            args,
+            6,
+            7,
+            "XPENDING",
+            "XPENDING key group [start end count [consumer]]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let parsed_count = parse_i64_ascii(unsafe { args[5].as_slice() })
             .ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -447,12 +423,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 6 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XCLAIM",
-                expected: "XCLAIM key group consumer min-idle-time id [id ...] [options]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            6,
+            "XCLAIM",
+            "XCLAIM key group consumer min-idle-time id [id ...] [options]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -530,13 +506,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 6 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XAUTOCLAIM",
-                expected:
-                    "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            6,
+            "XAUTOCLAIM",
+            "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -589,12 +564,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XSETID",
-                expected: "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]",
-            });
-        }
+        ensure_min_arity(args, 3, "XSETID", "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -656,12 +626,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XINFO",
-                expected: "XINFO STREAM key FULL",
-            });
-        }
+        require_exact_arity(args, 4, "XINFO", "XINFO STREAM key FULL")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
@@ -691,12 +656,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XLEN",
-                expected: "XLEN key",
-            });
-        }
+        require_exact_arity(args, 2, "XLEN", "XLEN key")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         let count = self
@@ -711,12 +671,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 && args.len() != 6 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XRANGE",
-                expected: "XRANGE key start end [COUNT count]",
-            });
-        }
+        ensure_one_of_arities(
+            args,
+            &[4, 6],
+            "XRANGE",
+            "XRANGE key start end [COUNT count]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -747,12 +707,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 && args.len() != 6 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XREVRANGE",
-                expected: "XREVRANGE key end start [COUNT count]",
-            });
-        }
+        ensure_one_of_arities(
+            args,
+            &[4, 6],
+            "XREVRANGE",
+            "XREVRANGE key end start [COUNT count]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -783,12 +743,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "XTRIM",
-                expected: "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            4,
+            "XTRIM",
+            "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         let spec = parse_xtrim_spec(args)?;

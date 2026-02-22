@@ -52,7 +52,7 @@ mod zset_commands;
 
 #[allow(unused_imports)]
 use self::command_helpers::{
-    ensure_min_arity, ensure_paired_arity_after, ensure_ranged_arity,
+    ensure_min_arity, ensure_one_of_arities, ensure_paired_arity_after, ensure_ranged_arity,
     parse_scan_match_count_options, require_exact_arity,
 };
 use self::config::{

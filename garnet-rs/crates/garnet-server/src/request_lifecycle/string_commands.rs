@@ -93,12 +93,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         crate::debug_sync_point!("request_processor.handle_get.enter");
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "GET",
-                expected: "GET key",
-            });
-        }
+        require_exact_arity(args, 2, "GET", "GET key")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -135,12 +130,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "STRLEN",
-                expected: "STRLEN key",
-            });
-        }
+        require_exact_arity(args, 2, "STRLEN", "STRLEN key")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -197,9 +187,7 @@ impl RequestProcessor {
         } else {
             ("GETRANGE", "GETRANGE key start end")
         };
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity { command, expected });
-        }
+        require_exact_arity(args, 4, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let start = parse_i64_ascii(unsafe { args[2].as_slice() })
@@ -246,12 +234,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "GETBIT",
-                expected: "GETBIT key offset",
-            });
-        }
+        require_exact_arity(args, 3, "GETBIT", "GETBIT key offset")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let offset = parse_i64_ascii(unsafe { args[2].as_slice() })
             .ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -286,12 +269,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SETBIT",
-                expected: "SETBIT key offset value",
-            });
-        }
+        require_exact_arity(args, 4, "SETBIT", "SETBIT key offset value")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let offset = parse_i64_ascii(unsafe { args[2].as_slice() })
             .ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -353,12 +331,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SETRANGE",
-                expected: "SETRANGE key offset value",
-            });
-        }
+        require_exact_arity(args, 4, "SETRANGE", "SETRANGE key offset value")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let offset = parse_i64_ascii(unsafe { args[2].as_slice() })
             .ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -407,12 +380,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 && args.len() != 4 && args.len() != 5 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "BITCOUNT",
-                expected: "BITCOUNT key [start end [BYTE|BIT]]",
-            });
-        }
+        ensure_one_of_arities(
+            args,
+            &[2, 4, 5],
+            "BITCOUNT",
+            "BITCOUNT key [start end [BYTE|BIT]]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         self.expire_key_if_needed(&key)?;
@@ -487,12 +460,13 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 || args.len() > 6 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "BITPOS",
-                expected: "BITPOS key bit [start [end [BYTE|BIT]]]",
-            });
-        }
+        ensure_ranged_arity(
+            args,
+            3,
+            6,
+            "BITPOS",
+            "BITPOS key bit [start [end [BYTE|BIT]]]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -611,21 +585,13 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "BITOP",
-                expected: "BITOP operation destkey key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 4, "BITOP", "BITOP operation destkey key [key ...]")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let operation = parse_bitop_operation(unsafe { args[1].as_slice() })
             .ok_or(RequestExecutionError::SyntaxError)?;
         if operation == BitopOperation::Not && args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "BITOP",
-                expected: "BITOP NOT destkey key",
-            });
+            require_exact_arity(args, 4, "BITOP", "BITOP NOT destkey key")?;
         }
 
         // SAFETY: caller guarantees argument backing memory validity.
@@ -687,16 +653,15 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
         read_only: bool,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: if read_only { "BITFIELD_RO" } else { "BITFIELD" },
-                expected: if read_only {
-                    "BITFIELD_RO key GET encoding offset [GET encoding offset ...]"
-                } else {
-                    "BITFIELD key [GET|SET|INCRBY|OVERFLOW ...]"
-                },
-            });
-        }
+        let (command, expected) = if read_only {
+            (
+                "BITFIELD_RO",
+                "BITFIELD_RO key GET encoding offset [GET encoding offset ...]",
+            )
+        } else {
+            ("BITFIELD", "BITFIELD key [GET|SET|INCRBY|OVERFLOW ...]")
+        };
+        ensure_min_arity(args, 2, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -876,12 +841,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "LCS",
-                expected: "LCS key1 key2 [LEN | IDX [MINMATCHLEN min-match-len] [WITHMATCHLEN]]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            3,
+            "LCS",
+            "LCS key1 key2 [LEN | IDX [MINMATCHLEN min-match-len] [WITHMATCHLEN]]",
+        )?;
 
         let options = parse_lcs_options(args)?;
         // SAFETY: caller guarantees argument backing memory validity.
@@ -949,13 +914,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
         read_only: bool,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: if read_only { "SORT_RO" } else { "SORT" },
-                expected:
-                    "SORT key [BY pattern] [LIMIT offset count] [GET pattern [GET pattern ...]] [ASC|DESC] [ALPHA] [STORE destination]",
-            });
-        }
+        let command = if read_only { "SORT_RO" } else { "SORT" };
+        ensure_min_arity(
+            args,
+            2,
+            command,
+            "SORT key [BY pattern] [LIMIT offset count] [GET pattern [GET pattern ...]] [ASC|DESC] [ALPHA] [STORE destination]",
+        )?;
 
         let options = parse_sort_options(args, read_only)?;
         // SAFETY: caller guarantees argument backing memory validity.
@@ -1115,12 +1080,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "APPEND",
-                expected: "APPEND key value",
-            });
-        }
+        require_exact_arity(args, 3, "APPEND", "APPEND key value")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -1254,12 +1214,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "INCRBYFLOAT",
-                expected: "INCRBYFLOAT key increment",
-            });
-        }
+        require_exact_arity(args, 3, "INCRBYFLOAT", "INCRBYFLOAT key increment")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let increment = parse_f64_ascii(unsafe { args[2].as_slice() })
@@ -1310,12 +1265,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         crate::debug_sync_point!("request_processor.handle_set.enter");
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SET",
-                expected: "SET key value",
-            });
-        }
+        ensure_min_arity(args, 3, "SET", "SET key value")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -1421,12 +1371,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SETNX",
-                expected: "SETNX key value",
-            });
-        }
+        require_exact_arity(args, 3, "SETNX", "SETNX key value")?;
         let set_command = ArgSlice::from_slice(b"SET")
             .expect("static SET command name must fit within ArgSlice length");
         let nx_option =
@@ -1447,12 +1392,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SETEX",
-                expected: "SETEX key seconds value",
-            });
-        }
+        require_exact_arity(args, 4, "SETEX", "SETEX key seconds value")?;
         let set_command = ArgSlice::from_slice(b"SET")
             .expect("static SET command name must fit within ArgSlice length");
         let ex_option =
@@ -1466,12 +1406,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 4 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PSETEX",
-                expected: "PSETEX key milliseconds value",
-            });
-        }
+        require_exact_arity(args, 4, "PSETEX", "PSETEX key milliseconds value")?;
         let set_command = ArgSlice::from_slice(b"SET")
             .expect("static SET command name must fit within ArgSlice length");
         let px_option =
@@ -1485,12 +1420,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "GETSET",
-                expected: "GETSET key value",
-            });
-        }
+        require_exact_arity(args, 3, "GETSET", "GETSET key value")?;
 
         let get_command = ArgSlice::from_slice(b"GET")
             .expect("static GET command name must fit within ArgSlice length");
@@ -1514,12 +1444,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "GETDEL",
-                expected: "GETDEL key",
-            });
-        }
+        require_exact_arity(args, 2, "GETDEL", "GETDEL key")?;
 
         let get_command = ArgSlice::from_slice(b"GET")
             .expect("static GET command name must fit within ArgSlice length");
@@ -1546,12 +1471,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "DEL",
-                expected: "DEL key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 2, "DEL", "DEL key [key ...]")?;
 
         let keys: Vec<Vec<u8>> = args[1..]
             .iter()
@@ -1602,12 +1522,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "TOUCH",
-                expected: "TOUCH key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 2, "TOUCH", "TOUCH key [key ...]")?;
 
         let mut touched = 0i64;
         for arg in &args[1..] {
@@ -1627,12 +1542,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "UNLINK",
-                expected: "UNLINK key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 2, "UNLINK", "UNLINK key [key ...]")?;
         self.handle_del(args, response_out)
     }
 
@@ -1658,16 +1568,12 @@ impl RequestProcessor {
         only_if_absent: bool,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: if only_if_absent { "RENAMENX" } else { "RENAME" },
-                expected: if only_if_absent {
-                    "RENAMENX key newkey"
-                } else {
-                    "RENAME key newkey"
-                },
-            });
-        }
+        let (command, expected) = if only_if_absent {
+            ("RENAMENX", "RENAMENX key newkey")
+        } else {
+            ("RENAME", "RENAME key newkey")
+        };
+        require_exact_arity(args, 3, command, expected)?;
         // SAFETY: caller guarantees argument backing memory validity.
         let source = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -1712,12 +1618,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "COPY",
-                expected: "COPY source destination [DB destination-db] [REPLACE]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            3,
+            "COPY",
+            "COPY source destination [DB destination-db] [REPLACE]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let source = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
@@ -1782,12 +1688,12 @@ impl RequestProcessor {
         delta: i64,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: if delta > 0 { "INCR" } else { "DECR" },
-                expected: if delta > 0 { "INCR key" } else { "DECR key" },
-            });
-        }
+        let (command, expected) = if delta > 0 {
+            ("INCR", "INCR key")
+        } else {
+            ("DECR", "DECR key")
+        };
+        require_exact_arity(args, 2, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -1805,9 +1711,7 @@ impl RequestProcessor {
         } else {
             ("INCRBY", "INCRBY key increment")
         };
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity { command, expected });
-        }
+        require_exact_arity(args, 3, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let amount = parse_i64_ascii(unsafe { args[2].as_slice() })
@@ -1885,12 +1789,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "EXISTS",
-                expected: "EXISTS key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 2, "EXISTS", "EXISTS key [key ...]")?;
 
         let mut exists = 0i64;
         for arg in &args[1..] {
@@ -1911,12 +1810,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "TYPE",
-                expected: "TYPE key",
-            });
-        }
+        require_exact_arity(args, 2, "TYPE", "TYPE key")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -1941,12 +1835,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "MGET",
-                expected: "MGET key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 2, "MGET", "MGET key [key ...]")?;
 
         response_out.push(b'*');
         response_out.extend_from_slice((args.len() - 1).to_string().as_bytes());
@@ -1969,12 +1858,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 || args.len() % 2 == 0 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "MSET",
-                expected: "MSET key value [key value ...]",
-            });
-        }
+        ensure_paired_arity_after(args, 3, 1, "MSET", "MSET key value [key value ...]")?;
 
         for pair in args[1..].chunks_exact(2) {
             // SAFETY: caller guarantees argument backing memory validity.
@@ -1993,12 +1877,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 || args.len() % 2 == 0 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "MSETNX",
-                expected: "MSETNX key value [key value ...]",
-            });
-        }
+        ensure_paired_arity_after(args, 3, 1, "MSETNX", "MSETNX key value [key value ...]")?;
 
         let key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> = args[1..]
             .chunks_exact(2)
@@ -2032,12 +1911,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PFADD",
-                expected: "PFADD key element [element ...]",
-            });
-        }
+        ensure_min_arity(args, 3, "PFADD", "PFADD key element [element ...]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         let mut set = load_pf_set_for_key(self, &key)?.unwrap_or_default();
@@ -2057,12 +1931,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PFCOUNT",
-                expected: "PFCOUNT key [key ...]",
-            });
-        }
+        ensure_min_arity(args, 2, "PFCOUNT", "PFCOUNT key [key ...]")?;
         let mut cardinality_union = BTreeSet::new();
         for key_arg in &args[1..] {
             // SAFETY: caller guarantees argument backing memory validity.
@@ -2080,12 +1949,12 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PFMERGE",
-                expected: "PFMERGE destkey sourcekey [sourcekey ...]",
-            });
-        }
+        ensure_min_arity(
+            args,
+            3,
+            "PFMERGE",
+            "PFMERGE destkey sourcekey [sourcekey ...]",
+        )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let destination = unsafe { args[1].as_slice() }.to_vec();
         let _ = load_pf_set_for_key(self, &destination)?;
@@ -2108,41 +1977,21 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PFDEBUG",
-                expected: "PFDEBUG <ENCODING|TODENSE|HELP> [key]",
-            });
-        }
+        ensure_min_arity(args, 2, "PFDEBUG", "PFDEBUG <ENCODING|TODENSE|HELP> [key]")?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
         if ascii_eq_ignore_case(subcommand, b"HELP") {
-            if args.len() != 2 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "PFDEBUG",
-                    expected: "PFDEBUG HELP",
-                });
-            }
+            require_exact_arity(args, 2, "PFDEBUG", "PFDEBUG HELP")?;
             append_bulk_array(response_out, &PFDEBUG_HELP_LINES);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "PFDEBUG",
-                    expected: "PFDEBUG ENCODING key",
-                });
-            }
+            require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG ENCODING key")?;
             append_bulk_string(response_out, b"sparse");
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"TODENSE") {
-            if args.len() != 3 {
-                return Err(RequestExecutionError::WrongArity {
-                    command: "PFDEBUG",
-                    expected: "PFDEBUG TODENSE key",
-                });
-            }
+            require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG TODENSE key")?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -2154,12 +2003,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 1 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PFSELFTEST",
-                expected: "PFSELFTEST",
-            });
-        }
+        require_exact_arity(args, 1, "PFSELFTEST", "PFSELFTEST")?;
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -2261,9 +2105,7 @@ impl RequestProcessor {
         } else {
             ("EXPIRE", "EXPIRE key seconds")
         };
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity { command, expected });
-        }
+        require_exact_arity(args, 3, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let amount = parse_i64_ascii(unsafe { args[2].as_slice() })
@@ -2319,9 +2161,7 @@ impl RequestProcessor {
         } else {
             ("EXPIREAT", "EXPIREAT key seconds-unix-time")
         };
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity { command, expected });
-        }
+        require_exact_arity(args, 3, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let amount = parse_i64_ascii(unsafe { args[2].as_slice() })
@@ -2459,9 +2299,7 @@ impl RequestProcessor {
         } else {
             ("TTL", "TTL key")
         };
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity { command, expected });
-        }
+        require_exact_arity(args, 2, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -2505,9 +2343,7 @@ impl RequestProcessor {
         } else {
             ("EXPIRETIME", "EXPIRETIME key")
         };
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity { command, expected });
-        }
+        require_exact_arity(args, 2, command, expected)?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -2553,12 +2389,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "PERSIST",
-                expected: "PERSIST key",
-            });
-        }
+        require_exact_arity(args, 2, "PERSIST", "PERSIST key")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -2604,12 +2435,7 @@ enum GetExAction {
 }
 
 fn parse_getex_action(args: &[ArgSlice]) -> Result<GetExAction, RequestExecutionError> {
-    if args.len() < 2 {
-        return Err(RequestExecutionError::WrongArity {
-            command: "GETEX",
-            expected: "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]",
-        });
-    }
+    ensure_min_arity(args, 2, "GETEX", "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]")?;
     if args.len() == 2 {
         return Ok(GetExAction::KeepTtl);
     }
@@ -2621,12 +2447,7 @@ fn parse_getex_action(args: &[ArgSlice]) -> Result<GetExAction, RequestExecution
         }
         return Err(RequestExecutionError::SyntaxError);
     }
-    if args.len() != 4 {
-        return Err(RequestExecutionError::WrongArity {
-            command: "GETEX",
-            expected: "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]",
-        });
-    }
+    require_exact_arity(args, 4, "GETEX", "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]")?;
 
     // SAFETY: caller guarantees argument backing memory validity.
     let option = unsafe { args[2].as_slice() };

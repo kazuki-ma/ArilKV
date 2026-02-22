@@ -47,6 +47,19 @@ pub(super) fn ensure_ranged_arity(
 }
 
 #[inline]
+pub(super) fn ensure_one_of_arities(
+    args: &[ArgSlice],
+    allowed_counts: &[usize],
+    command: &'static str,
+    expected: &'static str,
+) -> Result<(), RequestExecutionError> {
+    if allowed_counts.contains(&args.len()) {
+        return Ok(());
+    }
+    Err(RequestExecutionError::WrongArity { command, expected })
+}
+
+#[inline]
 pub(super) fn ensure_paired_arity_after(
     args: &[ArgSlice],
     min_count: usize,

@@ -6199,7 +6199,8 @@ fn migrate_command_validates_arguments_before_disabled_response() {
     assert_eq!(response, b"-ERR MIGRATE is disabled in this server\r\n");
 
     response.clear();
-    let empty_key_without_keys = encode_resp(&[b"MIGRATE", b"127.0.0.1", b"6379", b"", b"0", b"1000"]);
+    let empty_key_without_keys =
+        encode_resp(&[b"MIGRATE", b"127.0.0.1", b"6379", b"", b"0", b"1000"]);
     let meta = parse_resp_command_arg_slices(&empty_key_without_keys, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
