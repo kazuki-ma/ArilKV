@@ -23,8 +23,10 @@ When adding Redis command behavior, update all of the following:
   - pop-family commands can return bulk-string null (`$-1`) or null-array (`*-1`) depending on command.
 - Commands with `numkeys` and/or trailing options (`timeout`, `COUNT`) do not fit `KeyAccessPattern::AllKeysFromArg1`.
   - In that case, prefer `KeyAccessPattern::None` until key-spec metadata is expanded.
-- Blocking commands in this implementation currently share non-blocking execution semantics.
-  - Parse and validate timeout strictly, but return immediately when no value is available.
+- Blocking commands are intentionally implemented via owner-thread polling.
+  - Execute on owner thread immediately.
+  - If the command returns empty-blocking response (`$-1` / `*-1`), sleep briefly and retry until timeout/deadline.
+  - No put-side wakeup registration is used for these commands in this phase (zero-overhead writes).
 
 ## Required Validation Path
 

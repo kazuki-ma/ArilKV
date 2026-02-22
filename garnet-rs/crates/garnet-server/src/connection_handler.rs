@@ -1,15 +1,17 @@
 use std::io;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use garnet_cluster::ClusterConfigStore;
 use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::time::sleep;
 
 use crate::command_dispatch::dispatch_from_arg_slices;
 use crate::command_spec::{
-    command_has_valid_arity, command_is_mutating, command_transaction_control,
+    command_has_valid_arity, command_is_mutating, command_transaction_control, CommandId,
     TransactionControlCommand,
 };
 use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
@@ -27,6 +29,7 @@ const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
+const BLOCKING_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) async fn handle_connection(
     mut stream: TcpStream,
@@ -324,16 +327,18 @@ pub(crate) async fn handle_connection(
                             consumed += frame_bytes_consumed;
                             continue;
                         }
-                        match execute_frame_on_owner_thread(
+                        match execute_blocking_frame_on_owner_thread(
                             &processor,
                             &owner_thread_pool,
                             &args[..argument_count],
                             command,
                             frame,
-                        ) {
-                            Ok(frame_response) => {
+                        )
+                        .await
+                        {
+                            Ok((frame_response, should_replicate)) => {
                                 responses.extend_from_slice(&frame_response);
-                                if command_is_mutating(command) {
+                                if should_replicate {
                                     propagate_frame = true;
                                 }
                             }
@@ -380,6 +385,118 @@ pub(crate) async fn handle_connection(
             stream.write_all(&responses).await?;
         }
     }
+}
+
+async fn execute_blocking_frame_on_owner_thread(
+    processor: &Arc<RequestProcessor>,
+    owner_thread_pool: &Arc<ShardOwnerThreadPool>,
+    args: &[ArgSlice],
+    command: CommandId,
+    frame: &[u8],
+) -> Result<(Vec<u8>, bool), OwnerThreadExecutionError> {
+    let deadline = blocking_timeout_deadline(command, args);
+    loop {
+        let frame_response = execute_frame_on_owner_thread(
+            processor,
+            owner_thread_pool,
+            args,
+            command,
+            frame,
+        )?;
+
+        let mutating_command = command_is_mutating(command);
+        let should_replicate = if is_blocking_command(command) {
+            mutating_command && !is_blocking_empty_response(&frame_response)
+        } else {
+            mutating_command
+        };
+        if !is_blocking_command(command) || !is_blocking_empty_response(&frame_response) {
+            return Ok((frame_response, should_replicate));
+        }
+
+        if let Some(deadline_time) = deadline {
+            let now = Instant::now();
+            if now >= deadline_time {
+                return Ok((frame_response, should_replicate));
+            }
+
+            let remaining = deadline_time.duration_since(now);
+            let sleep_for = if remaining < BLOCKING_COMMAND_POLL_INTERVAL {
+                remaining
+            } else {
+                BLOCKING_COMMAND_POLL_INTERVAL
+            };
+            sleep(sleep_for).await;
+        } else {
+            sleep(BLOCKING_COMMAND_POLL_INTERVAL).await;
+        }
+    }
+}
+
+fn blocking_timeout_deadline(command: CommandId, args: &[ArgSlice]) -> Option<Instant> {
+    if !is_blocking_command(command) {
+        return None;
+    }
+
+    let timeout_seconds = match command {
+        CommandId::Blmpop | CommandId::Bzmpop => parse_blocking_timeout_arg(args, 1)?,
+        CommandId::Blmove | CommandId::Brpoplpush => {
+            let timeout_index = args.len().checked_sub(1)?;
+            parse_blocking_timeout_arg(args, timeout_index)?
+        }
+        CommandId::Blpop
+        | CommandId::Brpop
+        | CommandId::Bzpopmin
+        | CommandId::Bzpopmax => {
+            let timeout_index = args.len().checked_sub(1)?;
+            parse_blocking_timeout_arg(args, timeout_index)?
+        }
+        _ => return None,
+    };
+
+    if timeout_seconds <= 0.0 {
+        return None;
+    }
+
+    Some(Instant::now() + Duration::from_secs_f64(timeout_seconds))
+}
+
+fn is_blocking_empty_response(frame_response: &[u8]) -> bool {
+    frame_response == b"*-1\r\n" || frame_response == b"$-1\r\n"
+}
+
+fn is_blocking_command(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Blmpop
+            | CommandId::Blpop
+            | CommandId::Brpop
+            | CommandId::Blmove
+            | CommandId::Brpoplpush
+            | CommandId::Bzpopmin
+            | CommandId::Bzpopmax
+            | CommandId::Bzmpop,
+    )
+}
+
+fn parse_blocking_timeout_arg(args: &[ArgSlice], timeout_index: usize) -> Option<f64> {
+    // SAFETY: The argument slice was parsed from a live request frame and stays valid
+    // while the request is being executed.
+    let timeout_slice = unsafe { args.get(timeout_index)?.as_slice() };
+    if timeout_slice.is_empty() {
+        return None;
+    }
+
+    let timeout = std::str::from_utf8(timeout_slice)
+        .ok()?
+        .parse::<f64>()
+        .ok()?;
+
+    if !timeout.is_finite() || timeout < 0.0 {
+        return None;
+    }
+
+    Some(timeout)
 }
 
 pub(crate) fn build_owner_thread_pool(

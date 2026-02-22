@@ -499,6 +499,78 @@ async fn tcp_inline_pipeline_executes_basic_crud_commands() {
 }
 
 #[tokio::test]
+async fn blocking_blpop_wakes_by_polling_from_another_connection() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$1\r\nk\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+
+    let mut probe = [0u8; 1];
+    assert!(
+        tokio::time::timeout(Duration::from_millis(20), waiter.read(&mut probe))
+            .await
+            .is_err(),
+        "blocking BLPOP should not return before producer pushes",
+    );
+
+    producer
+        .write_all(b"*3\r\n$5\r\nRPUSH\r\n$1\r\nk\r\n$1\r\nv\r\n")
+        .await
+        .unwrap();
+
+    let response = read_exact_with_timeout(&mut waiter, 18, Duration::from_secs(1)).await;
+    assert_eq!(response, b"*2\r\n$1\r\nk\r\n$1\r\nv\r\n");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_blpop_respects_timeout_without_updates() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$1\r\nk\r\n$4\r\n0.05\r\n")
+        .await
+        .unwrap();
+
+    let response = read_exact_with_timeout(&mut client, 5, Duration::from_secs(1)).await;
+    assert_eq!(response, b"*-1\r\n");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let master_addr = master_listener.local_addr().unwrap();
@@ -3551,6 +3623,19 @@ async fn send_and_expect(client: &mut TcpStream, request: &[u8], expected_respon
         .unwrap()
         .unwrap();
     assert_eq!(actual, expected_response);
+}
+
+async fn read_exact_with_timeout(
+    stream: &mut TcpStream,
+    expected_len: usize,
+    timeout: Duration,
+) -> Vec<u8> {
+    let mut response = vec![0u8; expected_len];
+    tokio::time::timeout(timeout, stream.read_exact(&mut response))
+        .await
+        .unwrap()
+        .unwrap();
+    response
 }
 
 fn encode_resp_command(parts: &[&[u8]]) -> Vec<u8> {
