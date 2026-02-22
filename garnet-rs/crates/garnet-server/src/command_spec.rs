@@ -148,6 +148,11 @@ pub enum CommandId {
     Watch,
     Unwatch,
     Asking,
+    Acl,
+    Cluster,
+    Failover,
+    Monitor,
+    Shutdown,
     Hello,
     Lastsave,
     Auth,
@@ -1679,6 +1684,56 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Acl,
+        name_upper: b"ACL",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Cluster,
+        name_upper: b"CLUSTER",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Failover,
+        name_upper: b"FAILOVER",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Monitor,
+        name_upper: b"MONITOR",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Shutdown,
+        name_upper: b"SHUTDOWN",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Hello,
         name_upper: b"HELLO",
         key_access_pattern: KeyAccessPattern::None,
@@ -2450,6 +2505,20 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Lolwut, 1));
         assert!(command_has_valid_arity(CommandId::Lolwut, 3));
         assert!(!command_has_valid_arity(CommandId::Lolwut, 0));
+        assert!(command_has_valid_arity(CommandId::Acl, 2));
+        assert!(command_has_valid_arity(CommandId::Acl, 5));
+        assert!(!command_has_valid_arity(CommandId::Acl, 1));
+        assert!(command_has_valid_arity(CommandId::Cluster, 2));
+        assert!(command_has_valid_arity(CommandId::Cluster, 4));
+        assert!(!command_has_valid_arity(CommandId::Cluster, 1));
+        assert!(command_has_valid_arity(CommandId::Failover, 1));
+        assert!(command_has_valid_arity(CommandId::Failover, 4));
+        assert!(!command_has_valid_arity(CommandId::Failover, 0));
+        assert!(command_has_valid_arity(CommandId::Monitor, 1));
+        assert!(!command_has_valid_arity(CommandId::Monitor, 2));
+        assert!(command_has_valid_arity(CommandId::Shutdown, 1));
+        assert!(command_has_valid_arity(CommandId::Shutdown, 3));
+        assert!(!command_has_valid_arity(CommandId::Shutdown, 0));
         assert!(!command_has_valid_arity(CommandId::Memory, 1));
         assert!(command_has_valid_arity(CommandId::Memory, 2));
         assert!(command_has_valid_arity(CommandId::Memory, 3));
@@ -2738,6 +2807,11 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Readwrite), b"READWRITE");
         assert_eq!(command_name_upper(CommandId::Reset), b"RESET");
         assert_eq!(command_name_upper(CommandId::Lolwut), b"LOLWUT");
+        assert_eq!(command_name_upper(CommandId::Acl), b"ACL");
+        assert_eq!(command_name_upper(CommandId::Cluster), b"CLUSTER");
+        assert_eq!(command_name_upper(CommandId::Failover), b"FAILOVER");
+        assert_eq!(command_name_upper(CommandId::Monitor), b"MONITOR");
+        assert_eq!(command_name_upper(CommandId::Shutdown), b"SHUTDOWN");
         assert_eq!(command_name_upper(CommandId::Expireat), b"EXPIREAT");
         assert_eq!(command_name_upper(CommandId::Pexpiretime), b"PEXPIRETIME");
         assert_eq!(command_name_upper(CommandId::Getdel), b"GETDEL");

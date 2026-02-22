@@ -48,6 +48,31 @@ const SLOWLOG_HELP_LINES: [&[u8]; 12] = [
     b"HELP",
     b"    Print this help.",
 ];
+const ACL_HELP_LINES: [&[u8]; 13] = [
+    b"ACL <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"CAT [<category>]",
+    b"    List ACL categories and the commands inside them.",
+    b"GETUSER <username>",
+    b"    Get user details.",
+    b"LIST",
+    b"    List ACL rules in ACL file format.",
+    b"SETUSER <username> [<rule> ...]",
+    b"    Modify ACL rules for a user.",
+    b"USERS",
+    b"    List all configured users.",
+    b"WHOAMI",
+    b"    Return the current connection username.",
+];
+const ACL_CATEGORIES: [&[u8]; 8] = [
+    b"keyspace",
+    b"read",
+    b"write",
+    b"string",
+    b"hash",
+    b"list",
+    b"set",
+    b"stream",
+];
 
 impl RequestProcessor {
     pub(super) fn handle_quit(
@@ -933,6 +958,180 @@ impl RequestProcessor {
             return Ok(());
         }
         Err(RequestExecutionError::UnknownCommand)
+    }
+
+    pub(super) fn handle_acl(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "ACL", "ACL <subcommand> [arguments...]")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "ACL", "ACL HELP")?;
+            append_bulk_array(response_out, &ACL_HELP_LINES);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"WHOAMI") {
+            require_exact_arity(args, 2, "ACL", "ACL WHOAMI")?;
+            append_bulk_string(response_out, b"default");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"USERS") {
+            require_exact_arity(args, 2, "ACL", "ACL USERS")?;
+            append_bulk_array(response_out, &[b"default"]);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"LIST") {
+            require_exact_arity(args, 2, "ACL", "ACL LIST")?;
+            append_bulk_array(
+                response_out,
+                &[b"user default on nopass sanitize-payload ~* &* +@all"],
+            );
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SETUSER") {
+            ensure_min_arity(args, 3, "ACL", "ACL SETUSER username [rule ...]")?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"CAT") {
+            if args.len() == 2 {
+                append_bulk_array(response_out, &ACL_CATEGORIES);
+                return Ok(());
+            }
+            require_exact_arity(args, 3, "ACL", "ACL CAT [category]")?;
+            append_bulk_array(response_out, &[]);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GETUSER") {
+            require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let username = unsafe { args[2].as_slice() };
+            if !ascii_eq_ignore_case(username, b"default") {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            append_bulk_array(
+                response_out,
+                &[
+                    b"flags",
+                    b"on",
+                    b"nopass",
+                    b"commands",
+                    b"+@all",
+                    b"keys",
+                    b"~*",
+                    b"channels",
+                    b"&*",
+                ],
+            );
+            return Ok(());
+        }
+        Err(RequestExecutionError::UnknownCommand)
+    }
+
+    pub(super) fn handle_cluster(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "CLUSTER", "CLUSTER <subcommand> [arguments...]")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"KEYSLOT") {
+            require_exact_arity(args, 3, "CLUSTER", "CLUSTER KEYSLOT key")?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let key = unsafe { args[2].as_slice() };
+            append_integer(response_out, i64::from(redis_hash_slot(key)));
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"INFO") {
+            require_exact_arity(args, 2, "CLUSTER", "CLUSTER INFO")?;
+            append_bulk_string(
+                response_out,
+                b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_known_nodes:1\r\n",
+            );
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"MYID") {
+            require_exact_arity(args, 2, "CLUSTER", "CLUSTER MYID")?;
+            append_bulk_string(response_out, b"0000000000000000000000000000000000000000");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"NODES") {
+            require_exact_arity(args, 2, "CLUSTER", "CLUSTER NODES")?;
+            append_bulk_string(
+                response_out,
+                b"0000000000000000000000000000000000000000 127.0.0.1:6379@16379 myself,master - 0 0 1 connected 0-16383\n",
+            );
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SLOTS") {
+            require_exact_arity(args, 2, "CLUSTER", "CLUSTER SLOTS")?;
+            response_out.extend_from_slice(b"*1\r\n*3\r\n");
+            append_integer(response_out, 0);
+            append_integer(response_out, 16_383);
+            response_out.extend_from_slice(b"*2\r\n");
+            append_bulk_string(response_out, b"127.0.0.1");
+            append_integer(response_out, 6379);
+            return Ok(());
+        }
+        Err(RequestExecutionError::ClusterSupportDisabled)
+    }
+
+    pub(super) fn handle_failover(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            1,
+            "FAILOVER",
+            "FAILOVER [TO host port] [FORCE] [TIMEOUT ms]",
+        )?;
+        Err(RequestExecutionError::ClusterSupportDisabled)
+    }
+
+    pub(super) fn handle_monitor(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 1, "MONITOR", "MONITOR")?;
+        append_simple_string(response_out, b"OK");
+        Ok(())
+    }
+
+    pub(super) fn handle_shutdown(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            1,
+            "SHUTDOWN",
+            "SHUTDOWN [NOSAVE|SAVE] [NOW|FORCE|ABORT]",
+        )?;
+        for option in &args[1..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { option.as_slice() };
+            if ascii_eq_ignore_case(token, b"SAVE")
+                || ascii_eq_ignore_case(token, b"NOSAVE")
+                || ascii_eq_ignore_case(token, b"NOW")
+                || ascii_eq_ignore_case(token, b"FORCE")
+                || ascii_eq_ignore_case(token, b"ABORT")
+            {
+                continue;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        Err(RequestExecutionError::CommandDisabled {
+            command: "SHUTDOWN",
+        })
     }
 
     pub(super) fn handle_function(

@@ -27,6 +27,9 @@ pub enum RequestExecutionError {
     StorageBusy,
     StorageCapacityExceeded,
     StorageFailure,
+    CommandDisabled {
+        command: &'static str,
+    },
     ValueNotInteger,
     ValueNotFloat,
     ValueOutOfRange,
@@ -66,6 +69,10 @@ impl RequestExecutionError {
                 "ERR storage capacity exceeded (increase max in-memory pages)",
             ),
             Self::StorageFailure => append_error(response_out, "ERR internal storage failure"),
+            Self::CommandDisabled { command } => append_error(
+                response_out,
+                &format!("ERR {} is disabled in this server", command),
+            ),
             Self::ValueNotInteger => {
                 append_error(response_out, "ERR value is not an integer or out of range")
             }

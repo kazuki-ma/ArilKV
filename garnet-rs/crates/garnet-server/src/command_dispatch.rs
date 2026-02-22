@@ -300,6 +300,11 @@ mod tests {
         assert_eq!(dispatch_command_name(b"watch"), CommandId::Watch);
         assert_eq!(dispatch_command_name(b"UNWATCH"), CommandId::Unwatch);
         assert_eq!(dispatch_command_name(b"asking"), CommandId::Asking);
+        assert_eq!(dispatch_command_name(b"ACL"), CommandId::Acl);
+        assert_eq!(dispatch_command_name(b"cluster"), CommandId::Cluster);
+        assert_eq!(dispatch_command_name(b"FAILOVER"), CommandId::Failover);
+        assert_eq!(dispatch_command_name(b"monitor"), CommandId::Monitor);
+        assert_eq!(dispatch_command_name(b"SHUTDOWN"), CommandId::Shutdown);
         assert_eq!(dispatch_command_name(b"HELLO"), CommandId::Hello);
         assert_eq!(dispatch_command_name(b"LASTSAVE"), CommandId::Lastsave);
         assert_eq!(dispatch_command_name(b"auth"), CommandId::Auth);

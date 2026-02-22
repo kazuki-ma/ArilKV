@@ -5173,6 +5173,85 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
 }
 
 #[test]
+fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let acl_whoami = b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n";
+    let meta = parse_resp_command_arg_slices(acl_whoami, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$7\r\ndefault\r\n");
+
+    response.clear();
+    let acl_users = b"*2\r\n$3\r\nACL\r\n$5\r\nUSERS\r\n";
+    let meta = parse_resp_command_arg_slices(acl_users, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*1\r\n$7\r\ndefault\r\n");
+
+    response.clear();
+    let acl_setuser = b"*4\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$7\r\ndefault\r\n$2\r\non\r\n";
+    let meta = parse_resp_command_arg_slices(acl_setuser, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let cluster_keyslot = b"*3\r\n$7\r\nCLUSTER\r\n$7\r\nKEYSLOT\r\n$5\r\nuser1\r\n";
+    let meta = parse_resp_command_arg_slices(cluster_keyslot, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        parse_integer_response(&response) as u16,
+        redis_hash_slot(b"user1")
+    );
+
+    response.clear();
+    let cluster_info = b"*2\r\n$7\r\nCLUSTER\r\n$4\r\nINFO\r\n";
+    let meta = parse_resp_command_arg_slices(cluster_info, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let cluster_info_text = std::str::from_utf8(&response).unwrap();
+    assert!(cluster_info_text.contains("cluster_slots_assigned:16384"));
+
+    response.clear();
+    let failover = b"*1\r\n$8\r\nFAILOVER\r\n";
+    let meta = parse_resp_command_arg_slices(failover, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR This instance has cluster support disabled\r\n"
+    );
+
+    response.clear();
+    let monitor = b"*1\r\n$7\r\nMONITOR\r\n";
+    let meta = parse_resp_command_arg_slices(monitor, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let shutdown = b"*2\r\n$8\r\nSHUTDOWN\r\n$6\r\nNOSAVE\r\n";
+    let meta = parse_resp_command_arg_slices(shutdown, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR SHUTDOWN is disabled in this server\r\n");
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];
