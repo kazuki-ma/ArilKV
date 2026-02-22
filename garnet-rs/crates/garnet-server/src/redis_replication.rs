@@ -128,16 +128,22 @@ impl RedisReplicationCoordinator {
         response.extend_from_slice(
             format!("+FULLRESYNC {} {}\r\n", self.inner.repl_id, repl_offset).as_bytes(),
         );
+        response.extend_from_slice(self.build_sync_payload().as_slice());
+        response
+    }
+
+    pub(crate) fn build_sync_payload(&self) -> Vec<u8> {
+        let mut response = Vec::with_capacity(64 + self.inner.empty_rdb_payload.len());
         response
             .extend_from_slice(format!("${}\r\n", self.inner.empty_rdb_payload.len()).as_bytes());
         response.extend_from_slice(&self.inner.empty_rdb_payload);
-        response.extend_from_slice(b"\r\n");
         response
     }
 
     pub(crate) async fn serve_downstream_replica(&self, mut stream: TcpStream) -> io::Result<()> {
         let mut subscriber = self.inner.downstream_tx.subscribe();
         let mut inbound_buf = [0u8; 1024];
+        write_resp_command(&mut stream, &[b"SELECT", b"0"]).await?;
 
         loop {
             tokio::select! {

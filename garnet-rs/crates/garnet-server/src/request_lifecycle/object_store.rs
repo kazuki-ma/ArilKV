@@ -52,11 +52,13 @@ impl RequestProcessor {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
                 self.set_string_expiration_deadline(&key, None);
                 self.untrack_object_key_in_shard(&key, shard_index);
+                self.clear_forced_list_quicklist_encoding(&key);
                 self.bump_watch_version(&key);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
                 self.untrack_object_key_in_shard(&key, shard_index);
+                self.clear_forced_list_quicklist_encoding(&key);
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -125,6 +127,12 @@ impl RequestProcessor {
         key: &[u8],
         list: &[Vec<u8>],
     ) -> Result<(), RequestExecutionError> {
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        if list_listpack_compatible(list, configured_size) {
+            self.clear_forced_list_quicklist_encoding(key);
+        } else {
+            self.force_list_quicklist_encoding(key);
+        }
         let payload = serialize_list_object_payload(list);
         self.object_upsert(key, LIST_OBJECT_TYPE_TAG, &payload)
     }
@@ -225,4 +233,35 @@ impl RequestProcessor {
         let payload = serialize_stream_object_payload(stream);
         self.object_upsert(key, STREAM_OBJECT_TYPE_TAG, &payload)
     }
+}
+
+fn list_listpack_compatible(list: &[Vec<u8>], configured_size: i64) -> bool {
+    const LISTPACK_POSITIVE_MIN: i64 = 1;
+    const LISTPACK_NEGATIVE_MIN: i64 = -5;
+    const LISTPACK_NEGATIVE_MAX: i64 = -1;
+
+    let normalized = match configured_size {
+        0 => LISTPACK_POSITIVE_MIN,
+        value if value < LISTPACK_NEGATIVE_MIN => LISTPACK_NEGATIVE_MIN,
+        value if value > 0 => value,
+        value if (LISTPACK_NEGATIVE_MIN..=LISTPACK_NEGATIVE_MAX).contains(&value) => value,
+        _ => LISTPACK_POSITIVE_MIN,
+    };
+
+    if normalized > 0 {
+        return list.len() <= normalized as usize;
+    }
+
+    let max_bytes = match normalized {
+        -1 => 4 * 1024usize,
+        -2 => 8 * 1024usize,
+        -3 => 16 * 1024usize,
+        -4 => 32 * 1024usize,
+        _ => 64 * 1024usize,
+    };
+    let estimated_bytes = list
+        .iter()
+        .map(|value| value.len().saturating_add(2))
+        .sum::<usize>();
+    estimated_bytes <= max_bytes
 }

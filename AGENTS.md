@@ -10,6 +10,7 @@ This file defines default collaboration and execution rules for repository work,
 - Experiment policy: `docs/performance/EXPERIMENT_REPORTING_POLICY.md`
 - DeepResearch request policy: `docs/performance/deepresearch-request-guidelines-2026-02-21.md`
 - Latest actor/locking guidance notes: `docs/performance/actor-lock-minimization-notes-2026-02-21.md`
+- TLA+ local workflow quickstart: `formal/tla/README.md`
 
 ## Non-Negotiable Workflow
 

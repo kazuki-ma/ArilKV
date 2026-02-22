@@ -158,9 +158,15 @@ impl RequestProcessor {
         require_exact_arity(args, 1, "INFO", "INFO")?;
 
         let dbsize = self.active_key_count()?;
+        let blocked_clients = self.blocked_clients();
+        let watching_clients = self.watching_clients();
+        let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
         let payload = format!(
-            "# Server\r\nredis_version:garnet-rs\r\n# Stats\r\ndbsize:{}\r\n",
-            dbsize
+            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_changes_since_last_save:{}\r\n",
+            blocked_clients,
+            watching_clients,
+            dbsize,
+            rdb_changes_since_last_save,
         );
         append_bulk_string(response_out, payload.as_bytes());
         Ok(())
@@ -329,7 +335,7 @@ impl RequestProcessor {
             args,
             2,
             "CLIENT",
-            "CLIENT <ID|GETNAME|SETNAME|LIST> [arguments...]",
+            "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-TOUCH> [arguments...]",
         )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let subcommand = unsafe { args[1].as_slice() };
@@ -352,6 +358,46 @@ impl RequestProcessor {
             require_exact_arity(args, 2, "CLIENT", "CLIENT LIST")?;
             // Minimal compatibility surface for tests that probe blocked EXEC visibility.
             append_bulk_string(response_out, b"id=1 cmd=exec");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"UNBLOCK") {
+            ensure_one_of_arities(
+                args,
+                &[3, 4],
+                "CLIENT",
+                "CLIENT UNBLOCK client-id [TIMEOUT|ERROR]",
+            )?;
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"PAUSE") {
+            ensure_one_of_arities(args, &[3, 4], "CLIENT", "CLIENT PAUSE timeout [WRITE|ALL]")?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            parse_u64_ascii(unsafe { args[2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            if args.len() == 4 {
+                // SAFETY: caller guarantees argument backing memory validity.
+                let mode = unsafe { args[3].as_slice() };
+                if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+            }
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"UNPAUSE") {
+            require_exact_arity(args, 2, "CLIENT", "CLIENT UNPAUSE")?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
+            require_exact_arity(args, 3, "CLIENT", "CLIENT NO-TOUCH on|off")?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let mode = unsafe { args[2].as_slice() };
+            if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            append_simple_string(response_out, b"OK");
             return Ok(());
         }
         Err(RequestExecutionError::UnknownCommand)
@@ -417,6 +463,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "SAVE", "SAVE")?;
+        self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -434,6 +481,7 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
+        self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"Background saving started");
         Ok(())
     }
@@ -597,8 +645,20 @@ impl RequestProcessor {
                 append_null_bulk_string(response_out);
                 return Ok(());
             };
+            if object_type == LIST_OBJECT_TYPE_TAG
+                && self.list_quicklist_encoding_is_forced(&key)
+            {
+                append_bulk_string(response_out, b"quicklist");
+                return Ok(());
+            }
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
-            let encoding = object_encoding_name(object_type, &payload, zset_max_listpack_entries)?;
+            let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
+            let encoding = object_encoding_name(
+                object_type,
+                &payload,
+                zset_max_listpack_entries,
+                list_max_listpack_size,
+            )?;
             append_bulk_string(response_out, encoding);
             return Ok(());
         }
@@ -1428,6 +1488,13 @@ impl RequestProcessor {
                     parse_u64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
                 self.zset_max_listpack_entries
                     .store(parsed as usize, Ordering::Release);
+            } else if ascii_eq_ignore_case(parameter, b"LIST-MAX-ZIPLIST-SIZE")
+                || ascii_eq_ignore_case(parameter, b"LIST-MAX-LISTPACK-SIZE")
+            {
+                let parsed =
+                    parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                self.list_max_listpack_size.store(parsed, Ordering::Release);
+                self.clear_all_forced_list_quicklist_encodings();
             }
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -1439,13 +1506,23 @@ impl RequestProcessor {
             let pattern = unsafe { args[2].as_slice() };
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let zset_max_listpack_entries_value = zset_max_listpack_entries.to_string();
+            let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
+            let list_max_listpack_size_value = list_max_listpack_size.to_string();
 
-            let config_items: [(&[u8], &[u8]); 7] = [
+            let config_items: [(&[u8], &[u8]); 9] = [
                 (b"appendonly", b"no"),
                 (b"save", b""),
                 (b"dbfilename", b"dump.rdb"),
                 (b"dir", b"."),
                 (b"maxmemory", b"0"),
+                (
+                    b"list-max-ziplist-size",
+                    list_max_listpack_size_value.as_bytes(),
+                ),
+                (
+                    b"list-max-listpack-size",
+                    list_max_listpack_size_value.as_bytes(),
+                ),
                 (
                     b"zset-max-ziplist-entries",
                     zset_max_listpack_entries_value.as_bytes(),
@@ -1812,9 +1889,9 @@ fn object_encoding_name(
     object_type: u8,
     payload: &[u8],
     zset_listpack_max_entries: usize,
+    list_max_listpack_size: i64,
 ) -> Result<&'static [u8], RequestExecutionError> {
     const SMALL_ELEMENT_BYTES: usize = 64;
-    const LIST_LISTPACK_MAX_ENTRIES: usize = 128;
     const SET_LISTPACK_MAX_ENTRIES: usize = 128;
     const HASH_LISTPACK_MAX_ENTRIES: usize = 32;
 
@@ -1823,8 +1900,7 @@ fn object_encoding_name(
             let list = deserialize_list_object_payload(payload).ok_or_else(|| {
                 storage_failure("object.encoding", "failed to decode list payload")
             })?;
-            let compact = list.len() <= LIST_LISTPACK_MAX_ENTRIES
-                && list.iter().all(|value| value.len() <= SMALL_ELEMENT_BYTES);
+            let compact = list_listpack_compatible(&list, list_max_listpack_size);
             if compact {
                 Ok(b"listpack")
             } else {
@@ -1882,6 +1958,38 @@ fn object_encoding_name(
             "unknown object type tag in object store",
         )),
     }
+}
+
+fn list_listpack_compatible(list: &[Vec<u8>], configured_size: i64) -> bool {
+    const LISTPACK_POSITIVE_MIN: i64 = 1;
+    const LISTPACK_NEGATIVE_MIN: i64 = -5;
+    const LISTPACK_NEGATIVE_MAX: i64 = -1;
+
+    let normalized = match configured_size {
+        0 => LISTPACK_POSITIVE_MIN,
+        value if value < LISTPACK_NEGATIVE_MIN => LISTPACK_NEGATIVE_MIN,
+        value if value > 0 => value,
+        value if (LISTPACK_NEGATIVE_MIN..=LISTPACK_NEGATIVE_MAX).contains(&value) => value,
+        _ => LISTPACK_POSITIVE_MIN,
+    };
+
+    if normalized > 0 {
+        return list.len() <= normalized as usize;
+    }
+
+    let max_bytes = match normalized {
+        -1 => 4 * 1024usize,
+        -2 => 8 * 1024usize,
+        -3 => 16 * 1024usize,
+        -4 => 32 * 1024usize,
+        _ => 64 * 1024usize,
+    };
+    // Approximate listpack footprint from member payload plus small per-entry overhead.
+    let estimated_bytes = list
+        .iter()
+        .map(|value| value.len().saturating_add(2))
+        .sum::<usize>();
+    estimated_bytes <= max_bytes
 }
 
 fn fnv_hex_digest(tag: u8, payload: &[u8]) -> Vec<u8> {

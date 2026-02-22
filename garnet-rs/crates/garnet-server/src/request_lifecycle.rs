@@ -4,8 +4,9 @@ use crate::debug_concurrency::{LockClass, OrderedMutex, OrderedMutexGuard};
 use crate::{dispatch_from_arg_slices, CommandId};
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
+use std::sync::Mutex;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
     DeleteInfo, DeleteOperationStatus, ReadInfo, ReadOperationStatus, RmwOperationStatus,
@@ -29,6 +30,7 @@ const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 18;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 18;
 const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
+const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 
@@ -124,6 +126,12 @@ struct StreamObject {
     groups: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientUnblockMode {
+    Timeout,
+    Error,
+}
+
 pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
@@ -132,10 +140,17 @@ pub struct RequestProcessor {
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     watch_versions: Vec<AtomicU64>,
+    blocking_wait_queues: Mutex<HashMap<Vec<u8>, VecDeque<u64>>>,
+    pending_client_unblocks: Mutex<HashMap<u64, ClientUnblockMode>>,
+    forced_list_quicklist_keys: Mutex<HashSet<Vec<u8>>>,
     random_state: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
+    rdb_changes_since_last_save: AtomicU64,
     resp_protocol_version: AtomicUsize,
+    blocked_clients: AtomicU64,
+    watching_clients: AtomicU64,
     zset_max_listpack_entries: AtomicUsize,
+    list_max_listpack_size: AtomicI64,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
 }
@@ -210,10 +225,17 @@ impl RequestProcessor {
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
+            blocking_wait_queues: Mutex::new(HashMap::new()),
+            pending_client_unblocks: Mutex::new(HashMap::new()),
+            forced_list_quicklist_keys: Mutex::new(HashSet::new()),
             random_state: AtomicU64::new(current_unix_time_millis().unwrap_or(0x9e3779b97f4a7c15)),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
+            rdb_changes_since_last_save: AtomicU64::new(0),
             resp_protocol_version: AtomicUsize::new(2),
+            blocked_clients: AtomicU64::new(0),
+            watching_clients: AtomicU64::new(0),
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
+            list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
             functions: KvSessionFunctions,
             object_functions: ObjectSessionFunctions,
         })
@@ -238,8 +260,163 @@ impl RequestProcessor {
         self.resp_protocol_version.load(Ordering::Acquire)
     }
 
+    pub(super) fn blocked_clients(&self) -> u64 {
+        self.blocked_clients.load(Ordering::Acquire)
+    }
+
+    pub(super) fn watching_clients(&self) -> u64 {
+        self.watching_clients.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn increment_blocked_clients(&self) {
+        self.blocked_clients.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn decrement_blocked_clients(&self) {
+        let mut current = self.blocked_clients.load(Ordering::Relaxed);
+        loop {
+            if current == 0 {
+                break;
+            }
+            match self.blocked_clients.compare_exchange_weak(
+                current,
+                current - 1,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(observed) => current = observed,
+            }
+        }
+    }
+
+    pub(crate) fn register_blocking_wait(&self, client_id: u64, keys: &[Vec<u8>]) {
+        if keys.is_empty() {
+            return;
+        }
+        // TLA+ (`BlockingDisconnectLeak`) `Block(c,k)` queue-enqueue critical section.
+        if let Ok(mut queues) = self.blocking_wait_queues.lock() {
+            for key in keys {
+                let queue = queues.entry(key.clone()).or_insert_with(VecDeque::new);
+                if !queue.contains(&client_id) {
+                    queue.push_back(client_id);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn unregister_blocking_wait(&self, client_id: u64, keys: &[Vec<u8>]) {
+        if keys.is_empty() {
+            return;
+        }
+        // TLA+ cleanup side for both wake completion and `Disconnect(c)` handling.
+        if let Ok(mut queues) = self.blocking_wait_queues.lock() {
+            for key in keys {
+                let mut should_remove = false;
+                if let Some(queue) = queues.get_mut(key) {
+                    queue.retain(|entry| *entry != client_id);
+                    should_remove = queue.is_empty();
+                }
+                if should_remove {
+                    let _ = queues.remove(key);
+                }
+            }
+        }
+    }
+
+    pub(crate) fn is_blocking_wait_turn(&self, client_id: u64, keys: &[Vec<u8>]) -> bool {
+        if keys.is_empty() {
+            return true;
+        }
+        // TLA+ `WakeHead(k)` guard: caller may proceed only when it is at queue front.
+        let Ok(queues) = self.blocking_wait_queues.lock() else {
+            return true;
+        };
+        keys.iter().any(|key| {
+            queues
+                .get(key)
+                .and_then(|queue| queue.front().copied())
+                .map(|front| front == client_id)
+                .unwrap_or(true)
+        })
+    }
+
+    pub(crate) fn request_client_unblock(
+        &self,
+        client_id: u64,
+        mode: ClientUnblockMode,
+    ) -> bool {
+        let is_blocked = self
+            .blocking_wait_queues
+            .lock()
+            .map(|queues| queues.values().any(|queue| queue.contains(&client_id)))
+            .unwrap_or(false);
+        if !is_blocked {
+            return false;
+        }
+        if let Ok(mut pending) = self.pending_client_unblocks.lock() {
+            pending.insert(client_id, mode);
+            return true;
+        }
+        false
+    }
+
+    pub(crate) fn take_client_unblock_request(&self, client_id: u64) -> Option<ClientUnblockMode> {
+        self.pending_client_unblocks
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(&client_id))
+    }
+
+    pub(crate) fn clear_client_unblock_request(&self, client_id: u64) {
+        if let Ok(mut pending) = self.pending_client_unblocks.lock() {
+            let _ = pending.remove(&client_id);
+        }
+    }
+
+    pub(super) fn force_list_quicklist_encoding(&self, key: &[u8]) {
+        if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
+            forced.insert(key.to_vec());
+        }
+    }
+
+    pub(super) fn clear_forced_list_quicklist_encoding(&self, key: &[u8]) {
+        if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
+            let _ = forced.remove(key);
+        }
+    }
+
+    pub(super) fn clear_all_forced_list_quicklist_encodings(&self) {
+        if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
+            forced.clear();
+        }
+    }
+
+    pub(super) fn list_quicklist_encoding_is_forced(&self, key: &[u8]) -> bool {
+        self.forced_list_quicklist_keys
+            .lock()
+            .map(|forced| forced.contains(key))
+            .unwrap_or(false)
+    }
+
     pub(super) fn lastsave_unix_seconds(&self) -> u64 {
         self.lastsave_unix_seconds.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn record_rdb_change(&self, delta: u64) {
+        if delta == 0 {
+            return;
+        }
+        self.rdb_changes_since_last_save
+            .fetch_add(delta, Ordering::Relaxed);
+    }
+
+    pub(super) fn rdb_changes_since_last_save(&self) -> u64 {
+        self.rdb_changes_since_last_save.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn reset_rdb_changes_since_last_save(&self) {
+        self.rdb_changes_since_last_save.store(0, Ordering::Relaxed);
     }
 
     pub(super) fn next_random_u64(&self) -> u64 {

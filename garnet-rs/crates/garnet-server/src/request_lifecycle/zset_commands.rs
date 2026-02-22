@@ -1750,12 +1750,58 @@ fn parse_blocking_timeout_seconds(
     index: usize,
 ) -> Result<f64, RequestExecutionError> {
     // SAFETY: caller guarantees argument backing memory validity.
-    let timeout = parse_f64_ascii(unsafe { args[index].as_slice() })
-        .ok_or(RequestExecutionError::ValueNotFloat)?;
-    if !timeout.is_finite() || timeout < 0.0 {
+    let timeout_token = unsafe { args[index].as_slice() };
+    let timeout_text =
+        std::str::from_utf8(timeout_token).map_err(|_| RequestExecutionError::ValueNotFloat)?;
+    let timeout = match timeout_text.parse::<f64>() {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            if looks_numeric_timeout_token(timeout_token) {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            return Err(RequestExecutionError::ValueNotFloat);
+        }
+    };
+    if !timeout.is_finite() {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    if timeout < 0.0 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
     Ok(timeout)
+}
+
+fn looks_numeric_timeout_token(token: &[u8]) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let (sign_len, body) = match token.first().copied() {
+        Some(b'+') | Some(b'-') if token.len() > 1 => (1usize, &token[1..]),
+        _ => (0usize, token),
+    };
+    if body.len() > 2
+        && body[0] == b'0'
+        && (body[1] == b'x' || body[1] == b'X')
+        && body[2..].iter().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return true;
+    }
+    let mut seen_digit = false;
+    for (index, byte) in token.iter().copied().enumerate() {
+        let is_sign = byte == b'+' || byte == b'-';
+        if is_sign && index == 0 && sign_len == 1 {
+            continue;
+        }
+        if byte.is_ascii_digit() {
+            seen_digit = true;
+            continue;
+        }
+        if matches!(byte, b'.' | b'e' | b'E') {
+            continue;
+        }
+        return false;
+    }
+    seen_digit
 }
 
 fn parse_zmpop_direction_and_count(

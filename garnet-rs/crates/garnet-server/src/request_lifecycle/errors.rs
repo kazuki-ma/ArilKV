@@ -34,6 +34,8 @@ pub enum RequestExecutionError {
     },
     ValueNotInteger,
     ValueNotFloat,
+    NumkeysMustBeGreaterThanZero,
+    CountMustBeGreaterThanZero,
     UnsupportedUnit,
     ValueOutOfRange,
     ValueOutOfRangePositive,
@@ -92,6 +94,12 @@ impl RequestExecutionError {
                 append_error(response_out, "ERR value is not an integer or out of range")
             }
             Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
+            Self::NumkeysMustBeGreaterThanZero => {
+                append_error(response_out, "ERR numkeys should be greater than 0")
+            }
+            Self::CountMustBeGreaterThanZero => {
+                append_error(response_out, "ERR count should be greater than 0")
+            }
             Self::UnsupportedUnit => append_error(
                 response_out,
                 "ERR unsupported unit provided. please use M, KM, FT, MI",

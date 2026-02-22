@@ -1522,7 +1522,58 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
-    assert_eq!(response, b"-ERR value is out of range\r\n");
+    assert_eq!(response, b"-ERR count should be greater than 0\r\n");
+
+    response.clear();
+    let lmpop_non_integer_count =
+        encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT", b"COUNT", b"abc"]);
+    let meta = parse_resp_command_arg_slices(&lmpop_non_integer_count, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR count should be greater than 0\r\n");
+
+    response.clear();
+    let lmpop_negative_count = encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT", b"COUNT", b"-1"]);
+    let meta = parse_resp_command_arg_slices(&lmpop_negative_count, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR count should be greater than 0\r\n");
+
+    response.clear();
+    let lmpop_zero_numkeys = encode_resp(&[b"LMPOP", b"0", b"missing", b"LEFT"]);
+    let meta = parse_resp_command_arg_slices(&lmpop_zero_numkeys, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR numkeys should be greater than 0\r\n");
+
+    response.clear();
+    let lmpop_non_integer_numkeys = encode_resp(&[b"LMPOP", b"a", b"missing", b"LEFT"]);
+    let meta = parse_resp_command_arg_slices(&lmpop_non_integer_numkeys, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR numkeys should be greater than 0\r\n");
+
+    response.clear();
+    let lmpop_negative_numkeys = encode_resp(&[b"LMPOP", b"-1", b"missing", b"LEFT"]);
+    let meta = parse_resp_command_arg_slices(&lmpop_negative_numkeys, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR numkeys should be greater than 0\r\n");
 
     response.clear();
     let blpop_bad_timeout = encode_resp(&[b"BLPOP", b"k1", b"not-a-float"]);
@@ -5447,6 +5498,38 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     assert_eq!(response, b"$13\r\nid=1 cmd=exec\r\n");
 
     response.clear();
+    let client_unblock = b"*3\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(client_unblock, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let client_pause = b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$3\r\n100\r\n$5\r\nWRITE\r\n";
+    let meta = parse_resp_command_arg_slices(client_pause, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let client_unpause = b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n";
+    let meta = parse_resp_command_arg_slices(client_unpause, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let client_no_touch = b"*3\r\n$6\r\nCLIENT\r\n$8\r\nNO-TOUCH\r\n$2\r\nON\r\n";
+    let meta = parse_resp_command_arg_slices(client_no_touch, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
     let role = b"*1\r\n$4\r\nROLE\r\n";
     let meta = parse_resp_command_arg_slices(role, &mut args).unwrap();
     processor
@@ -6824,6 +6907,55 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$8\r\nskiplist\r\n");
+}
+
+#[test]
+fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let config_set_small =
+        b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$21\r\nlist-max-ziplist-size\r\n$1\r\n5\r\n";
+    let meta = parse_resp_command_arg_slices(config_set_small, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    for index in 0..10 {
+        response.clear();
+        let value = index.to_string();
+        let rpush = encode_resp(&[b"RPUSH", b"list", value.as_bytes()]);
+        let meta = parse_resp_command_arg_slices(&rpush, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+    }
+
+    response.clear();
+    let object_encoding = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$4\r\nlist\r\n";
+    let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$9\r\nquicklist\r\n");
+
+    response.clear();
+    let config_set_compact =
+        b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(config_set_compact, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$8\r\nlistpack\r\n");
 }
 
 #[test]

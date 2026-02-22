@@ -571,6 +571,353 @@ async fn blocking_blpop_respects_timeout_without_updates() {
 }
 
 #[tokio::test]
+async fn blocking_clients_are_visible_in_info_and_client_list() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut waiter,
+        b"*3\r\n$6\r\nCLIENT\r\n$7\r\nSETNAME\r\n$6\r\nwaiter\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    let waiter_id = send_and_read_integer(
+        &mut waiter,
+        b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$1\r\nk\r\n$1\r\n1\r\n")
+        .await
+        .unwrap();
+
+    let waiter_id_text = waiter_id.to_string();
+    let client_list_frame =
+        encode_resp_command(&[b"CLIENT", b"LIST", b"ID", waiter_id_text.as_bytes()]);
+    let mut blocked_visible = false;
+    let deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < deadline {
+        let info = send_and_read_bulk_payload(
+            &mut inspector,
+            b"*1\r\n$4\r\nINFO\r\n",
+            Duration::from_secs(1),
+        )
+        .await;
+        if !info
+            .windows("blocked_clients:1".len())
+            .any(|w| w == b"blocked_clients:1")
+        {
+            sleep(Duration::from_millis(10)).await;
+            continue;
+        }
+
+        let list_payload =
+            send_and_read_bulk_payload(&mut inspector, &client_list_frame, Duration::from_secs(1))
+                .await;
+        if list_payload
+            .windows("flags=b".len())
+            .any(|w| w == b"flags=b")
+            && list_payload
+                .windows("cmd=blpop".len())
+                .any(|w| w == b"cmd=blpop")
+            && list_payload
+                .windows("name=waiter".len())
+                .any(|w| w == b"name=waiter")
+        {
+            blocked_visible = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        blocked_visible,
+        "blocked client should be visible via INFO/CLIENT LIST while waiting"
+    );
+
+    producer
+        .write_all(b"*3\r\n$5\r\nRPUSH\r\n$1\r\nk\r\n$1\r\nv\r\n")
+        .await
+        .unwrap();
+    let popped = read_exact_with_timeout(&mut waiter, 18, Duration::from_secs(1)).await;
+    assert_eq!(popped, b"*2\r\n$1\r\nk\r\n$1\r\nv\r\n");
+
+    let info_after = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*1\r\n$4\r\nINFO\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        info_after
+            .windows("blocked_clients:0".len())
+            .any(|w| w == b"blocked_clients:0"),
+        "INFO should report blocked_clients:0 after wakeup: {}",
+        String::from_utf8_lossy(&info_after),
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_unblock_unblocks_blocking_pop_with_timeout_and_error_modes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    let waiter_id = send_and_read_integer(
+        &mut waiter,
+        b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let waiter_id_text = waiter_id.to_string();
+
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$1\r\nk\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    let unblock_timeout = encode_resp_command(&[b"CLIENT", b"UNBLOCK", waiter_id_text.as_bytes()]);
+    let timeout_unblocked =
+        send_and_read_integer(&mut controller, &unblock_timeout, Duration::from_secs(1)).await;
+    assert_eq!(timeout_unblocked, 1);
+    let timeout_response = read_exact_with_timeout(&mut waiter, 5, Duration::from_secs(1)).await;
+    assert_eq!(timeout_response, b"*-1\r\n");
+
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$1\r\nk\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    let unblock_error =
+        encode_resp_command(&[b"CLIENT", b"UNBLOCK", waiter_id_text.as_bytes(), b"ERROR"]);
+    let error_unblocked =
+        send_and_read_integer(&mut controller, &unblock_error, Duration::from_secs(1)).await;
+    assert_eq!(error_unblocked, 1);
+    let error_response = read_resp_line_with_timeout(&mut waiter, Duration::from_secs(1)).await;
+    assert_eq!(
+        error_response,
+        b"-UNBLOCKED client unblocked via CLIENT UNBLOCK"
+    );
+
+    let controller_id = send_and_read_integer(
+        &mut controller,
+        b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let controller_id_text = controller_id.to_string();
+    let unblock_non_blocked =
+        encode_resp_command(&[b"CLIENT", b"UNBLOCK", controller_id_text.as_bytes()]);
+    let non_blocked_result = send_and_read_integer(
+        &mut controller,
+        &unblock_non_blocked,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(non_blocked_result, 0);
+
+    controller
+        .write_all(&encode_resp_command(&[b"CLIENT", b"UNBLOCK", b"asd"]))
+        .await
+        .unwrap();
+    let invalid_id_response = read_resp_line_with_timeout(&mut controller, Duration::from_secs(1)).await;
+    assert_eq!(
+        invalid_id_response,
+        b"-ERR value is not an integer or out of range"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_pipeline_preserves_waiter_fairness() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut pipelined = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut inspector,
+        b"*2\r\n$3\r\nDEL\r\n$6\r\nmylist\r\n",
+        b":0\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$6\r\nmylist\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    pipelined
+        .write_all(b"LPUSH mylist 1\r\nBLPOP mylist 0\r\n")
+        .await
+        .unwrap();
+    let waiter_value = read_exact_with_timeout(&mut waiter, 23, Duration::from_secs(1)).await;
+    assert_eq!(waiter_value, b"*2\r\n$6\r\nmylist\r\n$1\r\n1\r\n");
+    let pipelined_lpush = read_exact_with_timeout(&mut pipelined, 4, Duration::from_secs(1)).await;
+    assert_eq!(pipelined_lpush, b":1\r\n");
+
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut inspector,
+        b"*3\r\n$5\r\nLPUSH\r\n$6\r\nmylist\r\n$1\r\n2\r\n",
+        b":1\r\n",
+    )
+    .await;
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let pipelined_blpop =
+        read_exact_with_timeout(&mut pipelined, 23, Duration::from_secs(1)).await;
+    assert_eq!(pipelined_blpop, b"*2\r\n$6\r\nmylist\r\n$1\r\n2\r\n");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_list_wakeups_increase_rdb_changes_since_last_save() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    let info_before = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*1\r\n$4\r\nINFO\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let dirty_before = read_info_u64(&info_before, "rdb_changes_since_last_save").unwrap_or(0);
+
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$6\r\nlst{t}\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    producer
+        .write_all(b"*3\r\n$5\r\nLPUSH\r\n$6\r\nlst{t}\r\n$1\r\na\r\n")
+        .await
+        .unwrap();
+    let popped = read_exact_with_timeout(&mut waiter, 23, Duration::from_secs(1)).await;
+    assert_eq!(popped, b"*2\r\n$6\r\nlst{t}\r\n$1\r\na\r\n");
+
+    let info_after_blpop = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*1\r\n$4\r\nINFO\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let dirty_after_blpop =
+        read_info_u64(&info_after_blpop, "rdb_changes_since_last_save").unwrap_or(0);
+    assert_eq!(
+        dirty_after_blpop.saturating_sub(dirty_before),
+        2,
+        "BLPOP wakeup path should increase dirty counter by two (LPUSH + unblocked pop)"
+    );
+
+    let info_before_blmove = info_after_blpop;
+    let dirty_before_blmove =
+        read_info_u64(&info_before_blmove, "rdb_changes_since_last_save").unwrap_or(0);
+
+    waiter
+        .write_all(
+            b"*6\r\n$6\r\nBLMOVE\r\n$6\r\nlst{t}\r\n$7\r\nlst1{t}\r\n$4\r\nLEFT\r\n$4\r\nLEFT\r\n$1\r\n0\r\n",
+        )
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    producer
+        .write_all(b"*3\r\n$5\r\nLPUSH\r\n$6\r\nlst{t}\r\n$1\r\nb\r\n")
+        .await
+        .unwrap();
+    let moved = read_exact_with_timeout(&mut waiter, 7, Duration::from_secs(1)).await;
+    assert_eq!(moved, b"$1\r\nb\r\n");
+
+    let info_after_blmove = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*1\r\n$4\r\nINFO\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let dirty_after_blmove =
+        read_info_u64(&info_after_blmove, "rdb_changes_since_last_save").unwrap_or(0);
+    assert_eq!(
+        dirty_after_blmove.saturating_sub(dirty_before_blmove),
+        2,
+        "BLMOVE wakeup path should increase dirty counter by two (LPUSH + unblocked move)"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let master_addr = master_listener.local_addr().unwrap();
@@ -657,6 +1004,51 @@ async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let _ = replica_shutdown_tx.send(());
     master_server.await.unwrap();
     replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_starts_with_select_db_zero() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let expected_select = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
+    let select_frame = read_exact_with_timeout(
+        &mut replica_stream,
+        expected_select.len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(select_frame, expected_select);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -3625,6 +4017,53 @@ async fn send_and_expect(client: &mut TcpStream, request: &[u8], expected_respon
     assert_eq!(actual, expected_response);
 }
 
+async fn send_and_read_integer(client: &mut TcpStream, request: &[u8], timeout: Duration) -> i64 {
+    client.write_all(request).await.unwrap();
+    let line = read_resp_line_with_timeout(client, timeout).await;
+    assert!(line.starts_with(b":"));
+    std::str::from_utf8(&line[1..])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap()
+}
+
+async fn send_and_read_bulk_payload(
+    client: &mut TcpStream,
+    request: &[u8],
+    timeout: Duration,
+) -> Vec<u8> {
+    client.write_all(request).await.unwrap();
+    let header = read_resp_line_with_timeout(client, timeout).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let mut payload = vec![0u8; payload_len + 2];
+    tokio::time::timeout(timeout, client.read_exact(&mut payload))
+        .await
+        .unwrap()
+        .unwrap();
+    payload.truncate(payload_len);
+    payload
+}
+
+async fn read_resp_line_with_timeout(stream: &mut TcpStream, timeout: Duration) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        tokio::time::timeout(timeout, stream.read_exact(&mut byte))
+            .await
+            .unwrap()
+            .unwrap();
+        out.push(byte[0]);
+        if out.ends_with(b"\r\n") {
+            out.truncate(out.len() - 2);
+            return out;
+        }
+    }
+}
+
 async fn read_exact_with_timeout(
     stream: &mut TcpStream,
     expected_len: usize,
@@ -3636,6 +4075,29 @@ async fn read_exact_with_timeout(
         .unwrap()
         .unwrap();
     response
+}
+
+async fn wait_for_blocked_clients(stream: &mut TcpStream, expected: u64, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let payload =
+            send_and_read_bulk_payload(stream, b"*1\r\n$4\r\nINFO\r\n", Duration::from_secs(1))
+                .await;
+        if read_info_u64(&payload, "blocked_clients") == Some(expected) {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for blocked_clients={expected}");
+}
+
+fn read_info_u64(payload: &[u8], field: &str) -> Option<u64> {
+    let text = std::str::from_utf8(payload).ok()?;
+    let prefix = format!("{field}:");
+    text.split("\r\n").find_map(|line| {
+        line.strip_prefix(&prefix)
+            .and_then(|value| value.parse::<u64>().ok())
+    })
 }
 
 fn encode_resp_command(parts: &[&[u8]]) -> Vec<u8> {

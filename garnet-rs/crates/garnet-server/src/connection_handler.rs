@@ -7,6 +7,7 @@ use garnet_cluster::ClusterConfigStore;
 use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
+use tokio::task::yield_now;
 use tokio::time::sleep;
 
 use crate::command_dispatch::dispatch_from_arg_slices;
@@ -22,14 +23,17 @@ use crate::connection_protocol::{
 use crate::connection_routing::{cluster_error_for_command, command_hash_slot_for_transaction};
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
-use crate::{RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
+use crate::request_lifecycle::ClientUnblockMode;
+use crate::{
+    RequestExecutionError, RequestProcessor, ServerMetrics, ShardOwnerThreadPool,
+};
 
 const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
-const BLOCKING_COMMAND_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 
 pub(crate) async fn handle_connection(
     mut stream: TcpStream,
@@ -40,7 +44,11 @@ pub(crate) async fn handle_connection(
     owner_thread_pool: Arc<ShardOwnerThreadPool>,
     replication: Arc<RedisReplicationCoordinator>,
 ) -> io::Result<()> {
-    let _lifecycle = ConnectionLifecycle { metrics: &metrics };
+    let client_id = metrics.register_client();
+    let _lifecycle = ConnectionLifecycle {
+        metrics: &metrics,
+        client_id,
+    };
     let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
         .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
@@ -135,6 +143,19 @@ pub(crate) async fn handle_connection(
             }
             // SAFETY: `args` points to the current frame bytes.
             let command_name = unsafe { args[0].as_slice() };
+            metrics.set_client_last_command(client_id, command_name);
+
+            if command == CommandId::Client {
+                handle_client_command(
+                    &processor,
+                    &metrics,
+                    client_id,
+                    &args[..argument_count],
+                    &mut responses,
+                );
+                consumed += frame_bytes_consumed;
+                continue;
+            }
 
             if ascii_eq_ignore_case(command_name, b"REPLICAOF")
                 || ascii_eq_ignore_case(command_name, b"SLAVEOF")
@@ -175,10 +196,15 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
-            if ascii_eq_ignore_case(command_name, b"PSYNC")
-                || ascii_eq_ignore_case(command_name, b"SYNC")
-            {
+            if ascii_eq_ignore_case(command_name, b"PSYNC") {
                 responses.extend_from_slice(&replication.build_fullresync_payload());
+                consumed += frame_bytes_consumed;
+                switch_to_replica_stream = true;
+                break;
+            }
+
+            if ascii_eq_ignore_case(command_name, b"SYNC") {
+                responses.extend_from_slice(&replication.build_sync_payload());
                 consumed += frame_bytes_consumed;
                 switch_to_replica_stream = true;
                 break;
@@ -211,7 +237,7 @@ pub(crate) async fn handle_connection(
                     continue;
                 }
             }
-            let mut propagate_frame = false;
+            let propagate_frame = false;
             if transaction.in_multi {
                 match transaction_control {
                     TransactionControlCommand::Exec => {
@@ -327,19 +353,32 @@ pub(crate) async fn handle_connection(
                             consumed += frame_bytes_consumed;
                             continue;
                         }
+                        if is_blocking_command(command) && !responses.is_empty() {
+                            stream.write_all(&responses).await?;
+                            responses.clear();
+                        }
+                        let mut replication_frame: Option<Vec<u8>> = None;
                         match execute_blocking_frame_on_owner_thread(
                             &processor,
+                            &metrics,
                             &owner_thread_pool,
                             &args[..argument_count],
                             command,
                             frame,
+                            client_id,
+                            &mut stream,
                         )
                         .await
                         {
                             Ok((frame_response, should_replicate)) => {
                                 responses.extend_from_slice(&frame_response);
                                 if should_replicate {
-                                    propagate_frame = true;
+                                    replication_frame = replication_frame_for_command(
+                                        command,
+                                        &args[..argument_count],
+                                        &frame_response,
+                                        frame,
+                                    );
                                 }
                             }
                             Err(OwnerThreadExecutionError::Request(error)) => {
@@ -353,8 +392,9 @@ pub(crate) async fn handle_connection(
                                     .extend_from_slice(b"-ERR owner routing execution failed\r\n");
                             }
                         }
-                        if propagate_frame {
-                            replication.publish_write_frame(frame);
+                        if let Some(frame_to_replicate) = replication_frame.as_ref() {
+                            processor.record_rdb_change(1);
+                            replication.publish_write_frame(frame_to_replicate);
                         }
                         consumed += frame_bytes_consumed;
                         continue;
@@ -362,6 +402,7 @@ pub(crate) async fn handle_connection(
                 }
             }
             if propagate_frame {
+                processor.record_rdb_change(1);
                 replication.publish_write_frame(frame);
             }
             consumed += frame_bytes_consumed;
@@ -389,20 +430,76 @@ pub(crate) async fn handle_connection(
 
 async fn execute_blocking_frame_on_owner_thread(
     processor: &Arc<RequestProcessor>,
+    metrics: &Arc<ServerMetrics>,
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     args: &[ArgSlice],
     command: CommandId,
     frame: &[u8],
+    client_id: u64,
+    stream: &mut TcpStream,
 ) -> Result<(Vec<u8>, bool), OwnerThreadExecutionError> {
+    // TLA+ mapping (`formal/tla/specs/BlockingDisconnectLeak.tla`):
+    // - ACTIVE: client has no wait-queue registration.
+    // - BLOCKED: `register_blocking_wait` + `set_client_blocked(true)` applied.
+    // - DISCONNECTED: socket close observed in `blocking_client_disconnected`.
+    // Core actions:
+    // - `Block(c,k)`: first transition into blocked path for current blocking keys.
+    // - `PushWake/WakeHead(k)`: owner-thread execution returns non-empty response.
+    // - `Disconnect(c)`: disconnect check branch; cleanup must unregister the waiter.
     let deadline = blocking_timeout_deadline(command, args);
+    let blocking_keys = blocking_wait_keys(command, args);
+    let mut blocked = false;
+    processor.clear_client_unblock_request(client_id);
     loop {
-        let frame_response = execute_frame_on_owner_thread(
-            processor,
-            owner_thread_pool,
-            args,
-            command,
-            frame,
-        )?;
+        if is_blocking_command(command) && blocking_client_disconnected(stream).await {
+            // `Disconnect(c)` branch: if we were blocked, this must clear all wait-queue state.
+            if blocked {
+                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+            }
+            return Ok((blocking_empty_response_for_command(command).to_vec(), false));
+        }
+
+        if blocked {
+            if let Some(unblock_mode) = processor.take_client_unblock_request(client_id) {
+                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                let response = match unblock_mode {
+                    ClientUnblockMode::Timeout => blocking_empty_response_for_command(command).to_vec(),
+                    ClientUnblockMode::Error => {
+                        b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
+                    }
+                };
+                return Ok((response, false));
+            }
+        }
+
+        if !processor.is_blocking_wait_turn(client_id, &blocking_keys) {
+            if !blocked {
+                blocked = true;
+                // `Block(c,k)` critical section starts here.
+                processor.increment_blocked_clients();
+                processor.register_blocking_wait(client_id, &blocking_keys);
+                metrics.set_client_blocked(client_id, true);
+            }
+            sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
+            continue;
+        }
+
+        let frame_response =
+            match execute_frame_on_owner_thread(processor, owner_thread_pool, args, command, frame)
+            {
+                Ok(response) => response,
+                Err(OwnerThreadExecutionError::Request(RequestExecutionError::WrongType))
+                    if blocked && ignore_wrongtype_while_blocked(command) =>
+                {
+                    blocking_empty_response_for_command(command).to_vec()
+                }
+                Err(error) => {
+                    if blocked {
+                        clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                    }
+                    return Err(error);
+                }
+            };
 
         let mutating_command = command_is_mutating(command);
         let should_replicate = if is_blocking_command(command) {
@@ -411,25 +508,57 @@ async fn execute_blocking_frame_on_owner_thread(
             mutating_command
         };
         if !is_blocking_command(command) || !is_blocking_empty_response(&frame_response) {
+            if blocked {
+                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+            }
             return Ok((frame_response, should_replicate));
+        }
+
+        if !blocked {
+            blocked = true;
+            processor.increment_blocked_clients();
+            processor.register_blocking_wait(client_id, &blocking_keys);
+            metrics.set_client_blocked(client_id, true);
         }
 
         if let Some(deadline_time) = deadline {
             let now = Instant::now();
             if now >= deadline_time {
+                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
                 return Ok((frame_response, should_replicate));
             }
 
             let remaining = deadline_time.duration_since(now);
-            let sleep_for = if remaining < BLOCKING_COMMAND_POLL_INTERVAL {
-                remaining
-            } else {
-                BLOCKING_COMMAND_POLL_INTERVAL
-            };
-            sleep(sleep_for).await;
+            if remaining > Duration::from_millis(0) {
+                yield_now().await;
+            }
         } else {
-            sleep(BLOCKING_COMMAND_POLL_INTERVAL).await;
+            yield_now().await;
         }
+    }
+}
+
+fn clear_blocking_client_state(
+    processor: &RequestProcessor,
+    metrics: &ServerMetrics,
+    client_id: u64,
+    blocking_keys: &[Vec<u8>],
+) {
+    // Shared cleanup for both successful wakeups and disconnect/unblock paths.
+    // In TLA+ terms this is the queue-removal side of `Disconnect(c)` and wake completion.
+    processor.decrement_blocked_clients();
+    processor.unregister_blocking_wait(client_id, blocking_keys);
+    processor.clear_client_unblock_request(client_id);
+    metrics.set_client_blocked(client_id, false);
+}
+
+async fn blocking_client_disconnected(stream: &mut TcpStream) -> bool {
+    let mut probe = [0u8; 1];
+    match tokio::time::timeout(Duration::from_millis(1), stream.peek(&mut probe)).await {
+        Ok(Ok(0)) => true,
+        Ok(Ok(_)) => false,
+        Ok(Err(error)) => error.kind() != io::ErrorKind::WouldBlock,
+        Err(_) => false,
     }
 }
 
@@ -444,10 +573,7 @@ fn blocking_timeout_deadline(command: CommandId, args: &[ArgSlice]) -> Option<In
             let timeout_index = args.len().checked_sub(1)?;
             parse_blocking_timeout_arg(args, timeout_index)?
         }
-        CommandId::Blpop
-        | CommandId::Brpop
-        | CommandId::Bzpopmin
-        | CommandId::Bzpopmax => {
+        CommandId::Blpop | CommandId::Brpop | CommandId::Bzpopmin | CommandId::Bzpopmax => {
             let timeout_index = args.len().checked_sub(1)?;
             parse_blocking_timeout_arg(args, timeout_index)?
         }
@@ -465,6 +591,13 @@ fn is_blocking_empty_response(frame_response: &[u8]) -> bool {
     frame_response == b"*-1\r\n" || frame_response == b"$-1\r\n"
 }
 
+fn blocking_empty_response_for_command(command: CommandId) -> &'static [u8] {
+    match command {
+        CommandId::Blmove | CommandId::Brpoplpush => b"$-1\r\n",
+        _ => b"*-1\r\n",
+    }
+}
+
 fn is_blocking_command(command: CommandId) -> bool {
     matches!(
         command,
@@ -477,6 +610,71 @@ fn is_blocking_command(command: CommandId) -> bool {
             | CommandId::Bzpopmax
             | CommandId::Bzmpop,
     )
+}
+
+fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Blpop
+            | CommandId::Brpop
+            | CommandId::Blmpop
+            | CommandId::Bzpopmin
+            | CommandId::Bzpopmax
+            | CommandId::Bzmpop
+    )
+}
+
+fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
+    match command {
+        CommandId::Blpop | CommandId::Brpop | CommandId::Bzpopmin | CommandId::Bzpopmax => {
+            if args.len() < 3 {
+                return Vec::new();
+            }
+            args[1..args.len() - 1]
+                .iter()
+                .map(|arg| {
+                    // SAFETY: The argument slice was parsed from a live request frame and stays valid
+                    // while the request is being executed.
+                    unsafe { arg.as_slice() }.to_vec()
+                })
+                .collect()
+        }
+        CommandId::Blmove | CommandId::Brpoplpush => {
+            if args.len() < 2 {
+                return Vec::new();
+            }
+            vec![
+                // SAFETY: The argument slice was parsed from a live request frame and stays valid
+                // while the request is being executed.
+                unsafe { args[1].as_slice() }.to_vec(),
+            ]
+        }
+        CommandId::Blmpop | CommandId::Bzmpop => {
+            if args.len() < 5 {
+                return Vec::new();
+            }
+            // SAFETY: The argument slice was parsed from a live request frame and stays valid
+            // while the request is being executed.
+            let numkeys = parse_u64_ascii(unsafe { args[2].as_slice() }).unwrap_or(0) as usize;
+            if numkeys == 0 {
+                return Vec::new();
+            }
+            let start = 3usize;
+            let end = start.saturating_add(numkeys).min(args.len());
+            if start >= end {
+                return Vec::new();
+            }
+            args[start..end]
+                .iter()
+                .map(|arg| {
+                    // SAFETY: The argument slice was parsed from a live request frame and stays valid
+                    // while the request is being executed.
+                    unsafe { arg.as_slice() }.to_vec()
+                })
+                .collect()
+        }
+        _ => Vec::new(),
+    }
 }
 
 fn parse_blocking_timeout_arg(args: &[ArgSlice], timeout_index: usize) -> Option<f64> {
@@ -497,6 +695,280 @@ fn parse_blocking_timeout_arg(args: &[ArgSlice], timeout_index: usize) -> Option
     }
 
     Some(timeout)
+}
+
+fn handle_client_command(
+    processor: &RequestProcessor,
+    metrics: &ServerMetrics,
+    client_id: u64,
+    args: &[ArgSlice],
+    response_out: &mut Vec<u8>,
+) {
+    if args.len() < 2 {
+        append_wrong_arity_error_for_command(response_out, CommandId::Client);
+        return;
+    }
+
+    // SAFETY: `args` points to the current request frame.
+    let subcommand = unsafe { args[1].as_slice() };
+    if ascii_eq_ignore_case(subcommand, b"ID") {
+        if args.len() != 2 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        append_integer_frame(response_out, client_id as i64);
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"GETNAME") {
+        if args.len() != 2 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        if let Some(name) = metrics.client_name(client_id) {
+            append_bulk_string_frame(response_out, &name);
+        } else {
+            response_out.extend_from_slice(b"$-1\r\n");
+        }
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"SETNAME") {
+        if args.len() != 3 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        // SAFETY: `args` points to the current request frame.
+        let new_name = unsafe { args[2].as_slice() }.to_vec();
+        metrics.set_client_name(client_id, Some(new_name));
+        append_simple_string(response_out, b"OK");
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"LIST") {
+        let mut filter_id = None;
+        if args.len() > 2 {
+            if args.len() != 4 {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+            // SAFETY: `args` points to the current request frame.
+            let option = unsafe { args[2].as_slice() };
+            if !ascii_eq_ignore_case(option, b"ID") {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+            // SAFETY: `args` points to the current request frame.
+            let id_arg = unsafe { args[3].as_slice() };
+            let Some(parsed_id) = parse_u64_ascii(id_arg) else {
+                response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                return;
+            };
+            filter_id = Some(parsed_id);
+        }
+        let payload = metrics.render_client_list_payload(filter_id);
+        append_bulk_string_frame(response_out, &payload);
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"UNBLOCK") {
+        if args.len() != 3 && args.len() != 4 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        // SAFETY: `args` points to the current request frame.
+        let id_arg = unsafe { args[2].as_slice() };
+        let Some(target_client_id) = parse_u64_ascii(id_arg) else {
+            response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+            return;
+        };
+        let unblock_mode = if args.len() == 4 {
+            // SAFETY: `args` points to the current request frame.
+            let mode_arg = unsafe { args[3].as_slice() };
+            if ascii_eq_ignore_case(mode_arg, b"TIMEOUT") {
+                ClientUnblockMode::Timeout
+            } else if ascii_eq_ignore_case(mode_arg, b"ERROR") {
+                ClientUnblockMode::Error
+            } else {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        } else {
+            ClientUnblockMode::Timeout
+        };
+        let unblocked = target_client_id != client_id
+            && metrics.is_client_blocked(target_client_id)
+            && processor.request_client_unblock(target_client_id, unblock_mode);
+        append_integer_frame(response_out, if unblocked { 1 } else { 0 });
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"PAUSE") {
+        if args.len() != 3 && args.len() != 4 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        // SAFETY: `args` points to the current request frame.
+        let timeout_arg = unsafe { args[2].as_slice() };
+        if parse_u64_ascii(timeout_arg).is_none() {
+            response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+            return;
+        }
+        if args.len() == 4 {
+            // SAFETY: `args` points to the current request frame.
+            let mode = unsafe { args[3].as_slice() };
+            if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return;
+            }
+        }
+        append_simple_string(response_out, b"OK");
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"UNPAUSE") {
+        if args.len() != 2 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        append_simple_string(response_out, b"OK");
+        return;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
+        if args.len() != 3 {
+            append_wrong_arity_error_for_command(response_out, CommandId::Client);
+            return;
+        }
+        // SAFETY: `args` points to the current request frame.
+        let mode = unsafe { args[2].as_slice() };
+        if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
+            response_out.extend_from_slice(b"-ERR syntax error\r\n");
+            return;
+        }
+        append_simple_string(response_out, b"OK");
+        return;
+    }
+
+    response_out.extend_from_slice(b"-ERR unknown command\r\n");
+}
+
+fn append_integer_frame(output: &mut Vec<u8>, value: i64) {
+    output.push(b':');
+    output.extend_from_slice(value.to_string().as_bytes());
+    output.extend_from_slice(b"\r\n");
+}
+
+fn append_bulk_string_frame(output: &mut Vec<u8>, value: &[u8]) {
+    output.push(b'$');
+    output.extend_from_slice(value.len().to_string().as_bytes());
+    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(value);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn parse_u64_ascii(value: &[u8]) -> Option<u64> {
+    let text = std::str::from_utf8(value).ok()?;
+    text.parse::<u64>().ok()
+}
+
+fn replication_frame_for_command(
+    command: CommandId,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    if matches!(command, CommandId::Lmpop | CommandId::Blmpop) {
+        let (key, popped_count) = parse_lmpop_replication_meta(frame_response)?;
+        let pop_command = lmpop_pop_command(command, args)?;
+        let count = popped_count.to_string().into_bytes();
+        return Some(encode_resp_frame(&[pop_command.to_vec(), key, count]));
+    }
+    Some(original_frame.to_vec())
+}
+
+fn lmpop_pop_command(command: CommandId, args: &[ArgSlice]) -> Option<&'static [u8]> {
+    let direction_index = match command {
+        CommandId::Lmpop => {
+            let numkeys = parse_u64_ascii(
+                // SAFETY: args were parsed from the current request frame.
+                unsafe { args.get(1)?.as_slice() },
+            )? as usize;
+            2usize.checked_add(numkeys)?
+        }
+        CommandId::Blmpop => {
+            let numkeys = parse_u64_ascii(
+                // SAFETY: args were parsed from the current request frame.
+                unsafe { args.get(2)?.as_slice() },
+            )? as usize;
+            3usize.checked_add(numkeys)?
+        }
+        _ => return None,
+    };
+    // SAFETY: args were parsed from the current request frame.
+    let direction = unsafe { args.get(direction_index)?.as_slice() };
+    if ascii_eq_ignore_case(direction, b"LEFT") {
+        Some(b"LPOP")
+    } else if ascii_eq_ignore_case(direction, b"RIGHT") {
+        Some(b"RPOP")
+    } else {
+        None
+    }
+}
+
+fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<(Vec<u8>, usize)> {
+    if frame_response == b"*-1\r\n" {
+        return None;
+    }
+
+    let mut cursor = 0usize;
+    if !frame_response.get(cursor..)?.starts_with(b"*2\r\n") {
+        return None;
+    }
+    cursor += 4;
+
+    let (key, next_cursor) = parse_resp_bulk_string(frame_response, cursor)?;
+    cursor = next_cursor;
+
+    if frame_response.get(cursor)? != &b'*' {
+        return None;
+    }
+    cursor += 1;
+    let (count, _) = parse_resp_decimal(frame_response, cursor)?;
+    Some((key, count))
+}
+
+fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<(Vec<u8>, usize)> {
+    if input.get(cursor)? != &b'$' {
+        return None;
+    }
+    let (len, mut cursor) = parse_resp_decimal(input, cursor + 1)?;
+    let end = cursor.checked_add(len)?;
+    let value = input.get(cursor..end)?.to_vec();
+    cursor = end;
+    if input.get(cursor..cursor + 2)? != b"\r\n" {
+        return None;
+    }
+    cursor += 2;
+    Some((value, cursor))
+}
+
+fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<(usize, usize)> {
+    let mut index = cursor;
+    while input.get(index)? != &b'\r' {
+        if !input.get(index)?.is_ascii_digit() {
+            return None;
+        }
+        index += 1;
+    }
+    if input.get(index + 1)? != &b'\n' {
+        return None;
+    }
+    let value = std::str::from_utf8(input.get(cursor..index)?)
+        .ok()?
+        .parse::<usize>()
+        .ok()?;
+    Some((value, index + 2))
 }
 
 pub(crate) fn build_owner_thread_pool(
@@ -627,10 +1099,12 @@ fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usi
 
 struct ConnectionLifecycle<'a> {
     metrics: &'a ServerMetrics,
+    client_id: u64,
 }
 
 impl Drop for ConnectionLifecycle<'_> {
     fn drop(&mut self) {
+        self.metrics.unregister_client(self.client_id);
         self.metrics
             .active_connections
             .fetch_sub(1, Ordering::Relaxed);

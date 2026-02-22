@@ -358,6 +358,10 @@ impl RequestProcessor {
         };
         list[index] = value;
         self.save_list_object(&key, &list)?;
+        let max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        if max_listpack_size > 0 && list.len() >= max_listpack_size as usize {
+            self.force_list_quicklist_encoding(&key);
+        }
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -956,12 +960,13 @@ fn parse_list_numkeys_and_keys(
         return Err(RequestExecutionError::SyntaxError);
     }
     // SAFETY: caller guarantees argument backing memory validity.
-    let numkeys = parse_u64_ascii(unsafe { args[numkeys_index].as_slice() })
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
-    if numkeys == 0 {
-        return Err(RequestExecutionError::SyntaxError);
+    let raw_numkeys = parse_i64_ascii(unsafe { args[numkeys_index].as_slice() })
+        .ok_or(RequestExecutionError::NumkeysMustBeGreaterThanZero)?;
+    if raw_numkeys <= 0 {
+        return Err(RequestExecutionError::NumkeysMustBeGreaterThanZero);
     }
-    let numkeys = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    let numkeys =
+        usize::try_from(raw_numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
     let key_start = numkeys_index + 1;
     let key_end = key_start
         .checked_add(numkeys)
@@ -995,10 +1000,10 @@ fn parse_list_count_option(
         return Err(RequestExecutionError::SyntaxError);
     }
     // SAFETY: caller guarantees argument backing memory validity.
-    let count = parse_u64_ascii(unsafe { args[start_index + 1].as_slice() })
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
-    if count == 0 {
-        return Err(RequestExecutionError::ValueOutOfRange);
+    let count = parse_i64_ascii(unsafe { args[start_index + 1].as_slice() })
+        .ok_or(RequestExecutionError::CountMustBeGreaterThanZero)?;
+    if count <= 0 {
+        return Err(RequestExecutionError::CountMustBeGreaterThanZero);
     }
     Ok(usize::try_from(count).unwrap_or(usize::MAX))
 }
@@ -1008,8 +1013,18 @@ fn parse_blocking_timeout_seconds(
     index: usize,
 ) -> Result<f64, RequestExecutionError> {
     // SAFETY: caller guarantees argument backing memory validity.
-    let timeout = parse_f64_ascii(unsafe { args[index].as_slice() })
-        .ok_or(RequestExecutionError::ValueNotFloat)?;
+    let timeout_token = unsafe { args[index].as_slice() };
+    let timeout_text =
+        std::str::from_utf8(timeout_token).map_err(|_| RequestExecutionError::ValueNotFloat)?;
+    let timeout = match timeout_text.parse::<f64>() {
+        Ok(parsed) => parsed,
+        Err(_) => {
+            if looks_numeric_timeout_token(timeout_token) {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            return Err(RequestExecutionError::ValueNotFloat);
+        }
+    };
     if !timeout.is_finite() {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
@@ -1017,6 +1032,39 @@ fn parse_blocking_timeout_seconds(
         return Err(RequestExecutionError::TimeoutIsNegative);
     }
     Ok(timeout)
+}
+
+fn looks_numeric_timeout_token(token: &[u8]) -> bool {
+    if token.is_empty() {
+        return false;
+    }
+    let (sign_len, body) = match token.first().copied() {
+        Some(b'+') | Some(b'-') if token.len() > 1 => (1usize, &token[1..]),
+        _ => (0usize, token),
+    };
+    if body.len() > 2
+        && body[0] == b'0'
+        && (body[1] == b'x' || body[1] == b'X')
+        && body[2..].iter().all(|byte| byte.is_ascii_hexdigit())
+    {
+        return true;
+    }
+    let mut seen_digit = false;
+    for (index, byte) in token.iter().copied().enumerate() {
+        let is_sign = byte == b'+' || byte == b'-';
+        if is_sign && index == 0 && sign_len == 1 {
+            continue;
+        }
+        if byte.is_ascii_digit() {
+            seen_digit = true;
+            continue;
+        }
+        if matches!(byte, b'.' | b'e' | b'E') {
+            continue;
+        }
+        return false;
+    }
+    seen_digit
 }
 
 fn append_blocking_pop_response(response_out: &mut Vec<u8>, key: &[u8], value: &[u8]) {
