@@ -399,8 +399,11 @@ impl RequestProcessor {
     }
 
     pub(super) fn track_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
-        self.lock_string_key_registry_for_shard(shard_index)
-            .insert(key.to_vec());
+        let mut registry = self.lock_string_key_registry_for_shard(shard_index);
+        if registry.contains(key) {
+            return;
+        }
+        registry.insert(key.to_vec());
     }
 
     pub(super) fn track_string_key(&self, key: &[u8]) {

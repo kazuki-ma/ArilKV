@@ -1,0 +1,14 @@
+before_outdir=garnet-rs/benches/results/linux-perf-diff-docker-20260223-072014
+after_outdir=garnet-rs/benches/results/linux-perf-diff-docker-20260223-072808
+
+throughput_ops_sec_before=274076.98
+throughput_ops_sec_after=280317.75
+throughput_delta_pct=2.2770
+
+cfree_pct_before=10.85
+cfree_pct_after=9.61
+cfree_delta_pp=-1.24
+
+allocfree_pct_before=16.4084
+allocfree_pct_after=14.3657
+allocfree_delta_pp=-2.0427

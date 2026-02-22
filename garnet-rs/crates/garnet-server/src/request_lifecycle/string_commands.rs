@@ -1270,7 +1270,7 @@ impl RequestProcessor {
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
         // SAFETY: caller guarantees argument backing memory validity.
-        let value = unsafe { args[2].as_slice() }.to_vec();
+        let value = unsafe { args[2].as_slice() };
         let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
@@ -1327,7 +1327,7 @@ impl RequestProcessor {
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         let stored_value = encode_stored_value(
-            &value,
+            value,
             options.expiration.map(|expiration| expiration.unix_millis),
         );
         if options.expiration.is_some() {

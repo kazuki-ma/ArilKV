@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-23
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 244
+> **Current Iteration**: 245
 
 ---
 
@@ -293,6 +293,7 @@
 | 11.122 | Mark owner-pinned Dragonfly comparison as milestone and preserve reproducible evidence | DONE | 11.121 | Ran median-of-3 Docker/Linux comparison under owner-pinned+inline settings (`THREADS=1`, `CONNS=4`, `REQUESTS=30000`, `SIZE_RANGE=1-256`) and observed Garnet exceeding Dragonfly for both SET/GET. Stored milestone report and artifacts in `docs/performance/experiments/2026-02-23/13.07-owner-pinned-dragonfly-comparison-milestone/` and labeled the experiment set index accordingly. |
 | 11.123 | Run broader memtier workload sweep under owner-pinned mode and preserve cross-shape results | DONE | 11.122 | Executed a 4-case sweep (`1x4 p1 1-256`, `4x8 p1 1-1024`, `8x16 p1 1-1024`, `4x8 p16 1-1024`) using `linux_perf_diff_profile_median_local.sh` (`RUNS=2`) with shared owner-pinning envs. Stored consolidated summaries and per-case median artifacts under `docs/performance/experiments/2026-02-23/13.08-memtier-wide-sweep-owner-pinned/`. |
 | 11.124 | Encapsulate `ArgSlice::as_slice` unsafe at parser boundary and remove per-command unsafe callsites | TODO | 11.123 | Current `ArgSlice` API requires `unsafe` at every command access site. Introduce a safe borrowed argument-view layer at parse boundary so command handlers consume `&[u8]` without repeating `unsafe`, while preserving zero-copy behavior and existing perf constraints. |
+| 11.125 | Reduce high-concurrency `SET` allocator pressure with low-risk hot-path changes and verify via Linux perf | DONE | 11.123 | Removed redundant `value.to_vec()` in `handle_set` and made string-key tracking idempotent without duplicate key allocation. Re-measured (`THREADS=8`, `CONNS=16`, `PIPELINE=1`): throughput `274076.98 -> 280317.75` ops/s (`+2.28%`), `cfree` share `10.85% -> 9.61%`. Evidence and artifacts captured under `docs/performance/experiments/2026-02-23/13.09-set-allocation-hotpath-reduction/`. |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
@@ -766,3 +767,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 242 | 2026-02-23 | 11.122 | DONE | Marked a new performance milestone with reproducible median evidence: `RUNS=3` owner-pinned Dragonfly comparison (`.../linux-perf-diff-median-20260223-065532`) shows `dragonfly/garnet` throughput ratio `set=0.439`, `get=0.869` (Garnet higher on both), captured in `docs/performance/experiments/2026-02-23/13.07-owner-pinned-dragonfly-comparison-milestone/`. |
 | 243 | 2026-02-23 | 11.123 | DONE | Added broader owner-pinned memtier coverage across four workload shapes with `RUNS=2` medians and consolidated cross-shape comparison CSVs (`sweep_summary.csv`, `sweep_summary_with_p99.csv`). Captured full experiment package in `docs/performance/experiments/2026-02-23/13.08-memtier-wide-sweep-owner-pinned/` for reuse and follow-up tuning decisions. |
 | 244 | 2026-02-23 | 11.124 | DONE (tracking) | Added explicit TODO tracking for `unsafe` encapsulation: remove per-command `unsafe { ArgSlice::as_slice() }` usage by introducing a parser-boundary safe borrowed-args layer, while preserving zero-copy/perf characteristics. |
+| 245 | 2026-02-23 | 11.125 | DONE | Landed low-risk `SET` allocation hot-path reduction (`handle_set` avoids redundant value copy; string-key tracking avoids duplicate insert allocation), revalidated tests (`210 + 23 + 1` pass), and reprofiled Docker/Linux `SET` (`8x16`, `pipeline=1`): throughput `+2.28%`, `cfree` share `10.85% -> 9.61%`. Stored evidence under `docs/performance/experiments/2026-02-23/13.09-set-allocation-hotpath-reduction/`. |

@@ -1,0 +1,6 @@
+metric,before,after,delta_pct
+throughput_ops_sec,274076.98,280317.75,2.2770
+cfree_pct_perf_report,10.85,9.61,-11.4286
+allocfree_pct_folded,16.4084,14.3657,-12.4482
+malloc_samples,100502500,60301500,-40.0000
+cfree_samples,597989875,517587875,-13.4453
