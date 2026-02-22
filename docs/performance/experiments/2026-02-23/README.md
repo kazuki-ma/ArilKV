@@ -5,6 +5,7 @@
 1. `13.00-evidence-gate-read-drain-and-client-metrics`
 2. `13.01-owner-thread-count-sweep`
 3. `13.02-docker-linux-median-owner-thread-count`
+4. `13.03-single-port-current-thread-runtime-rejected`
 
 ## Policy
 
@@ -16,3 +17,4 @@
 - Candidate optimizations must be measured before acceptance.
 - If isolated gain is unclear, reject the change and keep only measured wins.
 - Avoid global default flips when load-shape results are mixed.
+- Treat runtime/scheduler model changes as high-risk; accept only with clear win.

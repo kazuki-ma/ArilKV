@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=main_multithread
+new_label=main_current_thread
+main_multithread.median_set_ops=72427.000
+main_multithread.median_get_ops=76451.000
+main_multithread.median_set_p99_ms=0.10300
+main_multithread.median_get_p99_ms=0.10300
+main_current_thread.median_set_ops=68534.000
+main_current_thread.median_get_ops=75429.000
+main_current_thread.median_set_p99_ms=0.11900
+main_current_thread.median_get_p99_ms=0.10300
+delta.set_ops_pct=-5.38
+delta.get_ops_pct=-1.34
+delta.set_p99_ms_pct=15.53
+delta.get_p99_ms_pct=0.00
