@@ -3,6 +3,7 @@
 ## Included Experiments
 
 1. `13.00-evidence-gate-read-drain-and-client-metrics`
+2. `13.01-owner-thread-count-sweep`
 
 ## Policy
 
@@ -13,3 +14,4 @@
 
 - Candidate optimizations must be measured before acceptance.
 - If isolated gain is unclear, reject the change and keep only measured wins.
+- Avoid global default flips when load-shape results are mixed.

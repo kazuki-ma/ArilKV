@@ -19,6 +19,7 @@
 7. `docs/performance/experiments/2026-02-21/12.30-actor-debt-cleanup-regression-check/`
 8. `docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/`
 9. `docs/performance/experiments/2026-02-23/13.00-evidence-gate-read-drain-and-client-metrics/`
+10. `docs/performance/experiments/2026-02-23/13.01-owner-thread-count-sweep/`
 
 ## Patterns To Re-check For New Experiments
 

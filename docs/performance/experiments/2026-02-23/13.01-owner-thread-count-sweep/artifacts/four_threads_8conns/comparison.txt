@@ -1,0 +1,15 @@
+owner_thread_count_comparison
+base_label=owner2
+new_label=owner1
+owner2.median_set_ops=163595.000
+owner2.median_get_ops=167059.000
+owner2.median_set_p99_ms=0.39900
+owner2.median_get_p99_ms=0.35100
+owner1.median_set_ops=166494.000
+owner1.median_get_ops=171313.000
+owner1.median_set_p99_ms=0.37500
+owner1.median_get_p99_ms=0.32700
+delta.set_ops_pct=1.77
+delta.get_ops_pct=2.55
+delta.set_p99_ms_pct=-6.02
+delta.get_p99_ms_pct=-6.84
