@@ -6,6 +6,7 @@
 2. `13.01-owner-thread-count-sweep`
 3. `13.02-docker-linux-median-owner-thread-count`
 4. `13.03-single-port-current-thread-runtime-rejected`
+5. `13.04-owner-result-channel-mode-rejected`
 
 ## Policy
 

@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=sync_channel
+new_label=channel
+sync_channel.median_set_ops=167998.000
+sync_channel.median_get_ops=169824.000
+sync_channel.median_set_p99_ms=1.53500
+sync_channel.median_get_p99_ms=1.46300
+channel.median_set_ops=165276.000
+channel.median_get_ops=169073.000
+channel.median_set_p99_ms=1.56700
+channel.median_get_p99_ms=1.43100
+delta.set_ops_pct=-1.62
+delta.get_ops_pct=-0.44
+delta.set_p99_ms_pct=2.08
+delta.get_p99_ms_pct=-2.19

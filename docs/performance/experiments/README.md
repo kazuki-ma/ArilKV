@@ -22,6 +22,7 @@
 10. `docs/performance/experiments/2026-02-23/13.01-owner-thread-count-sweep/`
 11. `docs/performance/experiments/2026-02-23/13.02-docker-linux-median-owner-thread-count/`
 12. `docs/performance/experiments/2026-02-23/13.03-single-port-current-thread-runtime-rejected/`
+13. `docs/performance/experiments/2026-02-23/13.04-owner-result-channel-mode-rejected/`
 
 ## Patterns To Re-check For New Experiments
 
