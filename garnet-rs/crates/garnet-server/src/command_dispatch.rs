@@ -125,6 +125,8 @@ mod tests {
         assert_eq!(dispatch_command_name(b"bitcount"), CommandId::Bitcount);
         assert_eq!(dispatch_command_name(b"bitpos"), CommandId::Bitpos);
         assert_eq!(dispatch_command_name(b"BITOP"), CommandId::Bitop);
+        assert_eq!(dispatch_command_name(b"bitfield"), CommandId::Bitfield);
+        assert_eq!(dispatch_command_name(b"BITFIELD_RO"), CommandId::BitfieldRo);
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);
         assert_eq!(

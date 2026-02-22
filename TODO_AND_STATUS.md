@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 201
+> **Current Iteration**: 203
 
 ---
 
@@ -264,8 +264,41 @@
 | 11.73 | Add medium/high zset coverage for `ZDIFF/ZDIFFSTORE/ZINTER/ZINTERSTORE/ZUNION/ZUNIONSTORE/ZRANGESTORE` and refresh compatibility matrix | DONE | 11.71 | Added command catalog/dispatch/request lifecycle handlers and unit coverage for the seven zset commands (including weights/aggregate/withscores, destination overwrite semantics, and `ZRANGESTORE` option paths `BYSCORE/BYLEX/REV/LIMIT`). Validation: `cargo test -p garnet-server -- --nocapture` (`179 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-081555`), and command matrix refresh now reports `162/241` declared coverage (`67.22%`) in `docs/compatibility/redis-command-status-summary.md`. |
 | 11.74 | Add `ZMPOP` coverage and complete current non-blocking ZSET command surface | DONE | 11.73 | Added command catalog/dispatch/request lifecycle handler and unit coverage for `ZMPOP` (`MIN|MAX`, optional `COUNT`, first-non-empty key selection, null-array return when no candidates). Validation: `cargo test -p garnet-server -- --nocapture` (`179 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-082000`), and command matrix refresh now reports `163/241` declared coverage (`67.63%`). |
 | 11.88 | Add explicit scripting-command compatibility surface for `EVAL*`/`FCALL*` (validated parse + disabled response) and refresh compatibility matrix | DONE | 11.87 | Added command catalog/dispatch/lifecycle wiring for `EVAL`, `EVAL_RO`, `EVALSHA`, `EVALSHA_RO`, `FCALL`, `FCALL_RO`, including `numkeys` validation (`integer`, `>=0`, key-count bounds) and explicit disabled response (`ERR scripting is disabled in this server`). Added `testkit::assert_command_error` helper and lifecycle coverage for disabled/error paths. Validation: `cargo test -p garnet-server -- --nocapture` (`188 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-104405` with tests `6/4/2`), and command matrix refresh now reports `216/241` declared coverage (`89.63%`). |
+| 11.89 | Add `BITFIELD`/`BITFIELD_RO` coverage and refresh compatibility matrix | DONE | 11.88 | Added command catalog/dispatch/lifecycle wiring for `BITFIELD` and `BITFIELD_RO`, including `GET`/`SET`/`INCRBY` subcommands, `OVERFLOW WRAP|SAT|FAIL`, `#` type-relative offsets, and read-only command enforcement for `BITFIELD_RO`. Added lifecycle coverage for wrap/saturate/fail paths, type-relative offsets, syntax/integer/range errors, and wrongtype handling. Validation: `cargo test -p garnet-server -- --nocapture` (`189 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-105135` with tests `6/4/2`), and command matrix refresh now reports `218/241` declared coverage (`90.46%`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
+
+### Phase 11 Command Backlog (Remaining From Matrix)
+
+Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED` as of iteration 202).
+
+| Backlog ID | Command | Risk | Status | Notes |
+|---|---|---|---|---|
+| C-001 | `BITFIELD` | MEDIUM | DONE | Implemented in `11.89` with `GET/SET/INCRBY`, `OVERFLOW` policy, and validation coverage. |
+| C-002 | `BITFIELD_RO` | MEDIUM | DONE | Implemented in `11.89` with read-only enforcement and compatibility tests. |
+| C-003 | `GEOADD` | HIGH | TODO | Requires geospatial data representation and write path. |
+| C-004 | `GEODIST` | HIGH | TODO | Depends on geospatial index/lookup and distance calc semantics. |
+| C-005 | `GEOHASH` | HIGH | TODO | Depends on geospatial coordinate storage. |
+| C-006 | `GEOPOS` | HIGH | TODO | Depends on geospatial coordinate storage. |
+| C-007 | `GEORADIUS` | HIGH | TODO | Legacy radius query; can be layered on `GEOSEARCH` semantics. |
+| C-008 | `GEORADIUSBYMEMBER` | HIGH | TODO | Member-centered radius query variant. |
+| C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | TODO | Read-only variant of member-centered radius query. |
+| C-010 | `GEORADIUS_RO` | HIGH | TODO | Read-only legacy radius query variant. |
+| C-011 | `GEOSEARCH` | HIGH | TODO | Core geo query command; prerequisite for compatibility depth. |
+| C-012 | `GEOSEARCHSTORE` | HIGH | TODO | Store variant for geo query result set. |
+| C-013 | `LCS` | MEDIUM | TODO | String DP command with multiple output modes (`LEN`, `IDX`, `WITHMATCHLEN`, `MINMATCHLEN`). |
+| C-014 | `MIGRATE` | HIGH | TODO | Cross-instance data transfer protocol and timeout/copy/replace semantics. |
+| C-015 | `PSUBSCRIBE` | HIGH | TODO | Pub/Sub pattern subscription with push-message lifecycle. |
+| C-016 | `PUBLISH` | HIGH | TODO | Pub/Sub fanout path + subscriber accounting. |
+| C-017 | `PUBSUB` | HIGH | TODO | Introspection command family (`CHANNELS`, `NUMSUB`, `NUMPAT`, etc.). |
+| C-018 | `PUNSUBSCRIBE` | HIGH | TODO | Pattern unsubscribe semantics and push acks. |
+| C-019 | `SORT` | MEDIUM | TODO | Multi-type sort grammar (`BY`, `LIMIT`, `GET`, `ALPHA`, `DESC`, `STORE`). |
+| C-020 | `SORT_RO` | MEDIUM | TODO | Read-only sort variant sharing parser/executor with `SORT`. |
+| C-021 | `SPUBLISH` | HIGH | TODO | Sharded pub/sub publish path (Redis 7). |
+| C-022 | `SSUBSCRIBE` | HIGH | TODO | Sharded pub/sub subscribe path (Redis 7). |
+| C-023 | `SUBSCRIBE` | HIGH | TODO | Core channel subscription path with connection mode switch. |
+| C-024 | `SUNSUBSCRIBE` | HIGH | TODO | Sharded pub/sub unsubscribe path (Redis 7). |
+| C-025 | `UNSUBSCRIBE` | HIGH | TODO | Core channel unsubscribe semantics and push acks. |
 
 ---
 
@@ -659,3 +692,5 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 199 | 2026-02-22 | 11.86 | DONE | Implemented HyperLogLog command surface for `PFADD`/`PFCOUNT`/`PFMERGE`/`PFDEBUG`/`PFSELFTEST` using an internal prefixed string-encoding path (set-backed cardinality model), including wrongtype checks for non-HLL string/object keys and deterministic merge/count behavior across multiple keys. Added lifecycle tests for add/count/merge/debug/selftest and wrongtype error path. Revalidated command-edit gates (`cargo test -p garnet-server`: `186 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-103342` with tests `6/4/2`; command matrix refreshed to `85.89%` coverage). |
 | 200 | 2026-02-22 | 11.87 | DONE | Implemented key migration serialization command surface for `DUMP`/`RESTORE`/`RESTORE-ASKING` using an internal Garnet dump blob format (`GRN1`) and restore option parsing (`REPLACE`, `ABSTTL`, `IDLETIME`, `FREQ`), including explicit busy-key and invalid-payload errors plus TTL reapplication behavior on restore. Added lifecycle coverage for dump/restore roundtrip, replace semantics, TTL validation, restore-asking alias, and invalid blob handling. Revalidated command-edit gates (`cargo test -p garnet-server`: `187 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-103834` with tests `6/4/2`; command matrix refreshed to `87.14%` coverage). |
 | 201 | 2026-02-22 | 11.88 | DONE | Added scripting-command compatibility surface for `EVAL`/`EVAL_RO`/`EVALSHA`/`EVALSHA_RO`/`FCALL`/`FCALL_RO` with explicit `numkeys` validation and deterministic disabled response (`ERR scripting is disabled in this server`). Added `testkit::assert_command_error` and lifecycle tests that cover disabled-path plus invalid `numkeys` (`negative`, `non-integer`, missing keys) behavior. Revalidated command-edit gates (`cargo test -p garnet-server`: `188 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-104405` with tests `6/4/2`; command matrix refreshed to `89.63%` coverage). |
+| 202 | 2026-02-22 | Backlog Planning | DONE | Added a complete in-repo TODO backlog for all remaining `NOT_IMPLEMENTED` Redis commands (`25` entries, `C-001..C-025`) sourced directly from `docs/compatibility/redis-command-status.csv`, with per-command risk labels to support one-by-one execution. |
+| 203 | 2026-02-22 | 11.89 / C-001 / C-002 | DONE | Implemented `BITFIELD`/`BITFIELD_RO` command coverage (catalog + dispatch + lifecycle), including `GET`/`SET`/`INCRBY`, overflow policies (`WRAP`/`SAT`/`FAIL`), type-relative offsets (`#`), and read-only enforcement/error paths. Revalidated command-edit gates (`cargo test -p garnet-server`: `189 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-105135` with tests `6/4/2`; command matrix refreshed to `90.46%` coverage). |

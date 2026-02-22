@@ -9,6 +9,31 @@ enum BitopOperation {
     Not,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitfieldSignedness {
+    Signed,
+    Unsigned,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BitfieldEncoding {
+    signedness: BitfieldSignedness,
+    bits: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitfieldOverflowMode {
+    Wrap,
+    Sat,
+    Fail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitfieldIncrOutcome {
+    Value { raw: u64, value: i64 },
+    OverflowFail,
+}
+
 const PF_STRING_PREFIX: &[u8] = b"\x00garnet-pf-v1\x00";
 const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
     b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -597,6 +622,212 @@ impl RequestProcessor {
             self.upsert_string_value_for_migration(&destination, &result, None)?;
         }
         append_integer(response_out, result.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_bitfield(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_bitfield_impl(args, response_out, false)
+    }
+
+    pub(super) fn handle_bitfield_ro(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_bitfield_impl(args, response_out, true)
+    }
+
+    fn handle_bitfield_impl(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        read_only: bool,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: if read_only { "BITFIELD_RO" } else { "BITFIELD" },
+                expected: if read_only {
+                    "BITFIELD_RO key GET encoding offset [GET encoding offset ...]"
+                } else {
+                    "BITFIELD key [GET|SET|INCRBY|OVERFLOW ...]"
+                },
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        self.expire_key_if_needed(&key)?;
+        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let mut value = match self.read_string_value(&key)? {
+            Some(value) => value,
+            None => {
+                if self.object_key_exists(&key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                Vec::new()
+            }
+        };
+
+        let mut overflow_mode = BitfieldOverflowMode::Wrap;
+        let mut index = 2usize;
+        let mut operation_count = 0usize;
+        let mut wrote = false;
+        let mut responses: Vec<Option<i64>> = Vec::new();
+
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let subcommand = unsafe { args[index].as_slice() };
+
+            if ascii_eq_ignore_case(subcommand, b"OVERFLOW") {
+                if read_only {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                let mode_index = index
+                    .checked_add(1)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                if mode_index >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SAFETY: caller guarantees argument backing memory validity.
+                let mode = unsafe { args[mode_index].as_slice() };
+                overflow_mode =
+                    parse_bitfield_overflow_mode(mode).ok_or(RequestExecutionError::SyntaxError)?;
+                index = mode_index + 1;
+                continue;
+            }
+
+            if ascii_eq_ignore_case(subcommand, b"GET") {
+                let encoding_index = index
+                    .checked_add(1)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let offset_index = index
+                    .checked_add(2)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                if offset_index >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+
+                // SAFETY: caller guarantees argument backing memory validity.
+                let encoding_token = unsafe { args[encoding_index].as_slice() };
+                // SAFETY: caller guarantees argument backing memory validity.
+                let offset_token = unsafe { args[offset_index].as_slice() };
+                let encoding = parse_bitfield_encoding(encoding_token)?;
+                let offset = parse_bitfield_offset(offset_token, usize::from(encoding.bits))?;
+                let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
+                responses.push(Some(decode_bitfield_raw(raw, encoding)));
+                operation_count += 1;
+                index = offset_index + 1;
+                continue;
+            }
+
+            if ascii_eq_ignore_case(subcommand, b"SET") {
+                if read_only {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                let encoding_index = index
+                    .checked_add(1)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let offset_index = index
+                    .checked_add(2)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let value_index = index
+                    .checked_add(3)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                if value_index >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+
+                // SAFETY: caller guarantees argument backing memory validity.
+                let encoding_token = unsafe { args[encoding_index].as_slice() };
+                // SAFETY: caller guarantees argument backing memory validity.
+                let offset_token = unsafe { args[offset_index].as_slice() };
+                // SAFETY: caller guarantees argument backing memory validity.
+                let value_token = unsafe { args[value_index].as_slice() };
+                let encoding = parse_bitfield_encoding(encoding_token)?;
+                let offset = parse_bitfield_offset(offset_token, usize::from(encoding.bits))?;
+                let set_value =
+                    parse_i64_ascii(value_token).ok_or(RequestExecutionError::ValueNotInteger)?;
+                let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
+                responses.push(Some(decode_bitfield_raw(raw, encoding)));
+                let new_raw = encode_bitfield_value(set_value, encoding);
+                write_unsigned_bits(&mut value, offset, usize::from(encoding.bits), new_raw)?;
+                wrote = true;
+                operation_count += 1;
+                index = value_index + 1;
+                continue;
+            }
+
+            if ascii_eq_ignore_case(subcommand, b"INCRBY") {
+                if read_only {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                let encoding_index = index
+                    .checked_add(1)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let offset_index = index
+                    .checked_add(2)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let increment_index = index
+                    .checked_add(3)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                if increment_index >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+
+                // SAFETY: caller guarantees argument backing memory validity.
+                let encoding_token = unsafe { args[encoding_index].as_slice() };
+                // SAFETY: caller guarantees argument backing memory validity.
+                let offset_token = unsafe { args[offset_index].as_slice() };
+                // SAFETY: caller guarantees argument backing memory validity.
+                let increment_token = unsafe { args[increment_index].as_slice() };
+                let encoding = parse_bitfield_encoding(encoding_token)?;
+                let offset = parse_bitfield_offset(offset_token, usize::from(encoding.bits))?;
+                let increment = parse_i64_ascii(increment_token)
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
+
+                match apply_bitfield_incrby(raw, encoding, increment, overflow_mode)? {
+                    BitfieldIncrOutcome::Value { raw, value: result } => {
+                        write_unsigned_bits(&mut value, offset, usize::from(encoding.bits), raw)?;
+                        responses.push(Some(result));
+                        wrote = true;
+                    }
+                    BitfieldIncrOutcome::OverflowFail => responses.push(None),
+                }
+
+                operation_count += 1;
+                index = increment_index + 1;
+                continue;
+            }
+
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        if operation_count == 0 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        if wrote {
+            self.upsert_string_value_with_expiration_unix_millis(
+                &key,
+                &value,
+                expiration_unix_millis,
+            )?;
+            self.track_string_key(&key);
+            self.bump_watch_version(&key);
+        }
+
+        response_out.extend_from_slice(format!("*{}\r\n", responses.len()).as_bytes());
+        for entry in responses {
+            match entry {
+                Some(value) => append_integer(response_out, value),
+                None => append_null_bulk_string(response_out),
+            }
+        }
         Ok(())
     }
 
@@ -2197,6 +2428,204 @@ fn parse_bitop_operation(token: &[u8]) -> Option<BitopOperation> {
         return Some(BitopOperation::Not);
     }
     None
+}
+
+fn parse_bitfield_overflow_mode(token: &[u8]) -> Option<BitfieldOverflowMode> {
+    if ascii_eq_ignore_case(token, b"WRAP") {
+        return Some(BitfieldOverflowMode::Wrap);
+    }
+    if ascii_eq_ignore_case(token, b"SAT") {
+        return Some(BitfieldOverflowMode::Sat);
+    }
+    if ascii_eq_ignore_case(token, b"FAIL") {
+        return Some(BitfieldOverflowMode::Fail);
+    }
+    None
+}
+
+fn parse_bitfield_encoding(token: &[u8]) -> Result<BitfieldEncoding, RequestExecutionError> {
+    if token.len() < 2 {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let signedness = match token[0].to_ascii_uppercase() {
+        b'I' => BitfieldSignedness::Signed,
+        b'U' => BitfieldSignedness::Unsigned,
+        _ => return Err(RequestExecutionError::SyntaxError),
+    };
+    let bits = parse_u64_ascii(&token[1..]).ok_or(RequestExecutionError::SyntaxError)?;
+    let valid = match signedness {
+        BitfieldSignedness::Signed => (1..=64).contains(&bits),
+        BitfieldSignedness::Unsigned => (1..=63).contains(&bits),
+    };
+    if !valid {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    Ok(BitfieldEncoding {
+        signedness,
+        bits: bits as u8,
+    })
+}
+
+fn parse_bitfield_offset(token: &[u8], bits: usize) -> Result<usize, RequestExecutionError> {
+    let (is_type_relative, raw_token) = match token.split_first() {
+        Some((b'#', rest)) => (true, rest),
+        _ => (false, token),
+    };
+    let offset = parse_i64_ascii(raw_token).ok_or(RequestExecutionError::ValueNotInteger)?;
+    if offset < 0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    let base = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    if is_type_relative {
+        base.checked_mul(bits)
+            .ok_or(RequestExecutionError::ValueOutOfRange)
+    } else {
+        Ok(base)
+    }
+}
+
+fn read_unsigned_bits(
+    value: &[u8],
+    bit_offset: usize,
+    bit_width: usize,
+) -> Result<u64, RequestExecutionError> {
+    let _ = bit_offset
+        .checked_add(bit_width)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let mut raw = 0u64;
+    for bit_delta in 0..bit_width {
+        let index = bit_offset
+            .checked_add(bit_delta)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        let byte_index = index / 8;
+        let bit_index = 7usize - (index % 8);
+        let bit = if byte_index < value.len() {
+            (value[byte_index] >> bit_index) & 1
+        } else {
+            0
+        };
+        raw = (raw << 1) | u64::from(bit);
+    }
+    Ok(raw)
+}
+
+fn write_unsigned_bits(
+    value: &mut Vec<u8>,
+    bit_offset: usize,
+    bit_width: usize,
+    raw: u64,
+) -> Result<(), RequestExecutionError> {
+    let end_bit = bit_offset
+        .checked_add(bit_width)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let required_len = end_bit
+        .checked_add(7)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?
+        / 8;
+    if value.len() < required_len {
+        value.resize(required_len, 0);
+    }
+
+    for bit_delta in 0..bit_width {
+        let index = bit_offset
+            .checked_add(bit_delta)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        let byte_index = index / 8;
+        let bit_index = 7usize - (index % 8);
+        let shift = bit_width - 1 - bit_delta;
+        let bit = ((raw >> shift) & 1) as u8;
+        if bit == 1 {
+            value[byte_index] |= 1u8 << bit_index;
+        } else {
+            value[byte_index] &= !(1u8 << bit_index);
+        }
+    }
+    Ok(())
+}
+
+fn bitfield_mask(bits: usize) -> u64 {
+    if bits == 64 {
+        u64::MAX
+    } else {
+        (1u64 << bits) - 1
+    }
+}
+
+fn decode_bitfield_raw(raw: u64, encoding: BitfieldEncoding) -> i64 {
+    let bits = usize::from(encoding.bits);
+    match encoding.signedness {
+        BitfieldSignedness::Unsigned => raw as i64,
+        BitfieldSignedness::Signed => {
+            if bits == 64 {
+                raw as i64
+            } else {
+                let sign_bit = 1u64 << (bits - 1);
+                if raw & sign_bit == 0 {
+                    raw as i64
+                } else {
+                    (i128::from(raw) - (1i128 << bits)) as i64
+                }
+            }
+        }
+    }
+}
+
+fn encode_bitfield_value(value: i64, encoding: BitfieldEncoding) -> u64 {
+    let bits = usize::from(encoding.bits);
+    (value as u64) & bitfield_mask(bits)
+}
+
+fn bitfield_bounds(encoding: BitfieldEncoding) -> (i128, i128) {
+    let bits = usize::from(encoding.bits);
+    match encoding.signedness {
+        BitfieldSignedness::Unsigned => (0, (1i128 << bits) - 1),
+        BitfieldSignedness::Signed => {
+            if bits == 64 {
+                (i64::MIN as i128, i64::MAX as i128)
+            } else {
+                (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+            }
+        }
+    }
+}
+
+fn apply_bitfield_incrby(
+    raw: u64,
+    encoding: BitfieldEncoding,
+    increment: i64,
+    overflow_mode: BitfieldOverflowMode,
+) -> Result<BitfieldIncrOutcome, RequestExecutionError> {
+    let bits = usize::from(encoding.bits);
+    let current_value = i128::from(decode_bitfield_raw(raw, encoding));
+    let increment_value = i128::from(increment);
+    let target = current_value + increment_value;
+    let (min, max) = bitfield_bounds(encoding);
+    if target >= min && target <= max {
+        let result = target as i64;
+        return Ok(BitfieldIncrOutcome::Value {
+            raw: encode_bitfield_value(result, encoding),
+            value: result,
+        });
+    }
+
+    match overflow_mode {
+        BitfieldOverflowMode::Wrap => {
+            let modulus = 1i128 << bits;
+            let wrapped_raw = ((i128::from(raw) + increment_value).rem_euclid(modulus)) as u64;
+            Ok(BitfieldIncrOutcome::Value {
+                raw: wrapped_raw,
+                value: decode_bitfield_raw(wrapped_raw, encoding),
+            })
+        }
+        BitfieldOverflowMode::Sat => {
+            let saturated = if target < min { min } else { max } as i64;
+            Ok(BitfieldIncrOutcome::Value {
+                raw: encode_bitfield_value(saturated, encoding),
+                value: saturated,
+            })
+        }
+        BitfieldOverflowMode::Fail => Ok(BitfieldIncrOutcome::OverflowFail),
+    }
 }
 
 fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> {

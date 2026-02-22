@@ -4601,6 +4601,75 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
 }
 
 #[test]
+fn bitfield_and_bitfield_ro_cover_wrap_sat_fail_and_validation_paths() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "BITFIELD bfw GET u8 0", b"*1\r\n:0\r\n");
+    assert_command_integer(&processor, "EXISTS bfw", 0);
+
+    assert_command_response(&processor, "BITFIELD bfw SET i8 0 127", b"*1\r\n:0\r\n");
+    assert_command_response(&processor, "BITFIELD bfw INCRBY i8 0 1", b"*1\r\n:-128\r\n");
+    assert_command_response(&processor, "BITFIELD bfw GET i8 0", b"*1\r\n:-128\r\n");
+
+    assert_command_response(&processor, "BITFIELD bfw SET i8 0 127", b"*1\r\n:-128\r\n");
+    assert_command_response(
+        &processor,
+        "BITFIELD bfw OVERFLOW SAT INCRBY i8 0 1",
+        b"*1\r\n:127\r\n",
+    );
+    assert_command_response(&processor, "BITFIELD bfw GET i8 0", b"*1\r\n:127\r\n");
+
+    assert_command_response(&processor, "BITFIELD bfw SET i8 0 127", b"*1\r\n:127\r\n");
+    assert_command_response(
+        &processor,
+        "BITFIELD bfw OVERFLOW FAIL INCRBY i8 0 1",
+        b"*1\r\n$-1\r\n",
+    );
+    assert_command_response(&processor, "BITFIELD bfw GET i8 0", b"*1\r\n:127\r\n");
+
+    assert_command_response(
+        &processor,
+        "BITFIELD bfn SET u4 #1 15 GET u4 #1",
+        b"*2\r\n:0\r\n:15\r\n",
+    );
+    assert_command_response(&processor, "BITFIELD_RO bfw GET i8 0", b"*1\r\n:127\r\n");
+
+    assert_command_error(&processor, "BITFIELD bfw", b"-ERR syntax error\r\n");
+    assert_command_error(
+        &processor,
+        "BITFIELD bfw OVERFLOW WRAP",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "BITFIELD bfw GET i8 -1",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "BITFIELD bfw GET i8 bad",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "BITFIELD_RO bfw SET i8 0 1",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "BITFIELD_RO bfw INCRBY i8 0 1",
+        b"-ERR syntax error\r\n",
+    );
+
+    assert_command_integer(&processor, "HSET hbf f v", 1);
+    assert_command_error(
+        &processor,
+        "BITFIELD hbf GET u8 0",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+}
+
+#[test]
 fn psetex_sets_value_with_millisecond_expiration() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
