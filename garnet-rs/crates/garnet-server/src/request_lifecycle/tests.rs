@@ -5796,6 +5796,44 @@ fn geoadd_supports_basic_options_and_validation_paths() {
 }
 
 #[test]
+fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+
+    let response = execute_frame(
+        &processor,
+        &encode_resp(&[b"GEOPOS", b"sicily", b"palermo"]),
+    );
+    assert!(response.starts_with(b"*1\r\n*2\r\n$"));
+    assert!(response.contains(&b'\n'));
+
+    assert_command_response(&processor, "GEOPOS sicily unknown", b"*1\r\n$-1\r\n");
+    assert_command_response(&processor, "GEOPOS missing unknown", b"*1\r\n$-1\r\n");
+    assert_command_response(
+        &processor,
+        "GEOPOS sicily palermo unknown",
+        b"*2\r\n*2\r\n$20\r\n13.36138953807039798\r\n$20\r\n38.11555696346235322\r\n$-1\r\n",
+    );
+
+    assert_command_response(&processor, "SET plain value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GEOPOS plain member",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOPOS sicily",
+        b"-ERR wrong number of arguments for 'GEOPOS' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

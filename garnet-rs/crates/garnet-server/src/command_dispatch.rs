@@ -149,6 +149,7 @@ mod tests {
         assert_eq!(dispatch_command_name(b"spublish"), CommandId::Spublish);
         assert_eq!(dispatch_command_name(b"PUBSUB"), CommandId::Pubsub);
         assert_eq!(dispatch_command_name(b"geoadd"), CommandId::Geoadd);
+        assert_eq!(dispatch_command_name(b"GEOPOS"), CommandId::Geopos);
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);
         assert_eq!(
