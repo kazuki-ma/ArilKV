@@ -287,6 +287,7 @@ mod tests {
         assert_eq!(dispatch_command_name(b"XLEN"), CommandId::Xlen);
         assert_eq!(dispatch_command_name(b"xrange"), CommandId::Xrange);
         assert_eq!(dispatch_command_name(b"XREVRANGE"), CommandId::Xrevrange);
+        assert_eq!(dispatch_command_name(b"xtrim"), CommandId::Xtrim);
         assert_eq!(dispatch_command_name(b"multi"), CommandId::Multi);
         assert_eq!(dispatch_command_name(b"EXEC"), CommandId::Exec);
         assert_eq!(dispatch_command_name(b"discard"), CommandId::Discard);

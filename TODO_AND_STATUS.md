@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 194
+> **Current Iteration**: 195
 
 ---
 
@@ -651,3 +651,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 192 | 2026-02-22 | 11.79 | DONE | Implemented `BITPOS` end-to-end (catalog/dispatch/lifecycle handler/tests) with support for `start/end` and `BYTE|BIT` mode parsing, missing-key semantics, explicit wrongtype/error paths, and Redis-compatible `BITPOS 0` tail behavior when `end` is omitted. Also added `SLAVEOF` alias support to replication control path and command surface. Revalidated command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-095504` with tests `6/4/2`; command matrix refreshed to `76.35%` coverage). |
 | 193 | 2026-02-22 | 11.80 | DONE | Implemented `LPOS` with `RANK`/`COUNT`/`MAXLEN` option parsing (order-independent), positive/negative rank traversal, no-match/missing-key RESP shape differences (`null` vs empty array when `COUNT` is present), and list wrongtype/validation coverage. Revalidated command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-100039` with tests `6/4/2`; command matrix refreshed to `76.76%` coverage). |
 | 194 | 2026-02-22 | 11.81 | DONE | Implemented single-DB-compatible `MOVE`/`SWAPDB` command surface and server behavior, including explicit same-db move error (`ERR source and destination objects are the same`) and out-of-range DB handling (`ERR DB index is out of range`) consistent with current `SELECT 0`-only model. Added catalog/dispatch/lifecycle wiring and admin-command test coverage. Revalidated command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-100542` with tests `6/4/2`; command matrix refreshed to `77.59%` coverage). |
+| 195 | 2026-02-22 | 11.82 | DONE | Implemented `XTRIM` stream trimming support with `MAXLEN|MINID`, optional `=|~`, and optional `LIMIT` parsing, plus deterministic entry-removal behavior over stream IDs and error-path validation. Added stream lifecycle coverage for maxlen/minid trimming and invalid option/range handling. Revalidated command-edit gates (`cargo test -p garnet-server`: `182 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-101005` with tests `6/4/2`; command matrix refreshed to `78.01%` coverage). |

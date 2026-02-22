@@ -135,6 +135,7 @@ pub enum CommandId {
     Xlen,
     Xrange,
     Xrevrange,
+    Xtrim,
     Multi,
     Exec,
     Discard,
@@ -1539,6 +1540,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Xtrim,
+        name_upper: b"XTRIM",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Multi,
         name_upper: b"MULTI",
         key_access_pattern: KeyAccessPattern::None,
@@ -2555,6 +2566,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Xrevrange, 4));
         assert!(command_has_valid_arity(CommandId::Xrevrange, 6));
         assert!(!command_has_valid_arity(CommandId::Xrevrange, 3));
+        assert!(command_has_valid_arity(CommandId::Xtrim, 4));
+        assert!(command_has_valid_arity(CommandId::Xtrim, 8));
+        assert!(!command_has_valid_arity(CommandId::Xtrim, 3));
         assert!(command_has_valid_arity(CommandId::Quit, 1));
         assert!(!command_has_valid_arity(CommandId::Quit, 2));
         assert!(command_has_valid_arity(CommandId::Time, 1));
@@ -2687,6 +2701,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Xlen), b"XLEN");
         assert_eq!(command_name_upper(CommandId::Xrange), b"XRANGE");
         assert_eq!(command_name_upper(CommandId::Xrevrange), b"XREVRANGE");
+        assert_eq!(command_name_upper(CommandId::Xtrim), b"XTRIM");
         assert_eq!(command_name_upper(CommandId::Quit), b"QUIT");
         assert_eq!(command_name_upper(CommandId::Time), b"TIME");
         assert_eq!(command_name_upper(CommandId::Touch), b"TOUCH");

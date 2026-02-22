@@ -5247,6 +5247,96 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
 }
 
 #[test]
+fn xtrim_supports_maxlen_minid_and_limit_options() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 24];
+    let mut response = Vec::new();
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XADD", b"streamx", b"1-0", b"field", b"one"])
+        ),
+        b"$3\r\n1-0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XADD", b"streamx", b"2-0", b"field", b"two"])
+        ),
+        b"$3\r\n2-0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XADD", b"streamx", b"3-0", b"field", b"three"])
+        ),
+        b"$3\r\n3-0\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"XTRIM", b"streamx", b"MAXLEN", b"2"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"XLEN", b"streamx"])),
+        b":2\r\n"
+    );
+    let range_after_maxlen = execute_frame(
+        &processor,
+        &encode_resp(&[b"XRANGE", b"streamx", b"-", b"+"]),
+    );
+    assert!(range_after_maxlen.starts_with(b"*2\r\n"));
+    assert!(range_after_maxlen.windows(3).any(|window| window == b"2-0"));
+    assert!(range_after_maxlen.windows(3).any(|window| window == b"3-0"));
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XADD", b"streamx", b"4-0", b"field", b"four"])
+        ),
+        b"$3\r\n4-0\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XTRIM", b"streamx", b"MINID", b"4-0", b"LIMIT", b"1"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"XLEN", b"streamx"])),
+        b":2\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XTRIM", b"streamx", b"MAXLEN", b"~", b"1", b"LIMIT", b"1"])
+        ),
+        b":1\r\n"
+    );
+
+    response.clear();
+    let xtrim_bad_strategy = b"*4\r\n$5\r\nXTRIM\r\n$7\r\nstreamx\r\n$7\r\nUNKNOWN\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(xtrim_bad_strategy, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR syntax error\r\n");
+
+    response.clear();
+    let xtrim_negative_limit =
+        b"*6\r\n$5\r\nXTRIM\r\n$7\r\nstreamx\r\n$6\r\nMAXLEN\r\n$1\r\n1\r\n$5\r\nLIMIT\r\n$2\r\n-1\r\n";
+    let meta = parse_resp_command_arg_slices(xtrim_negative_limit, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+}
+
+#[test]
 fn script_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

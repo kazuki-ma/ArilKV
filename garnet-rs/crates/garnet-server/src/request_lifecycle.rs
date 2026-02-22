@@ -425,6 +425,7 @@ impl RequestProcessor {
             CommandId::Xlen => self.handle_xlen(args, response_out),
             CommandId::Xrange => self.handle_xrange(args, response_out),
             CommandId::Xrevrange => self.handle_xrevrange(args, response_out),
+            CommandId::Xtrim => self.handle_xtrim(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),

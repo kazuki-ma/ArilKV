@@ -382,6 +382,72 @@ impl RequestProcessor {
         append_stream_entry_array(response_out, &entries);
         Ok(())
     }
+
+    pub(super) fn handle_xtrim(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "XTRIM",
+                expected: "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let spec = parse_xtrim_spec(args)?;
+        let mut stream = match self.load_stream_object(&key)? {
+            Some(stream) => stream,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let mut entry_ids: Vec<Vec<u8>> = stream.entries.keys().cloned().collect();
+        entry_ids.sort_by(|lhs, rhs| compare_stream_ids(lhs, rhs));
+
+        let mut removed = 0usize;
+        match spec.strategy {
+            XtrimStrategy::Maxlen(maxlen) => {
+                let mut to_remove = stream.entries.len().saturating_sub(maxlen);
+                if let Some(limit) = spec.limit {
+                    to_remove = to_remove.min(limit);
+                }
+                for entry_id in entry_ids.into_iter().take(to_remove) {
+                    if stream.entries.remove(&entry_id).is_some() {
+                        removed += 1;
+                    }
+                }
+            }
+            XtrimStrategy::Minid(minid) => {
+                for entry_id in entry_ids {
+                    if !compare_stream_ids(&entry_id, &minid).is_lt() {
+                        break;
+                    }
+                    if let Some(limit) = spec.limit {
+                        if removed >= limit {
+                            break;
+                        }
+                    }
+                    if stream.entries.remove(&entry_id).is_some() {
+                        removed += 1;
+                    }
+                }
+            }
+        }
+
+        if removed > 0 {
+            if stream.entries.is_empty() && stream.groups.is_empty() {
+                let _ = self.object_delete(&key)?;
+            } else {
+                self.save_stream_object(&key, &stream)?;
+            }
+        }
+        append_integer(response_out, removed as i64);
+        Ok(())
+    }
 }
 
 fn next_auto_stream_id(stream: &StreamObject) -> Vec<u8> {
@@ -425,6 +491,72 @@ fn parse_stream_count_option(args: &[ArgSlice]) -> Result<usize, RequestExecutio
         return Err(RequestExecutionError::ValueOutOfRange);
     }
     Ok(parsed as usize)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum XtrimStrategy {
+    Maxlen(usize),
+    Minid(Vec<u8>),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct XtrimSpec {
+    strategy: XtrimStrategy,
+    limit: Option<usize>,
+}
+
+fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionError> {
+    // SAFETY: caller guarantees argument backing memory validity.
+    let strategy_token = unsafe { args[2].as_slice() };
+    let mut index = 3usize;
+    if index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let marker = unsafe { args[index].as_slice() };
+        if marker == b"=" || marker == b"~" {
+            index += 1;
+        }
+    }
+    if index >= args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let threshold = unsafe { args[index].as_slice() };
+    index += 1;
+
+    let limit = if index == args.len() {
+        None
+    } else {
+        if index + 2 != args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        if !ascii_eq_ignore_case(unsafe { args[index].as_slice() }, b"LIMIT") {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let parsed = parse_i64_ascii(unsafe { args[index + 1].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if parsed < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        Some(usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?)
+    };
+
+    let strategy = if ascii_eq_ignore_case(strategy_token, b"MAXLEN") {
+        let parsed = parse_i64_ascii(threshold).ok_or(RequestExecutionError::ValueNotInteger)?;
+        if parsed < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        XtrimStrategy::Maxlen(
+            usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?,
+        )
+    } else if ascii_eq_ignore_case(strategy_token, b"MINID") {
+        XtrimStrategy::Minid(threshold.to_vec())
+    } else {
+        return Err(RequestExecutionError::SyntaxError);
+    };
+
+    Ok(XtrimSpec { strategy, limit })
 }
 
 fn collect_stream_range_entries(
