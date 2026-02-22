@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
-> **Last Updated**: 2026-02-22
+> **Last Updated**: 2026-02-23
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 229
+> **Current Iteration**: 238
 
 ---
 
@@ -287,6 +287,7 @@
 | 11.98 | Add `GEORADIUS*` family coverage (`GEORADIUS/GEORADIUS_RO/GEORADIUSBYMEMBER/GEORADIUSBYMEMBER_RO`) and refresh compatibility matrix | DONE | 11.97 | Added command catalog/dispatch/lifecycle wiring for all four legacy radius commands with shared query execution over geo zset data, including `WITHDIST|WITHHASH|WITHCOORD`, `COUNT [ANY]`, `ASC|DESC`, and mutating `STORE|STOREDIST` paths (RO variants reject store options). Added lifecycle coverage for query ordering, by-member center lookup, store overwrite/cleanup semantics, syntax/wrongtype/range errors, and RO behavior. Validation: `cargo test -p garnet-server -- --nocapture` (`199 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-174915` with tests `6/4/2`), and command matrix refresh now reports `240/241` declared coverage (`99.59%`, `NOT_IMPLEMENTED=1`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
+| 11.119 | Eliminate listener->owner cross-thread handoff on actor path (`listener thread = owner worker`) | TODO | 11.118 | Current runtime still accepts on listener/Tokio task and forwards to owner pool via `execute_sync`; this differs from the design intent (`1 owner thread = 1 listen port = 1 logical node`). Implement co-located owner execution path and re-measure wakeup-heavy hotspot reduction before changing defaults. |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
@@ -753,3 +754,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 235 | 2026-02-23 | 11.116 | DONE | Re-ran owner-thread count comparison with Dockerized Linux median-of-3 harness (`owner=2` vs `owner=1`, `THREADS=1`, `CONNS=4`, `REQUESTS=12000`) and stored reproducible artifacts at `docs/performance/experiments/2026-02-23/13.02-docker-linux-median-owner-thread-count/`; result is effectively neutral (`SET +0.02%`, `GET -0.53%`), so default remains unchanged. |
 | 236 | 2026-02-23 | 11.117 | DONE | Tested a single-port runtime model change (switch main path from Tokio `multi_thread` to `current_thread`) with binary A/B (`RUNS=5`, `1x4`, `12000` requests) and rejected it due regression (`SET -5.38%`, `GET -1.34%`, `SET p99 +15.53%`). Preserved full report/artifacts under `docs/performance/experiments/2026-02-23/13.03-single-port-current-thread-runtime-rejected/`. |
 | 237 | 2026-02-23 | 11.118 | DONE | Evaluated owner-thread result return channel mode (`sync_channel(1)` -> `channel()`) with multi-load A/B (`1x4`, `4x8`, `8x16`), and rejected the change because higher-concurrency median throughput regressed (`8x16`: `SET -1.62%`, `GET -0.44%`). Stored reproducible artifacts at `docs/performance/experiments/2026-02-23/13.04-owner-result-channel-mode-rejected/`. |
+| 238 | 2026-02-23 | 11.119 | DONE (tracking) | Added explicit TODO tracking for listener/owner co-location gap (`listener thread != owner worker` in current implementation) so the remaining design-intent mismatch is visible as first-class work before further socket/kernel tuning. |
