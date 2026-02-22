@@ -17,6 +17,7 @@ pub enum CommandId {
     Setbit,
     Setrange,
     Bitcount,
+    Bitop,
     Del,
     Rename,
     Renamenx,
@@ -350,6 +351,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bitop,
+        name_upper: b"BITOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2222,6 +2233,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Bitcount, 4));
         assert!(command_has_valid_arity(CommandId::Bitcount, 5));
         assert!(!command_has_valid_arity(CommandId::Bitcount, 1));
+        assert!(command_has_valid_arity(CommandId::Bitop, 4));
+        assert!(command_has_valid_arity(CommandId::Bitop, 6));
+        assert!(!command_has_valid_arity(CommandId::Bitop, 3));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -2512,6 +2526,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Setbit), b"SETBIT");
         assert_eq!(command_name_upper(CommandId::Setrange), b"SETRANGE");
         assert_eq!(command_name_upper(CommandId::Bitcount), b"BITCOUNT");
+        assert_eq!(command_name_upper(CommandId::Bitop), b"BITOP");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

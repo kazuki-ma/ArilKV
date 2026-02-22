@@ -1,6 +1,14 @@
 use super::*;
 use tsavorite::{RmwInfo, RmwOperationError};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitopOperation {
+    And,
+    Or,
+    Xor,
+    Not,
+}
+
 impl RequestProcessor {
     pub(super) fn handle_get(
         &self,
@@ -394,6 +402,65 @@ impl RequestProcessor {
             0
         };
         append_integer(response_out, count);
+        Ok(())
+    }
+
+    pub(super) fn handle_bitop(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "BITOP",
+                expected: "BITOP operation destkey key [key ...]",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let operation = parse_bitop_operation(unsafe { args[1].as_slice() })
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        if operation == BitopOperation::Not && args.len() != 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "BITOP",
+                expected: "BITOP NOT destkey key",
+            });
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[2].as_slice() }.to_vec();
+        let source_keys = args[3..]
+            .iter()
+            .map(|key| {
+                // SAFETY: caller guarantees argument backing memory validity.
+                unsafe { key.as_slice() }.to_vec()
+            })
+            .collect::<Vec<_>>();
+
+        let mut source_values = Vec::with_capacity(source_keys.len());
+        for key in &source_keys {
+            self.expire_key_if_needed(key)?;
+            let value = match self.read_string_value(key)? {
+                Some(value) => value,
+                None => {
+                    if self.object_key_exists(key)? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    Vec::new()
+                }
+            };
+            source_values.push(value);
+        }
+
+        let result = apply_bitop(operation, &source_values);
+        if result.is_empty() {
+            self.delete_string_key_for_migration(&destination)?;
+            let _ = self.object_delete(&destination)?;
+        } else {
+            let _ = self.object_delete(&destination)?;
+            self.upsert_string_value_for_migration(&destination, &result, None)?;
+        }
+        append_integer(response_out, result.len() as i64);
         Ok(())
     }
 
@@ -1841,6 +1908,53 @@ fn parse_getex_action(args: &[ArgSlice]) -> Result<GetExAction, RequestExecution
     }
 
     Err(RequestExecutionError::SyntaxError)
+}
+
+fn parse_bitop_operation(token: &[u8]) -> Option<BitopOperation> {
+    if ascii_eq_ignore_case(token, b"AND") {
+        return Some(BitopOperation::And);
+    }
+    if ascii_eq_ignore_case(token, b"OR") {
+        return Some(BitopOperation::Or);
+    }
+    if ascii_eq_ignore_case(token, b"XOR") {
+        return Some(BitopOperation::Xor);
+    }
+    if ascii_eq_ignore_case(token, b"NOT") {
+        return Some(BitopOperation::Not);
+    }
+    None
+}
+
+fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> {
+    if source_values.is_empty() {
+        return Vec::new();
+    }
+    match operation {
+        BitopOperation::Not => source_values[0].iter().map(|byte| !*byte).collect(),
+        BitopOperation::And | BitopOperation::Or | BitopOperation::Xor => {
+            let max_len = source_values.iter().map(Vec::len).max().unwrap_or(0);
+            let mut result = vec![0u8; max_len];
+            for index in 0..max_len {
+                let mut value = match operation {
+                    BitopOperation::And => 0xFFu8,
+                    BitopOperation::Or | BitopOperation::Xor => 0u8,
+                    BitopOperation::Not => unreachable!(),
+                };
+                for source in source_values {
+                    let source_byte = source.get(index).copied().unwrap_or(0);
+                    value = match operation {
+                        BitopOperation::And => value & source_byte,
+                        BitopOperation::Or => value | source_byte,
+                        BitopOperation::Xor => value ^ source_byte,
+                        BitopOperation::Not => unreachable!(),
+                    };
+                }
+                result[index] = value;
+            }
+            result
+        }
+    }
 }
 
 fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, usize)> {
