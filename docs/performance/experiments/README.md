@@ -16,3 +16,16 @@
 6. `docs/performance/experiments/2026-02-20/rxbuf-copy-rewrite-rejected/`
 7. `docs/performance/experiments/2026-02-21/12.30-actor-debt-cleanup-regression-check/`
 8. `docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/`
+
+## Patterns To Re-check For New Experiments
+
+- One experiment should map to one commit when possible.
+  - include before/after commit hashes and keep `diff.patch`.
+- Always capture exact benchmark parameters.
+  - threads, clients, requests, pipeline, key range, payload size.
+- Regressions must be judged from repeated runs.
+  - compare medians and preserve raw run tables (`runs.csv`).
+- Guard against false green outcomes.
+  - verify test/benchmark case counts and fail on server error lines.
+- Store artifacts in the experiment directory, not temporary-only locations.
+  - at minimum: `README.md`, `diff.patch`, summary artifacts.

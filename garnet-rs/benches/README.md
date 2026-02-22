@@ -20,6 +20,19 @@ REDIS_BENCH_REQUESTS=10000 REDIS_BENCH_CLIENTS=20 \
   ./benches/redis_official_benchmark.sh
 ```
 
+## Patterns To Re-check Before Benchmark Changes
+
+- Validate benchmark integrity from stdout, not only exit code.
+  - confirm expected test case or memtier summary counters (`Threads`, `Connections`, `Requests per client`, non-zero ops).
+- Keep workload parameters identical for A/B runs.
+  - pin `threads/clients/requests/pipeline/key-space/size-range`.
+- Treat server-side error lines as hard failures.
+  - `handle error response:` and `Connection error:` must fail the run.
+- Separate noise from regressions.
+  - run multiple iterations and compare median values, not single-run spikes.
+- Record reproducibility metadata.
+  - keep run command, binary path, commit hash, and output directory in artifacts.
+
 ### Common options
 
 - `REDIS_BENCH_HOST` (default: `127.0.0.1`)

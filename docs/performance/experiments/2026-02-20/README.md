@@ -13,3 +13,12 @@
 
 - See `docs/performance/EXPERIMENT_REPORTING_POLICY.md`.
 - This date set includes both compliant (commit-tracked) and historical gap reports.
+
+## Patterns Observed In This Set
+
+- Historical working-tree-only experiments made traceability difficult.
+  - reason: missing before/after commit hashes and revert hashes.
+- Harness integrity checks were necessary to avoid false pass.
+  - benchmark scripts must fail on server-side error output.
+- Local hotspot defaults can distort interpretation.
+  - keep defaults aligned to current runtime policy (for example shard count).

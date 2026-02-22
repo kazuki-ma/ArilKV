@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 189
+> **Current Iteration**: 190
 
 ---
 
@@ -646,3 +646,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 187 | 2026-02-22 | 11.74 | DONE | Implemented `ZMPOP` end-to-end (catalog/dispatch/handler/tests), including Redis-compatible null-array and key+entry array response shape, option parsing (`MIN|MAX`, `COUNT`), and first-non-empty-key pop behavior. Revalidated command-edit gates (`cargo test -p garnet-server`: `179 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-082000`; command matrix refreshed to `67.63%` coverage). |
 | 188 | 2026-02-22 | 11.75 | DONE | Implemented list blocking/multipop family `LMPOP/BLMPOP/BLPOP/BRPOP/BLMOVE/BRPOPLPUSH` end-to-end (command catalog, dispatch, lifecycle handlers, and RESP-shape unit tests). Added per-directory workflow docs and README-first agent guards (`garnet-server/src`, `request_lifecycle`, `tests/interop`). Revalidated required command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-092950` with tests `6/4/2`; command matrix refreshed to `73.86%` coverage). |
 | 189 | 2026-02-22 | 11.76 | DONE | Implemented blocking zset pop family `BZPOPMIN/BZPOPMAX/BZMPOP` end-to-end with strict timeout parsing, Redis-compatible null-array/result shapes, and first-non-empty-key selection semantics. Refactored zset pop internals to share mutation logic across `ZPOP*`/`BZPOP*`/`ZMPOP`/`BZMPOP`, and extended lifecycle tests for response/error paths. Revalidated required command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-093554` with tests `6/4/2`; command matrix refreshed to `75.10%` coverage). |
+| 190 | 2026-02-22 | 11.77 | DONE | Standardized directory-local README-first guidance by adding `AGENT.md` across active implementation/performance-report directories (`garnet-rs/benches`, `garnet-rs/tests`, `docs/performance/experiments/**`) and expanded local `README.md` files with implementation-time re-check patterns (benchmark integrity checks, command-test flow, experiment reproducibility pitfalls). Scoped out non-essential root-level directories per follow-up direction. |
