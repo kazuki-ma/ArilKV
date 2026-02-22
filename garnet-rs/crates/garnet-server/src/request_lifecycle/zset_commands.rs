@@ -577,72 +577,25 @@ impl RequestProcessor {
             "ZMPOP numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
-        if option_start >= args.len() {
-            return Err(RequestExecutionError::SyntaxError);
-        }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let direction = unsafe { args[option_start].as_slice() };
-        let pop_max = if ascii_eq_ignore_case(direction, b"MAX") {
-            true
-        } else if ascii_eq_ignore_case(direction, b"MIN") {
-            false
-        } else {
-            return Err(RequestExecutionError::SyntaxError);
-        };
+        let (pop_max, count) = parse_zmpop_direction_and_count(args, option_start)?;
+        self.handle_zmpop_like(&keys, pop_max, count, response_out)
+    }
 
-        let count = if option_start + 1 == args.len() {
-            1usize
-        } else {
-            if option_start + 3 != args.len() {
-                return Err(RequestExecutionError::SyntaxError);
-            }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let count_token = unsafe { args[option_start + 1].as_slice() };
-            if !ascii_eq_ignore_case(count_token, b"COUNT") {
-                return Err(RequestExecutionError::SyntaxError);
-            }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let parsed = parse_u64_ascii(unsafe { args[option_start + 2].as_slice() })
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
-            if parsed == 0 {
-                return Err(RequestExecutionError::ValueOutOfRange);
-            }
-            usize::try_from(parsed).unwrap_or(usize::MAX)
-        };
-
-        for key in keys {
-            let mut zset = match self.load_zset_object(&key)? {
-                Some(zset) => zset,
-                None => continue,
-            };
-            if zset.is_empty() {
-                let _ = self.object_delete(&key)?;
-                continue;
-            }
-            let mut entries = sorted_zset_entries_by_score(&zset);
-            if pop_max {
-                entries.reverse();
-            }
-            let selected_count = count.min(entries.len());
-            let selected: Vec<(Vec<u8>, f64)> = entries
-                .into_iter()
-                .take(selected_count)
-                .map(|(member, score)| (member.clone(), score))
-                .collect();
-            for (member, _score) in &selected {
-                zset.remove(member);
-            }
-            if zset.is_empty() {
-                let _ = self.object_delete(&key)?;
-            } else {
-                self.save_zset_object(&key, &zset)?;
-            }
-            append_zmpop_response(response_out, &key, &selected);
-            return Ok(());
-        }
-
-        response_out.extend_from_slice(b"*-1\r\n");
-        Ok(())
+    pub(super) fn handle_bzmpop(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "BZMPOP",
+            "BZMPOP timeout numkeys key [key ...] <MIN|MAX> [COUNT count]",
+        )?;
+        parse_blocking_timeout_seconds(args, 1)?;
+        let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
+        let (pop_max, count) = parse_zmpop_direction_and_count(args, option_start)?;
+        self.handle_zmpop_like(&keys, pop_max, count, response_out)
     }
 
     pub(super) fn handle_zrangestore(
@@ -1103,6 +1056,22 @@ impl RequestProcessor {
         self.handle_zpop_like(args, response_out, true)
     }
 
+    pub(super) fn handle_bzpopmin(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_bzpop_like(args, response_out, false)
+    }
+
+    pub(super) fn handle_bzpopmax(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_bzpop_like(args, response_out, true)
+    }
+
     fn handle_zrank_like(
         &self,
         args: &[ArgSlice],
@@ -1167,13 +1136,6 @@ impl RequestProcessor {
         )?;
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
-        let mut zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                response_out.extend_from_slice(b"*0\r\n");
-                return Ok(());
-            }
-        };
         let count = if args.len() == 3 {
             // SAFETY: caller guarantees argument backing memory validity.
             parse_u64_ascii(unsafe { args[2].as_slice() })
@@ -1185,30 +1147,11 @@ impl RequestProcessor {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
         }
-
-        let mut entries = sorted_zset_entries_by_score(&zset);
-        if pop_max {
-            entries.reverse();
-        }
         let requested = usize::try_from(count).unwrap_or(usize::MAX);
-        let selected_count = requested.min(entries.len());
-        if selected_count == 0 {
+        let Some(selected) = self.pop_zset_entries_from_key(&key, pop_max, requested)? else {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
-        }
-        let selected: Vec<(Vec<u8>, f64)> = entries
-            .into_iter()
-            .take(selected_count)
-            .map(|(member, score)| (member.clone(), score))
-            .collect();
-        for (member, _) in &selected {
-            zset.remove(member);
-        }
-        if zset.is_empty() {
-            let _ = self.object_delete(&key)?;
-        } else {
-            self.save_zset_object(&key, &zset)?;
-        }
+        };
 
         response_out.push(b'*');
         response_out.extend_from_slice((selected.len() * 2).to_string().as_bytes());
@@ -1218,6 +1161,99 @@ impl RequestProcessor {
             append_bulk_string(response_out, score.to_string().as_bytes());
         }
         Ok(())
+    }
+
+    fn handle_bzpop_like(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        pop_max: bool,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            if pop_max { "BZPOPMAX" } else { "BZPOPMIN" },
+            if pop_max {
+                "BZPOPMAX key [key ...] timeout"
+            } else {
+                "BZPOPMIN key [key ...] timeout"
+            },
+        )?;
+        let timeout_index = args.len() - 1;
+        parse_blocking_timeout_seconds(args, timeout_index)?;
+
+        for key in &args[1..timeout_index] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let key = unsafe { key.as_slice() }.to_vec();
+            let Some(mut selected) = self.pop_zset_entries_from_key(&key, pop_max, 1)? else {
+                continue;
+            };
+            let entry = selected
+                .pop()
+                .expect("pop_zset_entries_from_key returns one element when requested=1");
+            append_bzpop_response(response_out, &key, &entry);
+            return Ok(());
+        }
+
+        response_out.extend_from_slice(b"*-1\r\n");
+        Ok(())
+    }
+
+    fn handle_zmpop_like(
+        &self,
+        keys: &[Vec<u8>],
+        pop_max: bool,
+        count: usize,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        for key in keys {
+            let Some(selected) = self.pop_zset_entries_from_key(key, pop_max, count)? else {
+                continue;
+            };
+            append_zmpop_response(response_out, key, &selected);
+            return Ok(());
+        }
+        response_out.extend_from_slice(b"*-1\r\n");
+        Ok(())
+    }
+
+    fn pop_zset_entries_from_key(
+        &self,
+        key: &[u8],
+        pop_max: bool,
+        count: usize,
+    ) -> Result<Option<Vec<(Vec<u8>, f64)>>, RequestExecutionError> {
+        let mut zset = match self.load_zset_object(key)? {
+            Some(zset) => zset,
+            None => return Ok(None),
+        };
+        if zset.is_empty() {
+            let _ = self.object_delete(key)?;
+            return Ok(None);
+        }
+
+        let mut entries = sorted_zset_entries_by_score(&zset);
+        if pop_max {
+            entries.reverse();
+        }
+        let selected_count = count.min(entries.len());
+        if selected_count == 0 {
+            return Ok(None);
+        }
+        let selected: Vec<(Vec<u8>, f64)> = entries
+            .into_iter()
+            .take(selected_count)
+            .map(|(member, score)| (member.clone(), score))
+            .collect();
+        for (member, _score) in &selected {
+            zset.remove(member);
+        }
+        if zset.is_empty() {
+            let _ = self.object_delete(key)?;
+        } else {
+            self.save_zset_object(key, &zset)?;
+        }
+        Ok(Some(selected))
     }
 }
 
@@ -1700,6 +1736,65 @@ fn append_zmpop_response(response_out: &mut Vec<u8>, key: &[u8], entries: &[(Vec
         append_bulk_string(response_out, member);
         append_bulk_string(response_out, score.to_string().as_bytes());
     }
+}
+
+fn append_bzpop_response(response_out: &mut Vec<u8>, key: &[u8], entry: &(Vec<u8>, f64)) {
+    response_out.extend_from_slice(b"*3\r\n");
+    append_bulk_string(response_out, key);
+    append_bulk_string(response_out, entry.0.as_slice());
+    append_bulk_string(response_out, entry.1.to_string().as_bytes());
+}
+
+fn parse_blocking_timeout_seconds(
+    args: &[ArgSlice],
+    index: usize,
+) -> Result<f64, RequestExecutionError> {
+    // SAFETY: caller guarantees argument backing memory validity.
+    let timeout = parse_f64_ascii(unsafe { args[index].as_slice() })
+        .ok_or(RequestExecutionError::ValueNotFloat)?;
+    if !timeout.is_finite() || timeout < 0.0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    Ok(timeout)
+}
+
+fn parse_zmpop_direction_and_count(
+    args: &[ArgSlice],
+    option_start: usize,
+) -> Result<(bool, usize), RequestExecutionError> {
+    if option_start >= args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let direction = unsafe { args[option_start].as_slice() };
+    let pop_max = if ascii_eq_ignore_case(direction, b"MAX") {
+        true
+    } else if ascii_eq_ignore_case(direction, b"MIN") {
+        false
+    } else {
+        return Err(RequestExecutionError::SyntaxError);
+    };
+
+    let count = if option_start + 1 == args.len() {
+        1usize
+    } else {
+        if option_start + 3 != args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let count_token = unsafe { args[option_start + 1].as_slice() };
+        if !ascii_eq_ignore_case(count_token, b"COUNT") {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let parsed = parse_u64_ascii(unsafe { args[option_start + 2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if parsed == 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        usize::try_from(parsed).unwrap_or(usize::MAX)
+    };
+    Ok((pop_max, count))
 }
 
 fn parse_zrangestore_options(

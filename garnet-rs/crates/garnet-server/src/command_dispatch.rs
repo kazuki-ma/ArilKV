@@ -240,6 +240,8 @@ mod tests {
         );
         assert_eq!(dispatch_command_name(b"ZPOPMIN"), CommandId::Zpopmin);
         assert_eq!(dispatch_command_name(b"zpopmax"), CommandId::Zpopmax);
+        assert_eq!(dispatch_command_name(b"BZPOPMIN"), CommandId::Bzpopmin);
+        assert_eq!(dispatch_command_name(b"bzpopmax"), CommandId::Bzpopmax);
         assert_eq!(dispatch_command_name(b"ZDIFF"), CommandId::Zdiff);
         assert_eq!(dispatch_command_name(b"zdiffstore"), CommandId::Zdiffstore);
         assert_eq!(dispatch_command_name(b"ZINTER"), CommandId::Zinter);
@@ -266,6 +268,7 @@ mod tests {
         );
         assert_eq!(dispatch_command_name(b"ZINTERCARD"), CommandId::Zintercard);
         assert_eq!(dispatch_command_name(b"zmpop"), CommandId::Zmpop);
+        assert_eq!(dispatch_command_name(b"BZMPOP"), CommandId::Bzmpop);
         assert_eq!(dispatch_command_name(b"zunion"), CommandId::Zunion);
         assert_eq!(
             dispatch_command_name(b"ZUNIONSTORE"),

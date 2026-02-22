@@ -108,6 +108,8 @@ pub enum CommandId {
     Zrandmember,
     Zpopmin,
     Zpopmax,
+    Bzpopmin,
+    Bzpopmax,
     Zdiff,
     Zdiffstore,
     Zinter,
@@ -119,6 +121,7 @@ pub enum CommandId {
     Zremrangebylex,
     Zintercard,
     Zmpop,
+    Bzmpop,
     Zunion,
     Zunionstore,
     Xadd,
@@ -1260,6 +1263,26 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Bzpopmin,
+        name_upper: b"BZPOPMIN",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bzpopmax,
+        name_upper: b"BZPOPMAX",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Zdiff,
         name_upper: b"ZDIFF",
         key_access_pattern: KeyAccessPattern::None,
@@ -1367,6 +1390,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bzmpop,
+        name_upper: b"BZMPOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2402,6 +2435,12 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Zpopmax, 2));
         assert!(command_has_valid_arity(CommandId::Zpopmax, 3));
         assert!(!command_has_valid_arity(CommandId::Zpopmax, 1));
+        assert!(command_has_valid_arity(CommandId::Bzpopmin, 3));
+        assert!(command_has_valid_arity(CommandId::Bzpopmin, 5));
+        assert!(!command_has_valid_arity(CommandId::Bzpopmin, 2));
+        assert!(command_has_valid_arity(CommandId::Bzpopmax, 3));
+        assert!(command_has_valid_arity(CommandId::Bzpopmax, 5));
+        assert!(!command_has_valid_arity(CommandId::Bzpopmax, 2));
         assert!(command_has_valid_arity(CommandId::Zdiff, 3));
         assert!(command_has_valid_arity(CommandId::Zdiff, 7));
         assert!(!command_has_valid_arity(CommandId::Zdiff, 2));
@@ -2433,6 +2472,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Zmpop, 4));
         assert!(command_has_valid_arity(CommandId::Zmpop, 8));
         assert!(!command_has_valid_arity(CommandId::Zmpop, 3));
+        assert!(command_has_valid_arity(CommandId::Bzmpop, 5));
+        assert!(command_has_valid_arity(CommandId::Bzmpop, 9));
+        assert!(!command_has_valid_arity(CommandId::Bzmpop, 4));
         assert!(command_has_valid_arity(CommandId::Zunion, 3));
         assert!(command_has_valid_arity(CommandId::Zunion, 8));
         assert!(!command_has_valid_arity(CommandId::Zunion, 2));
@@ -2547,6 +2589,8 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Zrandmember), b"ZRANDMEMBER");
         assert_eq!(command_name_upper(CommandId::Zpopmin), b"ZPOPMIN");
         assert_eq!(command_name_upper(CommandId::Zpopmax), b"ZPOPMAX");
+        assert_eq!(command_name_upper(CommandId::Bzpopmin), b"BZPOPMIN");
+        assert_eq!(command_name_upper(CommandId::Bzpopmax), b"BZPOPMAX");
         assert_eq!(command_name_upper(CommandId::Zdiff), b"ZDIFF");
         assert_eq!(command_name_upper(CommandId::Zdiffstore), b"ZDIFFSTORE");
         assert_eq!(command_name_upper(CommandId::Zinter), b"ZINTER");
@@ -2564,6 +2608,7 @@ mod tests {
         );
         assert_eq!(command_name_upper(CommandId::Zintercard), b"ZINTERCARD");
         assert_eq!(command_name_upper(CommandId::Zmpop), b"ZMPOP");
+        assert_eq!(command_name_upper(CommandId::Bzmpop), b"BZMPOP");
         assert_eq!(command_name_upper(CommandId::Zunion), b"ZUNION");
         assert_eq!(command_name_upper(CommandId::Zunionstore), b"ZUNIONSTORE");
         assert_eq!(command_name_upper(CommandId::Xlen), b"XLEN");

@@ -2238,6 +2238,88 @@ fn zset_commands_roundtrip_over_object_store() {
         b"*-1\r\n"
     );
 
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"bz1", b"1", b"a", b"2", b"b"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZADD", b"bz2", b"3", b"c"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BZPOPMIN", b"missing_bz", b"bz1", b"0.01"])
+        ),
+        b"*3\r\n$3\r\nbz1\r\n$1\r\na\r\n$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BZPOPMAX", b"bz1", b"bz2", b"0.01"])
+        ),
+        b"*3\r\n$3\r\nbz1\r\n$1\r\nb\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BZPOPMAX", b"bz1", b"bz2", b"0.01"])
+        ),
+        b"*3\r\n$3\r\nbz2\r\n$1\r\nc\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BZPOPMIN", b"bz1", b"bz2", b"0.01"])
+        ),
+        b"*-1\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"bzm1", b"1", b"x", b"2", b"y"])
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"ZADD", b"bzm2", b"3", b"z"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"BZMPOP",
+                b"0.01",
+                b"2",
+                b"missing_bzm",
+                b"bzm1",
+                b"MIN",
+                b"COUNT",
+                b"2"
+            ])
+        ),
+        b"*2\r\n$4\r\nbzm1\r\n*2\r\n*2\r\n$1\r\nx\r\n$1\r\n1\r\n*2\r\n$1\r\ny\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BZMPOP", b"0.01", b"2", b"bzm1", b"bzm2", b"MAX"])
+        ),
+        b"*2\r\n$4\r\nbzm2\r\n*1\r\n*2\r\n$1\r\nz\r\n$1\r\n3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BZMPOP", b"0.01", b"1", b"bzm2", b"MIN"])
+        ),
+        b"*-1\r\n"
+    );
+
     response.clear();
     let zmscore =
         b"*5\r\n$7\r\nZMSCORE\r\n$3\r\nkey\r\n$3\r\none\r\n$7\r\nmissing\r\n$3\r\ntwo\r\n";
@@ -2301,6 +2383,27 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let bzpopmin_bad_timeout = b"*3\r\n$8\r\nBZPOPMIN\r\n$3\r\nbz1\r\n$3\r\nbad\r\n";
+    let meta = parse_resp_command_arg_slices(bzpopmin_bad_timeout, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is not a valid float\r\n");
+
+    response.clear();
+    let bzmpop_negative_timeout =
+        b"*7\r\n$6\r\nBZMPOP\r\n$2\r\n-1\r\n$1\r\n1\r\n$3\r\nbz1\r\n$3\r\nMIN\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(bzmpop_negative_timeout, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
 
     response.clear();
     let zrem = b"*4\r\n$4\r\nZREM\r\n$3\r\nkey\r\n$3\r\none\r\n$4\r\nnone\r\n";
