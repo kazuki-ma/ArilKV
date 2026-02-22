@@ -297,7 +297,7 @@ fn reserve_tail_space(
 
         let next_page = page_index + 1;
         let next_page_start = next_page << space.page_size_bits();
-        pointers.shift_tail_address(next_page_start + allocated_size as u64);
+        pointers.shift_tail_address(next_page_start);
         if !page_manager.is_page_allocated(next_page) {
             page_manager.allocate_page(next_page)?;
         }

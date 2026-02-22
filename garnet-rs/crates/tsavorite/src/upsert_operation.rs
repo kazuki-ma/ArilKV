@@ -133,8 +133,10 @@ where
                 key,
                 previous_address,
             )? {
-                matched_address = Some(address);
-                matched_record = Some(record);
+                if !record.record_info.tombstone() && !record.record_info.invalid() {
+                    matched_address = Some(address);
+                    matched_record = Some(record);
+                }
             }
         }
     }
@@ -363,7 +365,7 @@ fn reserve_tail_space(
 
         let next_page = page_index + 1;
         let next_page_start = next_page << space.page_size_bits();
-        pointers.shift_tail_address(next_page_start + allocated_size as u64);
+        pointers.shift_tail_address(next_page_start);
         if !page_manager.is_page_allocated(next_page) {
             page_manager.allocate_page(next_page)?;
         }
@@ -373,10 +375,11 @@ fn reserve_tail_space(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::delete_operation::{delete, DeleteOperationContext, DeleteOperationStatus};
     use crate::read_operation::{
         read, HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus,
     };
-    use crate::{ReadInfo, RmwInfo};
+    use crate::{DeleteInfo, ReadInfo, RmwInfo};
 
     struct ByteUpsertFunctions;
 
@@ -474,21 +477,25 @@ mod tests {
         fn single_deleter(
             &self,
             _key: &Self::Key,
-            _value: &mut Self::Value,
+            value: &mut Self::Value,
             _delete_info: &mut crate::DeleteInfo,
-            _record_info: &mut RecordInfo,
+            record_info: &mut RecordInfo,
         ) -> bool {
-            false
+            value.clear();
+            record_info.set_tombstone();
+            true
         }
 
         fn concurrent_deleter(
             &self,
             _key: &Self::Key,
-            _value: &mut Self::Value,
+            value: &mut Self::Value,
             _delete_info: &mut crate::DeleteInfo,
-            _record_info: &mut RecordInfo,
+            record_info: &mut RecordInfo,
         ) -> bool {
-            false
+            value.clear();
+            record_info.set_tombstone();
+            true
         }
     }
 
@@ -517,6 +524,24 @@ mod tests {
 
         fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
             record_value.to_vec()
+        }
+    }
+
+    impl crate::delete_operation::HybridLogDeleteAdapter for ByteUpsertFunctions {
+        fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool {
+            requested_key.as_slice() == record_key
+        }
+
+        fn key_to_record_bytes(&self, key: &Self::Key) -> Vec<u8> {
+            key.clone()
+        }
+
+        fn value_from_record(&self, record_value: &[u8]) -> Self::Value {
+            record_value.to_vec()
+        }
+
+        fn value_to_record_bytes(&self, value: &Self::Value) -> Vec<u8> {
+            value.clone()
         }
     }
 
@@ -668,5 +693,136 @@ mod tests {
 
         assert_eq!(status, UpsertOperationStatus::CopiedToTail);
         assert_ne!(before, after);
+    }
+
+    #[test]
+    fn upsert_after_tombstone_resurrects_key() {
+        let hash_index = HashIndex::with_size_bits(2).unwrap();
+        let mut page_manager = PageManager::new(8, 8).unwrap();
+        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        page_manager.allocate_page(0).unwrap();
+
+        let functions = ByteUpsertFunctions;
+        let key = b"key".to_vec();
+        let key_hash = (24u64 << crate::HASH_TAG_SHIFT) | 0;
+        let mut output = Vec::new();
+        let mut upsert_info = UpsertInfo::default();
+
+        {
+            let mut upsert_context = UpsertOperationContext {
+                hash_index: &hash_index,
+                page_manager: &mut page_manager,
+                pointers: &pointers,
+            };
+            let status = upsert(
+                &mut upsert_context,
+                &functions,
+                key_hash,
+                &key,
+                &b"abc".to_vec(),
+                &mut output,
+                &mut upsert_info,
+            )
+            .unwrap();
+            assert_eq!(status, UpsertOperationStatus::Inserted);
+        }
+
+        {
+            let mut delete_context = DeleteOperationContext {
+                hash_index: &hash_index,
+                page_manager: &mut page_manager,
+                pointers: &pointers,
+            };
+            let mut delete_info = DeleteInfo::default();
+            let status = delete(
+                &mut delete_context,
+                &functions,
+                key_hash,
+                &key,
+                &mut delete_info,
+            )
+            .unwrap();
+            assert!(matches!(
+                status,
+                DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone
+            ));
+        }
+
+        {
+            let mut upsert_context = UpsertOperationContext {
+                hash_index: &hash_index,
+                page_manager: &mut page_manager,
+                pointers: &pointers,
+            };
+            let status = upsert(
+                &mut upsert_context,
+                &functions,
+                key_hash,
+                &key,
+                &b"xyz".to_vec(),
+                &mut output,
+                &mut upsert_info,
+            )
+            .unwrap();
+            assert_eq!(status, UpsertOperationStatus::Inserted);
+        }
+
+        let device = crate::InMemoryPageDevice::new(page_manager.page_size());
+        let mut read_context = ReadOperationContext {
+            hash_index: &hash_index,
+            page_manager: &mut page_manager,
+            pointers: &pointers,
+            device: &device,
+        };
+        let read_status = read(
+            &mut read_context,
+            &functions,
+            key_hash,
+            &key,
+            &Vec::new(),
+            &mut output,
+            &ReadInfo::default(),
+        )
+        .unwrap();
+        assert!(matches!(
+            read_status,
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk
+        ));
+        assert_eq!(output, b"xyz");
+    }
+
+    #[test]
+    fn upsert_inserts_multiple_records_larger_than_half_page() {
+        let hash_index = HashIndex::with_size_bits(2).unwrap();
+        let mut page_manager = PageManager::new(9, 8).unwrap();
+        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        page_manager.allocate_page(0).unwrap();
+
+        let functions = ByteUpsertFunctions;
+        let mut output = Vec::new();
+        let mut upsert_info = UpsertInfo::default();
+        let value = vec![b'x'; 300];
+
+        let mut context = UpsertOperationContext {
+            hash_index: &hash_index,
+            page_manager: &mut page_manager,
+            pointers: &pointers,
+        };
+
+        for i in 0u64..3 {
+            let key = format!("k{i}").into_bytes();
+            let key_hash = ((40 + i) << crate::HASH_TAG_SHIFT) | i;
+            let status = upsert(
+                &mut context,
+                &functions,
+                key_hash,
+                &key,
+                &value,
+                &mut output,
+                &mut upsert_info,
+            )
+            .unwrap();
+            assert_eq!(status, UpsertOperationStatus::Inserted);
+        }
     }
 }

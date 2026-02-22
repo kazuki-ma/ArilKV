@@ -31,7 +31,46 @@ async fn redis_cli_basic_command_compatibility() {
         run_redis_cli(port, &["SET", "foo", "bar"]).await.unwrap(),
         "OK"
     );
+    assert_eq!(
+        run_redis_cli(port, &["SETEX", "sfoo", "10", "sbar"])
+            .await
+            .unwrap(),
+        "OK"
+    );
+    assert_eq!(run_redis_cli(port, &["GET", "sfoo"]).await.unwrap(), "sbar");
     assert_eq!(run_redis_cli(port, &["GET", "foo"]).await.unwrap(), "bar");
+    assert_eq!(run_redis_cli(port, &["KEYS", "foo*"]).await.unwrap(), "foo");
+    assert_eq!(
+        run_redis_cli(port, &["RENAME", "foo", "foo2"])
+            .await
+            .unwrap(),
+        "OK"
+    );
+    assert_eq!(run_redis_cli(port, &["GET", "foo2"]).await.unwrap(), "bar");
+    assert_eq!(
+        run_redis_cli(port, &["RENAMENX", "foo2", "foo3"])
+            .await
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(run_redis_cli(port, &["GET", "foo3"]).await.unwrap(), "bar");
+    assert_eq!(
+        run_redis_cli(port, &["COPY", "foo3", "foo4"])
+            .await
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(run_redis_cli(port, &["GET", "foo4"]).await.unwrap(), "bar");
+    assert_eq!(
+        run_redis_cli(port, &["EXISTS", "foo", "foo3", "missing"])
+            .await
+            .unwrap(),
+        "1"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["TYPE", "foo3"]).await.unwrap(),
+        "string"
+    );
     assert_eq!(
         run_redis_cli(port, &["INCR", "counter"]).await.unwrap(),
         "1"
@@ -41,10 +80,54 @@ async fn redis_cli_basic_command_compatibility() {
         "2"
     );
     assert_eq!(
-        run_redis_cli(port, &["EXPIRE", "foo", "0"]).await.unwrap(),
+        run_redis_cli(port, &["INCRBY", "counter", "5"])
+            .await
+            .unwrap(),
+        "7"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["DECRBY", "counter", "2"])
+            .await
+            .unwrap(),
+        "5"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["MSET", "mk1", "mv1", "mk2", "mv2"])
+            .await
+            .unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["MGET", "mk1", "mk2", "mk3"])
+            .await
+            .unwrap(),
+        "mv1\nmv2"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["SCRIPT", "FLUSH"]).await.unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["CONFIG", "RESETSTAT"]).await.unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["DEBUG", "SET-ACTIVE-EXPIRE", "0"])
+            .await
+            .unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["DEBUG", "SET-ACTIVE-EXPIRE", "1"])
+            .await
+            .unwrap(),
+        "OK"
+    );
+    assert_eq!(
+        run_redis_cli(port, &["EXPIRE", "foo3", "0"]).await.unwrap(),
         "1"
     );
-    assert_eq!(run_redis_cli(port, &["TTL", "foo"]).await.unwrap(), "-2");
+    assert_eq!(run_redis_cli(port, &["TTL", "foo3"]).await.unwrap(), "-2");
     assert_eq!(
         run_redis_cli(port, &["SET", "pfoo", "bar"]).await.unwrap(),
         "OK"

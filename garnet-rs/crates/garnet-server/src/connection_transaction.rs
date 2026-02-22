@@ -1,4 +1,4 @@
-use garnet_common::{parse_resp_command_arg_slices, ArgSlice};
+use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
 use std::sync::Arc;
 
 use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
@@ -59,6 +59,7 @@ pub(crate) fn execute_transaction_queue(
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     transaction: &mut ConnectionTransactionState,
     responses: &mut Vec<u8>,
+    max_resp_arguments: usize,
 ) {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
@@ -70,10 +71,10 @@ pub(crate) fn execute_transaction_queue(
     responses.extend_from_slice(queued.len().to_string().as_bytes());
     responses.extend_from_slice(b"\r\n");
 
-    let mut args = [ArgSlice::EMPTY; 64];
+    let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     for frame in queued {
         let mut item_response = Vec::new();
-        match parse_resp_command_arg_slices(&frame, &mut args) {
+        match parse_resp_command_arg_slices_dynamic(&frame, &mut args, max_resp_arguments) {
             Ok(meta) if meta.bytes_consumed == frame.len() => {
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
@@ -95,6 +96,9 @@ pub(crate) fn execute_transaction_queue(
                         item_response.extend_from_slice(b"-ERR owner routing execution failed\r\n");
                     }
                 }
+            }
+            Err(RespParseError::ArgumentCapacityExceeded { .. }) => {
+                item_response.extend_from_slice(b"-ERR too many arguments in request\r\n");
             }
             _ => item_response.extend_from_slice(b"-ERR protocol error\r\n"),
         }

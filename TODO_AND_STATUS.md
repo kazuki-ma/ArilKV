@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 187
+> **Current Iteration**: 188
 
 ---
 
@@ -644,3 +644,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 185 | 2026-02-22 | 11.71 | DONE | Refactored shared command scaffolding (`command_helpers`) to centralize arity checks and `SCAN` match/count option parsing across hash/set/zset handlers, added `testkit` assertion helpers for command-line-based lifecycle tests, and added `request_lifecycle/COMMAND_AND_TEST_TEMPLATE.md` for copy-ready command/test onboarding. Revalidated command-edit gates (`cargo test -p garnet-server`: `179 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-075053`; command matrix refreshed to `62.24%` coverage). |
 | 186 | 2026-02-22 | 11.73 | DONE | Implemented `ZDIFF/ZDIFFSTORE/ZINTER/ZINTERSTORE/ZUNION/ZUNIONSTORE/ZRANGESTORE` with command catalog + dispatch + lifecycle handler wiring, plus unit coverage for weights/aggregate/withscores and destination overwrite semantics. Revalidated command-edit gates (`cargo test -p garnet-server`: `179 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-081555`; command matrix refreshed to `67.22%` coverage). |
 | 187 | 2026-02-22 | 11.74 | DONE | Implemented `ZMPOP` end-to-end (catalog/dispatch/handler/tests), including Redis-compatible null-array and key+entry array response shape, option parsing (`MIN|MAX`, `COUNT`), and first-non-empty-key pop behavior. Revalidated command-edit gates (`cargo test -p garnet-server`: `179 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-082000`; command matrix refreshed to `67.63%` coverage). |
+| 188 | 2026-02-22 | 11.75 | DONE | Implemented list blocking/multipop family `LMPOP/BLMPOP/BLPOP/BRPOP/BLMOVE/BRPOPLPUSH` end-to-end (command catalog, dispatch, lifecycle handlers, and RESP-shape unit tests). Added per-directory workflow docs and README-first agent guards (`garnet-server/src`, `request_lifecycle`, `tests/interop`). Revalidated required command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-092950` with tests `6/4/2`; command matrix refreshed to `73.86%` coverage). |

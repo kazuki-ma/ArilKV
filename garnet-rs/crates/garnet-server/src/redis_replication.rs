@@ -2,14 +2,15 @@
 
 mod protocol;
 
+use crate::command_spec::command_is_mutating;
 use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
 use crate::redis_replication::protocol::{
     decode_hex_bytes, discard_bulk_payload, generate_repl_id, parse_bulk_length, read_line,
     starts_with_ascii_no_case, write_resp_command,
 };
 use crate::ShardOwnerThreadPool;
-use crate::{dispatch_from_arg_slices, CommandId, RequestProcessor};
-use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
+use crate::{dispatch_from_arg_slices, RequestProcessor};
+use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
 use std::io;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -23,6 +24,9 @@ use tokio::task::JoinHandle;
 const EMPTY_RDB_HEX: &str =
     "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
 const DOWNSTREAM_BROADCAST_CAPACITY: usize = 4096;
+const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
+const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
+const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MasterEndpoint {
@@ -266,14 +270,20 @@ async fn sync_once_from_upstream(
 
     inner.upstream_link_up.store(true, Ordering::Relaxed);
 
-    let mut args = [ArgSlice::EMPTY; 64];
+    let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
+        .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
+    let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
     let mut applied_offset = 0u64;
 
     loop {
         let mut consumed = 0usize;
 
         loop {
-            match parse_resp_command_arg_slices(&receive_buffer[consumed..], &mut args) {
+            match parse_resp_command_arg_slices_dynamic(
+                &receive_buffer[consumed..],
+                &mut args,
+                max_resp_arguments,
+            ) {
                 Ok(meta) => {
                     process_upstream_frame(
                         &mut stream,
@@ -287,6 +297,15 @@ async fn sync_once_from_upstream(
                     consumed += meta.bytes_consumed;
                 }
                 Err(RespParseError::Incomplete) => break,
+                Err(RespParseError::ArgumentCapacityExceeded { required, capacity }) => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::Other,
+                        format!(
+                            "upstream frame has too many arguments (required={}, max={})",
+                            required, capacity
+                        ),
+                    ));
+                }
                 Err(_) => {
                     let preview_len = receive_buffer.len().saturating_sub(consumed).min(96);
                     let preview = &receive_buffer[consumed..consumed + preview_len];
@@ -353,7 +372,7 @@ async fn process_upstream_frame(
 
     // SAFETY: arg slices reference data owned by the live upstream receive buffer.
     let command_id = unsafe { dispatch_from_arg_slices(args) };
-    if !is_replicated_mutating_command(command_id) {
+    if !command_is_mutating(command_id) {
         return Ok(());
     }
     match execute_frame_on_owner_thread(
@@ -383,25 +402,9 @@ async fn process_upstream_frame(
     Ok(())
 }
 
-fn is_replicated_mutating_command(command: CommandId) -> bool {
-    matches!(
-        command,
-        CommandId::Set
-            | CommandId::Del
-            | CommandId::Incr
-            | CommandId::Decr
-            | CommandId::Expire
-            | CommandId::Pexpire
-            | CommandId::Persist
-            | CommandId::Hset
-            | CommandId::Hdel
-            | CommandId::Lpush
-            | CommandId::Rpush
-            | CommandId::Lpop
-            | CommandId::Rpop
-            | CommandId::Sadd
-            | CommandId::Srem
-            | CommandId::Zadd
-            | CommandId::Zrem
-    )
+fn parse_positive_env_usize(key: &str) -> Option<usize> {
+    std::env::var(key)
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
 }

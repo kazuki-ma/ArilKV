@@ -1,10 +1,12 @@
+#[cfg(test)]
+use garnet_common::parse_resp_command_arg_slices_dynamic;
 use garnet_common::ArgSlice;
 use std::sync::Arc;
 
 use crate::connection_routing::owner_shard_for_command;
 use crate::{CommandId, RequestExecutionError, RequestProcessor, ShardOwnerThreadPool};
-
-const MAX_ROUTED_ARGUMENTS: usize = 64;
+#[cfg(test)]
+const TEST_MAX_ROUTED_ARGUMENTS: usize = 1_048_576;
 
 #[derive(Debug)]
 pub(crate) enum RoutedExecutionError {
@@ -29,7 +31,7 @@ pub(crate) fn capture_owned_frame_args(
     frame: &[u8],
     args: &[ArgSlice],
 ) -> Result<OwnedFrameArgs, RoutedExecutionError> {
-    if args.is_empty() || args.len() > MAX_ROUTED_ARGUMENTS {
+    if args.is_empty() {
         return Err(RoutedExecutionError::Protocol);
     }
 
@@ -58,13 +60,11 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &OwnedFrameArgs,
 ) -> Result<Vec<u8>, RoutedExecutionError> {
-    if owned_args.arg_offsets_and_lengths.is_empty()
-        || owned_args.arg_offsets_and_lengths.len() > MAX_ROUTED_ARGUMENTS
-    {
+    if owned_args.arg_offsets_and_lengths.is_empty() {
         return Err(RoutedExecutionError::Protocol);
     }
 
-    let mut args = [ArgSlice::EMPTY; MAX_ROUTED_ARGUMENTS];
+    let mut args = vec![ArgSlice::EMPTY; owned_args.arg_offsets_and_lengths.len()];
     for (index, (offset, len)) in owned_args
         .arg_offsets_and_lengths
         .iter()
@@ -83,10 +83,7 @@ pub(crate) fn execute_owned_frame_args_via_processor(
 
     let mut response = Vec::new();
     processor
-        .execute(
-            &args[..owned_args.arg_offsets_and_lengths.len()],
-            &mut response,
-        )
+        .execute(&args, &mut response)
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -124,18 +121,18 @@ pub(crate) fn execute_owned_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &[Vec<u8>],
 ) -> Result<Vec<u8>, RoutedExecutionError> {
-    if owned_args.is_empty() || owned_args.len() > MAX_ROUTED_ARGUMENTS {
+    if owned_args.is_empty() {
         return Err(RoutedExecutionError::Protocol);
     }
 
-    let mut args = [ArgSlice::EMPTY; MAX_ROUTED_ARGUMENTS];
+    let mut args = vec![ArgSlice::EMPTY; owned_args.len()];
     for (index, arg) in owned_args.iter().enumerate() {
         args[index] = ArgSlice::from_slice(arg).map_err(|_| RoutedExecutionError::Protocol)?;
     }
 
     let mut response = Vec::new();
     processor
-        .execute(&args[..owned_args.len()], &mut response)
+        .execute(&args, &mut response)
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -145,8 +142,8 @@ pub(crate) fn execute_frame_via_processor(
     processor: &RequestProcessor,
     frame: &[u8],
 ) -> Result<Vec<u8>, RoutedExecutionError> {
-    let mut args = [ArgSlice::EMPTY; MAX_ROUTED_ARGUMENTS];
-    let meta = garnet_common::parse_resp_command_arg_slices(frame, &mut args)
+    let mut args = vec![ArgSlice::EMPTY; 64];
+    let meta = parse_resp_command_arg_slices_dynamic(frame, &mut args, TEST_MAX_ROUTED_ARGUMENTS)
         .map_err(|_| RoutedExecutionError::Protocol)?;
     if meta.bytes_consumed != frame.len() {
         return Err(RoutedExecutionError::Protocol);

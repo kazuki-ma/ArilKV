@@ -6,7 +6,8 @@ pub mod span_byte;
 
 pub use arg_slice::{ArgSlice, ArgSliceError};
 pub use resp::{
-    parse_resp_command, parse_resp_command_arg_slices, RespCommandMeta, RespParseError,
+    parse_resp_command, parse_resp_command_arg_slices, parse_resp_command_arg_slices_dynamic,
+    RespCommandMeta, RespParseError,
 };
 pub use span_byte::{
     SpanByte, SpanByteError, SpanByteRef, SpanByteRefMut, EXTRA_METADATA_BIT_MASK, HEADER_MASK,

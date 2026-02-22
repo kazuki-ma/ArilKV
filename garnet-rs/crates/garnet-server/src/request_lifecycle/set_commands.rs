@@ -6,12 +6,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SADD",
-                expected: "SADD key member [member ...]",
-            });
-        }
+        ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -33,12 +28,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() < 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SREM",
-                expected: "SREM key member [member ...]",
-            });
-        }
+        ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -71,12 +61,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 2 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SMEMBERS",
-                expected: "SMEMBERS key",
-            });
-        }
+        require_exact_arity(args, 2, "SMEMBERS", "SMEMBERS key")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -102,12 +87,7 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() != 3 {
-            return Err(RequestExecutionError::WrongArity {
-                command: "SISMEMBER",
-                expected: "SISMEMBER key member",
-            });
-        }
+        require_exact_arity(args, 3, "SISMEMBER", "SISMEMBER key member")?;
 
         // SAFETY: caller guarantees argument backing memory validity.
         let key = unsafe { args[1].as_slice() }.to_vec();
@@ -122,5 +102,591 @@ impl RequestProcessor {
         };
         append_integer(response_out, if set.contains(member) { 1 } else { 0 });
         Ok(())
+    }
+
+    pub(super) fn handle_scard(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 2, "SCARD", "SCARD key")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let len = self
+            .load_set_object(&key)?
+            .map_or(0, |set| set.len() as i64);
+        append_integer(response_out, len);
+        Ok(())
+    }
+
+    pub(super) fn handle_sscan(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "SSCAN",
+            "SSCAN key cursor [MATCH pattern] [COUNT count]",
+        )?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let cursor = parse_u64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let scan_options = parse_scan_match_count_options(args, 3)?;
+
+        let Some(set) = self.load_set_object(&key)? else {
+            append_set_scan_response(response_out, cursor, scan_options.count, &[]);
+            return Ok(());
+        };
+
+        let mut matched = Vec::new();
+        for member in &set {
+            if let Some(pattern) = scan_options.pattern {
+                if !super::server_commands::redis_glob_match(pattern, member, false, 0) {
+                    continue;
+                }
+            }
+            matched.push(member.as_slice());
+        }
+
+        append_set_scan_response(response_out, cursor, scan_options.count, &matched);
+        Ok(())
+    }
+
+    pub(super) fn handle_smismember(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 3, "SMISMEMBER", "SMISMEMBER key member [member ...]")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let set = self.load_set_object(&key)?;
+        let members = &args[2..];
+        response_out.push(b'*');
+        response_out.extend_from_slice(members.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for member in members {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let member = unsafe { member.as_slice() };
+            let exists = set.as_ref().is_some_and(|set| set.contains(member));
+            append_integer(response_out, if exists { 1 } else { 0 });
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_srandmember(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_ranged_arity(args, 2, 3, "SRANDMEMBER", "SRANDMEMBER key [count]")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let set = self.load_set_object(&key)?;
+        if args.len() == 2 {
+            let Some(set) = set else {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            };
+            if set.is_empty() {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            let members = select_random_members_distinct(self, &set, 1);
+            append_bulk_string(response_out, &members[0]);
+            return Ok(());
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let count = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let Some(set) = set else {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        };
+        if set.is_empty() || count == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let sampled = if count > 0 {
+            let requested = usize::try_from(count).unwrap_or(usize::MAX);
+            select_random_members_distinct(self, &set, requested)
+        } else {
+            let requested = usize::try_from(count.unsigned_abs())
+                .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+            select_random_members_with_replacement(self, &set, requested)
+        };
+        response_out.push(b'*');
+        response_out.extend_from_slice(sampled.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for member in sampled {
+            append_bulk_string(response_out, &member);
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_spop(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_ranged_arity(args, 2, 3, "SPOP", "SPOP key [count]")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        let mut set = self.load_set_object(&key)?;
+        if args.len() == 2 {
+            let Some(mut set) = set.take() else {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            };
+            if set.is_empty() {
+                let _ = self.object_delete(&key)?;
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            let selected = select_random_members_distinct(self, &set, 1);
+            let member = selected[0].clone();
+            let removed = set.remove(&member);
+            debug_assert!(removed, "selected member must exist in set");
+            if set.is_empty() {
+                let _ = self.object_delete(&key)?;
+            } else {
+                self.save_set_object(&key, &set)?;
+            }
+            append_bulk_string(response_out, &member);
+            return Ok(());
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let count = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if count < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let count = usize::try_from(count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        let Some(mut set) = set else {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        };
+        if set.is_empty() || count == 0 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        let selected = select_random_members_distinct(self, &set, count);
+        for member in &selected {
+            set.remove(member);
+        }
+        if set.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_set_object(&key, &set)?;
+        }
+
+        response_out.push(b'*');
+        response_out.extend_from_slice(selected.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for member in selected {
+            append_bulk_string(response_out, &member);
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_smove(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 4, "SMOVE", "SMOVE source destination member")?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let source = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[2].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let member = unsafe { args[3].as_slice() }.to_vec();
+
+        let mut source_set = match self.load_set_object(&source)? {
+            Some(set) => set,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        if !source_set.contains(&member) {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if source == destination {
+            append_integer(response_out, 1);
+            return Ok(());
+        }
+
+        source_set.remove(&member);
+        let mut destination_set = self.load_set_object(&destination)?.unwrap_or_default();
+        destination_set.insert(member);
+
+        if source_set.is_empty() {
+            let _ = self.object_delete(&source)?;
+        } else {
+            self.save_set_object(&source, &source_set)?;
+        }
+        self.save_set_object(&destination, &destination_set)?;
+        append_integer(response_out, 1);
+        Ok(())
+    }
+
+    pub(super) fn handle_sunion(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "SUNION", "SUNION key [key ...]")?;
+        let keys = collect_set_keys(args, 1);
+        let union = compute_sunion(self, &keys)?;
+        append_set_members(response_out, &union);
+        Ok(())
+    }
+
+    pub(super) fn handle_sinter(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "SINTER", "SINTER key [key ...]")?;
+        let keys = collect_set_keys(args, 1);
+        let inter = compute_sinter(self, &keys)?;
+        append_set_members(response_out, &inter);
+        Ok(())
+    }
+
+    pub(super) fn handle_sintercard(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "SINTERCARD",
+            "SINTERCARD numkeys key [key ...] [LIMIT limit]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let num_keys = parse_u64_ascii(unsafe { args[1].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if num_keys == 0 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let num_keys =
+            usize::try_from(num_keys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        let key_start = 2usize;
+        let key_end = key_start + num_keys;
+        if args.len() < key_end {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let mut limit = 0usize;
+        if args.len() > key_end {
+            if args.len() != key_end + 2 {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let option = unsafe { args[key_end].as_slice() };
+            if !ascii_eq_ignore_case(option, b"LIMIT") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let parsed_limit = parse_u64_ascii(unsafe { args[key_end + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            limit = usize::try_from(parsed_limit)
+                .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        }
+
+        let keys: Vec<Vec<u8>> = args[key_start..key_end]
+            .iter()
+            .map(|key| {
+                // SAFETY: caller guarantees argument backing memory validity.
+                unsafe { key.as_slice() }.to_vec()
+            })
+            .collect();
+        let inter = compute_sinter(self, &keys)?;
+        let mut cardinality = inter.len();
+        if limit > 0 {
+            cardinality = cardinality.min(limit);
+        }
+        append_integer(response_out, cardinality as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_sdiff(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "SDIFF", "SDIFF key [key ...]")?;
+        let keys = collect_set_keys(args, 1);
+        let diff = compute_sdiff(self, &keys)?;
+        append_set_members(response_out, &diff);
+        Ok(())
+    }
+
+    pub(super) fn handle_sunionstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "SUNIONSTORE",
+            "SUNIONSTORE destination key [key ...]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let keys = collect_set_keys(args, 2);
+        let union = compute_sunion(self, &keys)?;
+        store_set_result(self, &destination, &union)?;
+        append_integer(response_out, union.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_sinterstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "SINTERSTORE",
+            "SINTERSTORE destination key [key ...]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let keys = collect_set_keys(args, 2);
+        let inter = compute_sinter(self, &keys)?;
+        store_set_result(self, &destination, &inter)?;
+        append_integer(response_out, inter.len() as i64);
+        Ok(())
+    }
+
+    pub(super) fn handle_sdiffstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            3,
+            "SDIFFSTORE",
+            "SDIFFSTORE destination key [key ...]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let keys = collect_set_keys(args, 2);
+        let diff = compute_sdiff(self, &keys)?;
+        store_set_result(self, &destination, &diff)?;
+        append_integer(response_out, diff.len() as i64);
+        Ok(())
+    }
+}
+
+fn select_random_members_distinct(
+    processor: &RequestProcessor,
+    set: &BTreeSet<Vec<u8>>,
+    count: usize,
+) -> Vec<Vec<u8>> {
+    let mut members: Vec<Vec<u8>> = set.iter().cloned().collect();
+    if members.len() <= 1 {
+        members.truncate(count.min(members.len()));
+        return members;
+    }
+    for index in (1..members.len()).rev() {
+        let random_index = (processor.next_random_u64() as usize) % (index + 1);
+        members.swap(index, random_index);
+    }
+    members.truncate(count.min(members.len()));
+    members
+}
+
+fn select_random_members_with_replacement(
+    processor: &RequestProcessor,
+    set: &BTreeSet<Vec<u8>>,
+    count: usize,
+) -> Vec<Vec<u8>> {
+    let members: Vec<Vec<u8>> = set.iter().cloned().collect();
+    if members.is_empty() || count == 0 {
+        return Vec::new();
+    }
+    let mut selected = Vec::with_capacity(count);
+    for _ in 0..count {
+        let index = (processor.next_random_u64() as usize) % members.len();
+        selected.push(members[index].clone());
+    }
+    selected
+}
+
+fn collect_set_keys(args: &[ArgSlice], first_key_index: usize) -> Vec<Vec<u8>> {
+    args[first_key_index..]
+        .iter()
+        .map(|key| {
+            // SAFETY: caller guarantees argument backing memory validity.
+            unsafe { key.as_slice() }.to_vec()
+        })
+        .collect()
+}
+
+fn append_set_scan_response(
+    response_out: &mut Vec<u8>,
+    cursor: u64,
+    count: usize,
+    values: &[&[u8]],
+) {
+    let start = usize::try_from(cursor)
+        .unwrap_or(usize::MAX)
+        .min(values.len());
+    let end = start.saturating_add(count).min(values.len());
+    let next_cursor = if end >= values.len() { 0 } else { end };
+
+    response_out.push(b'*');
+    response_out.extend_from_slice(b"2\r\n");
+    let next_cursor_bytes = next_cursor.to_string();
+    append_bulk_string(response_out, next_cursor_bytes.as_bytes());
+    response_out.push(b'*');
+    response_out.extend_from_slice((end - start).to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for value in &values[start..end] {
+        append_bulk_string(response_out, value);
+    }
+}
+
+fn append_set_members(response_out: &mut Vec<u8>, set: &BTreeSet<Vec<u8>>) {
+    response_out.push(b'*');
+    response_out.extend_from_slice(set.len().to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for member in set {
+        append_bulk_string(response_out, member);
+    }
+}
+
+fn compute_sunion(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
+    let mut union = BTreeSet::new();
+    for key in keys {
+        if let Some(set) = processor.load_set_object(key)? {
+            union.extend(set);
+        }
+    }
+    Ok(union)
+}
+
+fn compute_sinter(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
+    let Some((first_key, remaining_keys)) = keys.split_first() else {
+        return Ok(BTreeSet::new());
+    };
+    let mut inter = match processor.load_set_object(first_key)? {
+        Some(set) => set,
+        None => return Ok(BTreeSet::new()),
+    };
+
+    for key in remaining_keys {
+        let Some(other_set) = processor.load_set_object(key)? else {
+            inter.clear();
+            break;
+        };
+        inter.retain(|member| other_set.contains(member));
+        if inter.is_empty() {
+            break;
+        }
+    }
+
+    Ok(inter)
+}
+
+fn compute_sdiff(
+    processor: &RequestProcessor,
+    keys: &[Vec<u8>],
+) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
+    let Some((first_key, remaining_keys)) = keys.split_first() else {
+        return Ok(BTreeSet::new());
+    };
+    let mut diff = match processor.load_set_object(first_key)? {
+        Some(set) => set,
+        None => return Ok(BTreeSet::new()),
+    };
+
+    for key in remaining_keys {
+        let Some(other_set) = processor.load_set_object(key)? else {
+            continue;
+        };
+        diff.retain(|member| !other_set.contains(member));
+        if diff.is_empty() {
+            break;
+        }
+    }
+
+    Ok(diff)
+}
+
+fn store_set_result(
+    processor: &RequestProcessor,
+    destination: &[u8],
+    result_set: &BTreeSet<Vec<u8>>,
+) -> Result<(), RequestExecutionError> {
+    processor.expire_key_if_needed(destination)?;
+    let destination_had_string = processor.key_exists(destination)?;
+    let string_deleted = if destination_had_string {
+        delete_string_value_for_object_overwrite(processor, destination)?
+    } else {
+        false
+    };
+
+    if result_set.is_empty() {
+        let object_deleted = processor.object_delete(destination)?;
+        if string_deleted && !object_deleted {
+            processor.bump_watch_version(destination);
+        }
+        return Ok(());
+    }
+
+    processor.save_set_object(destination, result_set)
+}
+
+fn delete_string_value_for_object_overwrite(
+    processor: &RequestProcessor,
+    key: &[u8],
+) -> Result<bool, RequestExecutionError> {
+    let key_vec = key.to_vec();
+    let mut store = processor.lock_string_store_for_key(key);
+    let mut session = store.session(&processor.functions);
+    let mut info = DeleteInfo::default();
+    let status = session
+        .delete(&key_vec, &mut info)
+        .map_err(map_delete_error)?;
+    match status {
+        DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+            processor.remove_string_key_metadata(key);
+            Ok(true)
+        }
+        DeleteOperationStatus::NotFound => {
+            processor.remove_string_key_metadata(key);
+            Ok(false)
+        }
+        DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
     }
 }

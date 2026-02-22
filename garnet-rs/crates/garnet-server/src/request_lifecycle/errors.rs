@@ -18,14 +18,23 @@ pub enum RequestExecutionError {
         expected: &'static str,
     },
     UnknownCommand,
+    NoSuchKey,
     SyntaxError,
     InvalidExpireTime,
+    InvalidGetExExpireTime,
     WrongType,
     StorageBusy,
     StorageCapacityExceeded,
     StorageFailure,
     ValueNotInteger,
     ValueNotFloat,
+    ValueOutOfRange,
+    IndexOutOfRange,
+    IncrementOverflow,
+    AuthNotEnabled,
+    DbIndexOutOfRange,
+    WaitAofAppendOnlyDisabled,
+    ClusterSupportDisabled,
 }
 
 impl RequestExecutionError {
@@ -36,9 +45,13 @@ impl RequestExecutionError {
                 &format!("ERR wrong number of arguments for '{}' command", command),
             ),
             Self::UnknownCommand => append_error(response_out, "ERR unknown command"),
+            Self::NoSuchKey => append_error(response_out, "ERR no such key"),
             Self::SyntaxError => append_error(response_out, "ERR syntax error"),
             Self::InvalidExpireTime => {
                 append_error(response_out, "ERR invalid expire time in 'set' command")
+            }
+            Self::InvalidGetExExpireTime => {
+                append_error(response_out, "ERR invalid expire time in 'getex' command")
             }
             Self::WrongType => append_error(
                 response_out,
@@ -54,6 +67,26 @@ impl RequestExecutionError {
                 append_error(response_out, "ERR value is not an integer or out of range")
             }
             Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
+            Self::ValueOutOfRange => append_error(response_out, "ERR value is out of range"),
+            Self::IndexOutOfRange => append_error(response_out, "ERR index out of range"),
+            Self::IncrementOverflow => {
+                append_error(response_out, "ERR increment or decrement would overflow")
+            }
+            Self::AuthNotEnabled => append_error(
+                response_out,
+                "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?",
+            ),
+            Self::DbIndexOutOfRange => {
+                append_error(response_out, "ERR DB index is out of range")
+            }
+            Self::WaitAofAppendOnlyDisabled => append_error(
+                response_out,
+                "ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled.",
+            ),
+            Self::ClusterSupportDisabled => append_error(
+                response_out,
+                "ERR This instance has cluster support disabled",
+            ),
         }
     }
 }

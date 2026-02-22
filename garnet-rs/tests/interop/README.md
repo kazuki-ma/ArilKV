@@ -33,17 +33,73 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
   - Writes a CSV summary and per-case logs under
     `garnet-rs/tests/interop/results/...`.
 
+- `redis_runtest_external_subset.sh`
+  - Runs Redis official `runtest` in external-server mode against local Garnet:
+    - `--host/--port --singledb --force-resp3`
+    - targeted subset for current implemented commands (`MGET/MSET/INCRBY/DECRBY/EXISTS`)
+  - Includes a direct `redis-cli TYPE` probe (`string/hash/none`) in the same run.
+  - Writes a CSV summary and per-case logs under
+    `garnet-rs/tests/interop/results/...`.
+
+- `build_command_status_matrix.sh`
+  - Generates a full Redis-command status matrix for Garnet (all commands):
+    - `SUPPORTED_DECLARED`
+    - `NOT_IMPLEMENTED`
+    - `GARNET_EXTENSION`
+  - Writes:
+    - `docs/compatibility/redis-command-status.csv`
+    - `docs/compatibility/redis-command-status-summary.md`
+
 ## Usage
 
 ```bash
 cd garnet-rs/tests/interop
 chmod +x command_coverage_audit.sh cluster_capability_matrix.sh
 chmod +x replication_capability_matrix.sh
+chmod +x redis_runtest_external_subset.sh
+chmod +x build_command_status_matrix.sh
 
 ./command_coverage_audit.sh
 ./cluster_capability_matrix.sh
 ./replication_capability_matrix.sh
+./redis_runtest_external_subset.sh
+./build_command_status_matrix.sh
 ```
+
+## Required Flow For Command Edits
+
+When Redis command behavior is added/changed, run these in order:
+
+```bash
+cd garnet-rs
+cargo test -p garnet-server -- --nocapture
+
+cd tests/interop
+REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis \
+./redis_runtest_external_subset.sh
+./build_command_status_matrix.sh
+```
+
+If command status changed, include these generated files in the commit:
+
+- `docs/compatibility/redis-command-status.csv`
+- `docs/compatibility/redis-command-status-summary.md`
+
+Recommended add-on checks:
+
+```bash
+./command_coverage_audit.sh
+./replication_capability_matrix.sh
+```
+
+## Patterns To Re-check
+
+- `redis_runtest_external_subset.sh` is a focused subset, not full Redis compatibility.
+  - keep feature-level unit tests in `garnet-server` as the primary correctness gate.
+- `build_command_status_matrix.sh` updates canonical status files under `docs/compatibility/`.
+  - run it whenever `CommandId`/`COMMAND` surface changes.
+- Always verify test count lines in command output, not only exit code.
+  - the expected test-case counts are part of regression safety.
 
 ## Current interpretation
 

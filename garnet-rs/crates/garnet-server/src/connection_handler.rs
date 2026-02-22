@@ -3,7 +3,7 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use garnet_cluster::ClusterConfigStore;
-use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
+use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
@@ -23,7 +23,10 @@ use crate::redis_replication::RedisReplicationCoordinator;
 use crate::{RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
 
 const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
+const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
+const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
+const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 
 pub(crate) async fn handle_connection(
     mut stream: TcpStream,
@@ -35,10 +38,12 @@ pub(crate) async fn handle_connection(
     replication: Arc<RedisReplicationCoordinator>,
 ) -> io::Result<()> {
     let _lifecycle = ConnectionLifecycle { metrics: &metrics };
+    let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
+        .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
     let mut receive_buffer = Vec::with_capacity(read_buffer_size.max(1));
     let mut responses = Vec::with_capacity(read_buffer_size.max(1));
-    let mut args = [ArgSlice::EMPTY; 64];
+    let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
     let mut transaction = ConnectionTransactionState::default();
     let mut allow_asking_once = false;
 
@@ -57,261 +62,298 @@ pub(crate) async fn handle_connection(
         let mut switch_to_replica_stream = false;
 
         loop {
-            match parse_resp_command_arg_slices(&receive_buffer[consumed..], &mut args) {
-                Ok(meta) => {
-                    let frame_start = consumed;
-                    let frame_end = consumed + meta.bytes_consumed;
-                    // SAFETY: `args` refers to the still-live `receive_buffer` backing bytes.
-                    let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                    if meta.argument_count == 0 {
-                        responses.extend_from_slice(b"-ERR unknown command\r\n");
-                        consumed += meta.bytes_consumed;
-                        continue;
-                    }
-                    // SAFETY: `args` points to the current request frame in `receive_buffer`.
-                    let command_name = unsafe { args[0].as_slice() };
-
-                    if ascii_eq_ignore_case(command_name, b"REPLICAOF") {
-                        if meta.argument_count != 3 {
-                            responses.extend_from_slice(
-                                b"-ERR wrong number of arguments for 'REPLICAOF' command\r\n",
-                            );
-                        } else {
-                            // SAFETY: `args` points to the current request frame in `receive_buffer`.
-                            let arg1 = unsafe { args[1].as_slice() };
-                            // SAFETY: `args` points to the current request frame in `receive_buffer`.
-                            let arg2 = unsafe { args[2].as_slice() };
-
-                            if ascii_eq_ignore_case(arg1, b"NO")
-                                && ascii_eq_ignore_case(arg2, b"ONE")
-                            {
-                                replication.become_master().await;
-                                append_simple_string(&mut responses, b"OK");
-                            } else if let Some(master_port) = parse_u16_ascii(arg2) {
-                                let master_host = String::from_utf8_lossy(arg1).to_string();
-                                replication.become_replica(master_host, master_port).await;
-                                append_simple_string(&mut responses, b"OK");
-                            } else {
-                                responses.extend_from_slice(
-                                    b"-ERR value is not an integer or out of range\r\n",
-                                );
-                            }
-                        }
-                        consumed += meta.bytes_consumed;
-                        continue;
-                    }
-
-                    if ascii_eq_ignore_case(command_name, b"REPLCONF") {
-                        append_simple_string(&mut responses, b"OK");
-                        consumed += meta.bytes_consumed;
-                        continue;
-                    }
-
-                    if ascii_eq_ignore_case(command_name, b"PSYNC")
-                        || ascii_eq_ignore_case(command_name, b"SYNC")
-                    {
-                        responses.extend_from_slice(&replication.build_fullresync_payload());
-                        consumed += meta.bytes_consumed;
-                        switch_to_replica_stream = true;
-                        break;
-                    }
-
-                    let transaction_control = command_transaction_control(command);
-                    if transaction_control == TransactionControlCommand::Asking {
-                        if !command_has_valid_arity(command, meta.argument_count) {
-                            append_wrong_arity_error_for_command(&mut responses, command);
-                        } else {
-                            allow_asking_once = true;
-                            append_simple_string(&mut responses, b"OK");
-                        }
-                        consumed += meta.bytes_consumed;
-                        continue;
-                    }
-                    if let Some(cluster_store) = cluster_config.as_ref() {
-                        let (redirection_error, consume_asking) = cluster_error_for_command(
-                            cluster_store,
-                            &args[..meta.argument_count],
-                            command,
-                            allow_asking_once,
-                        )?;
-                        if consume_asking {
-                            allow_asking_once = false;
-                        }
-                        if let Some(redirection_error) = redirection_error {
-                            append_error_line(&mut responses, redirection_error.as_bytes());
-                            consumed += meta.bytes_consumed;
-                            continue;
-                        }
-                    }
-                    let mut propagate_frame = false;
-                    if transaction.in_multi {
-                        match transaction_control {
-                            TransactionControlCommand::Exec => {
-                                if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error_for_command(&mut responses, command);
-                                } else if !processor.watch_versions_match(&transaction.watched_keys)
-                                {
-                                    transaction.reset();
-                                    responses.extend_from_slice(b"*-1\r\n");
-                                } else if transaction.aborted {
-                                    transaction.reset();
-                                    responses.extend_from_slice(
-                                        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
-                                    );
-                                } else {
-                                    execute_transaction_queue(
-                                        &processor,
-                                        &owner_thread_pool,
-                                        &mut transaction,
-                                        &mut responses,
-                                    );
-                                }
-                            }
-                            TransactionControlCommand::Discard => {
-                                if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error_for_command(&mut responses, command);
-                                } else {
-                                    transaction.reset();
-                                    append_simple_string(&mut responses, b"OK");
-                                }
-                            }
-                            TransactionControlCommand::Multi => {
-                                responses
-                                    .extend_from_slice(b"-ERR MULTI calls can not be nested\r\n");
-                            }
-                            TransactionControlCommand::Watch => {
-                                responses.extend_from_slice(
-                                    b"-ERR WATCH inside MULTI is not allowed\r\n",
-                                );
-                            }
-                            TransactionControlCommand::Unwatch => {
-                                if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error_for_command(&mut responses, command);
-                                } else {
-                                    // Matches Garnet behavior: UNWATCH during MULTI is a no-op.
-                                    append_simple_string(&mut responses, b"OK");
-                                }
-                            }
-                            _ => {
-                                if replication.is_replica_mode() && command_is_mutating(command) {
-                                    responses.extend_from_slice(
-                                        b"-READONLY You can't write against a read only replica.\r\n",
-                                    );
-                                    consumed += meta.bytes_consumed;
-                                    continue;
-                                }
-                                if cluster_config.is_some() {
-                                    if let Some(slot) = command_hash_slot_for_transaction(
-                                        &args[..meta.argument_count],
-                                        command,
-                                    ) {
-                                        if !transaction.set_transaction_slot_or_abort(slot) {
-                                            responses.extend_from_slice(
-                                                b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
-                                            );
-                                            consumed += meta.bytes_consumed;
-                                            continue;
-                                        }
-                                    }
-                                }
-                                transaction
-                                    .queued_frames
-                                    .push(receive_buffer[frame_start..frame_end].to_vec());
-                                append_simple_string(&mut responses, b"QUEUED");
-                            }
-                        }
-                    } else {
-                        match transaction_control {
-                            TransactionControlCommand::Multi => {
-                                if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error_for_command(&mut responses, command);
-                                } else {
-                                    transaction.in_multi = true;
-                                    append_simple_string(&mut responses, b"OK");
-                                }
-                            }
-                            TransactionControlCommand::Exec => {
-                                responses.extend_from_slice(b"-ERR EXEC without MULTI\r\n");
-                            }
-                            TransactionControlCommand::Discard => {
-                                responses.extend_from_slice(b"-ERR DISCARD without MULTI\r\n");
-                            }
-                            TransactionControlCommand::Watch => {
-                                if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error_for_command(&mut responses, command);
-                                } else {
-                                    for key_arg in &args[1..meta.argument_count] {
-                                        // SAFETY: `args` points to the live receive buffer.
-                                        let key = unsafe { key_arg.as_slice() };
-                                        let version = processor.watch_key_version(key);
-                                        transaction.watch_key(key, version);
-                                    }
-                                    append_simple_string(&mut responses, b"OK");
-                                }
-                            }
-                            TransactionControlCommand::Unwatch => {
-                                if !command_has_valid_arity(command, meta.argument_count) {
-                                    append_wrong_arity_error_for_command(&mut responses, command);
-                                } else {
-                                    transaction.clear_watches();
-                                    append_simple_string(&mut responses, b"OK");
-                                }
-                            }
-                            _ => {
-                                if replication.is_replica_mode() && command_is_mutating(command) {
-                                    responses.extend_from_slice(
-                                        b"-READONLY You can't write against a read only replica.\r\n",
-                                    );
-                                    consumed += meta.bytes_consumed;
-                                    continue;
-                                }
-                                match execute_frame_on_owner_thread(
-                                    &processor,
-                                    &owner_thread_pool,
-                                    &args[..meta.argument_count],
-                                    command,
-                                    &receive_buffer[frame_start..frame_end],
-                                ) {
-                                    Ok(frame_response) => {
-                                        responses.extend_from_slice(&frame_response);
-                                        if command_is_mutating(command) {
-                                            propagate_frame = true;
-                                        }
-                                    }
-                                    Err(OwnerThreadExecutionError::Request(error)) => {
-                                        error.append_resp_error(&mut responses);
-                                    }
-                                    Err(OwnerThreadExecutionError::Protocol) => {
-                                        responses.extend_from_slice(b"-ERR protocol error\r\n");
-                                    }
-                                    Err(OwnerThreadExecutionError::OwnerThreadUnavailable) => {
-                                        responses.extend_from_slice(
-                                            b"-ERR owner routing execution failed\r\n",
-                                        );
-                                    }
-                                }
-                                if propagate_frame {
-                                    replication.publish_write_frame(
-                                        &receive_buffer[frame_start..frame_end],
-                                    );
-                                }
-                                consumed += meta.bytes_consumed;
-                                continue;
-                            }
-                        }
-                    }
-                    if propagate_frame {
-                        replication.publish_write_frame(&receive_buffer[frame_start..frame_end]);
-                    }
-                    consumed += meta.bytes_consumed;
-                }
+            let mut inline_frame = Vec::new();
+            let (argument_count, frame_bytes_consumed) = match parse_resp_command_arg_slices_dynamic(
+                &receive_buffer[consumed..],
+                &mut args,
+                max_resp_arguments,
+            ) {
+                Ok(meta) => (meta.argument_count, meta.bytes_consumed),
                 Err(RespParseError::Incomplete) => break,
+                Err(RespParseError::InvalidArrayPrefix { .. }) => {
+                    match parse_inline_frame(&receive_buffer[consumed..]) {
+                        InlineFrameParse::Parsed {
+                            frame,
+                            bytes_consumed,
+                        } => {
+                            inline_frame = frame;
+                            match parse_resp_command_arg_slices_dynamic(
+                                &inline_frame,
+                                &mut args,
+                                max_resp_arguments,
+                            ) {
+                                Ok(meta) => (meta.argument_count, bytes_consumed),
+                                Err(RespParseError::ArgumentCapacityExceeded { .. }) => {
+                                    append_too_many_arguments_error(
+                                        &mut responses,
+                                        max_resp_arguments,
+                                    );
+                                    stream.write_all(&responses).await?;
+                                    return Ok(());
+                                }
+                                Err(_) => {
+                                    responses.extend_from_slice(b"-ERR protocol error\r\n");
+                                    stream.write_all(&responses).await?;
+                                    return Ok(());
+                                }
+                            }
+                        }
+                        InlineFrameParse::Incomplete => break,
+                        InlineFrameParse::ProtocolError => {
+                            responses.extend_from_slice(b"-ERR protocol error\r\n");
+                            stream.write_all(&responses).await?;
+                            return Ok(());
+                        }
+                    }
+                }
+                Err(RespParseError::ArgumentCapacityExceeded { .. }) => {
+                    append_too_many_arguments_error(&mut responses, max_resp_arguments);
+                    stream.write_all(&responses).await?;
+                    return Ok(());
+                }
                 Err(_) => {
                     responses.extend_from_slice(b"-ERR protocol error\r\n");
                     stream.write_all(&responses).await?;
                     return Ok(());
                 }
+            };
+
+            let frame = if inline_frame.is_empty() {
+                &receive_buffer[consumed..consumed + frame_bytes_consumed]
+            } else {
+                inline_frame.as_slice()
+            };
+            // SAFETY: `args` refers to either the live receive_buffer slice or inline_frame bytes.
+            let command = unsafe { dispatch_from_arg_slices(&args[..argument_count]) };
+            if argument_count == 0 {
+                responses.extend_from_slice(b"-ERR unknown command\r\n");
+                consumed += frame_bytes_consumed;
+                continue;
             }
+            // SAFETY: `args` points to the current frame bytes.
+            let command_name = unsafe { args[0].as_slice() };
+
+            if ascii_eq_ignore_case(command_name, b"REPLICAOF") {
+                if argument_count != 3 {
+                    responses.extend_from_slice(
+                        b"-ERR wrong number of arguments for 'REPLICAOF' command\r\n",
+                    );
+                } else {
+                    // SAFETY: `args` points to the current request frame.
+                    let arg1 = unsafe { args[1].as_slice() };
+                    // SAFETY: `args` points to the current request frame.
+                    let arg2 = unsafe { args[2].as_slice() };
+
+                    if ascii_eq_ignore_case(arg1, b"NO") && ascii_eq_ignore_case(arg2, b"ONE") {
+                        replication.become_master().await;
+                        append_simple_string(&mut responses, b"OK");
+                    } else if let Some(master_port) = parse_u16_ascii(arg2) {
+                        let master_host = String::from_utf8_lossy(arg1).to_string();
+                        replication.become_replica(master_host, master_port).await;
+                        append_simple_string(&mut responses, b"OK");
+                    } else {
+                        responses
+                            .extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                    }
+                }
+                consumed += frame_bytes_consumed;
+                continue;
+            }
+
+            if ascii_eq_ignore_case(command_name, b"REPLCONF") {
+                append_simple_string(&mut responses, b"OK");
+                consumed += frame_bytes_consumed;
+                continue;
+            }
+
+            if ascii_eq_ignore_case(command_name, b"PSYNC")
+                || ascii_eq_ignore_case(command_name, b"SYNC")
+            {
+                responses.extend_from_slice(&replication.build_fullresync_payload());
+                consumed += frame_bytes_consumed;
+                switch_to_replica_stream = true;
+                break;
+            }
+
+            let transaction_control = command_transaction_control(command);
+            if transaction_control == TransactionControlCommand::Asking {
+                if !command_has_valid_arity(command, argument_count) {
+                    append_wrong_arity_error_for_command(&mut responses, command);
+                } else {
+                    allow_asking_once = true;
+                    append_simple_string(&mut responses, b"OK");
+                }
+                consumed += frame_bytes_consumed;
+                continue;
+            }
+            if let Some(cluster_store) = cluster_config.as_ref() {
+                let (redirection_error, consume_asking) = cluster_error_for_command(
+                    cluster_store,
+                    &args[..argument_count],
+                    command,
+                    allow_asking_once,
+                )?;
+                if consume_asking {
+                    allow_asking_once = false;
+                }
+                if let Some(redirection_error) = redirection_error {
+                    append_error_line(&mut responses, redirection_error.as_bytes());
+                    consumed += frame_bytes_consumed;
+                    continue;
+                }
+            }
+            let mut propagate_frame = false;
+            if transaction.in_multi {
+                match transaction_control {
+                    TransactionControlCommand::Exec => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else if !processor.watch_versions_match(&transaction.watched_keys) {
+                            transaction.reset();
+                            responses.extend_from_slice(b"*-1\r\n");
+                        } else if transaction.aborted {
+                            transaction.reset();
+                            responses.extend_from_slice(
+                                b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+                            );
+                        } else {
+                            execute_transaction_queue(
+                                &processor,
+                                &owner_thread_pool,
+                                &mut transaction,
+                                &mut responses,
+                                max_resp_arguments,
+                            );
+                        }
+                    }
+                    TransactionControlCommand::Discard => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            transaction.reset();
+                            append_simple_string(&mut responses, b"OK");
+                        }
+                    }
+                    TransactionControlCommand::Multi => {
+                        responses.extend_from_slice(b"-ERR MULTI calls can not be nested\r\n");
+                    }
+                    TransactionControlCommand::Watch => {
+                        responses.extend_from_slice(b"-ERR WATCH inside MULTI is not allowed\r\n");
+                    }
+                    TransactionControlCommand::Unwatch => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            // Matches Garnet behavior: UNWATCH during MULTI is a no-op.
+                            append_simple_string(&mut responses, b"OK");
+                        }
+                    }
+                    _ => {
+                        if replication.is_replica_mode() && command_is_mutating(command) {
+                            responses.extend_from_slice(
+                                b"-READONLY You can't write against a read only replica.\r\n",
+                            );
+                            consumed += frame_bytes_consumed;
+                            continue;
+                        }
+                        if cluster_config.is_some() {
+                            if let Some(slot) =
+                                command_hash_slot_for_transaction(&args[..argument_count], command)
+                            {
+                                if !transaction.set_transaction_slot_or_abort(slot) {
+                                    responses.extend_from_slice(
+                                        b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+                                    );
+                                    consumed += frame_bytes_consumed;
+                                    continue;
+                                }
+                            }
+                        }
+                        transaction.queued_frames.push(frame.to_vec());
+                        append_simple_string(&mut responses, b"QUEUED");
+                    }
+                }
+            } else {
+                match transaction_control {
+                    TransactionControlCommand::Multi => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            transaction.in_multi = true;
+                            append_simple_string(&mut responses, b"OK");
+                        }
+                    }
+                    TransactionControlCommand::Exec => {
+                        responses.extend_from_slice(b"-ERR EXEC without MULTI\r\n");
+                    }
+                    TransactionControlCommand::Discard => {
+                        responses.extend_from_slice(b"-ERR DISCARD without MULTI\r\n");
+                    }
+                    TransactionControlCommand::Watch => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            for key_arg in &args[1..argument_count] {
+                                // SAFETY: `args` points to the live command frame.
+                                let key = unsafe { key_arg.as_slice() };
+                                let version = processor.watch_key_version(key);
+                                transaction.watch_key(key, version);
+                            }
+                            append_simple_string(&mut responses, b"OK");
+                        }
+                    }
+                    TransactionControlCommand::Unwatch => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            transaction.clear_watches();
+                            append_simple_string(&mut responses, b"OK");
+                        }
+                    }
+                    _ => {
+                        if replication.is_replica_mode() && command_is_mutating(command) {
+                            responses.extend_from_slice(
+                                b"-READONLY You can't write against a read only replica.\r\n",
+                            );
+                            consumed += frame_bytes_consumed;
+                            continue;
+                        }
+                        match execute_frame_on_owner_thread(
+                            &processor,
+                            &owner_thread_pool,
+                            &args[..argument_count],
+                            command,
+                            frame,
+                        ) {
+                            Ok(frame_response) => {
+                                responses.extend_from_slice(&frame_response);
+                                if command_is_mutating(command) {
+                                    propagate_frame = true;
+                                }
+                            }
+                            Err(OwnerThreadExecutionError::Request(error)) => {
+                                error.append_resp_error(&mut responses);
+                            }
+                            Err(OwnerThreadExecutionError::Protocol) => {
+                                responses.extend_from_slice(b"-ERR protocol error\r\n");
+                            }
+                            Err(OwnerThreadExecutionError::OwnerThreadUnavailable) => {
+                                responses
+                                    .extend_from_slice(b"-ERR owner routing execution failed\r\n");
+                            }
+                        }
+                        if propagate_frame {
+                            replication.publish_write_frame(frame);
+                        }
+                        consumed += frame_bytes_consumed;
+                        continue;
+                    }
+                }
+            }
+            if propagate_frame {
+                replication.publish_write_frame(frame);
+            }
+            consumed += frame_bytes_consumed;
         }
 
         if switch_to_replica_stream {
@@ -353,11 +395,111 @@ pub(crate) fn build_owner_thread_pool(
     Ok(Arc::new(pool))
 }
 
+enum InlineFrameParse {
+    Parsed {
+        frame: Vec<u8>,
+        bytes_consumed: usize,
+    },
+    Incomplete,
+    ProtocolError,
+}
+
+fn parse_inline_frame(input: &[u8]) -> InlineFrameParse {
+    let Some(newline_offset) = input.iter().position(|byte| *byte == b'\n') else {
+        return InlineFrameParse::Incomplete;
+    };
+
+    let bytes_consumed = newline_offset + 1;
+    let mut line = &input[..newline_offset];
+    if line.ends_with(b"\r") {
+        line = &line[..line.len() - 1];
+    }
+
+    let tokens = match tokenize_inline_command(line) {
+        Ok(tokens) if !tokens.is_empty() => tokens,
+        _ => return InlineFrameParse::ProtocolError,
+    };
+
+    InlineFrameParse::Parsed {
+        frame: encode_resp_frame(&tokens),
+        bytes_consumed,
+    }
+}
+
+fn tokenize_inline_command(line: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+    let mut tokens = Vec::new();
+    let mut current = Vec::new();
+    let mut quote: Option<u8> = None;
+    let mut escaping = false;
+
+    for &byte in line {
+        if escaping {
+            current.push(byte);
+            escaping = false;
+            continue;
+        }
+
+        if byte == b'\\' {
+            escaping = true;
+            continue;
+        }
+
+        if let Some(quote_byte) = quote {
+            if byte == quote_byte {
+                quote = None;
+            } else {
+                current.push(byte);
+            }
+            continue;
+        }
+
+        if byte == b'\'' || byte == b'"' {
+            quote = Some(byte);
+            continue;
+        }
+
+        if byte.is_ascii_whitespace() {
+            if !current.is_empty() {
+                tokens.push(core::mem::take(&mut current));
+            }
+            continue;
+        }
+
+        current.push(byte);
+    }
+
+    if escaping || quote.is_some() {
+        return Err(());
+    }
+    if !current.is_empty() {
+        tokens.push(current);
+    }
+
+    Ok(tokens)
+}
+
+fn encode_resp_frame(parts: &[Vec<u8>]) -> Vec<u8> {
+    let mut out = Vec::new();
+    out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+    for part in parts {
+        out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+        out.extend_from_slice(part);
+        out.extend_from_slice(b"\r\n");
+    }
+    out
+}
+
 fn parse_positive_env_usize(key: &str) -> Option<usize> {
     std::env::var(key)
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
+}
+
+fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usize) {
+    output.extend_from_slice(b"-ERR too many arguments in request (max ");
+    output.extend_from_slice(max_resp_arguments.to_string().as_bytes());
+    output.extend_from_slice(b")\r\n");
 }
 
 struct ConnectionLifecycle<'a> {
@@ -372,5 +514,57 @@ impl Drop for ConnectionLifecycle<'_> {
         self.metrics
             .closed_connections
             .fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use garnet_common::parse_resp_command_arg_slices;
+
+    #[test]
+    fn parses_inline_frame_as_resp() {
+        let input = b"SET key value\r\n";
+        let InlineFrameParse::Parsed {
+            frame,
+            bytes_consumed,
+        } = parse_inline_frame(input)
+        else {
+            panic!("inline frame should parse");
+        };
+        assert_eq!(bytes_consumed, input.len());
+
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        assert_eq!(meta.argument_count, 3);
+        // SAFETY: args reference `frame`, which is alive in this scope.
+        assert_eq!(unsafe { args[0].as_slice() }, b"SET");
+        // SAFETY: args reference `frame`, which is alive in this scope.
+        assert_eq!(unsafe { args[1].as_slice() }, b"key");
+        // SAFETY: args reference `frame`, which is alive in this scope.
+        assert_eq!(unsafe { args[2].as_slice() }, b"value");
+    }
+
+    #[test]
+    fn parses_inline_frame_with_quotes_and_escapes() {
+        let input = b"SET \"key with space\" 'v\\'1'\r\n";
+        let InlineFrameParse::Parsed { frame, .. } = parse_inline_frame(input) else {
+            panic!("quoted inline frame should parse");
+        };
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        assert_eq!(meta.argument_count, 3);
+        // SAFETY: args reference `frame`, which is alive in this scope.
+        assert_eq!(unsafe { args[1].as_slice() }, b"key with space");
+        // SAFETY: args reference `frame`, which is alive in this scope.
+        assert_eq!(unsafe { args[2].as_slice() }, b"v'1");
+    }
+
+    #[test]
+    fn inline_frame_waits_for_newline_before_parsing() {
+        assert!(matches!(
+            parse_inline_frame(b"SET key value"),
+            InlineFrameParse::Incomplete
+        ));
     }
 }

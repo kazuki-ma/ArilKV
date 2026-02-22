@@ -192,4 +192,37 @@ impl RequestProcessor {
         let payload = serialize_zset_object_payload(zset);
         self.object_upsert(key, ZSET_OBJECT_TYPE_TAG, &payload)
     }
+
+    pub(super) fn load_stream_object(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<StreamObject>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
+        let object = match self.object_read(key)? {
+            Some(object) => object,
+            None => {
+                if self.key_exists(key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                return Ok(None);
+            }
+        };
+        if object.0 != STREAM_OBJECT_TYPE_TAG {
+            return Err(RequestExecutionError::WrongType);
+        }
+        deserialize_stream_object_payload(&object.1)
+            .map(Some)
+            .ok_or_else(|| {
+                storage_failure("load_stream_object", "failed to deserialize stream payload")
+            })
+    }
+
+    pub(super) fn save_stream_object(
+        &self,
+        key: &[u8],
+        stream: &StreamObject,
+    ) -> Result<(), RequestExecutionError> {
+        let payload = serialize_stream_object_payload(stream);
+        self.object_upsert(key, STREAM_OBJECT_TYPE_TAG, &payload)
+    }
 }

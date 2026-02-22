@@ -1233,6 +1233,123 @@ fn additional_list_commands_cover_common_redis_semantics() {
 }
 
 #[test]
+fn blocking_and_mpop_list_commands_cover_redis_shapes() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPUSH", b"queue", b"a", b"b", b"c", b"d"])
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LMPOP", b"1", b"queue", b"LEFT", b"COUNT", b"2"])
+        ),
+        b"*2\r\n$5\r\nqueue\r\n*2\r\n$1\r\na\r\n$1\r\nb\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LMPOP", b"1", b"queue", b"RIGHT"])
+        ),
+        b"*2\r\n$5\r\nqueue\r\n*1\r\n$1\r\nd\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BLMPOP", b"0.01", b"1", b"queue", b"LEFT"])
+        ),
+        b"*2\r\n$5\r\nqueue\r\n*1\r\n$1\r\nc\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BLMPOP", b"0.01", b"1", b"queue", b"LEFT"])
+        ),
+        b"*-1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT"])
+        ),
+        b"*-1\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"RPUSH", b"k2", b"x", b"y"])),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"BLPOP", b"k1", b"k2", b"0.02"])),
+        b"*2\r\n$2\r\nk2\r\n$1\r\nx\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"BRPOP", b"k1", b"k2", b"0.02"])),
+        b"*2\r\n$2\r\nk2\r\n$1\r\ny\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"BRPOP", b"k1", b"k2", b"0.02"])),
+        b"*-1\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"RPUSH", b"src", b"1", b"2"])),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BLMOVE", b"src", b"dst", b"RIGHT", b"LEFT", b"0.01"])
+        ),
+        b"$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BRPOPLPUSH", b"src", b"dst", b"0.01"])
+        ),
+        b"$1\r\n1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LRANGE", b"dst", b"0", b"-1"])),
+        b"*2\r\n$1\r\n1\r\n$1\r\n2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"BRPOPLPUSH", b"missing", b"dst", b"0.01"])
+        ),
+        b"$-1\r\n"
+    );
+
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let lmpop_zero_count = encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT", b"COUNT", b"0"]);
+    let meta = parse_resp_command_arg_slices(&lmpop_zero_count, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+
+    response.clear();
+    let blpop_bad_timeout = encode_resp(&[b"BLPOP", b"k1", b"not-a-float"]);
+    let meta = parse_resp_command_arg_slices(&blpop_bad_timeout, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is not a valid float\r\n");
+}
+
+#[test]
 fn list_commands_return_wrongtype_for_string_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -4334,6 +4451,128 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     assert_eq!(
         response,
         b"-ERR value is not an integer or out of range\r\n"
+    );
+}
+
+#[test]
+fn server_admin_commands_cover_auth_select_client_role_wait_and_save_family() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let auth = b"*2\r\n$4\r\nAUTH\r\n$3\r\npwd\r\n";
+    let meta = parse_resp_command_arg_slices(auth, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n"
+    );
+
+    response.clear();
+    let select_zero = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(select_zero, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let select_one = b"*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(select_one, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR DB index is out of range\r\n");
+
+    response.clear();
+    let client_id = b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n";
+    let meta = parse_resp_command_arg_slices(client_id, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let client_getname = b"*2\r\n$6\r\nCLIENT\r\n$7\r\nGETNAME\r\n";
+    let meta = parse_resp_command_arg_slices(client_getname, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let client_setname = b"*3\r\n$6\r\nCLIENT\r\n$7\r\nSETNAME\r\n$3\r\napp\r\n";
+    let meta = parse_resp_command_arg_slices(client_setname, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let role = b"*1\r\n$4\r\nROLE\r\n";
+    let meta = parse_resp_command_arg_slices(role, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
+
+    response.clear();
+    let wait = b"*3\r\n$4\r\nWAIT\r\n$1\r\n1\r\n$2\r\n10\r\n";
+    let meta = parse_resp_command_arg_slices(wait, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let waitaof = b"*4\r\n$7\r\nWAITAOF\r\n$1\r\n0\r\n$1\r\n1\r\n$2\r\n10\r\n";
+    let meta = parse_resp_command_arg_slices(waitaof, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let waitaof_err = b"*4\r\n$7\r\nWAITAOF\r\n$1\r\n1\r\n$1\r\n1\r\n$2\r\n10\r\n";
+    let meta = parse_resp_command_arg_slices(waitaof_err, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR WAITAOF cannot be used when numlocal is set but appendonly is disabled.\r\n"
+    );
+
+    response.clear();
+    let save = b"*1\r\n$4\r\nSAVE\r\n";
+    let meta = parse_resp_command_arg_slices(save, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let bgsave = b"*1\r\n$6\r\nBGSAVE\r\n";
+    let meta = parse_resp_command_arg_slices(bgsave, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+Background saving started\r\n");
+
+    response.clear();
+    let bgrewriteaof = b"*1\r\n$12\r\nBGREWRITEAOF\r\n";
+    let meta = parse_resp_command_arg_slices(bgrewriteaof, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"+Background append only file rewriting started\r\n"
     );
 }
 

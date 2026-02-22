@@ -30,6 +30,20 @@ This file defines default collaboration and execution rules for repository work,
 - If a benchmark script/test script is edited:
   - Re-run that script in a smoke configuration and verify integrity checks.
 
+## Command Coverage Workflow
+
+When command behavior or command declarations change (`request_lifecycle`,
+`command_spec`, `command_dispatch`), run this sequence:
+
+1. `cd garnet-rs && cargo test -p garnet-server -- --nocapture`
+2. `cd garnet-rs/tests/interop && REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis ./redis_runtest_external_subset.sh`
+3. `cd garnet-rs/tests/interop && ./build_command_status_matrix.sh`
+
+Commit the generated compatibility matrix files when status changes:
+
+- `docs/compatibility/redis-command-status.csv`
+- `docs/compatibility/redis-command-status-summary.md`
+
 ## Performance Regression Policy
 
 - For hot-path changes, run before/after comparison using fixed parameters.

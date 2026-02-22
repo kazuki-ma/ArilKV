@@ -176,6 +176,12 @@ mod tests {
         assert_eq!(dispatch_command_name(b"linsert"), CommandId::Linsert);
         assert_eq!(dispatch_command_name(b"LMOVE"), CommandId::Lmove);
         assert_eq!(dispatch_command_name(b"rpoplpush"), CommandId::Rpoplpush);
+        assert_eq!(dispatch_command_name(b"lmpop"), CommandId::Lmpop);
+        assert_eq!(dispatch_command_name(b"BLMPOP"), CommandId::Blmpop);
+        assert_eq!(dispatch_command_name(b"blpop"), CommandId::Blpop);
+        assert_eq!(dispatch_command_name(b"BRPOP"), CommandId::Brpop);
+        assert_eq!(dispatch_command_name(b"blmove"), CommandId::Blmove);
+        assert_eq!(dispatch_command_name(b"BRPOPLPUSH"), CommandId::Brpoplpush);
         assert_eq!(dispatch_command_name(b"sadd"), CommandId::Sadd);
         assert_eq!(dispatch_command_name(b"SREM"), CommandId::Srem);
         assert_eq!(dispatch_command_name(b"smembers"), CommandId::Smembers);
@@ -281,6 +287,18 @@ mod tests {
         assert_eq!(dispatch_command_name(b"asking"), CommandId::Asking);
         assert_eq!(dispatch_command_name(b"HELLO"), CommandId::Hello);
         assert_eq!(dispatch_command_name(b"LASTSAVE"), CommandId::Lastsave);
+        assert_eq!(dispatch_command_name(b"auth"), CommandId::Auth);
+        assert_eq!(dispatch_command_name(b"SELECT"), CommandId::Select);
+        assert_eq!(dispatch_command_name(b"client"), CommandId::Client);
+        assert_eq!(dispatch_command_name(b"ROLE"), CommandId::Role);
+        assert_eq!(dispatch_command_name(b"wait"), CommandId::Wait);
+        assert_eq!(dispatch_command_name(b"WAITAOF"), CommandId::Waitaof);
+        assert_eq!(dispatch_command_name(b"save"), CommandId::Save);
+        assert_eq!(dispatch_command_name(b"BGSAVE"), CommandId::Bgsave);
+        assert_eq!(
+            dispatch_command_name(b"bgrewriteaof"),
+            CommandId::Bgrewriteaof
+        );
         assert_eq!(dispatch_command_name(b"readonly"), CommandId::Readonly);
         assert_eq!(dispatch_command_name(b"READWRITE"), CommandId::Readwrite);
         assert_eq!(dispatch_command_name(b"reset"), CommandId::Reset);

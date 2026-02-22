@@ -466,6 +466,39 @@ async fn tcp_pipeline_executes_basic_crud_commands() {
 }
 
 #[tokio::test]
+async fn tcp_inline_pipeline_executes_basic_crud_commands() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    client
+        .write_all(b"SET k1 xyzk\r\nGET k1\r\nPING\r\n")
+        .await
+        .unwrap();
+    let expected = b"+OK\r\n$4\r\nxyzk\r\n+PONG\r\n";
+    let mut actual = vec![0u8; expected.len()];
+    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut actual))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(actual, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let master_addr = master_listener.local_addr().unwrap();

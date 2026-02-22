@@ -68,6 +68,12 @@ pub enum CommandId {
     Linsert,
     Lmove,
     Rpoplpush,
+    Lmpop,
+    Blmpop,
+    Blpop,
+    Brpop,
+    Blmove,
+    Brpoplpush,
     Sadd,
     Srem,
     Smembers,
@@ -131,6 +137,15 @@ pub enum CommandId {
     Asking,
     Hello,
     Lastsave,
+    Auth,
+    Select,
+    Client,
+    Role,
+    Wait,
+    Waitaof,
+    Save,
+    Bgsave,
+    Bgrewriteaof,
     Readonly,
     Readwrite,
     Reset,
@@ -845,6 +860,66 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Lmpop,
+        name_upper: b"LMPOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Blmpop,
+        name_upper: b"BLMPOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Blpop,
+        name_upper: b"BLPOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Brpop,
+        name_upper: b"BRPOP",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Blmove,
+        name_upper: b"BLMOVE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(6)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Brpoplpush,
+        name_upper: b"BRPOPLPUSH",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Sadd,
         name_upper: b"SADD",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -1475,6 +1550,96 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Auth,
+        name_upper: b"AUTH",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Select,
+        name_upper: b"SELECT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Client,
+        name_upper: b"CLIENT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Role,
+        name_upper: b"ROLE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Wait,
+        name_upper: b"WAIT",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Waitaof,
+        name_upper: b"WAITAOF",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Save,
+        name_upper: b"SAVE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bgsave,
+        name_upper: b"BGSAVE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bgrewriteaof,
+        name_upper: b"BGREWRITEAOF",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Readonly,
         name_upper: b"READONLY",
         key_access_pattern: KeyAccessPattern::None,
@@ -2049,6 +2214,27 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Hello, 2));
         assert!(command_has_valid_arity(CommandId::Lastsave, 1));
         assert!(!command_has_valid_arity(CommandId::Lastsave, 2));
+        assert!(command_has_valid_arity(CommandId::Auth, 2));
+        assert!(command_has_valid_arity(CommandId::Auth, 3));
+        assert!(!command_has_valid_arity(CommandId::Auth, 1));
+        assert!(command_has_valid_arity(CommandId::Select, 2));
+        assert!(!command_has_valid_arity(CommandId::Select, 1));
+        assert!(command_has_valid_arity(CommandId::Client, 2));
+        assert!(command_has_valid_arity(CommandId::Client, 4));
+        assert!(!command_has_valid_arity(CommandId::Client, 1));
+        assert!(command_has_valid_arity(CommandId::Role, 1));
+        assert!(!command_has_valid_arity(CommandId::Role, 2));
+        assert!(command_has_valid_arity(CommandId::Wait, 3));
+        assert!(!command_has_valid_arity(CommandId::Wait, 2));
+        assert!(command_has_valid_arity(CommandId::Waitaof, 4));
+        assert!(!command_has_valid_arity(CommandId::Waitaof, 3));
+        assert!(command_has_valid_arity(CommandId::Save, 1));
+        assert!(!command_has_valid_arity(CommandId::Save, 2));
+        assert!(command_has_valid_arity(CommandId::Bgsave, 1));
+        assert!(command_has_valid_arity(CommandId::Bgsave, 2));
+        assert!(!command_has_valid_arity(CommandId::Bgsave, 0));
+        assert!(command_has_valid_arity(CommandId::Bgrewriteaof, 1));
+        assert!(!command_has_valid_arity(CommandId::Bgrewriteaof, 2));
         assert!(command_has_valid_arity(CommandId::Readonly, 1));
         assert!(!command_has_valid_arity(CommandId::Readonly, 2));
         assert!(command_has_valid_arity(CommandId::Readwrite, 1));
@@ -2131,6 +2317,22 @@ mod tests {
         assert!(!command_has_valid_arity(CommandId::Lmove, 4));
         assert!(command_has_valid_arity(CommandId::Rpoplpush, 3));
         assert!(!command_has_valid_arity(CommandId::Rpoplpush, 2));
+        assert!(command_has_valid_arity(CommandId::Lmpop, 4));
+        assert!(command_has_valid_arity(CommandId::Lmpop, 7));
+        assert!(!command_has_valid_arity(CommandId::Lmpop, 3));
+        assert!(command_has_valid_arity(CommandId::Blmpop, 5));
+        assert!(command_has_valid_arity(CommandId::Blmpop, 8));
+        assert!(!command_has_valid_arity(CommandId::Blmpop, 4));
+        assert!(command_has_valid_arity(CommandId::Blpop, 3));
+        assert!(command_has_valid_arity(CommandId::Blpop, 5));
+        assert!(!command_has_valid_arity(CommandId::Blpop, 2));
+        assert!(command_has_valid_arity(CommandId::Brpop, 3));
+        assert!(command_has_valid_arity(CommandId::Brpop, 5));
+        assert!(!command_has_valid_arity(CommandId::Brpop, 2));
+        assert!(command_has_valid_arity(CommandId::Blmove, 6));
+        assert!(!command_has_valid_arity(CommandId::Blmove, 5));
+        assert!(command_has_valid_arity(CommandId::Brpoplpush, 4));
+        assert!(!command_has_valid_arity(CommandId::Brpoplpush, 3));
         assert!(command_has_valid_arity(CommandId::Scard, 2));
         assert!(!command_has_valid_arity(CommandId::Scard, 3));
         assert!(command_has_valid_arity(CommandId::Smismember, 3));
@@ -2269,6 +2471,15 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Setrange), b"SETRANGE");
         assert_eq!(command_name_upper(CommandId::Bitcount), b"BITCOUNT");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
+        assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
+        assert_eq!(command_name_upper(CommandId::Select), b"SELECT");
+        assert_eq!(command_name_upper(CommandId::Client), b"CLIENT");
+        assert_eq!(command_name_upper(CommandId::Role), b"ROLE");
+        assert_eq!(command_name_upper(CommandId::Wait), b"WAIT");
+        assert_eq!(command_name_upper(CommandId::Waitaof), b"WAITAOF");
+        assert_eq!(command_name_upper(CommandId::Save), b"SAVE");
+        assert_eq!(command_name_upper(CommandId::Bgsave), b"BGSAVE");
+        assert_eq!(command_name_upper(CommandId::Bgrewriteaof), b"BGREWRITEAOF");
         assert_eq!(command_name_upper(CommandId::Readonly), b"READONLY");
         assert_eq!(command_name_upper(CommandId::Readwrite), b"READWRITE");
         assert_eq!(command_name_upper(CommandId::Reset), b"RESET");
@@ -2292,6 +2503,12 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Linsert), b"LINSERT");
         assert_eq!(command_name_upper(CommandId::Lmove), b"LMOVE");
         assert_eq!(command_name_upper(CommandId::Rpoplpush), b"RPOPLPUSH");
+        assert_eq!(command_name_upper(CommandId::Lmpop), b"LMPOP");
+        assert_eq!(command_name_upper(CommandId::Blmpop), b"BLMPOP");
+        assert_eq!(command_name_upper(CommandId::Blpop), b"BLPOP");
+        assert_eq!(command_name_upper(CommandId::Brpop), b"BRPOP");
+        assert_eq!(command_name_upper(CommandId::Blmove), b"BLMOVE");
+        assert_eq!(command_name_upper(CommandId::Brpoplpush), b"BRPOPLPUSH");
         assert_eq!(command_name_upper(CommandId::Scard), b"SCARD");
         assert_eq!(command_name_upper(CommandId::Smismember), b"SMISMEMBER");
         assert_eq!(command_name_upper(CommandId::Srandmember), b"SRANDMEMBER");

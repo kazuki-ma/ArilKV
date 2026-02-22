@@ -1,10 +1,12 @@
 //! AOF replay helpers for rebuilding in-memory state from command logs.
 
 use crate::request_lifecycle::RequestProcessor;
-use garnet_common::{parse_resp_command_arg_slices, ArgSlice};
+use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice};
 use std::io;
 use std::path::Path;
 use tsavorite::AofReader;
+
+const MAX_AOF_REPLAY_ARGUMENTS: usize = 1_048_576;
 
 pub fn replay_aof_file<P: AsRef<Path>>(processor: &RequestProcessor, path: P) -> io::Result<usize> {
     let mut reader = AofReader::open(path)?;
@@ -16,18 +18,20 @@ pub fn replay_aof_operations(
     processor: &RequestProcessor,
     operations: &[Vec<u8>],
 ) -> io::Result<usize> {
-    let mut args = [ArgSlice::EMPTY; 64];
+    let mut args = vec![ArgSlice::EMPTY; 64];
     let mut response = Vec::new();
     let mut applied = 0usize;
 
     for operation in operations {
         response.clear();
-        let meta = parse_resp_command_arg_slices(operation, &mut args).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("invalid AOF operation frame: {:?}", error),
-            )
-        })?;
+        let meta =
+            parse_resp_command_arg_slices_dynamic(operation, &mut args, MAX_AOF_REPLAY_ARGUMENTS)
+                .map_err(|error| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("invalid AOF operation frame: {:?}", error),
+                )
+            })?;
         if meta.bytes_consumed != operation.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,

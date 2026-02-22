@@ -156,6 +156,29 @@ pub(crate) fn execute_command_line(
 }
 
 #[cfg(test)]
+pub(crate) fn assert_command_response(processor: &RequestProcessor, line: &str, expected: &[u8]) {
+    let response = execute_command_line(processor, line)
+        .unwrap_or_else(|error| panic!("command failed: `{line}`: {error}"));
+    assert_eq!(response, expected, "unexpected response for `{line}`");
+}
+
+#[cfg(test)]
+pub(crate) fn assert_command_integer(processor: &RequestProcessor, line: &str, expected: i64) {
+    let response = execute_command_line(processor, line)
+        .unwrap_or_else(|error| panic!("command failed: `{line}`: {error}"));
+    assert!(
+        response.len() >= 4 && response[0] == b':' && response.ends_with(b"\r\n"),
+        "expected integer RESP reply for `{line}`, got: {:?}",
+        String::from_utf8_lossy(&response)
+    );
+    let value = core::str::from_utf8(&response[1..response.len() - 2])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    assert_eq!(value, expected, "unexpected integer response for `{line}`");
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

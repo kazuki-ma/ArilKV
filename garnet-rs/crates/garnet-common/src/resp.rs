@@ -90,6 +90,39 @@ pub fn parse_resp_command_arg_slices(
     })
 }
 
+pub fn parse_resp_command_arg_slices_dynamic(
+    input: &[u8],
+    args_out: &mut Vec<ArgSlice>,
+    max_arguments: usize,
+) -> Result<RespCommandMeta, RespParseError> {
+    if max_arguments == 0 {
+        return Err(RespParseError::ArgumentCapacityExceeded {
+            required: 1,
+            capacity: 0,
+        });
+    }
+
+    if args_out.is_empty() {
+        args_out.resize(1, ArgSlice::EMPTY);
+    }
+
+    loop {
+        match parse_resp_command_arg_slices(input, args_out) {
+            Ok(meta) => return Ok(meta),
+            Err(RespParseError::ArgumentCapacityExceeded { required, .. }) => {
+                if required > max_arguments {
+                    return Err(RespParseError::ArgumentCapacityExceeded {
+                        required,
+                        capacity: max_arguments,
+                    });
+                }
+                args_out.resize(required, ArgSlice::EMPTY);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 fn parse_resp_command_with<'a, F>(
     input: &'a [u8],
     capacity: usize,
@@ -292,6 +325,38 @@ mod tests {
             err,
             RespParseError::ArgumentCapacityExceeded { .. }
         ));
+    }
+
+    #[test]
+    fn dynamic_parser_resizes_argument_buffer() {
+        let frame = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let mut args = vec![ArgSlice::EMPTY; 1];
+
+        let meta = parse_resp_command_arg_slices_dynamic(frame, &mut args, 16).unwrap();
+        assert_eq!(meta.argument_count, 3);
+        assert_eq!(meta.bytes_consumed, frame.len());
+        assert!(args.len() >= 3);
+        // SAFETY: `frame` lives until end of this scope.
+        assert_eq!(unsafe { args[0].as_slice() }, b"SET");
+        // SAFETY: `frame` lives until end of this scope.
+        assert_eq!(unsafe { args[1].as_slice() }, b"key");
+        // SAFETY: `frame` lives until end of this scope.
+        assert_eq!(unsafe { args[2].as_slice() }, b"value");
+    }
+
+    #[test]
+    fn dynamic_parser_respects_max_argument_limit() {
+        let frame = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+        let mut args = vec![ArgSlice::EMPTY; 1];
+
+        let err = parse_resp_command_arg_slices_dynamic(frame, &mut args, 2).unwrap_err();
+        assert_eq!(
+            err,
+            RespParseError::ArgumentCapacityExceeded {
+                required: 3,
+                capacity: 2,
+            }
+        );
     }
 
     proptest! {
