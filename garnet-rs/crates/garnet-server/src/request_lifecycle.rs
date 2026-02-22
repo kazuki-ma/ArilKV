@@ -490,6 +490,8 @@ impl RequestProcessor {
             CommandId::Geopos => self.handle_geopos(args, response_out),
             CommandId::Geodist => self.handle_geodist(args, response_out),
             CommandId::Geohash => self.handle_geohash(args, response_out),
+            CommandId::Geosearch => self.handle_geosearch(args, response_out),
+            CommandId::Geosearchstore => self.handle_geosearchstore(args, response_out),
             CommandId::Monitor => self.handle_monitor(args, response_out),
             CommandId::Shutdown => self.handle_shutdown(args, response_out),
             CommandId::Hello => self.handle_hello(args, response_out),

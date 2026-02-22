@@ -5916,6 +5916,131 @@ fn geohash_returns_expected_shape_and_null_for_missing_members() {
 }
 
 #[test]
+fn geosearch_supports_radius_box_and_response_options() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+
+    assert_command_response(
+        &processor,
+        "GEOSEARCH sicily FROMMEMBER palermo BYRADIUS 200 km ASC COUNT 1",
+        b"*1\r\n$7\r\npalermo\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "GEOSEARCH sicily FROMMEMBER palermo BYRADIUS 200 km DESC COUNT 1",
+        b"*1\r\n$7\r\ncatania\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "GEOSEARCH sicily FROMLONLAT 13.361389 38.115556 BYBOX 400 400 km ASC COUNT 2",
+        b"*2\r\n$7\r\npalermo\r\n$7\r\ncatania\r\n",
+    );
+
+    let with_options = execute_frame(
+        &processor,
+        &encode_resp(&[
+            b"GEOSEARCH",
+            b"sicily",
+            b"FROMMEMBER",
+            b"palermo",
+            b"BYRADIUS",
+            b"200",
+            b"km",
+            b"WITHDIST",
+            b"WITHHASH",
+            b"WITHCOORD",
+            b"ASC",
+            b"COUNT",
+            b"1",
+        ]),
+    );
+    assert!(with_options.starts_with(b"*1\r\n*4\r\n$7\r\npalermo\r\n$3\r\n0.0\r\n:"));
+    assert!(with_options.windows(5).any(|window| window == b"*2\r\n$"));
+
+    assert_command_response(
+        &processor,
+        "GEOSEARCH missing FROMMEMBER palermo BYRADIUS 200 km",
+        b"*0\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOSEARCH sicily FROMMEMBER unknown BYRADIUS 200 km",
+        b"-ERR no such key\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOSEARCH sicily FROMMEMBER palermo BYRADIUS -1 km",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOSEARCH sicily FROMMEMBER palermo BYRADIUS 200 km COUNT 0",
+        b"-ERR value is out of range\r\n",
+    );
+
+    assert_command_response(&processor, "SET plain value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GEOSEARCH plain FROMMEMBER palermo BYRADIUS 200 km",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOSEARCH sicily BYRADIUS 200 km",
+        b"-ERR wrong number of arguments for 'GEOSEARCH' command\r\n",
+    );
+}
+
+#[test]
+fn geosearchstore_stores_results_and_clears_destination_on_empty_source() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+
+    assert_command_integer(
+        &processor,
+        "GEOSEARCHSTORE gdst sicily FROMMEMBER palermo BYRADIUS 200 km STOREDIST",
+        2,
+    );
+    assert_command_response(
+        &processor,
+        "ZRANGE gdst 0 -1",
+        b"*2\r\n$7\r\npalermo\r\n$7\r\ncatania\r\n",
+    );
+
+    assert_command_integer(
+        &processor,
+        "GEOSEARCHSTORE gdst missing FROMMEMBER palermo BYRADIUS 200 km",
+        0,
+    );
+    assert_command_integer(&processor, "EXISTS gdst", 0);
+
+    assert_command_response(&processor, "SET plain value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GEOSEARCHSTORE gdst plain FROMMEMBER palermo BYRADIUS 200 km",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOSEARCHSTORE gdst sicily FROMMEMBER palermo BYRADIUS 200 km WITHDIST",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOSEARCHSTORE gdst sicily FROMMEMBER palermo",
+        b"-ERR wrong number of arguments for 'GEOSEARCHSTORE' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

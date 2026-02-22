@@ -1,10 +1,15 @@
 use super::*;
+use std::cmp::Ordering;
 
 const GEOADD_USAGE: &str =
     "GEOADD key [NX|XX] [CH] longitude latitude member [longitude latitude member ...]";
 const GEOPOS_USAGE: &str = "GEOPOS key member [member ...]";
 const GEODIST_USAGE: &str = "GEODIST key member1 member2 [M|KM|FT|MI]";
 const GEOHASH_USAGE: &str = "GEOHASH key member [member ...]";
+const GEOSEARCH_USAGE: &str =
+    "GEOSEARCH key FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius unit|BYBOX width height unit [options]";
+const GEOSEARCHSTORE_USAGE: &str =
+    "GEOSEARCHSTORE destination source FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius unit|BYBOX width height unit [options]";
 const GEO_LONGITUDE_MIN: f64 = -180.0;
 const GEO_LONGITUDE_MAX: f64 = 180.0;
 const GEO_LATITUDE_MIN: f64 = -85.051_128_78;
@@ -25,6 +30,63 @@ struct GeoAddOptions {
     nx: bool,
     xx: bool,
     ch: bool,
+}
+
+#[derive(Clone)]
+enum GeoSearchOrigin {
+    FromMember(Vec<u8>),
+    FromLonLat { longitude: f64, latitude: f64 },
+}
+
+#[derive(Clone, Copy)]
+enum GeoSearchShape {
+    ByRadius {
+        radius_meters: f64,
+        unit_to_meters: f64,
+    },
+    ByBox {
+        width_meters: f64,
+        height_meters: f64,
+        unit_to_meters: f64,
+    },
+}
+
+impl GeoSearchShape {
+    fn unit_to_meters(self) -> f64 {
+        match self {
+            Self::ByRadius { unit_to_meters, .. } => unit_to_meters,
+            Self::ByBox { unit_to_meters, .. } => unit_to_meters,
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum GeoSortOrder {
+    None,
+    Asc,
+    Desc,
+}
+
+#[derive(Clone)]
+struct GeoSearchOptions {
+    origin: GeoSearchOrigin,
+    shape: GeoSearchShape,
+    with_dist: bool,
+    with_hash: bool,
+    with_coord: bool,
+    sort: GeoSortOrder,
+    count: Option<usize>,
+    any: bool,
+    store_dist: bool,
+}
+
+#[derive(Clone)]
+struct GeoSearchMatch {
+    member: Vec<u8>,
+    score: f64,
+    longitude: f64,
+    latitude: f64,
+    distance_meters: f64,
 }
 
 impl RequestProcessor {
@@ -148,7 +210,7 @@ impl RequestProcessor {
         let unit_to_meters = if args.len() == 5 {
             // SAFETY: caller guarantees argument backing memory validity.
             let unit = unsafe { args[4].as_slice() };
-            parse_geodist_unit_to_meters(unit)?
+            parse_geo_unit_to_meters(unit)?
         } else {
             1.0
         };
@@ -220,6 +282,79 @@ impl RequestProcessor {
         }
         Ok(())
     }
+
+    pub(super) fn handle_geosearch(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 7, "GEOSEARCH", GEOSEARCH_USAGE)?;
+        let options = parse_geosearch_options(args, 2, true, false)?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() };
+        let zset = match self.load_zset_object(key)? {
+            Some(entries) => entries,
+            None => {
+                response_out.extend_from_slice(b"*0\r\n");
+                return Ok(());
+            }
+        };
+
+        let (center_longitude, center_latitude) = resolve_geosearch_center(&zset, &options.origin)?;
+        let mut matches =
+            collect_geosearch_matches(&zset, center_longitude, center_latitude, options.shape);
+        apply_geosearch_sort_and_count(&mut matches, &options);
+        append_geosearch_response(response_out, &matches, &options);
+        Ok(())
+    }
+
+    pub(super) fn handle_geosearchstore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 8, "GEOSEARCHSTORE", GEOSEARCHSTORE_USAGE)?;
+        let options = parse_geosearch_options(args, 3, false, true)?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination_key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let source_key = unsafe { args[2].as_slice() };
+        let source_zset = match self.load_zset_object(source_key)? {
+            Some(entries) => entries,
+            None => {
+                store_geosearch_result(self, &destination_key, &BTreeMap::new())?;
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let (center_longitude, center_latitude) =
+            resolve_geosearch_center(&source_zset, &options.origin)?;
+        let mut matches = collect_geosearch_matches(
+            &source_zset,
+            center_longitude,
+            center_latitude,
+            options.shape,
+        );
+        apply_geosearch_sort_and_count(&mut matches, &options);
+
+        let mut destination_zset = BTreeMap::new();
+        let unit_to_meters = options.shape.unit_to_meters();
+        for candidate in matches {
+            let score = if options.store_dist {
+                candidate.distance_meters / unit_to_meters
+            } else {
+                candidate.score
+            };
+            destination_zset.insert(candidate.member, score);
+        }
+        let stored = destination_zset.len() as i64;
+        store_geosearch_result(self, &destination_key, &destination_zset)?;
+        append_integer(response_out, stored);
+        Ok(())
+    }
 }
 
 fn parse_geoadd_options(
@@ -261,7 +396,7 @@ fn geo_coordinates_in_range(longitude: f64, latitude: f64) -> bool {
         && (GEO_LATITUDE_MIN..=GEO_LATITUDE_MAX).contains(&latitude)
 }
 
-fn parse_geodist_unit_to_meters(unit: &[u8]) -> Result<f64, RequestExecutionError> {
+fn parse_geo_unit_to_meters(unit: &[u8]) -> Result<f64, RequestExecutionError> {
     if ascii_eq_ignore_case(unit, b"M") {
         return Ok(1.0);
     }
@@ -275,6 +410,382 @@ fn parse_geodist_unit_to_meters(unit: &[u8]) -> Result<f64, RequestExecutionErro
         return Ok(1609.34);
     }
     Err(RequestExecutionError::UnsupportedUnit)
+}
+
+fn parse_geosearch_options(
+    args: &[ArgSlice],
+    mut index: usize,
+    allow_reply_options: bool,
+    allow_store_dist: bool,
+) -> Result<GeoSearchOptions, RequestExecutionError> {
+    let mut origin = None;
+    let mut shape = None;
+    let mut with_dist = false;
+    let mut with_hash = false;
+    let mut with_coord = false;
+    let mut sort = GeoSortOrder::None;
+    let mut count = None;
+    let mut any = false;
+    let mut store_dist = false;
+
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+
+        if ascii_eq_ignore_case(token, b"FROMMEMBER") {
+            if origin.is_some() || index + 1 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let member = unsafe { args[index + 1].as_slice() }.to_vec();
+            origin = Some(GeoSearchOrigin::FromMember(member));
+            index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"FROMLONLAT") {
+            if origin.is_some() || index + 2 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let longitude = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let latitude = parse_f64_ascii(unsafe { args[index + 2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            if !geo_coordinates_in_range(longitude, latitude) {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            origin = Some(GeoSearchOrigin::FromLonLat {
+                longitude,
+                latitude,
+            });
+            index += 3;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"BYRADIUS") {
+            if shape.is_some() || index + 2 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let radius = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            if radius < 0.0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let unit_to_meters = parse_geo_unit_to_meters(unsafe { args[index + 2].as_slice() })?;
+            shape = Some(GeoSearchShape::ByRadius {
+                radius_meters: radius * unit_to_meters,
+                unit_to_meters,
+            });
+            index += 3;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"BYBOX") {
+            if shape.is_some() || index + 3 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let width = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            // SAFETY: caller guarantees argument backing memory validity.
+            let height = parse_f64_ascii(unsafe { args[index + 2].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            if width < 0.0 || height < 0.0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let unit_to_meters = parse_geo_unit_to_meters(unsafe { args[index + 3].as_slice() })?;
+            shape = Some(GeoSearchShape::ByBox {
+                width_meters: width * unit_to_meters,
+                height_meters: height * unit_to_meters,
+                unit_to_meters,
+            });
+            index += 4;
+            continue;
+        }
+        if allow_reply_options && ascii_eq_ignore_case(token, b"WITHDIST") {
+            with_dist = true;
+            index += 1;
+            continue;
+        }
+        if allow_reply_options && ascii_eq_ignore_case(token, b"WITHHASH") {
+            with_hash = true;
+            index += 1;
+            continue;
+        }
+        if allow_reply_options && ascii_eq_ignore_case(token, b"WITHCOORD") {
+            with_coord = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"COUNT") {
+            if count.is_some() || index + 1 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let raw_count = parse_i64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            if raw_count <= 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            count = Some(raw_count as usize);
+            index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ANY") {
+            any = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ASC") {
+            sort = GeoSortOrder::Asc;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"DESC") {
+            sort = GeoSortOrder::Desc;
+            index += 1;
+            continue;
+        }
+        if allow_store_dist && ascii_eq_ignore_case(token, b"STOREDIST") {
+            store_dist = true;
+            index += 1;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+
+    let origin = origin.ok_or(RequestExecutionError::SyntaxError)?;
+    let shape = shape.ok_or(RequestExecutionError::SyntaxError)?;
+    if any && count.is_none() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(GeoSearchOptions {
+        origin,
+        shape,
+        with_dist,
+        with_hash,
+        with_coord,
+        sort,
+        count,
+        any,
+        store_dist,
+    })
+}
+
+fn resolve_geosearch_center(
+    zset: &BTreeMap<Vec<u8>, f64>,
+    origin: &GeoSearchOrigin,
+) -> Result<(f64, f64), RequestExecutionError> {
+    match origin {
+        GeoSearchOrigin::FromLonLat {
+            longitude,
+            latitude,
+        } => Ok((*longitude, *latitude)),
+        GeoSearchOrigin::FromMember(member) => {
+            let Some(score) = zset.get(member).copied() else {
+                return Err(RequestExecutionError::NoSuchKey);
+            };
+            let Some((longitude, latitude)) = decode_geo_score(score) else {
+                return Err(RequestExecutionError::NoSuchKey);
+            };
+            Ok((longitude, latitude))
+        }
+    }
+}
+
+fn collect_geosearch_matches(
+    zset: &BTreeMap<Vec<u8>, f64>,
+    center_longitude: f64,
+    center_latitude: f64,
+    shape: GeoSearchShape,
+) -> Vec<GeoSearchMatch> {
+    let mut matches = Vec::new();
+    for (member, score) in zset {
+        let Some((longitude, latitude)) = decode_geo_score(*score) else {
+            continue;
+        };
+        let distance_meters =
+            geo_distance_meters(center_longitude, center_latitude, longitude, latitude);
+        let in_shape = match shape {
+            GeoSearchShape::ByRadius { radius_meters, .. } => distance_meters <= radius_meters,
+            GeoSearchShape::ByBox {
+                width_meters,
+                height_meters,
+                ..
+            } => geo_box_contains(
+                center_longitude,
+                center_latitude,
+                longitude,
+                latitude,
+                width_meters,
+                height_meters,
+            ),
+        };
+        if in_shape {
+            matches.push(GeoSearchMatch {
+                member: member.clone(),
+                score: *score,
+                longitude,
+                latitude,
+                distance_meters,
+            });
+        }
+    }
+    matches
+}
+
+fn apply_geosearch_sort_and_count(matches: &mut Vec<GeoSearchMatch>, options: &GeoSearchOptions) {
+    let mut sort = options.sort;
+    if options.count.is_some() && sort == GeoSortOrder::None && !options.any {
+        sort = GeoSortOrder::Asc;
+    }
+
+    match sort {
+        GeoSortOrder::None => {}
+        GeoSortOrder::Asc => matches.sort_by(|left, right| {
+            let distance_order = left
+                .distance_meters
+                .partial_cmp(&right.distance_meters)
+                .unwrap_or(Ordering::Equal);
+            if distance_order == Ordering::Equal {
+                left.member.cmp(&right.member)
+            } else {
+                distance_order
+            }
+        }),
+        GeoSortOrder::Desc => matches.sort_by(|left, right| {
+            let distance_order = right
+                .distance_meters
+                .partial_cmp(&left.distance_meters)
+                .unwrap_or(Ordering::Equal);
+            if distance_order == Ordering::Equal {
+                left.member.cmp(&right.member)
+            } else {
+                distance_order
+            }
+        }),
+    }
+
+    if let Some(count) = options.count {
+        matches.truncate(count.min(matches.len()));
+    }
+}
+
+fn append_geosearch_response(
+    response_out: &mut Vec<u8>,
+    matches: &[GeoSearchMatch],
+    options: &GeoSearchOptions,
+) {
+    let option_count =
+        options.with_dist as usize + options.with_hash as usize + options.with_coord as usize;
+    response_out.extend_from_slice(format!("*{}\r\n", matches.len()).as_bytes());
+    for entry in matches {
+        if option_count == 0 {
+            append_bulk_string(response_out, &entry.member);
+            continue;
+        }
+        response_out.extend_from_slice(format!("*{}\r\n", option_count + 1).as_bytes());
+        append_bulk_string(response_out, &entry.member);
+        if options.with_dist {
+            let distance_unit = entry.distance_meters / options.shape.unit_to_meters();
+            let text = format_geo_number(distance_unit, 4);
+            append_bulk_string(response_out, text.as_bytes());
+        }
+        if options.with_hash {
+            append_integer(response_out, entry.score as i64);
+        }
+        if options.with_coord {
+            response_out.extend_from_slice(b"*2\r\n");
+            let longitude_text = format_geo_coordinate(entry.longitude);
+            let latitude_text = format_geo_coordinate(entry.latitude);
+            append_bulk_string(response_out, longitude_text.as_bytes());
+            append_bulk_string(response_out, latitude_text.as_bytes());
+        }
+    }
+}
+
+fn geo_box_contains(
+    center_longitude: f64,
+    center_latitude: f64,
+    longitude: f64,
+    latitude: f64,
+    width_meters: f64,
+    height_meters: f64,
+) -> bool {
+    let half_height_delta = ((height_meters * 0.5) / GEO_EARTH_RADIUS_METERS).to_degrees();
+    if (latitude - center_latitude).abs() > half_height_delta {
+        return false;
+    }
+
+    let cos_lat = center_latitude.to_radians().cos().abs();
+    let half_width_delta = if cos_lat <= f64::EPSILON {
+        GEO_LONGITUDE_MAX
+    } else {
+        (((width_meters * 0.5) / (GEO_EARTH_RADIUS_METERS * cos_lat)).to_degrees())
+            .min(GEO_LONGITUDE_MAX)
+    };
+    let longitude_delta = normalized_longitude_delta(longitude - center_longitude).abs();
+    longitude_delta <= half_width_delta
+}
+
+fn normalized_longitude_delta(delta: f64) -> f64 {
+    let mut normalized = delta % 360.0;
+    if normalized > 180.0 {
+        normalized -= 360.0;
+    }
+    if normalized < -180.0 {
+        normalized += 360.0;
+    }
+    normalized
+}
+
+fn store_geosearch_result(
+    processor: &RequestProcessor,
+    destination: &[u8],
+    result_zset: &BTreeMap<Vec<u8>, f64>,
+) -> Result<(), RequestExecutionError> {
+    processor.expire_key_if_needed(destination)?;
+    let destination_had_string = processor.key_exists(destination)?;
+    let string_deleted = if destination_had_string {
+        delete_string_value_for_geo_store_overwrite(processor, destination)?
+    } else {
+        false
+    };
+
+    if result_zset.is_empty() {
+        let object_deleted = processor.object_delete(destination)?;
+        if string_deleted && !object_deleted {
+            processor.bump_watch_version(destination);
+        }
+        return Ok(());
+    }
+    processor.save_zset_object(destination, result_zset)
+}
+
+fn delete_string_value_for_geo_store_overwrite(
+    processor: &RequestProcessor,
+    key: &[u8],
+) -> Result<bool, RequestExecutionError> {
+    let key_vec = key.to_vec();
+    let mut store = processor.lock_string_store_for_key(key);
+    let mut session = store.session(&processor.functions);
+    let mut info = DeleteInfo::default();
+    let status = session
+        .delete(&key_vec, &mut info)
+        .map_err(map_delete_error)?;
+    match status {
+        DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+            processor.remove_string_key_metadata(key);
+            Ok(true)
+        }
+        DeleteOperationStatus::NotFound => {
+            processor.remove_string_key_metadata(key);
+            Ok(false)
+        }
+        DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+    }
 }
 
 fn encode_geo_score(longitude: f64, latitude: f64) -> f64 {

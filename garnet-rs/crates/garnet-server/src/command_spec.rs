@@ -37,6 +37,8 @@ pub enum CommandId {
     Geopos,
     Geodist,
     Geohash,
+    Geosearch,
+    Geosearchstore,
     Del,
     Rename,
     Renamenx,
@@ -603,6 +605,26 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Geosearch,
+        name_upper: b"GEOSEARCH",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(7)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Geosearchstore,
+        name_upper: b"GEOSEARCHSTORE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(8)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2849,6 +2871,12 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Geohash, 3));
         assert!(command_has_valid_arity(CommandId::Geohash, 6));
         assert!(!command_has_valid_arity(CommandId::Geohash, 2));
+        assert!(command_has_valid_arity(CommandId::Geosearch, 7));
+        assert!(command_has_valid_arity(CommandId::Geosearch, 11));
+        assert!(!command_has_valid_arity(CommandId::Geosearch, 6));
+        assert!(command_has_valid_arity(CommandId::Geosearchstore, 8));
+        assert!(command_has_valid_arity(CommandId::Geosearchstore, 12));
+        assert!(!command_has_valid_arity(CommandId::Geosearchstore, 7));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3250,6 +3278,11 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Geopos), b"GEOPOS");
         assert_eq!(command_name_upper(CommandId::Geodist), b"GEODIST");
         assert_eq!(command_name_upper(CommandId::Geohash), b"GEOHASH");
+        assert_eq!(command_name_upper(CommandId::Geosearch), b"GEOSEARCH");
+        assert_eq!(
+            command_name_upper(CommandId::Geosearchstore),
+            b"GEOSEARCHSTORE"
+        );
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");
