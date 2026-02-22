@@ -312,6 +312,9 @@ mod tests {
         assert_eq!(dispatch_command_name(b"READWRITE"), CommandId::Readwrite);
         assert_eq!(dispatch_command_name(b"reset"), CommandId::Reset);
         assert_eq!(dispatch_command_name(b"LOLWUT"), CommandId::Lolwut);
+        assert_eq!(dispatch_command_name(b"latency"), CommandId::Latency);
+        assert_eq!(dispatch_command_name(b"MODULE"), CommandId::Module);
+        assert_eq!(dispatch_command_name(b"slowlog"), CommandId::Slowlog);
     }
 
     #[test]

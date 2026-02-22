@@ -5035,6 +5035,144 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
 }
 
 #[test]
+fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let module_list = b"*2\r\n$6\r\nMODULE\r\n$4\r\nLIST\r\n";
+    let meta = parse_resp_command_arg_slices(module_list, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let module_help = b"*2\r\n$6\r\nMODULE\r\n$4\r\nHELP\r\n";
+    let meta = parse_resp_command_arg_slices(module_help, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*11\r\n"));
+    let module_help_text = std::str::from_utf8(&response).unwrap();
+    assert!(module_help_text.contains("MODULE <subcommand>"));
+
+    response.clear();
+    let latency_help = b"*2\r\n$7\r\nLATENCY\r\n$4\r\nHELP\r\n";
+    let meta = parse_resp_command_arg_slices(latency_help, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*15\r\n"));
+    let latency_help_text = std::str::from_utf8(&response).unwrap();
+    assert!(latency_help_text.contains("\r\nLATEST\r\n"));
+
+    response.clear();
+    let latency_latest = b"*2\r\n$7\r\nLATENCY\r\n$6\r\nLATEST\r\n";
+    let meta = parse_resp_command_arg_slices(latency_latest, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let latency_history = b"*3\r\n$7\r\nLATENCY\r\n$7\r\nHISTORY\r\n$7\r\ncommand\r\n";
+    let meta = parse_resp_command_arg_slices(latency_history, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let latency_reset = b"*2\r\n$7\r\nLATENCY\r\n$5\r\nRESET\r\n";
+    let meta = parse_resp_command_arg_slices(latency_reset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let latency_doctor = b"*2\r\n$7\r\nLATENCY\r\n$6\r\nDOCTOR\r\n";
+    let meta = parse_resp_command_arg_slices(latency_doctor, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$"));
+    let latency_doctor_text = std::str::from_utf8(&response).unwrap();
+    assert!(latency_doctor_text.contains("Latency monitoring is disabled"));
+
+    response.clear();
+    let slowlog_len = b"*2\r\n$7\r\nSLOWLOG\r\n$3\r\nLEN\r\n";
+    let meta = parse_resp_command_arg_slices(slowlog_len, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let slowlog_get_default = b"*2\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n";
+    let meta = parse_resp_command_arg_slices(slowlog_get_default, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let slowlog_get_count = b"*3\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(slowlog_get_count, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    response.clear();
+    let slowlog_reset = b"*2\r\n$7\r\nSLOWLOG\r\n$5\r\nRESET\r\n";
+    let meta = parse_resp_command_arg_slices(slowlog_reset, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let slowlog_help = b"*2\r\n$7\r\nSLOWLOG\r\n$4\r\nHELP\r\n";
+    let meta = parse_resp_command_arg_slices(slowlog_help, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*12\r\n"));
+
+    response.clear();
+    let module_unknown = b"*2\r\n$6\r\nMODULE\r\n$4\r\nNOPE\r\n";
+    let meta = parse_resp_command_arg_slices(module_unknown, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR unknown command\r\n");
+
+    response.clear();
+    let latency_unknown = b"*2\r\n$7\r\nLATENCY\r\n$4\r\nNOPE\r\n";
+    let meta = parse_resp_command_arg_slices(latency_unknown, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR unknown command\r\n");
+
+    response.clear();
+    let slowlog_bad_count = b"*3\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n$3\r\nbad\r\n";
+    let meta = parse_resp_command_arg_slices(slowlog_bad_count, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR value is not an integer or out of range\r\n"
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];
@@ -5274,7 +5412,10 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
         b"$3\r\n3-0\r\n"
     );
     assert_eq!(
-        execute_frame(&processor, &encode_resp(&[b"XTRIM", b"streamx", b"MAXLEN", b"2"])),
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XTRIM", b"streamx", b"MAXLEN", b"2"])
+        ),
         b":1\r\n"
     );
     assert_eq!(

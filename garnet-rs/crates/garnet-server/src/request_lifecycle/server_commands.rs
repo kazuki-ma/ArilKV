@@ -2,6 +2,52 @@ use super::*;
 use crate::command_spec::command_names_for_command_response;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
+const MODULE_HELP_LINES: [&[u8]; 11] = [
+    b"MODULE <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"LIST",
+    b"    Return a list of loaded modules.",
+    b"LOAD <path> [<arg> ...]",
+    b"    Load a module library from <path>, passing to it any optional arguments.",
+    b"LOADEX <path> [[CONFIG NAME VALUE] [CONFIG NAME VALUE]] [ARGS ...]",
+    b"    Load a module library from <path>, while passing it module configurations and optional arguments.",
+    b"UNLOAD <name>",
+    b"    Unload a module.",
+    b"HELP",
+    b"    Print this help.",
+];
+const LATENCY_HELP_LINES: [&[u8]; 15] = [
+    b"LATENCY <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"DOCTOR",
+    b"    Return a human readable latency analysis report.",
+    b"GRAPH <event>",
+    b"    Return an ASCII latency graph for the <event> class.",
+    b"HISTORY <event>",
+    b"    Return time-latency samples for the <event> class.",
+    b"LATEST",
+    b"    Return the latest latency samples for all events.",
+    b"RESET [<event> ...]",
+    b"    Reset latency data of one or more <event> classes.",
+    b"HISTOGRAM [COMMAND ...]",
+    b"    Return cumulative latency histograms for command names.",
+    b"HELP",
+    b"    Print this help.",
+];
+const LATENCY_DOCTOR_DISABLED_MESSAGE: &[u8] =
+    b"I'm sorry, Dave, I can't do that. Latency monitoring is disabled in this garnet-rs instance.";
+const SLOWLOG_HELP_LINES: [&[u8]; 12] = [
+    b"SLOWLOG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"GET [<count>]",
+    b"    Return top <count> entries from the slowlog (default: 10, -1 mean all).",
+    b"    Entries are made of:",
+    b"    id, timestamp, time in microseconds, arguments array, client IP and port,",
+    b"    client name",
+    b"LEN",
+    b"    Return the length of the slowlog.",
+    b"RESET",
+    b"    Reset the slowlog.",
+    b"HELP",
+    b"    Print this help.",
+];
 
 impl RequestProcessor {
     pub(super) fn handle_quit(
@@ -776,6 +822,117 @@ impl RequestProcessor {
         }
         append_bulk_array(response_out, command_names_for_command_response());
         Ok(())
+    }
+
+    pub(super) fn handle_latency(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            2,
+            "LATENCY",
+            "LATENCY <DOCTOR|GRAPH|HISTORY|LATEST|RESET|HISTOGRAM|HELP> [arguments...]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "LATENCY", "LATENCY HELP")?;
+            append_bulk_array(response_out, &LATENCY_HELP_LINES);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"LATEST") {
+            require_exact_arity(args, 2, "LATENCY", "LATENCY LATEST")?;
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"HISTORY") {
+            require_exact_arity(args, 3, "LATENCY", "LATENCY HISTORY event")?;
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"RESET") {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
+            require_exact_arity(args, 2, "LATENCY", "LATENCY DOCTOR")?;
+            append_bulk_string(response_out, LATENCY_DOCTOR_DISABLED_MESSAGE);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GRAPH") {
+            require_exact_arity(args, 3, "LATENCY", "LATENCY GRAPH event")?;
+            append_bulk_string(response_out, b"");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"HISTOGRAM") {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        Err(RequestExecutionError::UnknownCommand)
+    }
+
+    pub(super) fn handle_module(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "MODULE", "MODULE <LIST|HELP>")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"LIST") {
+            require_exact_arity(args, 2, "MODULE", "MODULE LIST")?;
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "MODULE", "MODULE HELP")?;
+            append_bulk_array(response_out, &MODULE_HELP_LINES);
+            return Ok(());
+        }
+        Err(RequestExecutionError::UnknownCommand)
+    }
+
+    pub(super) fn handle_slowlog(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            2,
+            "SLOWLOG",
+            "SLOWLOG <GET|LEN|RESET|HELP> [arguments...]",
+        )?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG HELP")?;
+            append_bulk_array(response_out, &SLOWLOG_HELP_LINES);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"LEN") {
+            require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG LEN")?;
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"RESET") {
+            require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG RESET")?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GET") {
+            ensure_ranged_arity(args, 2, 3, "SLOWLOG", "SLOWLOG GET [count]")?;
+            if args.len() == 3 {
+                // SAFETY: caller guarantees argument backing memory validity.
+                parse_i64_ascii(unsafe { args[2].as_slice() })
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+            }
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        Err(RequestExecutionError::UnknownCommand)
     }
 
     pub(super) fn handle_function(

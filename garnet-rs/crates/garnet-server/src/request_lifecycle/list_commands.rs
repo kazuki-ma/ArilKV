@@ -288,9 +288,7 @@ impl RequestProcessor {
                     continue;
                 }
                 positions.push(index as i64);
-                if options.count.is_none()
-                    || (!unlimited_count && positions.len() >= count_limit)
-                {
+                if options.count.is_none() || (!unlimited_count && positions.len() >= count_limit) {
                     break;
                 }
             }
@@ -309,9 +307,7 @@ impl RequestProcessor {
                     continue;
                 }
                 positions.push(index as i64);
-                if options.count.is_none()
-                    || (!unlimited_count && positions.len() >= count_limit)
-                {
+                if options.count.is_none() || (!unlimited_count && positions.len() >= count_limit) {
                     break;
                 }
             }

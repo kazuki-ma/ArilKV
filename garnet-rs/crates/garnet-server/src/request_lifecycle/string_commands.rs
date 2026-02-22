@@ -494,7 +494,8 @@ impl RequestProcessor {
             } else {
                 -1
             }
-        } else if let Some((start_byte, end_byte)) = normalize_string_range(value.len(), start, end) {
+        } else if let Some((start_byte, end_byte)) = normalize_string_range(value.len(), start, end)
+        {
             let mut found = None;
             for byte_index in start_byte..=end_byte {
                 let byte = value[byte_index];

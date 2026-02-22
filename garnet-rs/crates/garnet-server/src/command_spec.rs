@@ -189,6 +189,9 @@ pub enum CommandId {
     Unlink,
     Move,
     Swapdb,
+    Latency,
+    Module,
+    Slowlog,
     Unknown,
 }
 
@@ -2080,6 +2083,36 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Latency,
+        name_upper: b"LATENCY",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Module,
+        name_upper: b"MODULE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Slowlog,
+        name_upper: b"SLOWLOG",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Unknown,
         name_upper: b"UNKNOWN",
         key_access_pattern: KeyAccessPattern::None,
@@ -2583,6 +2616,15 @@ mod tests {
         assert!(!command_has_valid_arity(CommandId::Move, 2));
         assert!(command_has_valid_arity(CommandId::Swapdb, 3));
         assert!(!command_has_valid_arity(CommandId::Swapdb, 2));
+        assert!(command_has_valid_arity(CommandId::Latency, 2));
+        assert!(command_has_valid_arity(CommandId::Latency, 4));
+        assert!(!command_has_valid_arity(CommandId::Latency, 1));
+        assert!(command_has_valid_arity(CommandId::Module, 2));
+        assert!(command_has_valid_arity(CommandId::Module, 3));
+        assert!(!command_has_valid_arity(CommandId::Module, 1));
+        assert!(command_has_valid_arity(CommandId::Slowlog, 2));
+        assert!(command_has_valid_arity(CommandId::Slowlog, 3));
+        assert!(!command_has_valid_arity(CommandId::Slowlog, 1));
     }
 
     #[test]
@@ -2708,6 +2750,9 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Unlink), b"UNLINK");
         assert_eq!(command_name_upper(CommandId::Move), b"MOVE");
         assert_eq!(command_name_upper(CommandId::Swapdb), b"SWAPDB");
+        assert_eq!(command_name_upper(CommandId::Latency), b"LATENCY");
+        assert_eq!(command_name_upper(CommandId::Module), b"MODULE");
+        assert_eq!(command_name_upper(CommandId::Slowlog), b"SLOWLOG");
         assert_eq!(command_name_upper(CommandId::Scan), b"SCAN");
         assert_eq!(command_name_upper(CommandId::Hscan), b"HSCAN");
         assert_eq!(command_name_upper(CommandId::Sscan), b"SSCAN");
