@@ -44,6 +44,28 @@ Commit the generated compatibility matrix files when status changes:
 - `docs/compatibility/redis-command-status.csv`
 - `docs/compatibility/redis-command-status-summary.md`
 
+## Implementation Reference Policy
+
+For future command implementation work, use this source-of-truth order:
+
+1. Command semantics and edge-case behavior:
+   - Prefer `Valkey` source as primary reference.
+   - Local path: `/Users/kazuki-matsuda/dev/src/github.com/valkey-io/valkey`
+2. This repository's architecture and integration constraints:
+   - Prefer `garnet-rs` existing patterns in this repo.
+3. Additional implementation patterns (when needed):
+   - Use `.NET Garnet` code in this repo as secondary guidance.
+
+Rationale:
+
+- Valkey is BSD-3-Clause and avoids Redis post-license-change ambiguity.
+- `garnet-rs` must still follow its own threading/locking/testing conventions.
+
+Guardrails:
+
+- Do not copy large code blocks verbatim from external projects.
+- Always validate behavior via the command workflow above and keep matrix files updated.
+
 ## Performance Regression Policy
 
 - For hot-path changes, run before/after comparison using fixed parameters.
