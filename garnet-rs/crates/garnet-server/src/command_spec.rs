@@ -17,6 +17,7 @@ pub enum CommandId {
     Setbit,
     Setrange,
     Bitcount,
+    Bitpos,
     Bitop,
     Del,
     Rename,
@@ -239,7 +240,8 @@ struct CommandSpecEntry {
     include_in_command_response: bool,
 }
 
-const REPLICATION_PROTOCOL_COMMANDS: [&[u8]; 4] = [b"REPLICAOF", b"REPLCONF", b"PSYNC", b"SYNC"];
+const REPLICATION_PROTOCOL_COMMANDS: [&[u8]; 5] =
+    [b"REPLICAOF", b"SLAVEOF", b"REPLCONF", b"PSYNC", b"SYNC"];
 const COMMAND_ID_COUNT: usize = CommandId::Unknown as usize + 1;
 
 const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
@@ -351,6 +353,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Bitpos,
+        name_upper: b"BITPOS",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2126,6 +2138,7 @@ mod tests {
     fn command_response_names_include_replication_protocol_commands() {
         let names = command_names_for_command_response();
         assert!(names.contains(&&b"REPLICAOF"[..]));
+        assert!(names.contains(&&b"SLAVEOF"[..]));
         assert!(names.contains(&&b"REPLCONF"[..]));
         assert!(names.contains(&&b"PSYNC"[..]));
         assert!(names.contains(&&b"SYNC"[..]));
@@ -2233,6 +2246,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Bitcount, 4));
         assert!(command_has_valid_arity(CommandId::Bitcount, 5));
         assert!(!command_has_valid_arity(CommandId::Bitcount, 1));
+        assert!(command_has_valid_arity(CommandId::Bitpos, 3));
+        assert!(command_has_valid_arity(CommandId::Bitpos, 6));
+        assert!(!command_has_valid_arity(CommandId::Bitpos, 2));
         assert!(command_has_valid_arity(CommandId::Bitop, 4));
         assert!(command_has_valid_arity(CommandId::Bitop, 6));
         assert!(!command_has_valid_arity(CommandId::Bitop, 3));
@@ -2526,6 +2542,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Setbit), b"SETBIT");
         assert_eq!(command_name_upper(CommandId::Setrange), b"SETRANGE");
         assert_eq!(command_name_upper(CommandId::Bitcount), b"BITCOUNT");
+        assert_eq!(command_name_upper(CommandId::Bitpos), b"BITPOS");
         assert_eq!(command_name_upper(CommandId::Bitop), b"BITOP");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
@@ -2647,6 +2664,7 @@ mod tests {
         for name in command_names_for_command_response() {
             let dispatch = dispatch_command_name(name);
             let protocol_passthrough = *name == b"REPLICAOF"
+                || *name == b"SLAVEOF"
                 || *name == b"REPLCONF"
                 || *name == b"PSYNC"
                 || *name == b"SYNC";

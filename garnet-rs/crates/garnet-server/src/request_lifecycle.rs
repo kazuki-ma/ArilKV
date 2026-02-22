@@ -297,6 +297,7 @@ impl RequestProcessor {
             CommandId::Setbit => self.handle_setbit(args, response_out),
             CommandId::Setrange => self.handle_setrange(args, response_out),
             CommandId::Bitcount => self.handle_bitcount(args, response_out),
+            CommandId::Bitpos => self.handle_bitpos(args, response_out),
             CommandId::Bitop => self.handle_bitop(args, response_out),
             CommandId::Append => self.handle_append(args, response_out),
             CommandId::Getex => self.handle_getex(args, response_out),

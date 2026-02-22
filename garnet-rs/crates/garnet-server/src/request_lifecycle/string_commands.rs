@@ -405,6 +405,129 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_bitpos(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 3 || args.len() > 6 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "BITPOS",
+                expected: "BITPOS key bit [start [end [BYTE|BIT]]]",
+            });
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        // SAFETY: caller guarantees argument backing memory validity.
+        let bit = parse_i64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if bit != 0 && bit != 1 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let target_bit = bit as u8;
+
+        self.expire_key_if_needed(&key)?;
+        let Some(value) = self.read_string_value(&key)? else {
+            if self.object_key_exists(&key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            let missing_result = if target_bit == 0 { 0 } else { -1 };
+            append_integer(response_out, missing_result);
+            return Ok(());
+        };
+        if value.is_empty() {
+            append_integer(response_out, -1);
+            return Ok(());
+        }
+
+        let mut mode_is_bit = false;
+        if args.len() == 6 {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let mode = unsafe { args[5].as_slice() };
+            if ascii_eq_ignore_case(mode, b"BYTE") {
+                mode_is_bit = false;
+            } else if ascii_eq_ignore_case(mode, b"BIT") {
+                mode_is_bit = true;
+            } else {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+        }
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let start = if args.len() >= 4 {
+            parse_i64_ascii(unsafe { args[3].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?
+        } else {
+            0
+        };
+        // SAFETY: caller guarantees argument backing memory validity.
+        let end = if args.len() >= 5 {
+            parse_i64_ascii(unsafe { args[4].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?
+        } else if mode_is_bit {
+            let total_bits = value
+                .len()
+                .checked_mul(8)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            (total_bits as i64) - 1
+        } else {
+            (value.len() as i64) - 1
+        };
+        let has_explicit_end = args.len() >= 5;
+
+        let result = if mode_is_bit {
+            let total_bits = value
+                .len()
+                .checked_mul(8)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            if let Some((start_bit, end_bit)) = normalize_string_range(total_bits, start, end) {
+                let mut found = None;
+                for bit_index in start_bit..=end_bit {
+                    let byte = value[bit_index / 8];
+                    let shift = 7usize - (bit_index % 8);
+                    if ((byte >> shift) & 1) == target_bit {
+                        found = Some(bit_index as i64);
+                        break;
+                    }
+                }
+                found.unwrap_or(-1)
+            } else {
+                -1
+            }
+        } else if let Some((start_byte, end_byte)) = normalize_string_range(value.len(), start, end) {
+            let mut found = None;
+            for byte_index in start_byte..=end_byte {
+                let byte = value[byte_index];
+                if target_bit == 1 {
+                    if byte == 0 {
+                        continue;
+                    }
+                    let first_set = byte.leading_zeros() as usize;
+                    found = Some(((byte_index * 8) + first_set) as i64);
+                    break;
+                }
+                if byte == 0xFF {
+                    continue;
+                }
+                let first_zero = (!byte).leading_zeros() as usize;
+                found = Some(((byte_index * 8) + first_zero) as i64);
+                break;
+            }
+            if let Some(position) = found {
+                position
+            } else if target_bit == 0 && !has_explicit_end {
+                (value.len() * 8) as i64
+            } else {
+                -1
+            }
+        } else {
+            -1
+        };
+
+        append_integer(response_out, result);
+        Ok(())
+    }
+
     pub(super) fn handle_bitop(
         &self,
         args: &[ArgSlice],

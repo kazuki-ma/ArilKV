@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 191
+> **Current Iteration**: 192
 
 ---
 
@@ -648,3 +648,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 189 | 2026-02-22 | 11.76 | DONE | Implemented blocking zset pop family `BZPOPMIN/BZPOPMAX/BZMPOP` end-to-end with strict timeout parsing, Redis-compatible null-array/result shapes, and first-non-empty-key selection semantics. Refactored zset pop internals to share mutation logic across `ZPOP*`/`BZPOP*`/`ZMPOP`/`BZMPOP`, and extended lifecycle tests for response/error paths. Revalidated required command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-093554` with tests `6/4/2`; command matrix refreshed to `75.10%` coverage). |
 | 190 | 2026-02-22 | 11.77 | DONE | Standardized directory-local README-first guidance by adding `AGENT.md` across active implementation/performance-report directories (`garnet-rs/benches`, `garnet-rs/tests`, `docs/performance/experiments/**`) and expanded local `README.md` files with implementation-time re-check patterns (benchmark integrity checks, command-test flow, experiment reproducibility pitfalls). Scoped out non-essential root-level directories per follow-up direction. |
 | 191 | 2026-02-22 | 11.78 | DONE | Implemented `BITOP` (`AND`/`OR`/`XOR`/`NOT`) end-to-end with strict arity handling for `NOT`, wrongtype detection on source keys, and Redis-compatible destination deletion when result length is zero. Updated command catalog/dispatch/lifecycle wiring, extended string-command lifecycle tests, reran command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-094706` with tests `6/4/2`; command matrix refreshed to `75.52%` coverage). |
+| 192 | 2026-02-22 | 11.79 | DONE | Implemented `BITPOS` end-to-end (catalog/dispatch/lifecycle handler/tests) with support for `start/end` and `BYTE|BIT` mode parsing, missing-key semantics, explicit wrongtype/error paths, and Redis-compatible `BITPOS 0` tail behavior when `end` is omitted. Also added `SLAVEOF` alias support to replication control path and command surface. Revalidated command-edit gates (`cargo test -p garnet-server`: `181 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-095504` with tests `6/4/2`; command matrix refreshed to `76.35%` coverage). |

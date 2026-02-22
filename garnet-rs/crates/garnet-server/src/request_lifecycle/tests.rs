@@ -4116,6 +4116,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
+    assert_command_integer(&processor, "BITPOS missing 0", 0);
+    assert_command_integer(&processor, "BITPOS missing 1", -1);
+
+    for bit in 0..8 {
+        assert_command_integer(&processor, &format!("SETBIT bpff {bit} 1"), 0);
+    }
+    assert_command_integer(&processor, "BITPOS bpff 0", 8);
+    assert_command_integer(&processor, "BITPOS bpff 1", 0);
+    assert_command_integer(&processor, "BITPOS bpff 0 1", -1);
+    assert_command_integer(&processor, "BITPOS bpff 0 0 0", -1);
+    assert_command_integer(&processor, "BITPOS bpff 0 0 7 BIT", -1);
+
+    assert_command_integer(&processor, "SETBIT bpbits 8 1", 0);
+    assert_command_integer(&processor, "BITPOS bpbits 1 8 15 BIT", 8);
+    assert_command_integer(&processor, "BITPOS bpbits 1 16 16 BIT", -1);
+
     response.clear();
     let set_b1 = b"*3\r\n$3\r\nSET\r\n$2\r\nb1\r\n$1\r\nA\r\n";
     let meta = parse_resp_command_arg_slices(set_b1, &mut args).unwrap();
@@ -4246,6 +4262,36 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     assert_eq!(response, b"-ERR syntax error\r\n");
 
     response.clear();
+    let set_empty = b"*3\r\n$3\r\nSET\r\n$8\r\nbitempty\r\n$0\r\n\r\n";
+    let meta = parse_resp_command_arg_slices(set_empty, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+    assert_command_integer(&processor, "BITPOS bitempty 0", -1);
+
+    response.clear();
+    let bitpos_invalid_mode =
+        b"*6\r\n$6\r\nBITPOS\r\n$4\r\nbpff\r\n$1\r\n0\r\n$1\r\n0\r\n$1\r\n7\r\n$5\r\nWORDS\r\n";
+    let meta = parse_resp_command_arg_slices(bitpos_invalid_mode, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR syntax error\r\n");
+
+    response.clear();
+    let bitpos_invalid_bit = b"*3\r\n$6\r\nBITPOS\r\n$4\r\nbpff\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(bitpos_invalid_bit, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR value is out of range\r\n");
+
+    response.clear();
     let hset = b"*4\r\n$4\r\nHSET\r\n$2\r\noh\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
@@ -4257,6 +4303,19 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_wrongtype =
         b"*5\r\n$5\r\nBITOP\r\n$2\r\nOR\r\n$4\r\nbdst\r\n$2\r\noh\r\n$2\r\nb1\r\n";
     let meta = parse_resp_command_arg_slices(bitop_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    response.clear();
+    let bitpos_wrongtype = b"*3\r\n$6\r\nBITPOS\r\n$2\r\noh\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(bitpos_wrongtype, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .err()

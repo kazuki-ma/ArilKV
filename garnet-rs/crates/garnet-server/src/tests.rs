@@ -532,8 +532,8 @@ async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
 
     let master_port = master_addr.port().to_string();
-    let replicaof = encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]);
-    send_and_expect(&mut replica_client, &replicaof, b"+OK\r\n").await;
+    let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
 
     let mut replicated = false;
     for attempt in 0..50 {

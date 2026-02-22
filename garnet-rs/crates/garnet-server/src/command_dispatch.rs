@@ -111,6 +111,7 @@ mod tests {
         assert_eq!(dispatch_command_name(b"setbit"), CommandId::Setbit);
         assert_eq!(dispatch_command_name(b"SETRANGE"), CommandId::Setrange);
         assert_eq!(dispatch_command_name(b"bitcount"), CommandId::Bitcount);
+        assert_eq!(dispatch_command_name(b"bitpos"), CommandId::Bitpos);
         assert_eq!(dispatch_command_name(b"BITOP"), CommandId::Bitop);
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);

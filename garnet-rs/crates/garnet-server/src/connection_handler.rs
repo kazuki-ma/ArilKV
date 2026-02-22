@@ -133,11 +133,17 @@ pub(crate) async fn handle_connection(
             // SAFETY: `args` points to the current frame bytes.
             let command_name = unsafe { args[0].as_slice() };
 
-            if ascii_eq_ignore_case(command_name, b"REPLICAOF") {
+            if ascii_eq_ignore_case(command_name, b"REPLICAOF")
+                || ascii_eq_ignore_case(command_name, b"SLAVEOF")
+            {
                 if argument_count != 3 {
-                    responses.extend_from_slice(
-                        b"-ERR wrong number of arguments for 'REPLICAOF' command\r\n",
-                    );
+                    responses.extend_from_slice(b"-ERR wrong number of arguments for '");
+                    if ascii_eq_ignore_case(command_name, b"SLAVEOF") {
+                        responses.extend_from_slice(b"SLAVEOF");
+                    } else {
+                        responses.extend_from_slice(b"REPLICAOF");
+                    }
+                    responses.extend_from_slice(b"' command\r\n");
                 } else {
                     // SAFETY: `args` points to the current request frame.
                     let arg1 = unsafe { args[1].as_slice() };
