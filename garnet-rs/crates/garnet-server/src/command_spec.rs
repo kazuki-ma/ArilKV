@@ -43,6 +43,7 @@ pub enum CommandId {
     GeoradiusRo,
     Georadiusbymember,
     GeoradiusbymemberRo,
+    Migrate,
     Del,
     Rename,
     Renamenx,
@@ -669,6 +670,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Migrate,
+        name_upper: b"MIGRATE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(6)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2933,6 +2944,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::GeoradiusbymemberRo, 5));
         assert!(command_has_valid_arity(CommandId::GeoradiusbymemberRo, 9));
         assert!(!command_has_valid_arity(CommandId::GeoradiusbymemberRo, 4));
+        assert!(command_has_valid_arity(CommandId::Migrate, 6));
+        assert!(command_has_valid_arity(CommandId::Migrate, 12));
+        assert!(!command_has_valid_arity(CommandId::Migrate, 5));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3349,6 +3363,7 @@ mod tests {
             command_name_upper(CommandId::GeoradiusbymemberRo),
             b"GEORADIUSBYMEMBER_RO"
         );
+        assert_eq!(command_name_upper(CommandId::Migrate), b"MIGRATE");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

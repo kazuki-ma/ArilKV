@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 209
+> **Current Iteration**: 213
 
 ---
 
@@ -279,7 +279,7 @@
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
-Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=1` as of iteration 212).
+Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=0` as of iteration 213).
 
 | Backlog ID | Command | Risk | Status | Notes |
 |---|---|---|---|---|
@@ -296,7 +296,7 @@ Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=1` as of
 | C-011 | `GEOSEARCH` | HIGH | DONE | Implemented in `11.97` with `FROM*`/`BY*` parsing, sort/count options, and response-shape options (`WITHDIST|WITHHASH|WITHCOORD`). |
 | C-012 | `GEOSEARCHSTORE` | HIGH | DONE | Implemented in `11.97` with `STOREDIST`, deterministic filtering/sorting reuse, and destination overwrite/cleanup semantics. |
 | C-013 | `LCS` | MEDIUM | DONE | Implemented in `11.90` with sequence/len/idx modes and option validation coverage. |
-| C-014 | `MIGRATE` | HIGH | TODO | Cross-instance data transfer protocol and timeout/copy/replace semantics. |
+| C-014 | `MIGRATE` | HIGH | DONE | Implemented in `11.99` as a strict validation + disabled-surface compatibility command (`ERR MIGRATE is disabled in this server`) with argument/option parity checks for `COPY`/`REPLACE`/`AUTH`/`AUTH2`/`KEYS`. |
 | C-015 | `PSUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal subscription ACK compatibility response shape. |
 | C-016 | `PUBLISH` | HIGH | DONE | Implemented in `11.92` with deterministic integer receiver-count response (`:0`). |
 | C-017 | `PUBSUB` | HIGH | DONE | Implemented in `11.92` for `CHANNELS`/`SHARDCHANNELS`/`NUMSUB`/`SHARDNUMSUB`/`NUMPAT` introspection response shapes. |
@@ -311,11 +311,7 @@ Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=1` as of
 
 ### Active Command TODO Queue (Execute One-by-One)
 
-`NOT_IMPLEMENTED=1` commands from latest matrix. Execute in order and keep only one `IN_PROGRESS` item at a time.
-
-| Priority | Backlog ID | Command | Risk | Status |
-|---|---|---|---|---|
-| 1 | C-014 | `MIGRATE` | HIGH | TODO |
+`NOT_IMPLEMENTED=0` in latest matrix (`241/241`). Queue is empty.
 
 ---
 
@@ -720,3 +716,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 210 | 2026-02-22 | 11.96 / C-005 | DONE | Implemented `GEOHASH` command coverage (catalog + dispatch + lifecycle) with Redis/Valkey-compatible geohash formatting (52-bit step=26 encode + compatibility tail char) and null behavior for missing keys/members. Revalidated command-edit gates (`cargo test -p garnet-server`: `196 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-145817` with tests `6/4/2`; command matrix refreshed to `97.10%` coverage, `NOT_IMPLEMENTED=7`). |
 | 211 | 2026-02-22 | 11.97 / C-011 / C-012 | DONE | Implemented `GEOSEARCH`/`GEOSEARCHSTORE` command coverage (catalog + dispatch + lifecycle) with `FROM*` and `BY*` parsing, sort/count options, reply options (`WITHDIST|WITHHASH|WITHCOORD`), and store-path `STOREDIST` + overwrite semantics. Revalidated command-edit gates (`cargo test -p garnet-server`: `198 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-174405` with tests `6/4/2`; command matrix refreshed to `97.93%` coverage, `NOT_IMPLEMENTED=5`). |
 | 212 | 2026-02-22 | 11.98 / C-007 / C-008 / C-009 / C-010 | DONE | Implemented `GEORADIUS` command family coverage (catalog + dispatch + lifecycle) with shared radius-query execution, response options, and legacy store semantics (`STORE|STOREDIST`) while enforcing read-only behavior for `_RO` variants. Revalidated command-edit gates (`cargo test -p garnet-server`: `199 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-174915` with tests `6/4/2`; command matrix refreshed to `99.59%` coverage, `NOT_IMPLEMENTED=1`). |
+| 213 | 2026-02-22 | 11.99 / C-014 | DONE | Implemented `MIGRATE` compatibility surface (catalog + dispatch + lifecycle) with strict argument/option validation (`COPY`/`REPLACE`/`AUTH`/`AUTH2`/`KEYS`, db/timeout integer-range checks, key-argument semantics) and deterministic disabled response (`ERR MIGRATE is disabled in this server`). Revalidated command-edit gates (`cargo test -p garnet-server`: `200 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-175635` with tests `6/4/2`; command matrix refreshed to `100.00%` coverage, `NOT_IMPLEMENTED=0`). |

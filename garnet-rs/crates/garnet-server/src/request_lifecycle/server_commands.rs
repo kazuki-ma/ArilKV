@@ -74,6 +74,8 @@ const ACL_CATEGORIES: [&[u8]; 8] = [
     b"stream",
 ];
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
+const MIGRATE_USAGE: &str =
+    "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
 
 impl RequestProcessor {
     pub(super) fn handle_quit(
@@ -268,6 +270,91 @@ impl RequestProcessor {
         }
         append_simple_string(response_out, b"OK");
         Ok(())
+    }
+
+    pub(super) fn handle_migrate(
+        &self,
+        args: &[ArgSlice],
+        _response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 6, "MIGRATE", MIGRATE_USAGE)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let host = unsafe { args[1].as_slice() };
+        if host.is_empty() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let port = parse_u64_ascii(unsafe { args[2].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if port > u16::MAX as u64 {
+            return Err(RequestExecutionError::ValueNotInteger);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key_arg = unsafe { args[3].as_slice() };
+        // SAFETY: caller guarantees argument backing memory validity.
+        let destination_db = parse_i64_ascii(unsafe { args[4].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if destination_db != 0 {
+            return Err(RequestExecutionError::DbIndexOutOfRange);
+        }
+        // SAFETY: caller guarantees argument backing memory validity.
+        let timeout_millis = parse_i64_ascii(unsafe { args[5].as_slice() })
+            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        if timeout_millis <= 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+
+        let mut parsed_keys: Vec<Vec<u8>> = Vec::new();
+        if !key_arg.is_empty() {
+            parsed_keys.push(key_arg.to_vec());
+        }
+
+        let mut index = 6usize;
+        while index < args.len() {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let token = unsafe { args[index].as_slice() };
+            if ascii_eq_ignore_case(token, b"COPY") || ascii_eq_ignore_case(token, b"REPLACE") {
+                index += 1;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"AUTH") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"AUTH2") {
+                if index + 2 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                index += 3;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"KEYS") {
+                if !key_arg.is_empty() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                for key in &args[index + 1..] {
+                    // SAFETY: caller guarantees argument backing memory validity.
+                    let key = unsafe { key.as_slice() };
+                    if key.is_empty() {
+                        return Err(RequestExecutionError::SyntaxError);
+                    }
+                    parsed_keys.push(key.to_vec());
+                }
+                break;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        if parsed_keys.is_empty() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        Err(RequestExecutionError::CommandDisabled { command: "MIGRATE" })
     }
 
     pub(super) fn handle_client(

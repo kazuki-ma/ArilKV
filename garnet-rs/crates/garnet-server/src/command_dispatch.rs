@@ -170,6 +170,7 @@ mod tests {
             dispatch_command_name(b"georadiusbymember_ro"),
             CommandId::GeoradiusbymemberRo
         );
+        assert_eq!(dispatch_command_name(b"MIGRATE"), CommandId::Migrate);
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);
         assert_eq!(

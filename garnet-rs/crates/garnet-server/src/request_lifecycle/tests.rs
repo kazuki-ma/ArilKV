@@ -6149,6 +6149,72 @@ fn georadius_family_supports_query_and_store_paths() {
 }
 
 #[test]
+fn migrate_command_validates_arguments_before_disabled_response() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "MIGRATE 127.0.0.1 6379 key 0 1000",
+        b"-ERR MIGRATE is disabled in this server\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MIGRATE 127.0.0.1 notaport key 0 1000",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MIGRATE 127.0.0.1 6379 key 1 1000",
+        b"-ERR DB index is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MIGRATE 127.0.0.1 6379 key 0 -1",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MIGRATE 127.0.0.1 6379 key 0 1000 KEYS other",
+        b"-ERR syntax error\r\n",
+    );
+
+    let mut args = [ArgSlice::EMPTY; 16];
+    let empty_key_with_keys = encode_resp(&[
+        b"MIGRATE",
+        b"127.0.0.1",
+        b"6379",
+        b"",
+        b"0",
+        b"1000",
+        b"KEYS",
+        b"one",
+        b"two",
+    ]);
+    let meta = parse_resp_command_arg_slices(&empty_key_with_keys, &mut args).unwrap();
+    let mut response = Vec::new();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR MIGRATE is disabled in this server\r\n");
+
+    response.clear();
+    let empty_key_without_keys = encode_resp(&[b"MIGRATE", b"127.0.0.1", b"6379", b"", b"0", b"1000"]);
+    let meta = parse_resp_command_arg_slices(&empty_key_without_keys, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR syntax error\r\n");
+
+    assert_command_error(
+        &processor,
+        "MIGRATE 127.0.0.1 6379 key 0",
+        b"-ERR wrong number of arguments for 'MIGRATE' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

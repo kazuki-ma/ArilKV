@@ -496,6 +496,7 @@ impl RequestProcessor {
             CommandId::GeoradiusRo => self.handle_georadius_ro(args, response_out),
             CommandId::Georadiusbymember => self.handle_georadiusbymember(args, response_out),
             CommandId::GeoradiusbymemberRo => self.handle_georadiusbymember_ro(args, response_out),
+            CommandId::Migrate => self.handle_migrate(args, response_out),
             CommandId::Monitor => self.handle_monitor(args, response_out),
             CommandId::Shutdown => self.handle_shutdown(args, response_out),
             CommandId::Hello => self.handle_hello(args, response_out),
