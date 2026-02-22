@@ -4726,6 +4726,81 @@ fn lcs_supports_sequence_len_idx_and_validation_paths() {
 }
 
 #[test]
+fn sort_and_sort_ro_support_options_store_and_validation_paths() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "RPUSH sortnum 3 1 2", 3);
+    assert_command_response(
+        &processor,
+        "SORT sortnum",
+        b"*3\r\n$1\r\n1\r\n$1\r\n2\r\n$1\r\n3\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SORT sortnum DESC",
+        b"*3\r\n$1\r\n3\r\n$1\r\n2\r\n$1\r\n1\r\n",
+    );
+    assert_command_response(&processor, "SORT sortnum LIMIT 1 1", b"*1\r\n$1\r\n2\r\n");
+
+    assert_command_integer(&processor, "RPUSH sortalpha b a c", 3);
+    assert_command_response(
+        &processor,
+        "SORT sortalpha ALPHA",
+        b"*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SORT_RO sortalpha ALPHA DESC",
+        b"*3\r\n$1\r\nc\r\n$1\r\nb\r\n$1\r\na\r\n",
+    );
+
+    assert_command_integer(&processor, "RPUSH sortby one two three", 3);
+    assert_command_response(&processor, "SET weight:one 5", b"+OK\r\n");
+    assert_command_response(&processor, "SET weight:two 1", b"+OK\r\n");
+    assert_command_response(&processor, "SET weight:three 3", b"+OK\r\n");
+    assert_command_response(&processor, "SET data:one O", b"+OK\r\n");
+    assert_command_response(&processor, "SET data:two T", b"+OK\r\n");
+    assert_command_response(&processor, "SET data:three H", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "SORT sortby BY weight:*",
+        b"*3\r\n$3\r\ntwo\r\n$5\r\nthree\r\n$3\r\none\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SORT sortby BY weight:* GET data:* GET #",
+        b"*6\r\n$1\r\nT\r\n$3\r\ntwo\r\n$1\r\nH\r\n$5\r\nthree\r\n$1\r\nO\r\n$3\r\none\r\n",
+    );
+
+    assert_command_integer(&processor, "SORT sortby BY weight:* STORE sortdest", 3);
+    assert_command_response(
+        &processor,
+        "LRANGE sortdest 0 -1",
+        b"*3\r\n$3\r\ntwo\r\n$5\r\nthree\r\n$3\r\none\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SORT_RO sortby STORE no",
+        b"-ERR syntax error\r\n",
+    );
+
+    assert_command_response(&processor, "SET sortstr hello", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "SORT sortstr",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+
+    assert_command_integer(&processor, "RPUSH sortbad bad", 1);
+    assert_command_response(&processor, "SET weight:bad notfloat", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "SORT sortbad BY weight:*",
+        b"-ERR value is not a valid float\r\n",
+    );
+}
+
+#[test]
 fn psetex_sets_value_with_millisecond_expiration() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

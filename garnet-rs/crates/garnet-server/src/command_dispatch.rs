@@ -128,6 +128,8 @@ mod tests {
         assert_eq!(dispatch_command_name(b"bitfield"), CommandId::Bitfield);
         assert_eq!(dispatch_command_name(b"BITFIELD_RO"), CommandId::BitfieldRo);
         assert_eq!(dispatch_command_name(b"lcs"), CommandId::Lcs);
+        assert_eq!(dispatch_command_name(b"SORT"), CommandId::Sort);
+        assert_eq!(dispatch_command_name(b"sort_ro"), CommandId::SortRo);
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);
         assert_eq!(

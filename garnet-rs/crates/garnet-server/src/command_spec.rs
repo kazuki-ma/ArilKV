@@ -22,6 +22,8 @@ pub enum CommandId {
     Bitfield,
     BitfieldRo,
     Lcs,
+    Sort,
+    SortRo,
     Del,
     Rename,
     Renamenx,
@@ -438,6 +440,26 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sort,
+        name_upper: b"SORT",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::SortRo,
+        name_upper: b"SORT_RO",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2646,6 +2668,12 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Lcs, 3));
         assert!(command_has_valid_arity(CommandId::Lcs, 7));
         assert!(!command_has_valid_arity(CommandId::Lcs, 2));
+        assert!(command_has_valid_arity(CommandId::Sort, 2));
+        assert!(command_has_valid_arity(CommandId::Sort, 9));
+        assert!(!command_has_valid_arity(CommandId::Sort, 1));
+        assert!(command_has_valid_arity(CommandId::SortRo, 2));
+        assert!(command_has_valid_arity(CommandId::SortRo, 9));
+        assert!(!command_has_valid_arity(CommandId::SortRo, 1));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3032,6 +3060,8 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Bitfield), b"BITFIELD");
         assert_eq!(command_name_upper(CommandId::BitfieldRo), b"BITFIELD_RO");
         assert_eq!(command_name_upper(CommandId::Lcs), b"LCS");
+        assert_eq!(command_name_upper(CommandId::Sort), b"SORT");
+        assert_eq!(command_name_upper(CommandId::SortRo), b"SORT_RO");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

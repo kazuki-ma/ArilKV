@@ -57,6 +57,23 @@ struct LcsMatchSegment {
     length: usize,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SortOptions {
+    by_pattern: Option<Vec<u8>>,
+    limit_offset: usize,
+    limit_count: Option<usize>,
+    get_patterns: Vec<Vec<u8>>,
+    desc: bool,
+    alpha: bool,
+    store_key: Option<Vec<u8>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct SortElement {
+    value: Vec<u8>,
+    rank: usize,
+}
+
 const PF_STRING_PREFIX: &[u8] = b"\x00garnet-pf-v1\x00";
 const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
     b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -907,6 +924,169 @@ impl RequestProcessor {
             matches.retain(|entry| entry.length >= options.min_match_len);
         }
         append_lcs_idx_response(response_out, &matches, lcs_len, options.with_match_len);
+        Ok(())
+    }
+
+    pub(super) fn handle_sort(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_sort_impl(args, response_out, false)
+    }
+
+    pub(super) fn handle_sort_ro(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        self.handle_sort_impl(args, response_out, true)
+    }
+
+    fn handle_sort_impl(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        read_only: bool,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() < 2 {
+            return Err(RequestExecutionError::WrongArity {
+                command: if read_only { "SORT_RO" } else { "SORT" },
+                expected:
+                    "SORT key [BY pattern] [LIMIT offset count] [GET pattern [GET pattern ...]] [ASC|DESC] [ALPHA] [STORE destination]",
+            });
+        }
+
+        let options = parse_sort_options(args, read_only)?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let source_key = unsafe { args[1].as_slice() }.to_vec();
+        let mut elements = load_sort_elements(self, &source_key)?;
+
+        let by_pattern = options.by_pattern.as_deref();
+        let should_sort = match by_pattern {
+            Some(pattern) => pattern.contains(&b'*'),
+            None => true,
+        };
+        if should_sort {
+            let mut sortable: Vec<(SortElement, Vec<u8>)> = Vec::with_capacity(elements.len());
+            for (rank, element) in elements.into_iter().enumerate() {
+                let weight = if let Some(pattern) = by_pattern {
+                    resolve_sort_lookup_value(self, pattern, &element)?.unwrap_or_default()
+                } else {
+                    element.clone()
+                };
+                sortable.push((
+                    SortElement {
+                        value: element,
+                        rank,
+                    },
+                    weight,
+                ));
+            }
+
+            if options.alpha {
+                sortable.sort_by(
+                    |(left_element, left_weight), (right_element, right_weight)| {
+                        let mut order = left_weight.cmp(right_weight);
+                        if options.desc {
+                            order = order.reverse();
+                        }
+                        if order == core::cmp::Ordering::Equal {
+                            return left_element.rank.cmp(&right_element.rank);
+                        }
+                        order
+                    },
+                );
+            } else {
+                sortable.sort_by(
+                    |(left_element, left_weight), (right_element, right_weight)| {
+                        let left_score = if left_weight.is_empty() {
+                            Ok(0.0)
+                        } else {
+                            parse_f64_ascii(left_weight).ok_or(RequestExecutionError::ValueNotFloat)
+                        };
+                        let right_score = if right_weight.is_empty() {
+                            Ok(0.0)
+                        } else {
+                            parse_f64_ascii(right_weight)
+                                .ok_or(RequestExecutionError::ValueNotFloat)
+                        };
+                        let mut order = match (left_score, right_score) {
+                            (Ok(left), Ok(right)) => left
+                                .partial_cmp(&right)
+                                .unwrap_or(core::cmp::Ordering::Equal),
+                            (Err(_), _) => core::cmp::Ordering::Less,
+                            (_, Err(_)) => core::cmp::Ordering::Greater,
+                        };
+                        if options.desc {
+                            order = order.reverse();
+                        }
+                        if order == core::cmp::Ordering::Equal {
+                            return left_element.rank.cmp(&right_element.rank);
+                        }
+                        order
+                    },
+                );
+                if sortable.iter().any(|(_, weight)| {
+                    !weight.is_empty() && parse_f64_ascii(weight.as_slice()).is_none()
+                }) {
+                    return Err(RequestExecutionError::ValueNotFloat);
+                }
+            }
+
+            elements = sortable
+                .into_iter()
+                .map(|(element, _)| element.value)
+                .collect();
+        }
+
+        let selected = apply_sort_limit(&elements, options.limit_offset, options.limit_count);
+
+        if let Some(store_key) = options.store_key.as_deref() {
+            let mut stored = Vec::new();
+            if options.get_patterns.is_empty() {
+                stored.extend(selected.iter().cloned());
+            } else {
+                for element in selected {
+                    for pattern in &options.get_patterns {
+                        let resolved = resolve_sort_get_value(self, pattern, element)?;
+                        stored.push(resolved.unwrap_or_default());
+                    }
+                }
+            }
+
+            self.delete_string_key_for_migration(store_key)?;
+            let _ = self.object_delete(store_key)?;
+            if !stored.is_empty() {
+                self.save_list_object(store_key, &stored)?;
+            }
+            append_integer(response_out, stored.len() as i64);
+            return Ok(());
+        }
+
+        let response_count = if options.get_patterns.is_empty() {
+            selected.len()
+        } else {
+            selected
+                .len()
+                .checked_mul(options.get_patterns.len())
+                .ok_or(RequestExecutionError::ValueOutOfRange)?
+        };
+        append_resp_array_len(response_out, response_count);
+        if options.get_patterns.is_empty() {
+            for element in selected {
+                append_bulk_string(response_out, element);
+            }
+        } else {
+            for element in selected {
+                for pattern in &options.get_patterns {
+                    match resolve_sort_get_value(self, pattern, element)? {
+                        Some(value) => append_bulk_string(response_out, &value),
+                        None => append_null_bulk_string(response_out),
+                    }
+                }
+            }
+        }
         Ok(())
     }
 
@@ -2868,6 +3048,230 @@ fn append_lcs_idx_response(
     }
     append_bulk_string(response_out, b"len");
     append_integer(response_out, lcs_len as i64);
+}
+
+fn parse_sort_options(
+    args: &[ArgSlice],
+    read_only: bool,
+) -> Result<SortOptions, RequestExecutionError> {
+    let mut by_pattern = None;
+    let mut limit_offset = 0usize;
+    let mut limit_count = None;
+    let mut get_patterns = Vec::new();
+    let mut desc = false;
+    let mut alpha = false;
+    let mut store_key = None;
+    let mut index = 2usize;
+
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+        if ascii_eq_ignore_case(token, b"BY") {
+            let value_index = index
+                .checked_add(1)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            if value_index >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            by_pattern = Some(unsafe { args[value_index].as_slice() }.to_vec());
+            index = value_index + 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"LIMIT") {
+            let offset_index = index
+                .checked_add(1)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            let count_index = index
+                .checked_add(2)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            if count_index >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            let offset_token = unsafe { args[offset_index].as_slice() };
+            // SAFETY: caller guarantees argument backing memory validity.
+            let count_token = unsafe { args[count_index].as_slice() };
+            let offset =
+                parse_i64_ascii(offset_token).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let count =
+                parse_i64_ascii(count_token).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if offset < 0 {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            limit_offset =
+                usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+            if count < 0 {
+                limit_count = None;
+            } else {
+                limit_count = Some(
+                    usize::try_from(count).map_err(|_| RequestExecutionError::ValueOutOfRange)?,
+                );
+            }
+            index = count_index + 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"GET") {
+            let pattern_index = index
+                .checked_add(1)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            if pattern_index >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            get_patterns.push(unsafe { args[pattern_index].as_slice() }.to_vec());
+            index = pattern_index + 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ASC") {
+            desc = false;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"DESC") {
+            desc = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ALPHA") {
+            alpha = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"STORE") {
+            if read_only {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            let destination_index = index
+                .checked_add(1)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            if destination_index >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            store_key = Some(unsafe { args[destination_index].as_slice() }.to_vec());
+            index = destination_index + 1;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+
+    Ok(SortOptions {
+        by_pattern,
+        limit_offset,
+        limit_count,
+        get_patterns,
+        desc,
+        alpha,
+        store_key,
+    })
+}
+
+fn apply_sort_limit<'a>(
+    values: &'a [Vec<u8>],
+    offset: usize,
+    count: Option<usize>,
+) -> &'a [Vec<u8>] {
+    if offset >= values.len() {
+        return &values[values.len()..values.len()];
+    }
+    let end = match count {
+        Some(count) => offset.saturating_add(count).min(values.len()),
+        None => values.len(),
+    };
+    &values[offset..end]
+}
+
+fn load_sort_elements(
+    processor: &RequestProcessor,
+    key: &[u8],
+) -> Result<Vec<Vec<u8>>, RequestExecutionError> {
+    processor.expire_key_if_needed(key)?;
+    if processor.read_string_value(key)?.is_some() {
+        return Err(RequestExecutionError::WrongType);
+    }
+    let Some((object_type, payload)) = processor.object_read(key)? else {
+        return Ok(Vec::new());
+    };
+    match object_type {
+        LIST_OBJECT_TYPE_TAG => deserialize_list_object_payload(&payload)
+            .ok_or_else(|| storage_failure("sort", "failed to deserialize source list payload")),
+        SET_OBJECT_TYPE_TAG => {
+            let set = deserialize_set_object_payload(&payload).ok_or_else(|| {
+                storage_failure("sort", "failed to deserialize source set payload")
+            })?;
+            Ok(set.into_iter().collect())
+        }
+        ZSET_OBJECT_TYPE_TAG => {
+            let zset = deserialize_zset_object_payload(&payload).ok_or_else(|| {
+                storage_failure("sort", "failed to deserialize source zset payload")
+            })?;
+            Ok(zset.into_keys().collect())
+        }
+        _ => Err(RequestExecutionError::WrongType),
+    }
+}
+
+fn resolve_sort_get_value(
+    processor: &RequestProcessor,
+    pattern: &[u8],
+    element: &[u8],
+) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+    if pattern == b"#" {
+        return Ok(Some(element.to_vec()));
+    }
+    resolve_sort_lookup_value(processor, pattern, element)
+}
+
+fn resolve_sort_lookup_value(
+    processor: &RequestProcessor,
+    pattern: &[u8],
+    element: &[u8],
+) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+    let (key_pattern, hash_field_pattern) = split_sort_pattern(pattern);
+    let key = substitute_sort_wildcard(key_pattern, element);
+    processor.expire_key_if_needed(&key)?;
+
+    if let Some(field_pattern) = hash_field_pattern {
+        let field = substitute_sort_wildcard(field_pattern, element);
+        let Some((object_type, payload)) = processor.object_read(&key)? else {
+            return Ok(None);
+        };
+        if object_type != HASH_OBJECT_TYPE_TAG {
+            return Ok(None);
+        }
+        let hash = deserialize_hash_object_payload(&payload)
+            .ok_or_else(|| storage_failure("sort", "failed to deserialize hash payload"))?;
+        return Ok(hash.get(&field).cloned());
+    }
+
+    Ok(processor.read_string_value(&key)?)
+}
+
+fn split_sort_pattern(pattern: &[u8]) -> (&[u8], Option<&[u8]>) {
+    let mut index = 0usize;
+    while index + 1 < pattern.len() {
+        if pattern[index] == b'-' && pattern[index + 1] == b'>' {
+            return (&pattern[..index], Some(&pattern[index + 2..]));
+        }
+        index += 1;
+    }
+    (pattern, None)
+}
+
+fn substitute_sort_wildcard(pattern: &[u8], element: &[u8]) -> Vec<u8> {
+    if !pattern.contains(&b'*') {
+        return pattern.to_vec();
+    }
+    let mut out = Vec::with_capacity(pattern.len().saturating_add(element.len()));
+    for byte in pattern {
+        if *byte == b'*' {
+            out.extend_from_slice(element);
+        } else {
+            out.push(*byte);
+        }
+    }
+    out
 }
 
 fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> {
