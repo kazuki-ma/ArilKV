@@ -82,11 +82,14 @@ impl RequestProcessor {
         } else {
             None
         };
+        let resp3 = self.resp_protocol_version() == 3;
 
         let mut list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
-                if count.is_some() {
+                if resp3 {
+                    append_null(response_out);
+                } else if count.is_some() {
                     append_null_array(response_out);
                 } else {
                     append_null_bulk_string(response_out);
@@ -96,7 +99,9 @@ impl RequestProcessor {
         };
         if list.is_empty() {
             let _ = self.object_delete(&key)?;
-            if count.is_some() {
+            if resp3 {
+                append_null(response_out);
+            } else if count.is_some() {
                 append_null_array(response_out);
             } else {
                 append_null_bulk_string(response_out);
@@ -128,7 +133,11 @@ impl RequestProcessor {
 
         let Some(value) = pop_list_side(&mut list, side) else {
             let _ = self.object_delete(&key)?;
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         if list.is_empty() {

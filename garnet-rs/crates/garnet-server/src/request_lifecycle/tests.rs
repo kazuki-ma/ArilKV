@@ -1053,6 +1053,12 @@ fn list_pop_commands_support_optional_count() {
         "LPOP key -1",
         b"-ERR value is out of range, must be positive\r\n",
     );
+
+    processor.set_resp_protocol_version(3);
+    assert_command_response(&processor, "LPOP missing", b"_\r\n");
+    assert_command_response(&processor, "LPOP missing 2", b"_\r\n");
+    assert_command_response(&processor, "RPOP missing 2", b"_\r\n");
+    processor.set_resp_protocol_version(2);
 }
 
 #[test]
