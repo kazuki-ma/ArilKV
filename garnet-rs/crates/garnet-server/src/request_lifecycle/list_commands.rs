@@ -1010,8 +1010,11 @@ fn parse_blocking_timeout_seconds(
     // SAFETY: caller guarantees argument backing memory validity.
     let timeout = parse_f64_ascii(unsafe { args[index].as_slice() })
         .ok_or(RequestExecutionError::ValueNotFloat)?;
-    if !timeout.is_finite() || timeout < 0.0 {
+    if !timeout.is_finite() {
         return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    if timeout < 0.0 {
+        return Err(RequestExecutionError::TimeoutIsNegative);
     }
     Ok(timeout)
 }

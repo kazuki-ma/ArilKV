@@ -1533,6 +1533,16 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .unwrap();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR value is not a valid float\r\n");
+
+    response.clear();
+    let blpop_negative_timeout = encode_resp(&[b"BLPOP", b"k1", b"-1"]);
+    let meta = parse_resp_command_arg_slices(&blpop_negative_timeout, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-ERR timeout is negative\r\n");
 }
 
 #[test]

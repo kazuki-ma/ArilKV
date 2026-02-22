@@ -38,6 +38,7 @@ pub enum RequestExecutionError {
     ValueOutOfRange,
     ValueOutOfRangePositive,
     LposRankZero,
+    TimeoutIsNegative,
     IndexOutOfRange,
     IncrementOverflow,
     AuthNotEnabled,
@@ -103,6 +104,7 @@ impl RequestExecutionError {
                 response_out,
                 "ERR RANK can't be zero: use 1 to start from the first match, 2 from the second ... or use negative to start from the end of the list",
             ),
+            Self::TimeoutIsNegative => append_error(response_out, "ERR timeout is negative"),
             Self::IndexOutOfRange => append_error(response_out, "ERR index out of range"),
             Self::IncrementOverflow => {
                 append_error(response_out, "ERR increment or decrement would overflow")
