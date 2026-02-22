@@ -1142,6 +1142,143 @@ impl RequestProcessor {
         Err(RequestExecutionError::ClusterSupportDisabled)
     }
 
+    pub(super) fn handle_subscribe(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "SUBSCRIBE", "SUBSCRIBE channel [channel ...]")?;
+        append_subscription_acks(response_out, &args[1..], b"subscribe");
+        Ok(())
+    }
+
+    pub(super) fn handle_psubscribe(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "PSUBSCRIBE", "PSUBSCRIBE pattern [pattern ...]")?;
+        append_subscription_acks(response_out, &args[1..], b"psubscribe");
+        Ok(())
+    }
+
+    pub(super) fn handle_ssubscribe(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            2,
+            "SSUBSCRIBE",
+            "SSUBSCRIBE shardchannel [shardchannel ...]",
+        )?;
+        append_subscription_acks(response_out, &args[1..], b"ssubscribe");
+        Ok(())
+    }
+
+    pub(super) fn handle_unsubscribe(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            1,
+            "UNSUBSCRIBE",
+            "UNSUBSCRIBE [channel [channel ...]]",
+        )?;
+        append_unsubscribe_acks(response_out, &args[1..], b"unsubscribe");
+        Ok(())
+    }
+
+    pub(super) fn handle_punsubscribe(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            1,
+            "PUNSUBSCRIBE",
+            "PUNSUBSCRIBE [pattern [pattern ...]]",
+        )?;
+        append_unsubscribe_acks(response_out, &args[1..], b"punsubscribe");
+        Ok(())
+    }
+
+    pub(super) fn handle_sunsubscribe(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            1,
+            "SUNSUBSCRIBE",
+            "SUNSUBSCRIBE [shardchannel [shardchannel ...]]",
+        )?;
+        append_unsubscribe_acks(response_out, &args[1..], b"sunsubscribe");
+        Ok(())
+    }
+
+    pub(super) fn handle_publish(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 3, "PUBLISH", "PUBLISH channel message")?;
+        append_integer(response_out, 0);
+        Ok(())
+    }
+
+    pub(super) fn handle_spublish(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 3, "SPUBLISH", "SPUBLISH shardchannel message")?;
+        append_integer(response_out, 0);
+        Ok(())
+    }
+
+    pub(super) fn handle_pubsub(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "PUBSUB", "PUBSUB <subcommand> [arguments ...]")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let subcommand = unsafe { args[1].as_slice() };
+        if ascii_eq_ignore_case(subcommand, b"CHANNELS")
+            || ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS")
+        {
+            ensure_ranged_arity(args, 2, 3, "PUBSUB", "PUBSUB CHANNELS [pattern]")?;
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"NUMPAT") {
+            require_exact_arity(args, 2, "PUBSUB", "PUBSUB NUMPAT")?;
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"NUMSUB")
+            || ascii_eq_ignore_case(subcommand, b"SHARDNUMSUB")
+        {
+            ensure_min_arity(args, 2, "PUBSUB", "PUBSUB NUMSUB [channel [channel ...]]")?;
+            let pair_count = args.len().saturating_sub(2);
+            response_out.extend_from_slice(format!("*{}\r\n", pair_count * 2).as_bytes());
+            for channel in &args[2..] {
+                // SAFETY: caller guarantees argument backing memory validity.
+                let channel = unsafe { channel.as_slice() };
+                append_bulk_string(response_out, channel);
+                append_integer(response_out, 0);
+            }
+            return Ok(());
+        }
+        Err(RequestExecutionError::UnknownCommand)
+    }
+
     pub(super) fn handle_monitor(
         &self,
         args: &[ArgSlice],
@@ -1697,6 +1834,42 @@ fn validate_scripting_numkeys(
         return Err(RequestExecutionError::SyntaxError);
     }
     Ok(())
+}
+
+fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[ArgSlice], kind: &[u8]) {
+    for (index, target) in targets.iter().enumerate() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let channel = unsafe { target.as_slice() };
+        append_pubsub_ack(response_out, kind, Some(channel), index + 1);
+    }
+}
+
+fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[ArgSlice], kind: &[u8]) {
+    if targets.is_empty() {
+        append_pubsub_ack(response_out, kind, None, 0);
+        return;
+    }
+    for (index, target) in targets.iter().enumerate() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let channel = unsafe { target.as_slice() };
+        let remaining = targets.len().saturating_sub(index + 1);
+        append_pubsub_ack(response_out, kind, Some(channel), remaining);
+    }
+}
+
+fn append_pubsub_ack(
+    response_out: &mut Vec<u8>,
+    kind: &[u8],
+    channel: Option<&[u8]>,
+    count: usize,
+) {
+    response_out.extend_from_slice(b"*3\r\n");
+    append_bulk_string(response_out, kind);
+    match channel {
+        Some(channel) => append_bulk_string(response_out, channel),
+        None => append_null_bulk_string(response_out),
+    }
+    append_integer(response_out, count as i64);
 }
 
 fn object_encoding_name(

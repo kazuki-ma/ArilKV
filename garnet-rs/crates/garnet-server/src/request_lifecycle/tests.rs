@@ -5673,6 +5673,65 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
 }
 
 #[test]
+fn pubsub_commands_cover_minimal_ack_and_introspection_shapes() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "SUBSCRIBE chan1 chan2",
+        b"*3\r\n$9\r\nsubscribe\r\n$5\r\nchan1\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$5\r\nchan2\r\n:2\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "PSUBSCRIBE p1",
+        b"*3\r\n$10\r\npsubscribe\r\n$2\r\np1\r\n:1\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SSUBSCRIBE s1",
+        b"*3\r\n$10\r\nssubscribe\r\n$2\r\ns1\r\n:1\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "UNSUBSCRIBE chan1 chan2",
+        b"*3\r\n$11\r\nunsubscribe\r\n$5\r\nchan1\r\n:1\r\n*3\r\n$11\r\nunsubscribe\r\n$5\r\nchan2\r\n:0\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "PUNSUBSCRIBE",
+        b"*3\r\n$12\r\npunsubscribe\r\n$-1\r\n:0\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SUNSUBSCRIBE",
+        b"*3\r\n$12\r\nsunsubscribe\r\n$-1\r\n:0\r\n",
+    );
+    assert_command_response(&processor, "PUBLISH c msg", b":0\r\n");
+    assert_command_response(&processor, "SPUBLISH sc msg", b":0\r\n");
+
+    assert_command_response(&processor, "PUBSUB CHANNELS", b"*0\r\n");
+    assert_command_response(&processor, "PUBSUB SHARDCHANNELS", b"*0\r\n");
+    assert_command_response(
+        &processor,
+        "PUBSUB NUMSUB chan1 chan2",
+        b"*4\r\n$5\r\nchan1\r\n:0\r\n$5\r\nchan2\r\n:0\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "PUBSUB SHARDNUMSUB s1",
+        b"*2\r\n$2\r\ns1\r\n:0\r\n",
+    );
+    assert_command_response(&processor, "PUBSUB NUMPAT", b":0\r\n");
+
+    assert_command_error(
+        &processor,
+        "SUBSCRIBE",
+        b"-ERR wrong number of arguments for 'SUBSCRIBE' command\r\n",
+    );
+    assert_command_error(&processor, "PUBSUB NOPE", b"-ERR unknown command\r\n");
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

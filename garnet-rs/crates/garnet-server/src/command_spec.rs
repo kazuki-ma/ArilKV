@@ -24,6 +24,15 @@ pub enum CommandId {
     Lcs,
     Sort,
     SortRo,
+    Subscribe,
+    Psubscribe,
+    Ssubscribe,
+    Unsubscribe,
+    Punsubscribe,
+    Sunsubscribe,
+    Publish,
+    Spublish,
+    Pubsub,
     Del,
     Rename,
     Renamenx,
@@ -456,6 +465,96 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         id: CommandId::SortRo,
         name_upper: b"SORT_RO",
         key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Subscribe,
+        name_upper: b"SUBSCRIBE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Psubscribe,
+        name_upper: b"PSUBSCRIBE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Ssubscribe,
+        name_upper: b"SSUBSCRIBE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Unsubscribe,
+        name_upper: b"UNSUBSCRIBE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Punsubscribe,
+        name_upper: b"PUNSUBSCRIBE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Sunsubscribe,
+        name_upper: b"SUNSUBSCRIBE",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(1)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Publish,
+        name_upper: b"PUBLISH",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Spublish,
+        name_upper: b"SPUBLISH",
+        key_access_pattern: KeyAccessPattern::None,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(3)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Pubsub,
+        name_upper: b"PUBSUB",
+        key_access_pattern: KeyAccessPattern::None,
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
@@ -2674,6 +2773,26 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::SortRo, 2));
         assert!(command_has_valid_arity(CommandId::SortRo, 9));
         assert!(!command_has_valid_arity(CommandId::SortRo, 1));
+        assert!(command_has_valid_arity(CommandId::Subscribe, 2));
+        assert!(command_has_valid_arity(CommandId::Subscribe, 4));
+        assert!(!command_has_valid_arity(CommandId::Subscribe, 1));
+        assert!(command_has_valid_arity(CommandId::Psubscribe, 2));
+        assert!(command_has_valid_arity(CommandId::Psubscribe, 4));
+        assert!(!command_has_valid_arity(CommandId::Psubscribe, 1));
+        assert!(command_has_valid_arity(CommandId::Ssubscribe, 2));
+        assert!(command_has_valid_arity(CommandId::Ssubscribe, 4));
+        assert!(!command_has_valid_arity(CommandId::Ssubscribe, 1));
+        assert!(command_has_valid_arity(CommandId::Unsubscribe, 1));
+        assert!(command_has_valid_arity(CommandId::Unsubscribe, 3));
+        assert!(command_has_valid_arity(CommandId::Punsubscribe, 1));
+        assert!(command_has_valid_arity(CommandId::Sunsubscribe, 1));
+        assert!(command_has_valid_arity(CommandId::Publish, 3));
+        assert!(!command_has_valid_arity(CommandId::Publish, 2));
+        assert!(command_has_valid_arity(CommandId::Spublish, 3));
+        assert!(!command_has_valid_arity(CommandId::Spublish, 2));
+        assert!(command_has_valid_arity(CommandId::Pubsub, 2));
+        assert!(command_has_valid_arity(CommandId::Pubsub, 4));
+        assert!(!command_has_valid_arity(CommandId::Pubsub, 1));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3062,6 +3181,15 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Lcs), b"LCS");
         assert_eq!(command_name_upper(CommandId::Sort), b"SORT");
         assert_eq!(command_name_upper(CommandId::SortRo), b"SORT_RO");
+        assert_eq!(command_name_upper(CommandId::Subscribe), b"SUBSCRIBE");
+        assert_eq!(command_name_upper(CommandId::Psubscribe), b"PSUBSCRIBE");
+        assert_eq!(command_name_upper(CommandId::Ssubscribe), b"SSUBSCRIBE");
+        assert_eq!(command_name_upper(CommandId::Unsubscribe), b"UNSUBSCRIBE");
+        assert_eq!(command_name_upper(CommandId::Punsubscribe), b"PUNSUBSCRIBE");
+        assert_eq!(command_name_upper(CommandId::Sunsubscribe), b"SUNSUBSCRIBE");
+        assert_eq!(command_name_upper(CommandId::Publish), b"PUBLISH");
+        assert_eq!(command_name_upper(CommandId::Spublish), b"SPUBLISH");
+        assert_eq!(command_name_upper(CommandId::Pubsub), b"PUBSUB");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

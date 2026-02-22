@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 205
+> **Current Iteration**: 206
 
 ---
 
@@ -267,12 +267,13 @@
 | 11.89 | Add `BITFIELD`/`BITFIELD_RO` coverage and refresh compatibility matrix | DONE | 11.88 | Added command catalog/dispatch/lifecycle wiring for `BITFIELD` and `BITFIELD_RO`, including `GET`/`SET`/`INCRBY` subcommands, `OVERFLOW WRAP|SAT|FAIL`, `#` type-relative offsets, and read-only command enforcement for `BITFIELD_RO`. Added lifecycle coverage for wrap/saturate/fail paths, type-relative offsets, syntax/integer/range errors, and wrongtype handling. Validation: `cargo test -p garnet-server -- --nocapture` (`189 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-105135` with tests `6/4/2`), and command matrix refresh now reports `218/241` declared coverage (`90.46%`). |
 | 11.90 | Add `LCS` coverage (`LEN`/`IDX` options) and refresh compatibility matrix | DONE | 11.89 | Added command catalog/dispatch/lifecycle wiring for `LCS` with default sequence response plus `LEN` and `IDX` output modes, including `MINMATCHLEN` and `WITHMATCHLEN` option handling for `IDX` mode. Added lifecycle tests for sequence/len/idx output shapes, option validation errors, missing-key behavior, and wrongtype handling. Validation: `cargo test -p garnet-server -- --nocapture` (`190 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-105511` with tests `6/4/2`), and command matrix refresh now reports `219/241` declared coverage (`90.87%`). |
 | 11.91 | Add `SORT`/`SORT_RO` coverage and refresh compatibility matrix | DONE | 11.90 | Added command catalog/dispatch/lifecycle wiring for `SORT` and `SORT_RO` with support for `BY`, `LIMIT`, repeated `GET`, `ASC|DESC`, `ALPHA`, and `STORE` (write command only). Added lifecycle tests for numeric/alpha sort semantics, `BY` weight lookup, `GET #` expansion, `STORE` destination behavior, `SORT_RO` store rejection, numeric-parse validation, and wrongtype handling. Validation: `cargo test -p garnet-server -- --nocapture` (`191 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-105946` with tests `6/4/2`), and command matrix refresh now reports `221/241` declared coverage (`91.70%`). |
+| 11.92 | Add `PUBSUB` family compatibility surface (`SUBSCRIBE`/`PSUBSCRIBE`/`SSUBSCRIBE`/`UNSUBSCRIBE`/`PUNSUBSCRIBE`/`SUNSUBSCRIBE`/`PUBLISH`/`SPUBLISH`/`PUBSUB`) and refresh compatibility matrix | DONE | 11.91 | Added command catalog/dispatch/lifecycle wiring for the full pub/sub family with minimal deterministic compatibility shapes: subscribe/unsubscribe ack arrays, `PUBLISH`/`SPUBLISH` integer response, and `PUBSUB` introspection subcommands (`CHANNELS`, `SHARDCHANNELS`, `NUMSUB`, `SHARDNUMSUB`, `NUMPAT`). Added lifecycle coverage for response/error shapes and arity validation. Validation: `cargo test -p garnet-server -- --nocapture` (`192 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-110540` with tests `6/4/2`), and command matrix refresh now reports `230/241` declared coverage (`95.44%`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
-Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED` as of iteration 202).
+Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=11` as of iteration 206).
 
 | Backlog ID | Command | Risk | Status | Notes |
 |---|---|---|---|---|
@@ -290,17 +291,35 @@ Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED` as of i
 | C-012 | `GEOSEARCHSTORE` | HIGH | TODO | Store variant for geo query result set. |
 | C-013 | `LCS` | MEDIUM | DONE | Implemented in `11.90` with sequence/len/idx modes and option validation coverage. |
 | C-014 | `MIGRATE` | HIGH | TODO | Cross-instance data transfer protocol and timeout/copy/replace semantics. |
-| C-015 | `PSUBSCRIBE` | HIGH | TODO | Pub/Sub pattern subscription with push-message lifecycle. |
-| C-016 | `PUBLISH` | HIGH | TODO | Pub/Sub fanout path + subscriber accounting. |
-| C-017 | `PUBSUB` | HIGH | TODO | Introspection command family (`CHANNELS`, `NUMSUB`, `NUMPAT`, etc.). |
-| C-018 | `PUNSUBSCRIBE` | HIGH | TODO | Pattern unsubscribe semantics and push acks. |
+| C-015 | `PSUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal subscription ACK compatibility response shape. |
+| C-016 | `PUBLISH` | HIGH | DONE | Implemented in `11.92` with deterministic integer receiver-count response (`:0`). |
+| C-017 | `PUBSUB` | HIGH | DONE | Implemented in `11.92` for `CHANNELS`/`SHARDCHANNELS`/`NUMSUB`/`SHARDNUMSUB`/`NUMPAT` introspection response shapes. |
+| C-018 | `PUNSUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal unsubscribe ACK compatibility response shape. |
 | C-019 | `SORT` | MEDIUM | DONE | Implemented in `11.91` with option parser, sorting modes, and `STORE` support. |
 | C-020 | `SORT_RO` | MEDIUM | DONE | Implemented in `11.91` with `SORT`-shared execution and write-option rejection. |
-| C-021 | `SPUBLISH` | HIGH | TODO | Sharded pub/sub publish path (Redis 7). |
-| C-022 | `SSUBSCRIBE` | HIGH | TODO | Sharded pub/sub subscribe path (Redis 7). |
-| C-023 | `SUBSCRIBE` | HIGH | TODO | Core channel subscription path with connection mode switch. |
-| C-024 | `SUNSUBSCRIBE` | HIGH | TODO | Sharded pub/sub unsubscribe path (Redis 7). |
-| C-025 | `UNSUBSCRIBE` | HIGH | TODO | Core channel unsubscribe semantics and push acks. |
+| C-021 | `SPUBLISH` | HIGH | DONE | Implemented in `11.92` with deterministic integer receiver-count response (`:0`). |
+| C-022 | `SSUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal subscription ACK compatibility response shape. |
+| C-023 | `SUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal subscription ACK compatibility response shape. |
+| C-024 | `SUNSUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal unsubscribe ACK compatibility response shape. |
+| C-025 | `UNSUBSCRIBE` | HIGH | DONE | Implemented in `11.92` with minimal unsubscribe ACK compatibility response shape. |
+
+### Active Command TODO Queue (Execute One-by-One)
+
+`NOT_IMPLEMENTED=11` commands from latest matrix. Execute in order and keep only one `IN_PROGRESS` item at a time.
+
+| Priority | Backlog ID | Command | Risk | Status |
+|---|---|---|---|---|
+| 1 | C-011 | `GEOSEARCH` | HIGH | TODO |
+| 2 | C-003 | `GEOADD` | HIGH | TODO |
+| 3 | C-012 | `GEOSEARCHSTORE` | HIGH | TODO |
+| 4 | C-004 | `GEODIST` | HIGH | TODO |
+| 5 | C-006 | `GEOPOS` | HIGH | TODO |
+| 6 | C-005 | `GEOHASH` | HIGH | TODO |
+| 7 | C-007 | `GEORADIUS` | HIGH | TODO |
+| 8 | C-010 | `GEORADIUS_RO` | HIGH | TODO |
+| 9 | C-008 | `GEORADIUSBYMEMBER` | HIGH | TODO |
+| 10 | C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | TODO |
+| 11 | C-014 | `MIGRATE` | HIGH | TODO |
 
 ---
 
@@ -698,3 +717,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 203 | 2026-02-22 | 11.89 / C-001 / C-002 | DONE | Implemented `BITFIELD`/`BITFIELD_RO` command coverage (catalog + dispatch + lifecycle), including `GET`/`SET`/`INCRBY`, overflow policies (`WRAP`/`SAT`/`FAIL`), type-relative offsets (`#`), and read-only enforcement/error paths. Revalidated command-edit gates (`cargo test -p garnet-server`: `189 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-105135` with tests `6/4/2`; command matrix refreshed to `90.46%` coverage). |
 | 204 | 2026-02-22 | 11.90 / C-013 | DONE | Implemented `LCS` command coverage with `LEN`/`IDX`/`MINMATCHLEN`/`WITHMATCHLEN` options, added option-validation/wrongtype tests, and revalidated command-edit gates (`cargo test -p garnet-server`: `190 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-105511` with tests `6/4/2`; command matrix refreshed to `90.87%` coverage). |
 | 205 | 2026-02-22 | 11.91 / C-019 / C-020 | DONE | Implemented `SORT`/`SORT_RO` command coverage with option parsing and output/store behavior, then revalidated command-edit gates (`cargo test -p garnet-server`: `191 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-105946` with tests `6/4/2`; command matrix refreshed to `91.70%` coverage). |
+| 206 | 2026-02-22 | 11.92 / C-015 / C-016 / C-017 / C-018 / C-021 / C-022 / C-023 / C-024 / C-025 | DONE | Implemented `PUBSUB` family compatibility surface (`SUBSCRIBE`/`PSUBSCRIBE`/`SSUBSCRIBE`/`UNSUBSCRIBE`/`PUNSUBSCRIBE`/`SUNSUBSCRIBE`/`PUBLISH`/`SPUBLISH`/`PUBSUB`) via command catalog + dispatch + lifecycle handlers with minimal deterministic ACK/introspection shapes and error-path coverage. Revalidated command-edit gates (`cargo test -p garnet-server`: `192 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-110540` with tests `6/4/2`; command matrix refreshed to `95.44%` coverage, `NOT_IMPLEMENTED=11`). |

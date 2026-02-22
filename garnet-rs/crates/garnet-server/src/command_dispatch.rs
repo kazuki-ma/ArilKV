@@ -130,6 +130,24 @@ mod tests {
         assert_eq!(dispatch_command_name(b"lcs"), CommandId::Lcs);
         assert_eq!(dispatch_command_name(b"SORT"), CommandId::Sort);
         assert_eq!(dispatch_command_name(b"sort_ro"), CommandId::SortRo);
+        assert_eq!(dispatch_command_name(b"SUBSCRIBE"), CommandId::Subscribe);
+        assert_eq!(dispatch_command_name(b"psubscribe"), CommandId::Psubscribe);
+        assert_eq!(dispatch_command_name(b"SSUBSCRIBE"), CommandId::Ssubscribe);
+        assert_eq!(
+            dispatch_command_name(b"unsubscribe"),
+            CommandId::Unsubscribe
+        );
+        assert_eq!(
+            dispatch_command_name(b"PUNSUBSCRIBE"),
+            CommandId::Punsubscribe
+        );
+        assert_eq!(
+            dispatch_command_name(b"sunsubscribe"),
+            CommandId::Sunsubscribe
+        );
+        assert_eq!(dispatch_command_name(b"PUBLISH"), CommandId::Publish);
+        assert_eq!(dispatch_command_name(b"spublish"), CommandId::Spublish);
+        assert_eq!(dispatch_command_name(b"PUBSUB"), CommandId::Pubsub);
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);
         assert_eq!(
