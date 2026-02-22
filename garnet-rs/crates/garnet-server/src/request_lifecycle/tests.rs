@@ -5429,6 +5429,14 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
+    let client_list = b"*2\r\n$6\r\nCLIENT\r\n$4\r\nLIST\r\n";
+    let meta = parse_resp_command_arg_slices(client_list, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$13\r\nid=1 cmd=exec\r\n");
+
+    response.clear();
     let role = b"*1\r\n$4\r\nROLE\r\n";
     let meta = parse_resp_command_arg_slices(role, &mut args).unwrap();
     processor
