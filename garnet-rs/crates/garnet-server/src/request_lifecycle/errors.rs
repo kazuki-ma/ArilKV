@@ -20,6 +20,8 @@ pub enum RequestExecutionError {
     UnknownCommand,
     NoSuchKey,
     NoGroup,
+    BusyKey,
+    InvalidDumpPayload,
     SyntaxError,
     InvalidExpireTime,
     InvalidGetExExpireTime,
@@ -52,6 +54,11 @@ impl RequestExecutionError {
             Self::UnknownCommand => append_error(response_out, "ERR unknown command"),
             Self::NoSuchKey => append_error(response_out, "ERR no such key"),
             Self::NoGroup => append_error(response_out, "NOGROUP No such key or consumer group"),
+            Self::BusyKey => append_error(response_out, "BUSYKEY Target key name already exists."),
+            Self::InvalidDumpPayload => append_error(
+                response_out,
+                "ERR DUMP payload version or checksum are wrong",
+            ),
             Self::SyntaxError => append_error(response_out, "ERR syntax error"),
             Self::InvalidExpireTime => {
                 append_error(response_out, "ERR invalid expire time in 'set' command")

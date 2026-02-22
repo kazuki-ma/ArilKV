@@ -21,6 +21,27 @@ fn parse_integer_response(response: &[u8]) -> i64 {
         .unwrap()
 }
 
+fn parse_bulk_payload(response: &[u8]) -> Option<Vec<u8>> {
+    if response == b"$-1\r\n" {
+        return None;
+    }
+    assert!(response.starts_with(b"$"));
+    let mut index = 1usize;
+    while index + 1 < response.len() {
+        if response[index] == b'\r' && response[index + 1] == b'\n' {
+            break;
+        }
+        index += 1;
+    }
+    let len = core::str::from_utf8(&response[1..index])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let payload_start = index + 2;
+    let payload_end = payload_start + len;
+    Some(response[payload_start..payload_end].to_vec())
+}
+
 fn encode_resp(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
@@ -3607,6 +3628,116 @@ fn persist_removes_existing_expiration() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":0\r\n");
+}
+
+#[test]
+fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    let dump_missing = b"*2\r\n$4\r\nDUMP\r\n$7\r\nmissing\r\n";
+    let meta = parse_resp_command_arg_slices(dump_missing, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let set = b"*3\r\n$3\r\nSET\r\n$4\r\nrkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let dump = b"*2\r\n$4\r\nDUMP\r\n$4\r\nrkey\r\n";
+    let meta = parse_resp_command_arg_slices(dump, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let dump_payload = parse_bulk_payload(&response).expect("dump payload must exist");
+
+    response.clear();
+    let del = b"*2\r\n$3\r\nDEL\r\n$4\r\nrkey\r\n";
+    let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let restore = encode_resp(&[b"RESTORE", b"rkey", b"0", &dump_payload]);
+    let meta = parse_resp_command_arg_slices(&restore, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$4\r\nrkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let restore_busy = encode_resp(&[b"RESTORE", b"rkey", b"0", &dump_payload]);
+    let meta = parse_resp_command_arg_slices(&restore_busy, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-BUSYKEY Target key name already exists.\r\n");
+
+    response.clear();
+    let restore_replace = encode_resp(&[b"RESTORE", b"rkey", b"1000", &dump_payload, b"REPLACE"]);
+    let meta = parse_resp_command_arg_slices(&restore_replace, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pttl = b"*2\r\n$4\r\nPTTL\r\n$4\r\nrkey\r\n";
+    let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    let ttl = parse_integer_response(&response);
+    assert!(ttl > 0);
+    assert!(ttl <= 1000);
+
+    response.clear();
+    let restore_asking =
+        encode_resp(&[b"RESTORE-ASKING", b"rkey2", b"0", &dump_payload, b"REPLACE"]);
+    let meta = parse_resp_command_arg_slices(&restore_asking, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get_rkey2 = b"*2\r\n$3\r\nGET\r\n$5\r\nrkey2\r\n";
+    let meta = parse_resp_command_arg_slices(get_rkey2, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let restore_invalid = b"*4\r\n$7\r\nRESTORE\r\n$4\r\nbadk\r\n$1\r\n0\r\n$3\r\nbad\r\n";
+    let meta = parse_resp_command_arg_slices(restore_invalid, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR DUMP payload version or checksum are wrong\r\n"
+    );
 }
 
 #[test]

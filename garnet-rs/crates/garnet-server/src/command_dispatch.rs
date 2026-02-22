@@ -98,6 +98,12 @@ mod tests {
         assert_eq!(dispatch_command_name(b"script"), CommandId::Script);
         assert_eq!(dispatch_command_name(b"CONFIG"), CommandId::Config);
         assert_eq!(dispatch_command_name(b"command"), CommandId::Command);
+        assert_eq!(dispatch_command_name(b"DUMP"), CommandId::Dump);
+        assert_eq!(dispatch_command_name(b"restore"), CommandId::Restore);
+        assert_eq!(
+            dispatch_command_name(b"RESTORE-ASKING"),
+            CommandId::RestoreAsking
+        );
         assert_eq!(dispatch_command_name(b"DECR"), CommandId::Decr);
         assert_eq!(dispatch_command_name(b"RENAME"), CommandId::Rename);
         assert_eq!(dispatch_command_name(b"renamenx"), CommandId::Renamenx);

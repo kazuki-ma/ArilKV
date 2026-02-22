@@ -73,6 +73,7 @@ const ACL_CATEGORIES: [&[u8]; 8] = [
     b"set",
     b"stream",
 ];
+const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
 
 impl RequestProcessor {
     pub(super) fn handle_quit(
@@ -849,6 +850,52 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn handle_dump(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 2, "DUMP", "DUMP key")?;
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() }.to_vec();
+        self.expire_key_if_needed(&key)?;
+        if let Some(value) = self.read_string_value(&key)? {
+            append_bulk_string(
+                response_out,
+                &encode_dump_blob(MigrationValue::String(value)),
+            );
+            return Ok(());
+        }
+        if let Some((object_type, payload)) = self.object_read(&key)? {
+            append_bulk_string(
+                response_out,
+                &encode_dump_blob(MigrationValue::Object {
+                    object_type,
+                    payload,
+                }),
+            );
+            return Ok(());
+        }
+        append_null_bulk_string(response_out);
+        Ok(())
+    }
+
+    pub(super) fn handle_restore(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        restore_from_dump_blob(self, args, response_out, "RESTORE")
+    }
+
+    pub(super) fn handle_restore_asking(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        restore_from_dump_blob(self, args, response_out, "RESTORE-ASKING")
+    }
+
     pub(super) fn handle_latency(
         &self,
         args: &[ArgSlice],
@@ -1393,6 +1440,177 @@ impl RequestProcessor {
         }
 
         Ok(fnv_hex_digest(0, b""))
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct RestoreOptions {
+    replace: bool,
+    absttl: bool,
+}
+
+fn restore_from_dump_blob(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    response_out: &mut Vec<u8>,
+    command_name: &'static str,
+) -> Result<(), RequestExecutionError> {
+    if args.len() < 4 {
+        return Err(RequestExecutionError::WrongArity {
+            command: command_name,
+            expected: "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
+        });
+    }
+
+    // SAFETY: caller guarantees argument backing memory validity.
+    let key = unsafe { args[1].as_slice() }.to_vec();
+    // SAFETY: caller guarantees argument backing memory validity.
+    let ttl_input = parse_i64_ascii(unsafe { args[2].as_slice() })
+        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    if ttl_input < 0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    // SAFETY: caller guarantees argument backing memory validity.
+    let dump_blob = unsafe { args[3].as_slice() };
+    let options = parse_restore_options(args, 4, command_name)?;
+    let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
+
+    processor.expire_key_if_needed(&key)?;
+    if !options.replace && processor.key_exists_any(&key)? {
+        return Err(RequestExecutionError::BusyKey);
+    }
+
+    if options.replace {
+        processor.delete_string_key_for_migration(&key)?;
+        let _ = processor.object_delete(&key)?;
+    }
+
+    let ttl_u64 = u64::try_from(ttl_input).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    let expiration_unix_millis = if ttl_u64 == 0 {
+        None
+    } else if options.absttl {
+        Some(ttl_u64)
+    } else {
+        let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+        Some(
+            now.checked_add(ttl_u64)
+                .ok_or(RequestExecutionError::ValueOutOfRange)?,
+        )
+    };
+
+    match value {
+        MigrationValue::String(raw) => {
+            processor.upsert_string_value_for_migration(&key, &raw, expiration_unix_millis)?;
+            let _ = processor.object_delete(&key)?;
+        }
+        MigrationValue::Object {
+            object_type,
+            payload,
+        } => {
+            processor.delete_string_key_for_migration(&key)?;
+            processor.object_upsert(&key, object_type, &payload)?;
+            processor.set_string_expiration_deadline(
+                &key,
+                expiration_unix_millis.and_then(instant_from_unix_millis),
+            );
+        }
+    }
+
+    append_simple_string(response_out, b"OK");
+    Ok(())
+}
+
+fn parse_restore_options(
+    args: &[ArgSlice],
+    start_index: usize,
+    command_name: &'static str,
+) -> Result<RestoreOptions, RequestExecutionError> {
+    let mut options = RestoreOptions {
+        replace: false,
+        absttl: false,
+    };
+    let mut index = start_index;
+    while index < args.len() {
+        // SAFETY: caller guarantees argument backing memory validity.
+        let token = unsafe { args[index].as_slice() };
+        if ascii_eq_ignore_case(token, b"REPLACE") {
+            options.replace = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ABSTTL") {
+            options.absttl = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"IDLETIME") || ascii_eq_ignore_case(token, b"FREQ") {
+            if index + 1 >= args.len() {
+                return Err(RequestExecutionError::WrongArity {
+                    command: command_name,
+                    expected: "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
+                });
+            }
+            // SAFETY: caller guarantees argument backing memory validity.
+            parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            index += 2;
+            continue;
+        }
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(options)
+}
+
+fn encode_dump_blob(value: MigrationValue) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(DUMP_BLOB_MAGIC);
+    match value {
+        MigrationValue::String(raw) => {
+            encoded.push(0);
+            let len = u32::try_from(raw.len()).unwrap_or(u32::MAX);
+            encoded.extend_from_slice(&len.to_le_bytes());
+            encoded.extend_from_slice(&raw);
+        }
+        MigrationValue::Object {
+            object_type,
+            payload,
+        } => {
+            encoded.push(1);
+            encoded.push(object_type);
+            let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+            encoded.extend_from_slice(&len.to_le_bytes());
+            encoded.extend_from_slice(&payload);
+        }
+    }
+    encoded
+}
+
+fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
+    if !encoded.starts_with(DUMP_BLOB_MAGIC) {
+        return None;
+    }
+    let mut index = DUMP_BLOB_MAGIC.len();
+    let kind = *encoded.get(index)?;
+    index += 1;
+    match kind {
+        0 => {
+            let len = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
+            index += 4;
+            let value = encoded.get(index..index + len)?.to_vec();
+            Some(MigrationValue::String(value))
+        }
+        1 => {
+            let object_type = *encoded.get(index)?;
+            index += 1;
+            let len = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
+            index += 4;
+            let payload = encoded.get(index..index + len)?.to_vec();
+            Some(MigrationValue::Object {
+                object_type,
+                payload,
+            })
+        }
+        _ => None,
     }
 }
 

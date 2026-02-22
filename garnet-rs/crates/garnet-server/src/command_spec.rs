@@ -187,6 +187,9 @@ pub enum CommandId {
     Script,
     Config,
     Command,
+    Dump,
+    Restore,
+    RestoreAsking,
     Getdel,
     Getset,
     Psetex,
@@ -2079,6 +2082,36 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Dump,
+        name_upper: b"DUMP",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Restore,
+        name_upper: b"RESTORE",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::RestoreAsking,
+        name_upper: b"RESTORE-ASKING",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Getdel,
         name_upper: b"GETDEL",
         key_access_pattern: KeyAccessPattern::FirstKey,
@@ -2609,6 +2642,14 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Debug, 3));
         assert!(!command_has_valid_arity(CommandId::Debug, 1));
         assert!(command_has_valid_arity(CommandId::Set, 2));
+        assert!(command_has_valid_arity(CommandId::Dump, 2));
+        assert!(!command_has_valid_arity(CommandId::Dump, 3));
+        assert!(command_has_valid_arity(CommandId::Restore, 4));
+        assert!(command_has_valid_arity(CommandId::Restore, 8));
+        assert!(!command_has_valid_arity(CommandId::Restore, 3));
+        assert!(command_has_valid_arity(CommandId::RestoreAsking, 4));
+        assert!(command_has_valid_arity(CommandId::RestoreAsking, 8));
+        assert!(!command_has_valid_arity(CommandId::RestoreAsking, 3));
         assert!(command_has_valid_arity(CommandId::Getdel, 2));
         assert!(!command_has_valid_arity(CommandId::Getdel, 3));
         assert!(command_has_valid_arity(CommandId::Getset, 3));
@@ -2883,6 +2924,12 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Shutdown), b"SHUTDOWN");
         assert_eq!(command_name_upper(CommandId::Expireat), b"EXPIREAT");
         assert_eq!(command_name_upper(CommandId::Pexpiretime), b"PEXPIRETIME");
+        assert_eq!(command_name_upper(CommandId::Dump), b"DUMP");
+        assert_eq!(command_name_upper(CommandId::Restore), b"RESTORE");
+        assert_eq!(
+            command_name_upper(CommandId::RestoreAsking),
+            b"RESTORE-ASKING"
+        );
         assert_eq!(command_name_upper(CommandId::Getdel), b"GETDEL");
         assert_eq!(command_name_upper(CommandId::Getset), b"GETSET");
         assert_eq!(command_name_upper(CommandId::Psetex), b"PSETEX");
