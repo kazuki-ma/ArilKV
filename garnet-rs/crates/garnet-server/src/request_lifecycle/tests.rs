@@ -6041,6 +6041,114 @@ fn geosearchstore_stores_results_and_clears_destination_on_empty_source() {
 }
 
 #[test]
+fn georadius_family_supports_query_and_store_paths() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+
+    assert_command_response(
+        &processor,
+        "GEORADIUS sicily 15 37 200 km ASC COUNT 1",
+        b"*1\r\n$7\r\ncatania\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "GEORADIUSBYMEMBER sicily palermo 200 km DESC COUNT 1",
+        b"*1\r\n$7\r\ncatania\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUSBYMEMBER_RO sicily missing 200 km",
+        b"-ERR no such key\r\n",
+    );
+
+    let with_options = execute_frame(
+        &processor,
+        &encode_resp(&[
+            b"GEORADIUS_RO",
+            b"sicily",
+            b"15",
+            b"37",
+            b"200",
+            b"km",
+            b"WITHDIST",
+            b"WITHHASH",
+            b"WITHCOORD",
+            b"ASC",
+            b"COUNT",
+            b"1",
+        ]),
+    );
+    assert!(with_options.starts_with(b"*1\r\n*4\r\n$7\r\ncatania\r\n$"));
+    assert!(with_options.windows(5).any(|window| window == b"*2\r\n$"));
+
+    assert_command_integer(
+        &processor,
+        "GEORADIUS sicily 15 37 200 km STOREDIST rdist",
+        2,
+    );
+    assert_command_response(
+        &processor,
+        "ZRANGE rdist 0 -1",
+        b"*2\r\n$7\r\ncatania\r\n$7\r\npalermo\r\n",
+    );
+
+    assert_command_integer(&processor, "GEORADIUS sicily 15 37 200 km STORE rstore", 2);
+    assert_command_integer(
+        &processor,
+        "GEORADIUS missing 15 37 200 km STOREDIST rstore",
+        0,
+    );
+    assert_command_integer(&processor, "EXISTS rstore", 0);
+
+    assert_command_error(
+        &processor,
+        "GEORADIUS_RO sicily 15 37 200 km STORE bad",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUSBYMEMBER_RO sicily palermo 200 km STOREDIST bad",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUS sicily 15 37 -1 km",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUS sicily 15 37 200 km COUNT 0",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUSBYMEMBER sicily palermo 200 km ANY",
+        b"-ERR syntax error\r\n",
+    );
+
+    assert_command_response(&processor, "SET plain value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GEORADIUS plain 15 37 200 km",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUS_RO sicily 15 37",
+        b"-ERR wrong number of arguments for 'GEORADIUS_RO' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEORADIUSBYMEMBER_RO sicily palermo",
+        b"-ERR wrong number of arguments for 'GEORADIUSBYMEMBER_RO' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

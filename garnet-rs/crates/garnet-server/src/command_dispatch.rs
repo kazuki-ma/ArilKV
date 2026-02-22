@@ -157,6 +157,19 @@ mod tests {
             dispatch_command_name(b"GEOSEARCHSTORE"),
             CommandId::Geosearchstore
         );
+        assert_eq!(dispatch_command_name(b"GEORADIUS"), CommandId::Georadius);
+        assert_eq!(
+            dispatch_command_name(b"georadius_ro"),
+            CommandId::GeoradiusRo
+        );
+        assert_eq!(
+            dispatch_command_name(b"GEORADIUSBYMEMBER"),
+            CommandId::Georadiusbymember
+        );
+        assert_eq!(
+            dispatch_command_name(b"georadiusbymember_ro"),
+            CommandId::GeoradiusbymemberRo
+        );
         assert_eq!(dispatch_command_name(b"APPEND"), CommandId::Append);
         assert_eq!(dispatch_command_name(b"getex"), CommandId::Getex);
         assert_eq!(

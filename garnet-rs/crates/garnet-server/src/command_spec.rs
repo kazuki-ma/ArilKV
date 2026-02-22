@@ -39,6 +39,10 @@ pub enum CommandId {
     Geohash,
     Geosearch,
     Geosearchstore,
+    Georadius,
+    GeoradiusRo,
+    Georadiusbymember,
+    GeoradiusbymemberRo,
     Del,
     Rename,
     Renamenx,
@@ -625,6 +629,46 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(8)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Georadius,
+        name_upper: b"GEORADIUS",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(6)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::GeoradiusRo,
+        name_upper: b"GEORADIUS_RO",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(6)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Georadiusbymember,
+        name_upper: b"GEORADIUSBYMEMBER",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::GeoradiusbymemberRo,
+        name_upper: b"GEORADIUSBYMEMBER_RO",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2877,6 +2921,18 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Geosearchstore, 8));
         assert!(command_has_valid_arity(CommandId::Geosearchstore, 12));
         assert!(!command_has_valid_arity(CommandId::Geosearchstore, 7));
+        assert!(command_has_valid_arity(CommandId::Georadius, 6));
+        assert!(command_has_valid_arity(CommandId::Georadius, 11));
+        assert!(!command_has_valid_arity(CommandId::Georadius, 5));
+        assert!(command_has_valid_arity(CommandId::GeoradiusRo, 6));
+        assert!(command_has_valid_arity(CommandId::GeoradiusRo, 10));
+        assert!(!command_has_valid_arity(CommandId::GeoradiusRo, 5));
+        assert!(command_has_valid_arity(CommandId::Georadiusbymember, 5));
+        assert!(command_has_valid_arity(CommandId::Georadiusbymember, 10));
+        assert!(!command_has_valid_arity(CommandId::Georadiusbymember, 4));
+        assert!(command_has_valid_arity(CommandId::GeoradiusbymemberRo, 5));
+        assert!(command_has_valid_arity(CommandId::GeoradiusbymemberRo, 9));
+        assert!(!command_has_valid_arity(CommandId::GeoradiusbymemberRo, 4));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3282,6 +3338,16 @@ mod tests {
         assert_eq!(
             command_name_upper(CommandId::Geosearchstore),
             b"GEOSEARCHSTORE"
+        );
+        assert_eq!(command_name_upper(CommandId::Georadius), b"GEORADIUS");
+        assert_eq!(command_name_upper(CommandId::GeoradiusRo), b"GEORADIUS_RO");
+        assert_eq!(
+            command_name_upper(CommandId::Georadiusbymember),
+            b"GEORADIUSBYMEMBER"
+        );
+        assert_eq!(
+            command_name_upper(CommandId::GeoradiusbymemberRo),
+            b"GEORADIUSBYMEMBER_RO"
         );
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");

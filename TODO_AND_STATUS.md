@@ -273,12 +273,13 @@
 | 11.95 | Add `GEODIST` coverage and refresh compatibility matrix | DONE | 11.94 | Added command catalog/dispatch/lifecycle wiring for `GEODIST` with unit parsing (`M`/`KM`/`FT`/`MI`), haversine-based distance computation over zset-encoded geo coordinates, missing-member/null semantics, and unsupported-unit validation. Added lifecycle coverage for unit conversion sanity, missing/wrongtype cases, and arity errors. Validation: `cargo test -p garnet-server -- --nocapture` (`195 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-145254` with tests `6/4/2`), and command matrix refresh now reports `233/241` declared coverage (`96.68%`, `NOT_IMPLEMENTED=8`). |
 | 11.96 | Add `GEOHASH` coverage and refresh compatibility matrix | DONE | 11.95 | Added command catalog/dispatch/lifecycle wiring for `GEOHASH` with Redis/Valkey-compatible response semantics (nulls for missing members and 11-char geohash output where final char is compatibility-fixed). Implemented standard-range geohash encoding via 52-bit step=26 interleaving and compatibility tail behavior. Added lifecycle coverage for expected output shape, missing-key/member semantics, wrongtype, and arity validation. Validation: `cargo test -p garnet-server -- --nocapture` (`196 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-145817` with tests `6/4/2`), and command matrix refresh now reports `234/241` declared coverage (`97.10%`, `NOT_IMPLEMENTED=7`). |
 | 11.97 | Add `GEOSEARCH`/`GEOSEARCHSTORE` coverage and refresh compatibility matrix | DONE | 11.96 | Added command catalog/dispatch/lifecycle wiring for `GEOSEARCH` and `GEOSEARCHSTORE` with `FROMMEMBER|FROMLONLAT`, `BYRADIUS|BYBOX`, `ASC|DESC`, `COUNT [ANY]`, response options (`WITHDIST|WITHHASH|WITHCOORD`), and store-path `STOREDIST`. Implemented deterministic geo match filtering/sorting and destination overwrite semantics for store mode (including empty-source cleanup). Added lifecycle coverage for radius/box paths, option shape validation, wrongtype, and store cleanup behavior. Validation: `cargo test -p garnet-server -- --nocapture` (`198 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-174405` with tests `6/4/2`), and command matrix refresh now reports `236/241` declared coverage (`97.93%`, `NOT_IMPLEMENTED=5`). |
+| 11.98 | Add `GEORADIUS*` family coverage (`GEORADIUS/GEORADIUS_RO/GEORADIUSBYMEMBER/GEORADIUSBYMEMBER_RO`) and refresh compatibility matrix | DONE | 11.97 | Added command catalog/dispatch/lifecycle wiring for all four legacy radius commands with shared query execution over geo zset data, including `WITHDIST|WITHHASH|WITHCOORD`, `COUNT [ANY]`, `ASC|DESC`, and mutating `STORE|STOREDIST` paths (RO variants reject store options). Added lifecycle coverage for query ordering, by-member center lookup, store overwrite/cleanup semantics, syntax/wrongtype/range errors, and RO behavior. Validation: `cargo test -p garnet-server -- --nocapture` (`199 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-174915` with tests `6/4/2`), and command matrix refresh now reports `240/241` declared coverage (`99.59%`, `NOT_IMPLEMENTED=1`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
-Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=5` as of iteration 211).
+Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=1` as of iteration 212).
 
 | Backlog ID | Command | Risk | Status | Notes |
 |---|---|---|---|---|
@@ -288,10 +289,10 @@ Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=5` as of
 | C-004 | `GEODIST` | HIGH | DONE | Implemented in `11.95` with unit parsing and haversine distance computation over zset-backed geo data. |
 | C-005 | `GEOHASH` | HIGH | DONE | Implemented in `11.96` with Redis/Valkey-compatible 11-char geohash output and missing-member null semantics. |
 | C-006 | `GEOPOS` | HIGH | DONE | Implemented in `11.94` with zset-backed coordinate decode and RESP null semantics for missing members. |
-| C-007 | `GEORADIUS` | HIGH | TODO | Legacy radius query; can be layered on `GEOSEARCH` semantics. |
-| C-008 | `GEORADIUSBYMEMBER` | HIGH | TODO | Member-centered radius query variant. |
-| C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | TODO | Read-only variant of member-centered radius query. |
-| C-010 | `GEORADIUS_RO` | HIGH | TODO | Read-only legacy radius query variant. |
+| C-007 | `GEORADIUS` | HIGH | DONE | Implemented in `11.98` with radius query options and `STORE|STOREDIST` support. |
+| C-008 | `GEORADIUSBYMEMBER` | HIGH | DONE | Implemented in `11.98` with member-centered lookup and store-path compatibility. |
+| C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | DONE | Implemented in `11.98` with read-only behavior and store-option rejection. |
+| C-010 | `GEORADIUS_RO` | HIGH | DONE | Implemented in `11.98` with read-only radius query semantics and store-option rejection. |
 | C-011 | `GEOSEARCH` | HIGH | DONE | Implemented in `11.97` with `FROM*`/`BY*` parsing, sort/count options, and response-shape options (`WITHDIST|WITHHASH|WITHCOORD`). |
 | C-012 | `GEOSEARCHSTORE` | HIGH | DONE | Implemented in `11.97` with `STOREDIST`, deterministic filtering/sorting reuse, and destination overwrite/cleanup semantics. |
 | C-013 | `LCS` | MEDIUM | DONE | Implemented in `11.90` with sequence/len/idx modes and option validation coverage. |
@@ -310,15 +311,11 @@ Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=5` as of
 
 ### Active Command TODO Queue (Execute One-by-One)
 
-`NOT_IMPLEMENTED=5` commands from latest matrix. Execute in order and keep only one `IN_PROGRESS` item at a time.
+`NOT_IMPLEMENTED=1` commands from latest matrix. Execute in order and keep only one `IN_PROGRESS` item at a time.
 
 | Priority | Backlog ID | Command | Risk | Status |
 |---|---|---|---|---|
-| 1 | C-007 | `GEORADIUS` | HIGH | TODO |
-| 2 | C-010 | `GEORADIUS_RO` | HIGH | TODO |
-| 3 | C-008 | `GEORADIUSBYMEMBER` | HIGH | TODO |
-| 4 | C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | TODO |
-| 5 | C-014 | `MIGRATE` | HIGH | TODO |
+| 1 | C-014 | `MIGRATE` | HIGH | TODO |
 
 ---
 
@@ -722,3 +719,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 209 | 2026-02-22 | 11.95 / C-004 | DONE | Implemented `GEODIST` command coverage (catalog + dispatch + lifecycle) with unit parsing (`M`/`KM`/`FT`/`MI`), haversine-based distance calculation over geo zset scores, and missing-member/null behavior plus unsupported-unit/wrongtype/arity checks. Revalidated command-edit gates (`cargo test -p garnet-server`: `195 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-145254` with tests `6/4/2`; command matrix refreshed to `96.68%` coverage, `NOT_IMPLEMENTED=8`). |
 | 210 | 2026-02-22 | 11.96 / C-005 | DONE | Implemented `GEOHASH` command coverage (catalog + dispatch + lifecycle) with Redis/Valkey-compatible geohash formatting (52-bit step=26 encode + compatibility tail char) and null behavior for missing keys/members. Revalidated command-edit gates (`cargo test -p garnet-server`: `196 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-145817` with tests `6/4/2`; command matrix refreshed to `97.10%` coverage, `NOT_IMPLEMENTED=7`). |
 | 211 | 2026-02-22 | 11.97 / C-011 / C-012 | DONE | Implemented `GEOSEARCH`/`GEOSEARCHSTORE` command coverage (catalog + dispatch + lifecycle) with `FROM*` and `BY*` parsing, sort/count options, reply options (`WITHDIST|WITHHASH|WITHCOORD`), and store-path `STOREDIST` + overwrite semantics. Revalidated command-edit gates (`cargo test -p garnet-server`: `198 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-174405` with tests `6/4/2`; command matrix refreshed to `97.93%` coverage, `NOT_IMPLEMENTED=5`). |
+| 212 | 2026-02-22 | 11.98 / C-007 / C-008 / C-009 / C-010 | DONE | Implemented `GEORADIUS` command family coverage (catalog + dispatch + lifecycle) with shared radius-query execution, response options, and legacy store semantics (`STORE|STOREDIST`) while enforcing read-only behavior for `_RO` variants. Revalidated command-edit gates (`cargo test -p garnet-server`: `199 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-174915` with tests `6/4/2`; command matrix refreshed to `99.59%` coverage, `NOT_IMPLEMENTED=1`). |
