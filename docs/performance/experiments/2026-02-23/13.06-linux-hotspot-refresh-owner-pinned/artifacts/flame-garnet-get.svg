@@ -1,0 +1,1022 @@
+<?xml version="1.0" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN" "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg version="1.1" width="1200" height="1126" onload="init(evt)" viewBox="0 0 1200 1126" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">
+<!-- Flame graph stack visualization. See https://github.com/brendangregg/FlameGraph for latest version, and http://www.brendangregg.com/flamegraphs.html for examples. -->
+<!-- NOTES:  -->
+<defs>
+	<linearGradient id="background" y1="0" y2="1" x1="0" x2="0" >
+		<stop stop-color="#eeeeee" offset="5%" />
+		<stop stop-color="#eeeeb0" offset="95%" />
+	</linearGradient>
+</defs>
+<style type="text/css">
+	text { font-family:Verdana; font-size:12px; fill:rgb(0,0,0); }
+	#search, #ignorecase { opacity:0.1; cursor:pointer; }
+	#search:hover, #search.show, #ignorecase:hover, #ignorecase.show { opacity:1; }
+	#subtitle { text-anchor:middle; font-color:rgb(160,160,160); }
+	#title { text-anchor:middle; font-size:17px}
+	#unzoom { cursor:pointer; }
+	#frames > *:hover { stroke:black; stroke-width:0.5; cursor:pointer; }
+	.hide { display:none; }
+	.parent { opacity:0.5; }
+</style>
+<script type="text/ecmascript">
+<![CDATA[
+	"use strict";
+	var details, searchbtn, unzoombtn, matchedtxt, svg, searching, currentSearchTerm, ignorecase, ignorecaseBtn;
+	function init(evt) {
+		details = document.getElementById("details").firstChild;
+		searchbtn = document.getElementById("search");
+		ignorecaseBtn = document.getElementById("ignorecase");
+		unzoombtn = document.getElementById("unzoom");
+		matchedtxt = document.getElementById("matched");
+		svg = document.getElementsByTagName("svg")[0];
+		searching = 0;
+		currentSearchTerm = null;
+
+		// use GET parameters to restore a flamegraphs state.
+		var params = get_params();
+		if (params.x && params.y)
+			zoom(find_group(document.querySelector('[x="' + params.x + '"][y="' + params.y + '"]')));
+                if (params.s) search(params.s);
+	}
+
+	// event listeners
+	window.addEventListener("click", function(e) {
+		var target = find_group(e.target);
+		if (target) {
+			if (target.nodeName == "a") {
+				if (e.ctrlKey === false) return;
+				e.preventDefault();
+			}
+			if (target.classList.contains("parent")) unzoom(true);
+			zoom(target);
+			if (!document.querySelector('.parent')) {
+				// we have basically done a clearzoom so clear the url
+				var params = get_params();
+				if (params.x) delete params.x;
+				if (params.y) delete params.y;
+				history.replaceState(null, null, parse_params(params));
+				unzoombtn.classList.add("hide");
+				return;
+			}
+
+			// set parameters for zoom state
+			var el = target.querySelector("rect");
+			if (el && el.attributes && el.attributes.y && el.attributes._orig_x) {
+				var params = get_params()
+				params.x = el.attributes._orig_x.value;
+				params.y = el.attributes.y.value;
+				history.replaceState(null, null, parse_params(params));
+			}
+		}
+		else if (e.target.id == "unzoom") clearzoom();
+		else if (e.target.id == "search") search_prompt();
+		else if (e.target.id == "ignorecase") toggle_ignorecase();
+	}, false)
+
+	// mouse-over for info
+	// show
+	window.addEventListener("mouseover", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = "Function: " + g_to_text(target);
+	}, false)
+
+	// clear
+	window.addEventListener("mouseout", function(e) {
+		var target = find_group(e.target);
+		if (target) details.nodeValue = ' ';
+	}, false)
+
+	// ctrl-F for search
+	// ctrl-I to toggle case-sensitive search
+	window.addEventListener("keydown",function (e) {
+		if (e.keyCode === 114 || (e.ctrlKey && e.keyCode === 70)) {
+			e.preventDefault();
+			search_prompt();
+		}
+		else if (e.ctrlKey && e.keyCode === 73) {
+			e.preventDefault();
+			toggle_ignorecase();
+		}
+	}, false)
+
+	// functions
+	function get_params() {
+		var params = {};
+		var paramsarr = window.location.search.substr(1).split('&');
+		for (var i = 0; i < paramsarr.length; ++i) {
+			var tmp = paramsarr[i].split("=");
+			if (!tmp[0] || !tmp[1]) continue;
+			params[tmp[0]]  = decodeURIComponent(tmp[1]);
+		}
+		return params;
+	}
+	function parse_params(params) {
+		var uri = "?";
+		for (var key in params) {
+			uri += key + '=' + encodeURIComponent(params[key]) + '&';
+		}
+		if (uri.slice(-1) == "&")
+			uri = uri.substring(0, uri.length - 1);
+		if (uri == '?')
+			uri = window.location.href.split('?')[0];
+		return uri;
+	}
+	function find_child(node, selector) {
+		var children = node.querySelectorAll(selector);
+		if (children.length) return children[0];
+	}
+	function find_group(node) {
+		var parent = node.parentElement;
+		if (!parent) return;
+		if (parent.id == "frames") return node;
+		return find_group(parent);
+	}
+	function orig_save(e, attr, val) {
+		if (e.attributes["_orig_" + attr] != undefined) return;
+		if (e.attributes[attr] == undefined) return;
+		if (val == undefined) val = e.attributes[attr].value;
+		e.setAttribute("_orig_" + attr, val);
+	}
+	function orig_load(e, attr) {
+		if (e.attributes["_orig_"+attr] == undefined) return;
+		e.attributes[attr].value = e.attributes["_orig_" + attr].value;
+		e.removeAttribute("_orig_"+attr);
+	}
+	function g_to_text(e) {
+		var text = find_child(e, "title").firstChild.nodeValue;
+		return (text)
+	}
+	function g_to_func(e) {
+		var func = g_to_text(e);
+		// if there's any manipulation we want to do to the function
+		// name before it's searched, do it here before returning.
+		return (func);
+	}
+	function update_text(e) {
+		var r = find_child(e, "rect");
+		var t = find_child(e, "text");
+		var w = parseFloat(r.attributes.width.value) -3;
+		var txt = find_child(e, "title").textContent.replace(/\([^(]*\)$/,"");
+		t.attributes.x.value = parseFloat(r.attributes.x.value) + 3;
+
+		// Smaller than this size won't fit anything
+		if (w < 2 * 12 * 0.59) {
+			t.textContent = "";
+			return;
+		}
+
+		t.textContent = txt;
+		var sl = t.getSubStringLength(0, txt.length);
+		// check if only whitespace or if we can fit the entire string into width w
+		if (/^ *$/.test(txt) || sl < w)
+			return;
+
+		// this isn't perfect, but gives a good starting point
+		// and avoids calling getSubStringLength too often
+		var start = Math.floor((w/sl) * txt.length);
+		for (var x = start; x > 0; x = x-2) {
+			if (t.getSubStringLength(0, x + 2) <= w) {
+				t.textContent = txt.substring(0, x) + "..";
+				return;
+			}
+		}
+		t.textContent = "";
+	}
+
+	// zoom
+	function zoom_reset(e) {
+		if (e.attributes != undefined) {
+			orig_load(e, "x");
+			orig_load(e, "width");
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_reset(c[i]);
+		}
+	}
+	function zoom_child(e, x, ratio) {
+		if (e.attributes != undefined) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = (parseFloat(e.attributes.x.value) - x - 10) * ratio + 10;
+				if (e.tagName == "text")
+					e.attributes.x.value = find_child(e.parentNode, "rect[x]").attributes.x.value + 3;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseFloat(e.attributes.width.value) * ratio;
+			}
+		}
+
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_child(c[i], x - 10, ratio);
+		}
+	}
+	function zoom_parent(e) {
+		if (e.attributes) {
+			if (e.attributes.x != undefined) {
+				orig_save(e, "x");
+				e.attributes.x.value = 10;
+			}
+			if (e.attributes.width != undefined) {
+				orig_save(e, "width");
+				e.attributes.width.value = parseInt(svg.width.baseVal.value) - (10 * 2);
+			}
+		}
+		if (e.childNodes == undefined) return;
+		for (var i = 0, c = e.childNodes; i < c.length; i++) {
+			zoom_parent(c[i]);
+		}
+	}
+	function zoom(node) {
+		var attr = find_child(node, "rect").attributes;
+		var width = parseFloat(attr.width.value);
+		var xmin = parseFloat(attr.x.value);
+		var xmax = parseFloat(xmin + width);
+		var ymin = parseFloat(attr.y.value);
+		var ratio = (svg.width.baseVal.value - 2 * 10) / width;
+
+		// XXX: Workaround for JavaScript float issues (fix me)
+		var fudge = 0.0001;
+
+		unzoombtn.classList.remove("hide");
+
+		var el = document.getElementById("frames").children;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var a = find_child(e, "rect").attributes;
+			var ex = parseFloat(a.x.value);
+			var ew = parseFloat(a.width.value);
+			var upstack;
+			// Is it an ancestor
+			if (0 == 0) {
+				upstack = parseFloat(a.y.value) > ymin;
+			} else {
+				upstack = parseFloat(a.y.value) < ymin;
+			}
+			if (upstack) {
+				// Direct ancestor
+				if (ex <= xmin && (ex+ew+fudge) >= xmax) {
+					e.classList.add("parent");
+					zoom_parent(e);
+					update_text(e);
+				}
+				// not in current path
+				else
+					e.classList.add("hide");
+			}
+			// Children maybe
+			else {
+				// no common path
+				if (ex < xmin || ex + fudge >= xmax) {
+					e.classList.add("hide");
+				}
+				else {
+					zoom_child(e, xmin, ratio);
+					update_text(e);
+				}
+			}
+		}
+		search();
+	}
+	function unzoom(dont_update_text) {
+		unzoombtn.classList.add("hide");
+		var el = document.getElementById("frames").children;
+		for(var i = 0; i < el.length; i++) {
+			el[i].classList.remove("parent");
+			el[i].classList.remove("hide");
+			zoom_reset(el[i]);
+			if(!dont_update_text) update_text(el[i]);
+		}
+		search();
+	}
+	function clearzoom() {
+		unzoom();
+
+		// remove zoom state
+		var params = get_params();
+		if (params.x) delete params.x;
+		if (params.y) delete params.y;
+		history.replaceState(null, null, parse_params(params));
+	}
+
+	// search
+	function toggle_ignorecase() {
+		ignorecase = !ignorecase;
+		if (ignorecase) {
+			ignorecaseBtn.classList.add("show");
+		} else {
+			ignorecaseBtn.classList.remove("show");
+		}
+		reset_search();
+		search();
+	}
+	function reset_search() {
+		var el = document.querySelectorAll("#frames rect");
+		for (var i = 0; i < el.length; i++) {
+			orig_load(el[i], "fill")
+		}
+		var params = get_params();
+		delete params.s;
+		history.replaceState(null, null, parse_params(params));
+	}
+	function search_prompt() {
+		if (!searching) {
+			var term = prompt("Enter a search term (regexp " +
+			    "allowed, eg: ^ext4_)"
+			    + (ignorecase ? ", ignoring case" : "")
+			    + "\nPress Ctrl-i to toggle case sensitivity", "");
+			if (term != null) search(term);
+		} else {
+			reset_search();
+			searching = 0;
+			currentSearchTerm = null;
+			searchbtn.classList.remove("show");
+			searchbtn.firstChild.nodeValue = "Search"
+			matchedtxt.classList.add("hide");
+			matchedtxt.firstChild.nodeValue = ""
+		}
+	}
+	function search(term) {
+		if (term) currentSearchTerm = term;
+		if (currentSearchTerm === null) return;
+
+		var re = new RegExp(currentSearchTerm, ignorecase ? 'i' : '');
+		var el = document.getElementById("frames").children;
+		var matches = new Object();
+		var maxwidth = 0;
+		for (var i = 0; i < el.length; i++) {
+			var e = el[i];
+			var func = g_to_func(e);
+			var rect = find_child(e, "rect");
+			if (func == null || rect == null)
+				continue;
+
+			// Save max width. Only works as we have a root frame
+			var w = parseFloat(rect.attributes.width.value);
+			if (w > maxwidth)
+				maxwidth = w;
+
+			if (func.match(re)) {
+				// highlight
+				var x = parseFloat(rect.attributes.x.value);
+				orig_save(rect, "fill");
+				rect.attributes.fill.value = "rgb(230,0,230)";
+
+				// remember matches
+				if (matches[x] == undefined) {
+					matches[x] = w;
+				} else {
+					if (w > matches[x]) {
+						// overwrite with parent
+						matches[x] = w;
+					}
+				}
+				searching = 1;
+			}
+		}
+		if (!searching)
+			return;
+		var params = get_params();
+		params.s = currentSearchTerm;
+		history.replaceState(null, null, parse_params(params));
+
+		searchbtn.classList.add("show");
+		searchbtn.firstChild.nodeValue = "Reset Search";
+
+		// calculate percent matched, excluding vertical overlap
+		var count = 0;
+		var lastx = -1;
+		var lastw = 0;
+		var keys = Array();
+		for (k in matches) {
+			if (matches.hasOwnProperty(k))
+				keys.push(k);
+		}
+		// sort the matched frames by their x location
+		// ascending, then width descending
+		keys.sort(function(a, b){
+			return a - b;
+		});
+		// Step through frames saving only the biggest bottom-up frames
+		// thanks to the sort order. This relies on the tree property
+		// where children are always smaller than their parents.
+		var fudge = 0.0001;	// JavaScript floating point
+		for (var k in keys) {
+			var x = parseFloat(keys[k]);
+			var w = matches[keys[k]];
+			if (x >= lastx + lastw - fudge) {
+				count += w;
+				lastx = x;
+				lastw = w;
+			}
+		}
+		// display matched percent
+		matchedtxt.classList.remove("hide");
+		var pct = 100 * count / maxwidth;
+		if (pct != 100) pct = pct.toFixed(1)
+		matchedtxt.firstChild.nodeValue = "Matched: " + pct + "%";
+	}
+]]>
+</script>
+<rect x="0.0" y="0" width="1200.0" height="1126.0" fill="url(#background)"  />
+<text id="title" x="600.00" y="24" >Flame Graph</text>
+<text id="details" x="10.00" y="1109" > </text>
+<text id="unzoom" x="10.00" y="24" class="hide">Reset Zoom</text>
+<text id="search" x="1090.00" y="24" >Search</text>
+<text id="ignorecase" x="1174.00" y="24" >ic</text>
+<text id="matched" x="1090.00" y="1109" > </text>
+<g id="frames">
+<g >
+<title>tsavorite::read_operation::read (30,150,750 samples, 8.82%)</title><rect x="166.2" y="789" width="104.1" height="15.0" fill="rgb(252,217,51)" rx="2" ry="2" />
+<text  x="169.18" y="799.5" >tsavorite::r..</text>
+</g>
+<g >
+<title>skb_network_protocol (5,025,125 samples, 1.47%)</title><rect x="1103.2" y="373" width="17.4" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="1106.24" y="383.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::task::core::Core&lt;T,S&gt;::poll (311,557,750 samples, 91.18%)</title><rect x="79.4" y="885" width="1075.9" height="15.0" fill="rgb(245,186,44)" rx="2" ry="2" />
+<text  x="82.41" y="895.5" >tokio::runtime::task::core::Core&lt;T,S&gt;::poll</text>
+</g>
+<g >
+<title>__do_softirq (125,628,125 samples, 36.76%)</title><rect x="652.1" y="309" width="433.8" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="655.06" y="319.5" >__do_softirq</text>
+</g>
+<g >
+<title>tcp_ack (5,025,125 samples, 1.47%)</title><rect x="773.5" y="69" width="17.4" height="15.0" fill="rgb(230,115,27)" rx="2" ry="2" />
+<text  x="776.53" y="79.5" ></text>
+</g>
+<g >
+<title>nf_ct_acct_add (5,025,125 samples, 1.47%)</title><rect x="600.0" y="389" width="17.4" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="603.00" y="399.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (341,708,500 samples, 100.00%)</title><rect x="10.0" y="1029" width="1180.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="1039.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>tsavorite::hybrid_log::record_format::parse_record_layout (5,025,125 samples, 1.47%)</title><rect x="183.5" y="741" width="17.4" height="15.0" fill="rgb(210,25,6)" rx="2" ry="2" />
+<text  x="186.53" y="751.5" ></text>
+</g>
+<g >
+<title>tcp_push (170,854,250 samples, 50.00%)</title><rect x="530.6" y="565" width="590.0" height="15.0" fill="rgb(243,176,42)" rx="2" ry="2" />
+<text  x="533.59" y="575.5" >tcp_push</text>
+</g>
+<g >
+<title>tcp_mstamp_refresh (20,100,500 samples, 5.88%)</title><rect x="981.8" y="69" width="69.4" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="984.76" y="79.5" >tcp_mst..</text>
+</g>
+<g >
+<title>tokio::runtime::context::scoped::Scoped&lt;T&gt;::set (341,708,500 samples, 100.00%)</title><rect x="10.0" y="933" width="1180.0" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="13.00" y="943.5" >tokio::runtime::context::scoped::Scoped&lt;T&gt;::set</text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::current_thread::Context::enter (5,025,125 samples, 1.47%)</title><rect x="10.0" y="901" width="17.4" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="13.00" y="911.5" ></text>
+</g>
+<g >
+<title>ip_rcv (105,527,625 samples, 30.88%)</title><rect x="721.5" y="197" width="364.4" height="15.0" fill="rgb(209,22,5)" rx="2" ry="2" />
+<text  x="724.47" y="207.5" >ip_rcv</text>
+</g>
+<g >
+<title>ip_queue_xmit (170,854,250 samples, 50.00%)</title><rect x="530.6" y="501" width="590.0" height="15.0" fill="rgb(230,119,28)" rx="2" ry="2" />
+<text  x="533.59" y="511.5" >ip_queue_xmit</text>
+</g>
+<g >
+<title>std::time::Instant::elapsed (10,050,250 samples, 2.94%)</title><rect x="27.4" y="901" width="34.7" height="15.0" fill="rgb(240,163,39)" rx="2" ry="2" />
+<text  x="30.35" y="911.5" >st..</text>
+</g>
+<g >
+<title>[libc.so.6] (201,005,000 samples, 58.82%)</title><rect x="443.8" y="789" width="694.1" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="446.82" y="799.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>validate_xmit_skb.isra.0 (5,025,125 samples, 1.47%)</title><rect x="1103.2" y="389" width="17.4" height="15.0" fill="rgb(234,134,32)" rx="2" ry="2" />
+<text  x="1106.24" y="399.5" ></text>
+</g>
+<g >
+<title>core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h5f43bbb3c310d958 (341,708,500 samples, 100.00%)</title><rect x="10.0" y="997" width="1180.0" height="15.0" fill="rgb(237,150,35)" rx="2" ry="2" />
+<text  x="13.00" y="1007.5" >core::ops::function::FnOnce::call_once$u7b$$u7b$vtable.shim$u7d$$u7d$::h5f43bbb3c310d958</text>
+</g>
+<g >
+<title>tcp_write_xmit (170,854,250 samples, 50.00%)</title><rect x="530.6" y="533" width="590.0" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="533.59" y="543.5" >tcp_write_xmit</text>
+</g>
+<g >
+<title>__arm64_sys_sendto (175,879,375 samples, 51.47%)</title><rect x="530.6" y="661" width="607.3" height="15.0" fill="rgb(221,74,17)" rx="2" ry="2" />
+<text  x="533.59" y="671.5" >__arm64_sys_sendto</text>
+</g>
+<g >
+<title>tokio::runtime::task::harness::Harness&lt;T,S&gt;::poll (10,050,250 samples, 2.94%)</title><rect x="1155.3" y="885" width="34.7" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="1158.29" y="895.5" >to..</text>
+</g>
+<g >
+<title>[libc.so.6] (201,005,000 samples, 58.82%)</title><rect x="443.8" y="757" width="694.1" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="446.82" y="767.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>garnet_server::connection_owner_routing::execute_frame_on_owner_thread (55,276,375 samples, 16.18%)</title><rect x="79.4" y="837" width="190.9" height="15.0" fill="rgb(220,73,17)" rx="2" ry="2" />
+<text  x="82.41" y="847.5" >garnet_server::connectio..</text>
+</g>
+<g >
+<title>net_rx_action (120,603,000 samples, 35.29%)</title><rect x="669.4" y="277" width="416.5" height="15.0" fill="rgb(240,164,39)" rx="2" ry="2" />
+<text  x="672.41" y="287.5" >net_rx_action</text>
+</g>
+<g >
+<title>tokio::io::poll_evented::PollEvented&lt;E&gt;::poll_read (40,201,000 samples, 11.76%)</title><rect x="287.6" y="837" width="138.9" height="15.0" fill="rgb(249,206,49)" rx="2" ry="2" />
+<text  x="290.65" y="847.5" >tokio::io::poll_e..</text>
+</g>
+<g >
+<title>__local_bh_enable_ip (125,628,125 samples, 36.76%)</title><rect x="652.1" y="389" width="433.8" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="655.06" y="399.5" >__local_bh_enable_ip</text>
+</g>
+<g >
+<title>nf_conntrack_in (20,100,500 samples, 5.88%)</title><rect x="565.3" y="421" width="69.4" height="15.0" fill="rgb(206,8,2)" rx="2" ry="2" />
+<text  x="568.29" y="431.5" >nf_conn..</text>
+</g>
+<g >
+<title>tcp_sendmsg (175,879,375 samples, 51.47%)</title><rect x="530.6" y="597" width="607.3" height="15.0" fill="rgb(223,83,19)" rx="2" ry="2" />
+<text  x="533.59" y="607.5" >tcp_sendmsg</text>
+</g>
+<g >
+<title>tokio::runtime::task::harness::Harness&lt;T,S&gt;::poll (321,608,000 samples, 94.12%)</title><rect x="79.4" y="901" width="1110.6" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="82.41" y="911.5" >tokio::runtime::task::harness::Harness&lt;T,S&gt;::poll</text>
+</g>
+<g >
+<title>tsavorite::hash_index::HashIndex::find_tag_address (15,075,375 samples, 4.41%)</title><rect x="218.2" y="757" width="52.1" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="221.24" y="767.5" >tsavo..</text>
+</g>
+<g >
+<title>core::hash::BuildHasher::hash_one (5,025,125 samples, 1.47%)</title><rect x="148.8" y="741" width="17.4" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="151.82" y="751.5" ></text>
+</g>
+<g >
+<title>dev_hard_start_xmit (5,025,125 samples, 1.47%)</title><rect x="1085.9" y="389" width="17.3" height="15.0" fill="rgb(219,66,15)" rx="2" ry="2" />
+<text  x="1088.88" y="399.5" ></text>
+</g>
+<g >
+<title>__sys_sendto (175,879,375 samples, 51.47%)</title><rect x="530.6" y="645" width="607.3" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="533.59" y="655.5" >__sys_sendto</text>
+</g>
+<g >
+<title>hash_conntrack_raw (5,025,125 samples, 1.47%)</title><rect x="547.9" y="421" width="17.4" height="15.0" fill="rgb(220,70,16)" rx="2" ry="2" />
+<text  x="550.94" y="431.5" ></text>
+</g>
+<g >
+<title>__netif_receive_skb_one_core (110,552,750 samples, 32.35%)</title><rect x="704.1" y="213" width="381.8" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="707.12" y="223.5" >__netif_receive_skb_one_core</text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::current_thread::Context::enter (326,633,125 samples, 95.59%)</title><rect x="62.1" y="917" width="1127.9" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="65.06" y="927.5" >tokio::runtime::scheduler::current_thread::Context::enter</text>
+</g>
+<g >
+<title>tcp_schedule_loss_probe.part.0 (5,025,125 samples, 1.47%)</title><rect x="773.5" y="53" width="17.4" height="15.0" fill="rgb(248,198,47)" rx="2" ry="2" />
+<text  x="776.53" y="63.5" ></text>
+</g>
+<g >
+<title>ip_protocol_deliver_rcu (95,477,375 samples, 27.94%)</title><rect x="721.5" y="133" width="329.7" height="15.0" fill="rgb(215,49,11)" rx="2" ry="2" />
+<text  x="724.47" y="143.5" >ip_protocol_deliver_rcu</text>
+</g>
+<g >
+<title>[libc.so.6] (35,175,875 samples, 10.29%)</title><rect x="287.6" y="773" width="121.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="290.65" y="783.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>garnet_server::request_lifecycle::string_commands::&lt;impl garnet_server::request_lifecycle::RequestProcessor&gt;::handle_get (55,276,375 samples, 16.18%)</title><rect x="79.4" y="821" width="190.9" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="82.41" y="831.5" >garnet_server::request_l..</text>
+</g>
+<g >
+<title>nf_ct_seq_offset (5,025,125 samples, 1.47%)</title><rect x="617.4" y="405" width="17.3" height="15.0" fill="rgb(209,19,4)" rx="2" ry="2" />
+<text  x="620.35" y="415.5" ></text>
+</g>
+<g >
+<title>ip_local_deliver (95,477,375 samples, 27.94%)</title><rect x="721.5" y="165" width="329.7" height="15.0" fill="rgb(230,116,27)" rx="2" ry="2" />
+<text  x="724.47" y="175.5" >ip_local_deliver</text>
+</g>
+<g >
+<title>__netif_receive_skb_core.constprop.0 (5,025,125 samples, 1.47%)</title><rect x="704.1" y="197" width="17.4" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="707.12" y="207.5" ></text>
+</g>
+<g >
+<title>nf_hook_slow (25,125,625 samples, 7.35%)</title><rect x="547.9" y="453" width="86.8" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="550.94" y="463.5" >nf_hook_slow</text>
+</g>
+<g >
+<title>sockfd_lookup_light (5,025,125 samples, 1.47%)</title><rect x="374.4" y="629" width="17.4" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="377.41" y="639.5" ></text>
+</g>
+<g >
+<title>el0_svc (190,954,750 samples, 55.88%)</title><rect x="478.5" y="709" width="659.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="481.53" y="719.5" >el0_svc</text>
+</g>
+<g >
+<title>ktime_get (20,100,500 samples, 5.88%)</title><rect x="981.8" y="53" width="69.4" height="15.0" fill="rgb(207,10,2)" rx="2" ry="2" />
+<text  x="984.76" y="63.5" >ktime_get</text>
+</g>
+<g >
+<title>garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::h5f99148f514a7923 (311,557,750 samples, 91.18%)</title><rect x="79.4" y="853" width="1075.9" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="82.41" y="863.5" >garnet_server::connection_handler::handle_connection::_$u7b$$u7b$closure$u7d$$u7d$::h5f99148f514a7923</text>
+</g>
+<g >
+<title>std::sys::pal::unix::time::Timespec::now (10,050,250 samples, 2.94%)</title><rect x="27.4" y="885" width="34.7" height="15.0" fill="rgb(227,104,25)" rx="2" ry="2" />
+<text  x="30.35" y="895.5" >st..</text>
+</g>
+<g >
+<title>__dev_queue_xmit (135,678,375 samples, 39.71%)</title><rect x="652.1" y="405" width="468.5" height="15.0" fill="rgb(244,182,43)" rx="2" ry="2" />
+<text  x="655.06" y="415.5" >__dev_queue_xmit</text>
+</g>
+<g >
+<title>tokio::io::poll_evented::PollEvented&lt;E&gt;::poll_write (206,030,125 samples, 60.29%)</title><rect x="426.5" y="837" width="711.4" height="15.0" fill="rgb(226,97,23)" rx="2" ry="2" />
+<text  x="429.47" y="847.5" >tokio::io::poll_evented::PollEvented&lt;E&gt;::poll_write</text>
+</g>
+<g >
+<title>tcp_stream_alloc_skb (5,025,125 samples, 1.47%)</title><rect x="1120.6" y="565" width="17.3" height="15.0" fill="rgb(252,218,52)" rx="2" ry="2" />
+<text  x="1123.59" y="575.5" ></text>
+</g>
+<g >
+<title>do_el0_svc (15,075,375 samples, 4.41%)</title><rect x="357.1" y="693" width="52.0" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="360.06" y="703.5" >do_el..</text>
+</g>
+<g >
+<title>nf_hook_slow (5,025,125 samples, 1.47%)</title><rect x="1068.5" y="181" width="17.4" height="15.0" fill="rgb(243,175,42)" rx="2" ry="2" />
+<text  x="1071.53" y="191.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::context::runtime::enter_runtime (341,708,500 samples, 100.00%)</title><rect x="10.0" y="965" width="1180.0" height="15.0" fill="rgb(243,177,42)" rx="2" ry="2" />
+<text  x="13.00" y="975.5" >tokio::runtime::context::runtime::enter_runtime</text>
+</g>
+<g >
+<title>__netif_receive_skb (110,552,750 samples, 32.35%)</title><rect x="704.1" y="229" width="381.8" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="707.12" y="239.5" >__netif_receive_skb</text>
+</g>
+<g >
+<title>tokio::runtime::task::state::State::transition_to_idle (5,025,125 samples, 1.47%)</title><rect x="1172.6" y="869" width="17.4" height="15.0" fill="rgb(214,44,10)" rx="2" ry="2" />
+<text  x="1175.65" y="879.5" ></text>
+</g>
+<g >
+<title>handle_softirqs (125,628,125 samples, 36.76%)</title><rect x="652.1" y="293" width="433.8" height="15.0" fill="rgb(238,156,37)" rx="2" ry="2" />
+<text  x="655.06" y="303.5" >handle_softirqs</text>
+</g>
+<g >
+<title>std::thread::local::LocalKey&lt;T&gt;::with (10,050,250 samples, 2.94%)</title><rect x="131.5" y="773" width="34.7" height="15.0" fill="rgb(227,103,24)" rx="2" ry="2" />
+<text  x="134.47" y="783.5" >st..</text>
+</g>
+<g >
+<title>core::hash::BuildHasher::hash_one (5,025,125 samples, 1.47%)</title><rect x="148.8" y="725" width="17.4" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="151.82" y="735.5" ></text>
+</g>
+<g >
+<title>el0_svc (20,100,500 samples, 5.88%)</title><rect x="339.7" y="709" width="69.4" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="342.71" y="719.5" >el0_svc</text>
+</g>
+<g >
+<title>_ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$17hff56903ca0704d07E.llvm.6677929401443945953 (311,557,750 samples, 91.18%)</title><rect x="79.4" y="869" width="1075.9" height="15.0" fill="rgb(214,45,10)" rx="2" ry="2" />
+<text  x="82.41" y="879.5" >_ZN13garnet_server14server_runtime53run_listener_with_shutdown_and_cluster_with_processor28_$u7b$$u7b$closure$u7d$$u7d$28_$u7b$$u7b$closure$u7d$$u7d$..</text>
+</g>
+<g >
+<title>_ZN5alloc7raw_vec20RawVecInner$LT$A$GT$11finish_grow17hbe5a850cbba9662aE.llvm.7638053681190762514 (10,050,250 samples, 2.94%)</title><rect x="79.4" y="757" width="34.7" height="15.0" fill="rgb(208,15,3)" rx="2" ry="2" />
+<text  x="82.41" y="767.5" >_Z..</text>
+</g>
+<g >
+<title>garnet_server::connection_protocol::ascii_eq_ignore_case (5,025,125 samples, 1.47%)</title><rect x="270.3" y="837" width="17.3" height="15.0" fill="rgb(230,117,27)" rx="2" ry="2" />
+<text  x="273.29" y="847.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::io::registration::Registration::poll_ready (5,025,125 samples, 1.47%)</title><rect x="409.1" y="805" width="17.4" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="412.12" y="815.5" ></text>
+</g>
+<g >
+<title>hashbrown::map::HashMap&lt;K,V,S,A&gt;::insert (5,025,125 samples, 1.47%)</title><rect x="148.8" y="757" width="17.4" height="15.0" fill="rgb(221,75,18)" rx="2" ry="2" />
+<text  x="151.82" y="767.5" ></text>
+</g>
+<g >
+<title>garnet-node-127 (341,708,500 samples, 100.00%)</title><rect x="10.0" y="1061" width="1180.0" height="15.0" fill="rgb(220,71,17)" rx="2" ry="2" />
+<text  x="13.00" y="1071.5" >garnet-node-127</text>
+</g>
+<g >
+<title>__fget_light (5,025,125 samples, 1.47%)</title><rect x="374.4" y="597" width="17.4" height="15.0" fill="rgb(233,132,31)" rx="2" ry="2" />
+<text  x="377.41" y="607.5" ></text>
+</g>
+<g >
+<title>ip_rcv_finish (100,502,500 samples, 29.41%)</title><rect x="721.5" y="181" width="347.0" height="15.0" fill="rgb(205,1,0)" rx="2" ry="2" />
+<text  x="724.47" y="191.5" >ip_rcv_finish</text>
+</g>
+<g >
+<title>all (341,708,500 samples, 100%)</title><rect x="10.0" y="1077" width="1180.0" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="13.00" y="1087.5" ></text>
+</g>
+<g >
+<title>call_on_irq_stack (125,628,125 samples, 36.76%)</title><rect x="652.1" y="341" width="433.8" height="15.0" fill="rgb(239,156,37)" rx="2" ry="2" />
+<text  x="655.06" y="351.5" >call_on_irq_stack</text>
+</g>
+<g >
+<title>std::sys::backtrace::__rust_begin_short_backtrace (341,708,500 samples, 100.00%)</title><rect x="10.0" y="981" width="1180.0" height="15.0" fill="rgb(210,23,5)" rx="2" ry="2" />
+<text  x="13.00" y="991.5" >std::sys::backtrace::__rust_begin_short_backtrace</text>
+</g>
+<g >
+<title>__nf_conntrack_find_get (5,025,125 samples, 1.47%)</title><rect x="565.3" y="405" width="17.3" height="15.0" fill="rgb(243,178,42)" rx="2" ry="2" />
+<text  x="568.29" y="415.5" ></text>
+</g>
+<g >
+<title>tsavorite::tsavorite_kv::TsavoriteSession&lt;K,V,D,F&gt;::read (40,201,000 samples, 11.76%)</title><rect x="131.5" y="805" width="138.8" height="15.0" fill="rgb(246,192,46)" rx="2" ry="2" />
+<text  x="134.47" y="815.5" >tsavorite::tsavor..</text>
+</g>
+<g >
+<title>el0t_64_sync (20,100,500 samples, 5.88%)</title><rect x="339.7" y="741" width="69.4" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="342.71" y="751.5" >el0t_64..</text>
+</g>
+<g >
+<title>__ip_local_out (30,150,750 samples, 8.82%)</title><rect x="530.6" y="469" width="104.1" height="15.0" fill="rgb(206,5,1)" rx="2" ry="2" />
+<text  x="533.59" y="479.5" >__ip_local_out</text>
+</g>
+<g >
+<title>____do_softirq (125,628,125 samples, 36.76%)</title><rect x="652.1" y="325" width="433.8" height="15.0" fill="rgb(219,65,15)" rx="2" ry="2" />
+<text  x="655.06" y="335.5" >____do_softirq</text>
+</g>
+<g >
+<title>tcp_rcv_established (85,427,125 samples, 25.00%)</title><rect x="756.2" y="85" width="295.0" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="759.18" y="95.5" >tcp_rcv_established</text>
+</g>
+<g >
+<title>process_backlog (120,603,000 samples, 35.29%)</title><rect x="669.4" y="245" width="416.5" height="15.0" fill="rgb(224,90,21)" rx="2" ry="2" />
+<text  x="672.41" y="255.5" >process_backlog</text>
+</g>
+<g >
+<title>ip_local_deliver_finish (95,477,375 samples, 27.94%)</title><rect x="721.5" y="149" width="329.7" height="15.0" fill="rgb(225,95,22)" rx="2" ry="2" />
+<text  x="724.47" y="159.5" >ip_local_deliver_finish</text>
+</g>
+<g >
+<title>tcp_send_delayed_ack (5,025,125 samples, 1.47%)</title><rect x="756.2" y="53" width="17.3" height="15.0" fill="rgb(248,197,47)" rx="2" ry="2" />
+<text  x="759.18" y="63.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;std::os::unix::net::stream::UnixStream as std::io::Read&gt;::read (35,175,875 samples, 10.29%)</title><rect x="287.6" y="805" width="121.5" height="15.0" fill="rgb(241,169,40)" rx="2" ry="2" />
+<text  x="290.65" y="815.5" >&lt;&amp;std::os::unix..</text>
+</g>
+<g >
+<title>garnet_server::request_lifecycle::resp::append_bulk_string (10,050,250 samples, 2.94%)</title><rect x="79.4" y="805" width="34.7" height="15.0" fill="rgb(221,73,17)" rx="2" ry="2" />
+<text  x="82.41" y="815.5" >ga..</text>
+</g>
+<g >
+<title>sk_forced_mem_schedule (5,025,125 samples, 1.47%)</title><rect x="1120.6" y="549" width="17.3" height="15.0" fill="rgb(218,63,15)" rx="2" ry="2" />
+<text  x="1123.59" y="559.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::io::registration::Registration::poll_ready (5,025,125 samples, 1.47%)</title><rect x="409.1" y="821" width="17.4" height="15.0" fill="rgb(209,20,4)" rx="2" ry="2" />
+<text  x="412.12" y="831.5" ></text>
+</g>
+<g >
+<title>clock_gettime (10,050,250 samples, 2.94%)</title><rect x="27.4" y="869" width="34.7" height="15.0" fill="rgb(213,39,9)" rx="2" ry="2" />
+<text  x="30.35" y="879.5" >cl..</text>
+</g>
+<g >
+<title>do_softirq (125,628,125 samples, 36.76%)</title><rect x="652.1" y="373" width="433.8" height="15.0" fill="rgb(223,87,20)" rx="2" ry="2" />
+<text  x="655.06" y="383.5" >do_softirq</text>
+</g>
+<g >
+<title>ip_rcv_finish_core.isra.0 (5,025,125 samples, 1.47%)</title><rect x="1051.2" y="165" width="17.3" height="15.0" fill="rgb(207,12,2)" rx="2" ry="2" />
+<text  x="1054.18" y="175.5" ></text>
+</g>
+<g >
+<title>__local_bh_enable_ip (5,025,125 samples, 1.47%)</title><rect x="582.6" y="389" width="17.4" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="585.65" y="399.5" ></text>
+</g>
+<g >
+<title>tsavorite::hybrid_log::record_format::parse_value_span (5,025,125 samples, 1.47%)</title><rect x="183.5" y="757" width="17.4" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="186.53" y="767.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (35,175,875 samples, 10.29%)</title><rect x="287.6" y="789" width="121.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="290.65" y="799.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>__tcp_push_pending_frames (170,854,250 samples, 50.00%)</title><rect x="530.6" y="549" width="590.0" height="15.0" fill="rgb(230,117,28)" rx="2" ry="2" />
+<text  x="533.59" y="559.5" >__tcp_push_pending_frames</text>
+</g>
+<g >
+<title>ip_output (140,703,500 samples, 41.18%)</title><rect x="634.7" y="469" width="485.9" height="15.0" fill="rgb(247,194,46)" rx="2" ry="2" />
+<text  x="637.71" y="479.5" >ip_output</text>
+</g>
+<g >
+<title>garnet_server::request_lifecycle::string_commands::&lt;impl garnet_server::request_lifecycle::RequestProcessor&gt;::handle_get (5,025,125 samples, 1.47%)</title><rect x="114.1" y="805" width="17.4" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="117.12" y="815.5" ></text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::current_thread::CoreGuard::block_on (341,708,500 samples, 100.00%)</title><rect x="10.0" y="949" width="1180.0" height="15.0" fill="rgb(222,82,19)" rx="2" ry="2" />
+<text  x="13.00" y="959.5" >tokio::runtime::scheduler::current_thread::CoreGuard::block_on</text>
+</g>
+<g >
+<title>tsavorite::read_operation::read (15,075,375 samples, 4.41%)</title><rect x="218.2" y="773" width="52.1" height="15.0" fill="rgb(252,217,51)" rx="2" ry="2" />
+<text  x="221.24" y="783.5" >tsavo..</text>
+</g>
+<g >
+<title>tokio::runtime::metrics::batch::MetricsBatch::end_processing_scheduled_tasks (10,050,250 samples, 2.94%)</title><rect x="27.4" y="917" width="34.7" height="15.0" fill="rgb(226,100,23)" rx="2" ry="2" />
+<text  x="30.35" y="927.5" >to..</text>
+</g>
+<g >
+<title>do_softirq_own_stack (125,628,125 samples, 36.76%)</title><rect x="652.1" y="357" width="433.8" height="15.0" fill="rgb(250,209,50)" rx="2" ry="2" />
+<text  x="655.06" y="367.5" >do_softirq_own_stack</text>
+</g>
+<g >
+<title>__tcp_transmit_skb (170,854,250 samples, 50.00%)</title><rect x="530.6" y="517" width="590.0" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="533.59" y="527.5" >__tcp_transmit_skb</text>
+</g>
+<g >
+<title>invoke_syscall.constprop.0 (15,075,375 samples, 4.41%)</title><rect x="357.1" y="677" width="52.0" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="360.06" y="687.5" >invok..</text>
+</g>
+<g >
+<title>[libc.so.6] (35,175,875 samples, 10.29%)</title><rect x="287.6" y="757" width="121.5" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="290.65" y="767.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>__napi_poll (120,603,000 samples, 35.29%)</title><rect x="669.4" y="261" width="416.5" height="15.0" fill="rgb(247,195,46)" rx="2" ry="2" />
+<text  x="672.41" y="271.5" >__napi_poll</text>
+</g>
+<g >
+<title>try_charge_memcg (5,025,125 samples, 1.47%)</title><rect x="1120.6" y="533" width="17.3" height="15.0" fill="rgb(210,27,6)" rx="2" ry="2" />
+<text  x="1123.59" y="543.5" ></text>
+</g>
+<g >
+<title>__fdget (5,025,125 samples, 1.47%)</title><rect x="374.4" y="613" width="17.4" height="15.0" fill="rgb(214,41,10)" rx="2" ry="2" />
+<text  x="377.41" y="623.5" ></text>
+</g>
+<g >
+<title>__sys_recvfrom (5,025,125 samples, 1.47%)</title><rect x="374.4" y="645" width="17.4" height="15.0" fill="rgb(247,197,47)" rx="2" ry="2" />
+<text  x="377.41" y="655.5" ></text>
+</g>
+<g >
+<title>__sock_sendmsg (175,879,375 samples, 51.47%)</title><rect x="530.6" y="629" width="607.3" height="15.0" fill="rgb(217,57,13)" rx="2" ry="2" />
+<text  x="533.59" y="639.5" >__sock_sendmsg</text>
+</g>
+<g >
+<title>__tcp_ack_snd_check (5,025,125 samples, 1.47%)</title><rect x="756.2" y="69" width="17.3" height="15.0" fill="rgb(231,121,29)" rx="2" ry="2" />
+<text  x="759.18" y="79.5" ></text>
+</g>
+<g >
+<title>memset (5,025,125 samples, 1.47%)</title><rect x="391.8" y="645" width="17.3" height="15.0" fill="rgb(208,14,3)" rx="2" ry="2" />
+<text  x="394.76" y="655.5" ></text>
+</g>
+<g >
+<title>tcp_sendmsg_locked (175,879,375 samples, 51.47%)</title><rect x="530.6" y="581" width="607.3" height="15.0" fill="rgb(215,48,11)" rx="2" ry="2" />
+<text  x="533.59" y="591.5" >tcp_sendmsg_locked</text>
+</g>
+<g >
+<title>&lt;&amp;mio::net::tcp::stream::TcpStream as std::io::Write&gt;::write (206,030,125 samples, 60.29%)</title><rect x="426.5" y="821" width="711.4" height="15.0" fill="rgb(207,11,2)" rx="2" ry="2" />
+<text  x="429.47" y="831.5" >&lt;&amp;mio::net::tcp::stream::TcpStream as std::io::Write&gt;::write</text>
+</g>
+<g >
+<title>tokio::runtime::scheduler::current_thread::Context::enter (5,025,125 samples, 1.47%)</title><rect x="62.1" y="901" width="17.3" height="15.0" fill="rgb(216,54,13)" rx="2" ry="2" />
+<text  x="65.06" y="911.5" ></text>
+</g>
+<g >
+<title>tcp_data_ready (55,276,375 samples, 16.18%)</title><rect x="790.9" y="69" width="190.9" height="15.0" fill="rgb(232,124,29)" rx="2" ry="2" />
+<text  x="793.88" y="79.5" >tcp_data_ready</text>
+</g>
+<g >
+<title>__ip_queue_xmit (170,854,250 samples, 50.00%)</title><rect x="530.6" y="485" width="590.0" height="15.0" fill="rgb(253,223,53)" rx="2" ry="2" />
+<text  x="533.59" y="495.5" >__ip_queue_xmit</text>
+</g>
+<g >
+<title>&lt;&amp;std::os::unix::net::stream::UnixStream as std::io::Write&gt;::write (201,005,000 samples, 58.82%)</title><rect x="443.8" y="805" width="694.1" height="15.0" fill="rgb(244,181,43)" rx="2" ry="2" />
+<text  x="446.82" y="815.5" >&lt;&amp;std::os::unix::net::stream::UnixStream as std::io::Write&gt;::write</text>
+</g>
+<g >
+<title>__wake_up_sync_key (55,276,375 samples, 16.18%)</title><rect x="790.9" y="53" width="190.9" height="15.0" fill="rgb(226,100,24)" rx="2" ry="2" />
+<text  x="793.88" y="63.5" >__wake_up_sync_key</text>
+</g>
+<g >
+<title>inet_sendmsg (175,879,375 samples, 51.47%)</title><rect x="530.6" y="613" width="607.3" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="533.59" y="623.5" >inet_sendmsg</text>
+</g>
+<g >
+<title>tokio::runtime::context::scoped::Scoped&lt;T&gt;::set (5,025,125 samples, 1.47%)</title><rect x="10.0" y="917" width="17.4" height="15.0" fill="rgb(221,77,18)" rx="2" ry="2" />
+<text  x="13.00" y="927.5" ></text>
+</g>
+<g >
+<title>[libc.so.6] (201,005,000 samples, 58.82%)</title><rect x="443.8" y="773" width="694.1" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="446.82" y="783.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVecInner&lt;A&gt;::reserve::do_reserve_and_handle (10,050,250 samples, 2.94%)</title><rect x="79.4" y="773" width="34.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="82.41" y="783.5" >al..</text>
+</g>
+<g >
+<title>el0t_64_sync_handler (190,954,750 samples, 55.88%)</title><rect x="478.5" y="725" width="659.4" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="481.53" y="735.5" >el0t_64_sync_handler</text>
+</g>
+<g >
+<title>[libc.so.6] (341,708,500 samples, 100.00%)</title><rect x="10.0" y="1045" width="1180.0" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="13.00" y="1055.5" >[libc.so.6]</text>
+</g>
+<g >
+<title>tcp_v4_do_rcv (90,452,250 samples, 26.47%)</title><rect x="738.8" y="101" width="312.4" height="15.0" fill="rgb(210,26,6)" rx="2" ry="2" />
+<text  x="741.82" y="111.5" >tcp_v4_do_rcv</text>
+</g>
+<g >
+<title>ktime_get_seconds (5,025,125 samples, 1.47%)</title><rect x="738.8" y="85" width="17.4" height="15.0" fill="rgb(242,171,40)" rx="2" ry="2" />
+<text  x="741.82" y="95.5" ></text>
+</g>
+<g >
+<title>tcp_v4_rcv (95,477,375 samples, 27.94%)</title><rect x="721.5" y="117" width="329.7" height="15.0" fill="rgb(237,148,35)" rx="2" ry="2" />
+<text  x="724.47" y="127.5" >tcp_v4_rcv</text>
+</g>
+<g >
+<title>__ip_finish_output (135,678,375 samples, 39.71%)</title><rect x="652.1" y="437" width="468.5" height="15.0" fill="rgb(215,47,11)" rx="2" ry="2" />
+<text  x="655.06" y="447.5" >__ip_finish_output</text>
+</g>
+<g >
+<title>__kernel_clock_gettime (10,050,250 samples, 2.94%)</title><rect x="27.4" y="853" width="34.7" height="15.0" fill="rgb(231,122,29)" rx="2" ry="2" />
+<text  x="30.35" y="863.5" >__..</text>
+</g>
+<g >
+<title>ipv4_conntrack_local (25,125,625 samples, 7.35%)</title><rect x="547.9" y="437" width="86.8" height="15.0" fill="rgb(236,146,34)" rx="2" ry="2" />
+<text  x="550.94" y="447.5" >ipv4_connt..</text>
+</g>
+<g >
+<title>std::sys::thread::unix::Thread::new::thread_start (341,708,500 samples, 100.00%)</title><rect x="10.0" y="1013" width="1180.0" height="15.0" fill="rgb(250,210,50)" rx="2" ry="2" />
+<text  x="13.00" y="1023.5" >std::sys::thread::unix::Thread::new::thread_start</text>
+</g>
+<g >
+<title>tokio::runtime::io::registration::Registration::try_io (5,025,125 samples, 1.47%)</title><rect x="1137.9" y="821" width="17.4" height="15.0" fill="rgb(225,94,22)" rx="2" ry="2" />
+<text  x="1140.94" y="831.5" ></text>
+</g>
+<g >
+<title>&lt;&amp;mio::net::tcp::stream::TcpStream as std::io::Read&gt;::read (35,175,875 samples, 10.29%)</title><rect x="287.6" y="821" width="121.5" height="15.0" fill="rgb(254,229,54)" rx="2" ry="2" />
+<text  x="290.65" y="831.5" >&lt;&amp;mio::net::tcp..</text>
+</g>
+<g >
+<title>el0t_64_sync (190,954,750 samples, 55.88%)</title><rect x="478.5" y="741" width="659.4" height="15.0" fill="rgb(217,56,13)" rx="2" ry="2" />
+<text  x="481.53" y="751.5" >el0t_64_sync</text>
+</g>
+<g >
+<title>[libc.so.6] (5,025,125 samples, 1.47%)</title><rect x="166.2" y="757" width="17.3" height="15.0" fill="rgb(223,84,20)" rx="2" ry="2" />
+<text  x="169.18" y="767.5" ></text>
+</g>
+<g >
+<title>alloc::raw_vec::RawVecInner&lt;A&gt;::reserve::do_reserve_and_handle (10,050,250 samples, 2.94%)</title><rect x="79.4" y="789" width="34.7" height="15.0" fill="rgb(212,35,8)" rx="2" ry="2" />
+<text  x="82.41" y="799.5" >al..</text>
+</g>
+<g >
+<title>nf_conntrack_tcp_packet (10,050,250 samples, 2.94%)</title><rect x="582.6" y="405" width="34.8" height="15.0" fill="rgb(237,147,35)" rx="2" ry="2" />
+<text  x="585.65" y="415.5" >nf..</text>
+</g>
+<g >
+<title>tsavorite::read_operation::materialize_record_at (5,025,125 samples, 1.47%)</title><rect x="200.9" y="757" width="17.3" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="203.88" y="767.5" ></text>
+</g>
+<g >
+<title>ip_finish_output2 (135,678,375 samples, 39.71%)</title><rect x="652.1" y="421" width="468.5" height="15.0" fill="rgb(219,67,16)" rx="2" ry="2" />
+<text  x="655.06" y="431.5" >ip_finish_output2</text>
+</g>
+<g >
+<title>garnet_common::span_byte::SpanByteRef::parse (5,025,125 samples, 1.47%)</title><rect x="183.5" y="725" width="17.4" height="15.0" fill="rgb(205,0,0)" rx="2" ry="2" />
+<text  x="186.53" y="735.5" ></text>
+</g>
+<g >
+<title>__arm64_sys_recvfrom (10,050,250 samples, 2.94%)</title><rect x="374.4" y="661" width="34.7" height="15.0" fill="rgb(232,125,30)" rx="2" ry="2" />
+<text  x="377.41" y="671.5" >__..</text>
+</g>
+<g >
+<title>do_el0_svc (180,904,500 samples, 52.94%)</title><rect x="513.2" y="693" width="624.7" height="15.0" fill="rgb(218,60,14)" rx="2" ry="2" />
+<text  x="516.24" y="703.5" >do_el0_svc</text>
+</g>
+<g >
+<title>invoke_syscall.constprop.0 (180,904,500 samples, 52.94%)</title><rect x="513.2" y="677" width="624.7" height="15.0" fill="rgb(244,183,43)" rx="2" ry="2" />
+<text  x="516.24" y="687.5" >invoke_syscall.constprop.0</text>
+</g>
+<g >
+<title>arch_counter_get_cntvct (20,100,500 samples, 5.88%)</title><rect x="981.8" y="37" width="69.4" height="15.0" fill="rgb(219,64,15)" rx="2" ry="2" />
+<text  x="984.76" y="47.5" >arch_co..</text>
+</g>
+<g >
+<title>tokio::net::tcp::stream::TcpStream::try_read (5,025,125 samples, 1.47%)</title><rect x="1137.9" y="837" width="17.4" height="15.0" fill="rgb(223,86,20)" rx="2" ry="2" />
+<text  x="1140.94" y="847.5" ></text>
+</g>
+<g >
+<title>tsavorite::read_operation::materialize_record_at (15,075,375 samples, 4.41%)</title><rect x="166.2" y="773" width="52.0" height="15.0" fill="rgb(242,170,40)" rx="2" ry="2" />
+<text  x="169.18" y="783.5" >tsavo..</text>
+</g>
+<g >
+<title>ip_finish_output (140,703,500 samples, 41.18%)</title><rect x="634.7" y="453" width="485.9" height="15.0" fill="rgb(242,173,41)" rx="2" ry="2" />
+<text  x="637.71" y="463.5" >ip_finish_output</text>
+</g>
+<g >
+<title>el0t_64_sync_handler (20,100,500 samples, 5.88%)</title><rect x="339.7" y="725" width="69.4" height="15.0" fill="rgb(211,32,7)" rx="2" ry="2" />
+<text  x="342.71" y="735.5" >el0t_64..</text>
+</g>
+<g >
+<title>tsavorite::epoch::LightEpoch::pin (10,050,250 samples, 2.94%)</title><rect x="131.5" y="789" width="34.7" height="15.0" fill="rgb(230,118,28)" rx="2" ry="2" />
+<text  x="134.47" y="799.5" >ts..</text>
+</g>
+<g >
+<title>core::ops::function::FnOnce::call_once (5,025,125 samples, 1.47%)</title><rect x="131.5" y="757" width="17.3" height="15.0" fill="rgb(246,191,45)" rx="2" ry="2" />
+<text  x="134.47" y="767.5" ></text>
+</g>
+</g>
+</svg>

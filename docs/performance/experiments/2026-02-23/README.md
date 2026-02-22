@@ -8,6 +8,7 @@
 4. `13.03-single-port-current-thread-runtime-rejected`
 5. `13.04-owner-result-channel-mode-rejected`
 6. `13.05-listener-owner-colocation-accepted`
+7. `13.06-linux-hotspot-refresh-owner-pinned`
 
 ## Policy
 
