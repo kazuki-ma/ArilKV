@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-22
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 206
+> **Current Iteration**: 207
 
 ---
 
@@ -268,18 +268,19 @@
 | 11.90 | Add `LCS` coverage (`LEN`/`IDX` options) and refresh compatibility matrix | DONE | 11.89 | Added command catalog/dispatch/lifecycle wiring for `LCS` with default sequence response plus `LEN` and `IDX` output modes, including `MINMATCHLEN` and `WITHMATCHLEN` option handling for `IDX` mode. Added lifecycle tests for sequence/len/idx output shapes, option validation errors, missing-key behavior, and wrongtype handling. Validation: `cargo test -p garnet-server -- --nocapture` (`190 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-105511` with tests `6/4/2`), and command matrix refresh now reports `219/241` declared coverage (`90.87%`). |
 | 11.91 | Add `SORT`/`SORT_RO` coverage and refresh compatibility matrix | DONE | 11.90 | Added command catalog/dispatch/lifecycle wiring for `SORT` and `SORT_RO` with support for `BY`, `LIMIT`, repeated `GET`, `ASC|DESC`, `ALPHA`, and `STORE` (write command only). Added lifecycle tests for numeric/alpha sort semantics, `BY` weight lookup, `GET #` expansion, `STORE` destination behavior, `SORT_RO` store rejection, numeric-parse validation, and wrongtype handling. Validation: `cargo test -p garnet-server -- --nocapture` (`191 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-105946` with tests `6/4/2`), and command matrix refresh now reports `221/241` declared coverage (`91.70%`). |
 | 11.92 | Add `PUBSUB` family compatibility surface (`SUBSCRIBE`/`PSUBSCRIBE`/`SSUBSCRIBE`/`UNSUBSCRIBE`/`PUNSUBSCRIBE`/`SUNSUBSCRIBE`/`PUBLISH`/`SPUBLISH`/`PUBSUB`) and refresh compatibility matrix | DONE | 11.91 | Added command catalog/dispatch/lifecycle wiring for the full pub/sub family with minimal deterministic compatibility shapes: subscribe/unsubscribe ack arrays, `PUBLISH`/`SPUBLISH` integer response, and `PUBSUB` introspection subcommands (`CHANNELS`, `SHARDCHANNELS`, `NUMSUB`, `SHARDNUMSUB`, `NUMPAT`). Added lifecycle coverage for response/error shapes and arity validation. Validation: `cargo test -p garnet-server -- --nocapture` (`192 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-110540` with tests `6/4/2`), and command matrix refresh now reports `230/241` declared coverage (`95.44%`). |
+| 11.93 | Add `GEOADD` coverage and refresh compatibility matrix | DONE | 11.92 | Added command catalog/dispatch/lifecycle wiring for `GEOADD` with core option handling (`NX`/`XX`/`CH`), range validation for longitude/latitude, and deterministic coordinate packing into zset scores for future geo-query command reuse. Added lifecycle coverage for happy-path inserts/updates plus syntax/arity/value errors. Validation: `cargo test -p garnet-server -- --nocapture` (`193 + 23 + 1` pass), Redis external subset PASS (`result_dir=garnet-rs/tests/interop/results/redis-runtest-external-20260222-111303` with tests `6/4/2`), and command matrix refresh now reports `231/241` declared coverage (`95.85%`, `NOT_IMPLEMENTED=10`). |
 | 11.5 | Run Linux differential profiling (`perf` + flamegraph) for `garnet-rs` vs Dragonfly | DONE | 11.9 | Added Dockerized Linux execution wrapper `garnet-rs/benches/docker_linux_perf_diff_profile.sh` and completed differential captures with analysis in `docs/performance/linux-perf-diff-docker-2026-02-20.md`. Current robust snapshot is based on `RUNS=3` median aggregation (`/tmp/garnet-linux-perf-median-r3-20260220-133907`): Dragonfly vs Garnet throughput ratio `SET 1.793x`, `GET 1.496x`, while latest single-run hotspot capture remains at `garnet-rs/benches/results/linux-perf-diff-docker-20260220-133340`. |
 | 11.6 | Add automated performance regression gate | DONE | 11.5 | Added `garnet-rs/benches/perf_regression_gate_local.sh` (repeated-run median gate with memtier summary integrity checks, per-run CSV + summary output, threshold-based exit status) and CI automation `.github/workflows/garnet-rs-perf-gate.yml` (nightly + workflow_dispatch on `ubuntu-latest`, artifact upload included). |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
-Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=11` as of iteration 206).
+Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=10` as of iteration 207).
 
 | Backlog ID | Command | Risk | Status | Notes |
 |---|---|---|---|---|
 | C-001 | `BITFIELD` | MEDIUM | DONE | Implemented in `11.89` with `GET/SET/INCRBY`, `OVERFLOW` policy, and validation coverage. |
 | C-002 | `BITFIELD_RO` | MEDIUM | DONE | Implemented in `11.89` with read-only enforcement and compatibility tests. |
-| C-003 | `GEOADD` | HIGH | TODO | Requires geospatial data representation and write path. |
+| C-003 | `GEOADD` | HIGH | DONE | Implemented in `11.93` with `NX`/`XX`/`CH` options, coordinate validation, and zset-backed coordinate-score encoding. |
 | C-004 | `GEODIST` | HIGH | TODO | Depends on geospatial index/lookup and distance calc semantics. |
 | C-005 | `GEOHASH` | HIGH | TODO | Depends on geospatial coordinate storage. |
 | C-006 | `GEOPOS` | HIGH | TODO | Depends on geospatial coordinate storage. |
@@ -305,21 +306,20 @@ Source: `docs/compatibility/redis-command-status.csv` (`NOT_IMPLEMENTED=11` as o
 
 ### Active Command TODO Queue (Execute One-by-One)
 
-`NOT_IMPLEMENTED=11` commands from latest matrix. Execute in order and keep only one `IN_PROGRESS` item at a time.
+`NOT_IMPLEMENTED=10` commands from latest matrix. Execute in order and keep only one `IN_PROGRESS` item at a time.
 
 | Priority | Backlog ID | Command | Risk | Status |
 |---|---|---|---|---|
 | 1 | C-011 | `GEOSEARCH` | HIGH | TODO |
-| 2 | C-003 | `GEOADD` | HIGH | TODO |
-| 3 | C-012 | `GEOSEARCHSTORE` | HIGH | TODO |
-| 4 | C-004 | `GEODIST` | HIGH | TODO |
-| 5 | C-006 | `GEOPOS` | HIGH | TODO |
-| 6 | C-005 | `GEOHASH` | HIGH | TODO |
-| 7 | C-007 | `GEORADIUS` | HIGH | TODO |
-| 8 | C-010 | `GEORADIUS_RO` | HIGH | TODO |
-| 9 | C-008 | `GEORADIUSBYMEMBER` | HIGH | TODO |
-| 10 | C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | TODO |
-| 11 | C-014 | `MIGRATE` | HIGH | TODO |
+| 2 | C-012 | `GEOSEARCHSTORE` | HIGH | TODO |
+| 3 | C-004 | `GEODIST` | HIGH | TODO |
+| 4 | C-006 | `GEOPOS` | HIGH | TODO |
+| 5 | C-005 | `GEOHASH` | HIGH | TODO |
+| 6 | C-007 | `GEORADIUS` | HIGH | TODO |
+| 7 | C-010 | `GEORADIUS_RO` | HIGH | TODO |
+| 8 | C-008 | `GEORADIUSBYMEMBER` | HIGH | TODO |
+| 9 | C-009 | `GEORADIUSBYMEMBER_RO` | HIGH | TODO |
+| 10 | C-014 | `MIGRATE` | HIGH | TODO |
 
 ---
 
@@ -718,3 +718,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 204 | 2026-02-22 | 11.90 / C-013 | DONE | Implemented `LCS` command coverage with `LEN`/`IDX`/`MINMATCHLEN`/`WITHMATCHLEN` options, added option-validation/wrongtype tests, and revalidated command-edit gates (`cargo test -p garnet-server`: `190 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-105511` with tests `6/4/2`; command matrix refreshed to `90.87%` coverage). |
 | 205 | 2026-02-22 | 11.91 / C-019 / C-020 | DONE | Implemented `SORT`/`SORT_RO` command coverage with option parsing and output/store behavior, then revalidated command-edit gates (`cargo test -p garnet-server`: `191 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-105946` with tests `6/4/2`; command matrix refreshed to `91.70%` coverage). |
 | 206 | 2026-02-22 | 11.92 / C-015 / C-016 / C-017 / C-018 / C-021 / C-022 / C-023 / C-024 / C-025 | DONE | Implemented `PUBSUB` family compatibility surface (`SUBSCRIBE`/`PSUBSCRIBE`/`SSUBSCRIBE`/`UNSUBSCRIBE`/`PUNSUBSCRIBE`/`SUNSUBSCRIBE`/`PUBLISH`/`SPUBLISH`/`PUBSUB`) via command catalog + dispatch + lifecycle handlers with minimal deterministic ACK/introspection shapes and error-path coverage. Revalidated command-edit gates (`cargo test -p garnet-server`: `192 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-110540` with tests `6/4/2`; command matrix refreshed to `95.44%` coverage, `NOT_IMPLEMENTED=11`). |
+| 207 | 2026-02-22 | 11.93 / C-003 | DONE | Implemented `GEOADD` command coverage (catalog + dispatch + lifecycle) with `NX`/`XX`/`CH` option parsing, longitude/latitude range validation, and zset-backed coordinate-score encoding intended for follow-on geo command reuse. Revalidated command-edit gates (`cargo test -p garnet-server`: `193 + 23 + 1` pass; external redis runtest subset PASS at `.../redis-runtest-external-20260222-111303` with tests `6/4/2`; command matrix refreshed to `95.85%` coverage, `NOT_IMPLEMENTED=10`). |

@@ -33,6 +33,7 @@ pub enum CommandId {
     Publish,
     Spublish,
     Pubsub,
+    Geoadd,
     Del,
     Rename,
     Renamenx,
@@ -559,6 +560,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Geoadd,
+        name_upper: b"GEOADD",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2793,6 +2804,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Pubsub, 2));
         assert!(command_has_valid_arity(CommandId::Pubsub, 4));
         assert!(!command_has_valid_arity(CommandId::Pubsub, 1));
+        assert!(command_has_valid_arity(CommandId::Geoadd, 5));
+        assert!(command_has_valid_arity(CommandId::Geoadd, 9));
+        assert!(!command_has_valid_arity(CommandId::Geoadd, 4));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3190,6 +3204,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Publish), b"PUBLISH");
         assert_eq!(command_name_upper(CommandId::Spublish), b"SPUBLISH");
         assert_eq!(command_name_upper(CommandId::Pubsub), b"PUBSUB");
+        assert_eq!(command_name_upper(CommandId::Geoadd), b"GEOADD");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

@@ -5732,6 +5732,70 @@ fn pubsub_commands_cover_minimal_ack_and_introspection_shapes() {
 }
 
 #[test]
+fn geoadd_supports_basic_options_and_validation_paths() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+    assert_command_integer(&processor, "GEOADD sicily 13.361389 38.115556 palermo", 0);
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily CH 13.371389 38.125556 palermo",
+        1,
+    );
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily NX 13.381389 38.135556 palermo",
+        0,
+    );
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily XX CH 13.391389 38.145556 palermo",
+        1,
+    );
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily XX 13.361389 38.115556 agrigento",
+        0,
+    );
+    assert_command_integer(&processor, "EXISTS sicily", 1);
+
+    assert_command_error(
+        &processor,
+        "GEOADD sicily NX XX 13.5 38.1 x",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOADD sicily GT 13.5 38.1 x",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOADD sicily 181 38.1 x",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOADD sicily 13.5 86 x",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOADD sicily nope 38.1 x",
+        b"-ERR value is not a valid float\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOADD sicily 13.5 38.1",
+        b"-ERR wrong number of arguments for 'GEOADD' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

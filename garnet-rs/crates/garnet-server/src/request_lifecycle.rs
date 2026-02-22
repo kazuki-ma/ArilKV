@@ -35,6 +35,7 @@ const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 mod command_helpers;
 mod config;
 mod errors;
+mod geo_commands;
 mod hash_commands;
 mod list_commands;
 mod migration;
@@ -485,6 +486,7 @@ impl RequestProcessor {
             CommandId::Publish => self.handle_publish(args, response_out),
             CommandId::Spublish => self.handle_spublish(args, response_out),
             CommandId::Pubsub => self.handle_pubsub(args, response_out),
+            CommandId::Geoadd => self.handle_geoadd(args, response_out),
             CommandId::Monitor => self.handle_monitor(args, response_out),
             CommandId::Shutdown => self.handle_shutdown(args, response_out),
             CommandId::Hello => self.handle_hello(args, response_out),
