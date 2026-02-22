@@ -1,0 +1,69 @@
+diff --git a/garnet-rs/crates/garnet-server/src/connection_handler.rs b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+index db2f773714..dce8eddeb2 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_handler.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+@@ -59,15 +59,18 @@ pub(crate) async fn handle_connection(
+     let mut allow_asking_once = false;
+ 
+     loop {
+-        let bytes_read = stream.read(&mut read_buffer).await?;
++        // Read at least once (await), then drain any immediately-available bytes via try_read.
++        // This reduces read-side wakeups/syscall count under small pipelined requests.
++        let bytes_read = read_and_drain_available(
++            &mut stream,
++            &mut read_buffer,
++            &mut receive_buffer,
++            &metrics,
++        )
++        .await?;
+         if bytes_read == 0 {
+             return Ok(());
+         }
+-        metrics
+-            .bytes_received
+-            .fetch_add(bytes_read as u64, Ordering::Relaxed);
+-
+-        receive_buffer.extend_from_slice(&read_buffer[..bytes_read]);
+         let mut consumed = 0usize;
+         responses.clear();
+         let mut switch_to_replica_stream = false;
+@@ -428,6 +431,39 @@ pub(crate) async fn handle_connection(
+     }
+ }
+ 
++async fn read_and_drain_available(
++    stream: &mut TcpStream,
++    read_buffer: &mut [u8],
++    receive_buffer: &mut Vec<u8>,
++    metrics: &ServerMetrics,
++) -> io::Result<usize> {
++    let first = stream.read(read_buffer).await?;
++    if first == 0 {
++        return Ok(0);
++    }
++
++    receive_buffer.extend_from_slice(&read_buffer[..first]);
++    metrics.bytes_received.fetch_add(first as u64, Ordering::Relaxed);
++    let mut total = first;
++
++    loop {
++        match stream.try_read(read_buffer) {
++            Ok(0) => break,
++            Ok(bytes_read) => {
++                receive_buffer.extend_from_slice(&read_buffer[..bytes_read]);
++                metrics
++                    .bytes_received
++                    .fetch_add(bytes_read as u64, Ordering::Relaxed);
++                total += bytes_read;
++            }
++            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
++            Err(error) => return Err(error),
++        }
++    }
++
++    Ok(total)
++}
++
+ async fn execute_blocking_frame_on_owner_thread(
+     processor: &Arc<RequestProcessor>,
+     metrics: &Arc<ServerMetrics>,

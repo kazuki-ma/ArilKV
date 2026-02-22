@@ -5,6 +5,8 @@
 - Policy: `docs/performance/EXPERIMENT_REPORTING_POLICY.md`
 - Date: `2026-02-21`
 - Base directory: `docs/performance/experiments/2026-02-21/`
+- Date: `2026-02-23`
+- Base directory: `docs/performance/experiments/2026-02-23/`
 
 ## Reports
 
@@ -16,6 +18,7 @@
 6. `docs/performance/experiments/2026-02-20/rxbuf-copy-rewrite-rejected/`
 7. `docs/performance/experiments/2026-02-21/12.30-actor-debt-cleanup-regression-check/`
 8. `docs/performance/experiments/2026-02-21/12.31-command-catalog-sso/`
+9. `docs/performance/experiments/2026-02-23/13.00-evidence-gate-read-drain-and-client-metrics/`
 
 ## Patterns To Re-check For New Experiments
 
