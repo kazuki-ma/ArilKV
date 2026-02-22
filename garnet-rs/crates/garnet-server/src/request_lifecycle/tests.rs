@@ -5886,6 +5886,36 @@ fn geodist_supports_units_and_missing_member_semantics() {
 }
 
 #[test]
+fn geohash_returns_expected_shape_and_null_for_missing_members() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_integer(
+        &processor,
+        "GEOADD sicily 13.361389 38.115556 palermo 15.087269 37.502669 catania",
+        2,
+    );
+
+    assert_command_response(
+        &processor,
+        "GEOHASH sicily palermo catania",
+        b"*2\r\n$11\r\nsqc8b49rny0\r\n$11\r\nsqdtr74hyu0\r\n",
+    );
+    assert_command_response(&processor, "GEOHASH sicily unknown", b"*1\r\n$-1\r\n");
+    assert_command_response(&processor, "GEOHASH missing unknown", b"*1\r\n$-1\r\n");
+
+    assert_command_response(&processor, "SET plain value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GEOHASH plain member",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GEOHASH sicily",
+        b"-ERR wrong number of arguments for 'GEOHASH' command\r\n",
+    );
+}
+
+#[test]
 fn function_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

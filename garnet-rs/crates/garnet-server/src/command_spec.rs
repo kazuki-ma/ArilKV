@@ -36,6 +36,7 @@ pub enum CommandId {
     Geoadd,
     Geopos,
     Geodist,
+    Geohash,
     Del,
     Rename,
     Renamenx,
@@ -592,6 +593,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Geohash,
+        name_upper: b"GEOHASH",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(3)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2835,6 +2846,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Geodist, 4));
         assert!(command_has_valid_arity(CommandId::Geodist, 5));
         assert!(!command_has_valid_arity(CommandId::Geodist, 3));
+        assert!(command_has_valid_arity(CommandId::Geohash, 3));
+        assert!(command_has_valid_arity(CommandId::Geohash, 6));
+        assert!(!command_has_valid_arity(CommandId::Geohash, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 2));
         assert!(command_has_valid_arity(CommandId::Exists, 3));
         assert!(!command_has_valid_arity(CommandId::Type, 3));
@@ -3235,6 +3249,7 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Geoadd), b"GEOADD");
         assert_eq!(command_name_upper(CommandId::Geopos), b"GEOPOS");
         assert_eq!(command_name_upper(CommandId::Geodist), b"GEODIST");
+        assert_eq!(command_name_upper(CommandId::Geohash), b"GEOHASH");
         assert_eq!(command_name_upper(CommandId::Lastsave), b"LASTSAVE");
         assert_eq!(command_name_upper(CommandId::Auth), b"AUTH");
         assert_eq!(command_name_upper(CommandId::Select), b"SELECT");

@@ -4,14 +4,21 @@ const GEOADD_USAGE: &str =
     "GEOADD key [NX|XX] [CH] longitude latitude member [longitude latitude member ...]";
 const GEOPOS_USAGE: &str = "GEOPOS key member [member ...]";
 const GEODIST_USAGE: &str = "GEODIST key member1 member2 [M|KM|FT|MI]";
+const GEOHASH_USAGE: &str = "GEOHASH key member [member ...]";
 const GEO_LONGITUDE_MIN: f64 = -180.0;
 const GEO_LONGITUDE_MAX: f64 = 180.0;
 const GEO_LATITUDE_MIN: f64 = -85.051_128_78;
 const GEO_LATITUDE_MAX: f64 = 85.051_128_78;
+const STANDARD_GEOHASH_LAT_MIN: f64 = -90.0;
+const STANDARD_GEOHASH_LAT_MAX: f64 = 90.0;
 const GEO_COORD_BITS: u32 = 26;
 const GEO_COORD_MASK: u64 = (1u64 << GEO_COORD_BITS) - 1;
 const GEO_SCORE_MAX: u64 = (GEO_COORD_MASK << GEO_COORD_BITS) | GEO_COORD_MASK;
 const GEO_EARTH_RADIUS_METERS: f64 = 6_372_797.560_856;
+const GEOHASH_ALPHABET: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
+const GEOHASH_OUTPUT_LEN: usize = 11;
+const STANDARD_GEOHASH_STEP: u32 = 26;
+const STANDARD_GEOHASH_BITS: u32 = STANDARD_GEOHASH_STEP * 2;
 
 #[derive(Default)]
 struct GeoAddOptions {
@@ -184,6 +191,35 @@ impl RequestProcessor {
         append_bulk_string(response_out, text.as_bytes());
         Ok(())
     }
+
+    pub(super) fn handle_geohash(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 3, "GEOHASH", GEOHASH_USAGE)?;
+
+        // SAFETY: caller guarantees argument backing memory validity.
+        let key = unsafe { args[1].as_slice() };
+        let zset = self.load_zset_object(key)?;
+
+        response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
+        for member in &args[2..] {
+            // SAFETY: caller guarantees argument backing memory validity.
+            let member = unsafe { member.as_slice() };
+            let Some(score) = zset.as_ref().and_then(|entries| entries.get(member)) else {
+                append_null_bulk_string(response_out);
+                continue;
+            };
+            let Some((longitude, latitude)) = decode_geo_score(*score) else {
+                append_null_bulk_string(response_out);
+                continue;
+            };
+            let geohash = encode_standard_geohash(longitude, latitude);
+            append_bulk_string(response_out, &geohash);
+        }
+        Ok(())
+    }
 }
 
 fn parse_geoadd_options(
@@ -303,4 +339,53 @@ fn format_geo_number(value: f64, precision: usize) -> String {
         }
     }
     text
+}
+
+fn encode_standard_geohash(longitude: f64, latitude: f64) -> [u8; GEOHASH_OUTPUT_LEN] {
+    let mut output = [b'0'; GEOHASH_OUTPUT_LEN];
+    let lat_bits = quantize_standard_geohash_coordinate(
+        latitude,
+        STANDARD_GEOHASH_LAT_MIN,
+        STANDARD_GEOHASH_LAT_MAX,
+    );
+    let lon_bits =
+        quantize_standard_geohash_coordinate(longitude, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX);
+    let hash_bits = interleave64(lat_bits, lon_bits);
+
+    for (index, slot) in output.iter_mut().enumerate() {
+        let alphabet_index = if index == GEOHASH_OUTPUT_LEN - 1 {
+            // Redis/Valkey expose 11 chars for compatibility, even though only 52 bits are encoded.
+            0usize
+        } else {
+            let shift = STANDARD_GEOHASH_BITS - ((index as u32 + 1) * 5);
+            ((hash_bits >> shift) & 0x1f) as usize
+        };
+        *slot = GEOHASH_ALPHABET[alphabet_index];
+    }
+
+    output
+}
+
+fn quantize_standard_geohash_coordinate(value: f64, min: f64, max: f64) -> u32 {
+    let normalized = ((value - min) / (max - min)).clamp(0.0, 1.0);
+    (normalized * (1u64 << STANDARD_GEOHASH_STEP) as f64) as u32
+}
+
+fn interleave64(xlo: u32, ylo: u32) -> u64 {
+    const MASKS: [u64; 5] = [
+        0x5555_5555_5555_5555,
+        0x3333_3333_3333_3333,
+        0x0f0f_0f0f_0f0f_0f0f,
+        0x00ff_00ff_00ff_00ff,
+        0x0000_ffff_0000_ffff,
+    ];
+    const SHIFTS: [u32; 5] = [1, 2, 4, 8, 16];
+
+    let mut x = xlo as u64;
+    let mut y = ylo as u64;
+    for (mask, shift) in MASKS.iter().zip(SHIFTS.iter()).rev() {
+        x = (x | (x << shift)) & mask;
+        y = (y | (y << shift)) & mask;
+    }
+    x | (y << 1)
 }
