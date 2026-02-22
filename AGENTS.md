@@ -16,9 +16,11 @@ This file defines default collaboration and execution rules for repository work,
 
 1. Update `TODO_AND_STATUS.md` every iteration.
 2. Keep commits small and logically scoped.
-3. Do not merge performance-sensitive changes without benchmark evidence.
-4. Do not rely on command exit status alone for tests; verify reported test counts and failed-case absence in output.
-5. Keep compatibility-sensitive behavior changes backed by explicit tests.
+3. Enforce granularity: `1 TODO = 1 iteration = 1 commit` by default.
+4. If a commit must cover multiple TODOs (for mechanical coupling only), record explicit rationale in `TODO_AND_STATUS.md`.
+5. Do not merge performance-sensitive changes without benchmark evidence.
+6. Do not rely on command exit status alone for tests; verify reported test counts and failed-case absence in output.
+7. Keep compatibility-sensitive behavior changes backed by explicit tests.
 
 ## Required Validation (Default)
 
