@@ -348,10 +348,22 @@ Optional Garnet tuning env vars are forwarded into the container, including:
 - `GARNET_TSAVORITE_STRING_STORE_SHARDS`
 - `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES`
 - `GARNET_STRING_OWNER_THREADS`
+- `GARNET_OWNER_THREAD_PINNING`
+- `GARNET_OWNER_THREAD_CPU_SET`
+- `GARNET_OWNER_EXECUTION_INLINE`
 
 Outputs are still written under `garnet-rs/benches/results/` on the host.
 Latest published differential analysis:
 `docs/performance/linux-perf-diff-docker-2026-02-20.md`.
+
+For cleaner framegraph generation, `linux_perf_diff_profile.sh` now stores
+`perf` warnings separately:
+
+- `perf-report-<mode>.stderr.log`
+- `perf-script-<mode>.stderr.log`
+
+The corresponding `perf-report-<mode>.txt` and `perf-script-<mode>.txt` files
+remain parse-clean for stack-collapsing tools.
 
 ### Dockerized Linux `perf` median-of-N wrapper
 
@@ -373,6 +385,36 @@ Outputs under `garnet-rs/benches/results/linux-perf-diff-median-<timestamp>/`:
 - `runs.csv` (all parsed run metrics)
 - `median_summary.csv` (median ops/latency per target/workload)
 - `summary.txt` (quick ratio summary)
+
+## Linux NIC Affinity + RFS Setup
+
+Use `linux_nic_affinity_setup.sh` on Linux hosts to align NIC IRQ handling
+with server CPU placement and optionally enable RFS knobs.
+
+```bash
+cd garnet-rs
+chmod +x benches/linux_nic_affinity_setup.sh
+
+# inspect current state
+./benches/linux_nic_affinity_setup.sh --iface eth0 --mode show
+
+# apply IRQ pinning + RFS
+sudo ./benches/linux_nic_affinity_setup.sh \
+  --iface eth0 \
+  --mode apply \
+  --server-cpus 0-3 \
+  --enable-rfs 1 \
+  --rfs-entries 65536
+```
+
+Optional apply knobs:
+
+- `--rps-cpumask <hex>` writes `rx-*/rps_cpus`
+- `--xps-cpumask <hex>` writes `tx-*/xps_cpus`
+- `--dry-run 1` previews without writes
+
+The script writes an apply log to `/tmp/garnet-nic-affinity-<iface>-<timestamp>.log`
+by default.
 
 ## Allocator A/B (default vs mimalloc)
 

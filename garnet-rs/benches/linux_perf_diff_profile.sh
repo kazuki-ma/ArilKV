@@ -279,6 +279,8 @@ capture_perf_profile() {
     local bench_log="${run_dir}/memtier-${mode}.log"
     local perf_report="${run_dir}/perf-report-${mode}.txt"
     local perf_script="${run_dir}/perf-script-${mode}.txt"
+    local perf_report_stderr="${run_dir}/perf-report-${mode}.stderr.log"
+    local perf_script_stderr="${run_dir}/perf-script-${mode}.stderr.log"
 
     run_memtier "set" "${PRELOAD_REQUESTS}" "${port}" "${run_dir}/preload.log"
 
@@ -311,8 +313,8 @@ capture_perf_profile() {
     fi
     wait "${perf_pid}" 2>/dev/null || true
 
-    perf report --stdio --no-children -i "${perf_data}" >"${perf_report}" 2>&1 || true
-    perf script -i "${perf_data}" >"${perf_script}" 2>&1 || true
+    perf report --stdio --no-children -i "${perf_data}" >"${perf_report}" 2>"${perf_report_stderr}" || true
+    perf script -i "${perf_data}" >"${perf_script}" 2>"${perf_script_stderr}" || true
 
     if [[ -n "${FLAMEGRAPH_DIR}" ]] && [[ -f "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" ]] && [[ -f "${FLAMEGRAPH_DIR}/flamegraph.pl" ]]; then
         "${FLAMEGRAPH_DIR}/stackcollapse-perf.pl" "${perf_script}" | \
