@@ -131,8 +131,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "GEOADD", GEOADD_USAGE)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let (options, mut index) = parse_geoadd_options(args, 2)?;
 
         let remaining = args.len().saturating_sub(index);
@@ -149,18 +148,15 @@ impl RequestProcessor {
         let mut changed = 0i64;
 
         while index + 2 < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let longitude = parse_f64_ascii(unsafe { args[index].as_slice() })
+            let longitude = parse_f64_ascii(arg_slice_bytes(&args[index]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let latitude = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+            let latitude = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if !geo_coordinates_in_range(longitude, latitude) {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
 
-            // SAFETY: caller guarantees argument backing memory validity.
-            let member = unsafe { args[index + 2].as_slice() };
+            let member = arg_slice_bytes(&args[index + 2]);
             let previous = zset.get(member).copied();
 
             if options.nx && previous.is_some() {
@@ -208,14 +204,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "GEOPOS", GEOPOS_USAGE)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() };
+        let key = arg_slice_bytes(&args[1]);
         let zset = self.load_zset_object(key)?;
 
         response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
         for member in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let member = unsafe { member.as_slice() };
+            let member = arg_slice_bytes(&member);
             let Some(score) = zset.as_ref().and_then(|entries| entries.get(member)) else {
                 append_null_bulk_string(response_out);
                 continue;
@@ -242,15 +236,13 @@ impl RequestProcessor {
         ensure_ranged_arity(args, 4, 5, "GEODIST", GEODIST_USAGE)?;
 
         let unit_to_meters = if args.len() == 5 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let unit = unsafe { args[4].as_slice() };
+            let unit = arg_slice_bytes(&args[4]);
             parse_geo_unit_to_meters(unit)?
         } else {
             1.0
         };
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() };
+        let key = arg_slice_bytes(&args[1]);
         let zset = match self.load_zset_object(key)? {
             Some(entries) => entries,
             None => {
@@ -259,10 +251,8 @@ impl RequestProcessor {
             }
         };
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let member_a = unsafe { args[2].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let member_b = unsafe { args[3].as_slice() };
+        let member_a = arg_slice_bytes(&args[2]);
+        let member_b = arg_slice_bytes(&args[3]);
         let Some(score_a) = zset.get(member_a).copied() else {
             append_null_bulk_string(response_out);
             return Ok(());
@@ -295,14 +285,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "GEOHASH", GEOHASH_USAGE)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() };
+        let key = arg_slice_bytes(&args[1]);
         let zset = self.load_zset_object(key)?;
 
         response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
         for member in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let member = unsafe { member.as_slice() };
+            let member = arg_slice_bytes(&member);
             let Some(score) = zset.as_ref().and_then(|entries| entries.get(member)) else {
                 append_null_bulk_string(response_out);
                 continue;
@@ -377,25 +365,20 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 6, command_name, usage)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source_key = unsafe { args[1].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let longitude = parse_f64_ascii(unsafe { args[2].as_slice() })
+        let source_key = arg_slice_bytes(&args[1]);
+        let longitude = parse_f64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let latitude = parse_f64_ascii(unsafe { args[3].as_slice() })
+        let latitude = parse_f64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         if !geo_coordinates_in_range(longitude, latitude) {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let radius = parse_f64_ascii(unsafe { args[4].as_slice() })
+        let radius = parse_f64_ascii(arg_slice_bytes(&args[4]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         if radius < 0.0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let unit_to_meters = parse_geo_unit_to_meters(unsafe { args[5].as_slice() })?;
+        let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[5]))?;
         let radius_options = parse_georadius_options(args, 6, allow_store)?;
 
         let query_options = GeoSearchOptions {
@@ -434,18 +417,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, command_name, usage)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source_key = unsafe { args[1].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let member = unsafe { args[2].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let radius = parse_f64_ascii(unsafe { args[3].as_slice() })
+        let source_key = arg_slice_bytes(&args[1]);
+        let member = arg_slice_bytes(&args[2]).to_vec();
+        let radius = parse_f64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         if radius < 0.0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let unit_to_meters = parse_geo_unit_to_meters(unsafe { args[4].as_slice() })?;
+        let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[4]))?;
         let radius_options = parse_georadius_options(args, 5, allow_store)?;
 
         let query_options = GeoSearchOptions {
@@ -478,8 +457,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 7, "GEOSEARCH", GEOSEARCH_USAGE)?;
         let options = parse_geosearch_options(args, 2, true, false)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source_key = unsafe { args[1].as_slice() };
+        let source_key = arg_slice_bytes(&args[1]);
         execute_geo_query(self, source_key, &options, None, response_out)
     }
 
@@ -491,10 +469,8 @@ impl RequestProcessor {
         ensure_min_arity(args, 8, "GEOSEARCHSTORE", GEOSEARCHSTORE_USAGE)?;
         let options = parse_geosearch_options(args, 3, false, true)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination_key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source_key = unsafe { args[2].as_slice() };
+        let destination_key = arg_slice_bytes(&args[1]).to_vec();
+        let source_key = arg_slice_bytes(&args[2]);
         execute_geo_query(
             self,
             source_key,
@@ -511,8 +487,7 @@ fn parse_geoadd_options(
 ) -> Result<(GeoAddOptions, usize), RequestExecutionError> {
     let mut options = GeoAddOptions::default();
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"NX") {
             options.nx = true;
             index += 1;
@@ -577,15 +552,13 @@ fn parse_geosearch_options(
     let mut store_dist = false;
 
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
 
         if ascii_eq_ignore_case(token, b"FROMMEMBER") {
             if origin.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let member = unsafe { args[index + 1].as_slice() }.to_vec();
+            let member = arg_slice_bytes(&args[index + 1]).to_vec();
             origin = Some(GeoSearchOrigin::FromMember(member));
             index += 2;
             continue;
@@ -594,11 +567,9 @@ fn parse_geosearch_options(
             if origin.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let longitude = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+            let longitude = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let latitude = parse_f64_ascii(unsafe { args[index + 2].as_slice() })
+            let latitude = parse_f64_ascii(arg_slice_bytes(&args[index + 2]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if !geo_coordinates_in_range(longitude, latitude) {
                 return Err(RequestExecutionError::ValueOutOfRange);
@@ -614,14 +585,12 @@ fn parse_geosearch_options(
             if shape.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let radius = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+            let radius = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if radius < 0.0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let unit_to_meters = parse_geo_unit_to_meters(unsafe { args[index + 2].as_slice() })?;
+            let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[index + 2]))?;
             shape = Some(GeoSearchShape::ByRadius {
                 radius_meters: radius * unit_to_meters,
                 unit_to_meters,
@@ -633,17 +602,14 @@ fn parse_geosearch_options(
             if shape.is_some() || index + 3 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let width = parse_f64_ascii(unsafe { args[index + 1].as_slice() })
+            let width = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let height = parse_f64_ascii(unsafe { args[index + 2].as_slice() })
+            let height = parse_f64_ascii(arg_slice_bytes(&args[index + 2]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if width < 0.0 || height < 0.0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let unit_to_meters = parse_geo_unit_to_meters(unsafe { args[index + 3].as_slice() })?;
+            let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[index + 3]))?;
             shape = Some(GeoSearchShape::ByBox {
                 width_meters: width * unit_to_meters,
                 height_meters: height * unit_to_meters,
@@ -671,8 +637,7 @@ fn parse_geosearch_options(
             if count.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let raw_count = parse_i64_ascii(unsafe { args[index + 1].as_slice() })
+            let raw_count = parse_i64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count <= 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
@@ -729,8 +694,7 @@ fn parse_georadius_options(
 ) -> Result<GeoRadiusOptions, RequestExecutionError> {
     let mut options = GeoRadiusOptions::default();
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"WITHDIST") {
             options.with_dist = true;
             index += 1;
@@ -750,8 +714,7 @@ fn parse_georadius_options(
             if options.count.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let raw_count = parse_i64_ascii(unsafe { args[index + 1].as_slice() })
+            let raw_count = parse_i64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count <= 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
@@ -779,8 +742,7 @@ fn parse_georadius_options(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            options.store_key = Some(unsafe { args[index + 1].as_slice() }.to_vec());
+            options.store_key = Some(arg_slice_bytes(&args[index + 1]).to_vec());
             options.store_dist = false;
             index += 2;
             continue;
@@ -789,8 +751,7 @@ fn parse_georadius_options(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            options.store_key = Some(unsafe { args[index + 1].as_slice() }.to_vec());
+            options.store_key = Some(arg_slice_bytes(&args[index + 1]).to_vec());
             options.store_dist = true;
             index += 2;
             continue;

@@ -341,11 +341,7 @@ impl RequestProcessor {
         })
     }
 
-    pub(crate) fn request_client_unblock(
-        &self,
-        client_id: u64,
-        mode: ClientUnblockMode,
-    ) -> bool {
+    pub(crate) fn request_client_unblock(&self, client_id: u64, mode: ClientUnblockMode) -> bool {
         let is_blocked = self
             .blocking_wait_queues
             .lock()
@@ -706,6 +702,14 @@ impl RequestProcessor {
 }
 
 #[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: request-lifecycle command execution only receives ArgSlice values
+    // produced from a parsed frame whose backing bytes live for the duration of
+    // the current dispatch call.
+    unsafe { arg.as_slice() }
+}
+
+#[inline]
 fn fnv1a_hash64(key: &[u8]) -> u64 {
     let mut hash = 0xcbf29ce484222325u64;
     for byte in key {
@@ -731,8 +735,7 @@ fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionEr
     let mut index = 3usize;
 
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let option = unsafe { args[index].as_slice() };
+        let option = arg_slice_bytes(&args[index]);
 
         if ascii_eq_ignore_case(option, b"NX") {
             if options.only_if_absent || options.only_if_present {
@@ -760,8 +763,7 @@ fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionEr
                 return Err(RequestExecutionError::SyntaxError);
             }
 
-            // SAFETY: caller guarantees argument backing memory validity.
-            let value = unsafe { args[index + 1].as_slice() };
+            let value = arg_slice_bytes(&args[index + 1]);
             let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidExpireTime)?;
             if amount == 0 {
                 return Err(RequestExecutionError::InvalidExpireTime);

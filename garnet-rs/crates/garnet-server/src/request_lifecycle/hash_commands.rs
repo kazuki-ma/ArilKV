@@ -8,17 +8,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 4, 2, "HSET", "HSET key field value [field value ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
 
         let mut index = 2usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let field = unsafe { args[index].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let value = unsafe { args[index + 1].as_slice() }.to_vec();
+            let field = arg_slice_bytes(&args[index]).to_vec();
+            let value = arg_slice_bytes(&args[index + 1]).to_vec();
             if hash.insert(field, value).is_none() {
                 inserted += 1;
             }
@@ -37,10 +34,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HGET", "HGET key field")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let field = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let field = arg_slice_bytes(&args[2]);
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -63,8 +58,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HDEL", "HDEL key field [field ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -75,8 +69,7 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for field in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            if hash.remove(unsafe { field.as_slice() }).is_some() {
+            if hash.remove(arg_slice_bytes(&field)).is_some() {
                 removed += 1;
             }
         }
@@ -97,8 +90,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HGETALL", "HGETALL key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -125,8 +117,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HLEN", "HLEN key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let len = self
             .load_hash_object(&key)?
             .map(|hash| hash.len() as i64)
@@ -142,16 +133,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HMGET", "HMGET key field [field ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let hash = self.load_hash_object(&key)?;
         let field_count = args.len() - 2;
         response_out.push(b'*');
         response_out.extend_from_slice(field_count.to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for field in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let field = unsafe { field.as_slice() };
+            let field = arg_slice_bytes(&field);
             match hash.as_ref().and_then(|hash| hash.get(field)) {
                 Some(value) => append_bulk_string(response_out, value),
                 None => append_null_bulk_string(response_out),
@@ -173,15 +162,12 @@ impl RequestProcessor {
             "HMSET key field value [field value ...]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let mut index = 2usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let field = unsafe { args[index].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let value = unsafe { args[index + 1].as_slice() }.to_vec();
+            let field = arg_slice_bytes(&args[index]).to_vec();
+            let value = arg_slice_bytes(&args[index + 1]).to_vec();
             hash.insert(field, value);
             index += 2;
         }
@@ -197,17 +183,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HSETNX", "HSETNX key field value")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let field = unsafe { args[2].as_slice() }.to_vec();
+        let field = arg_slice_bytes(&args[2]).to_vec();
         if hash.contains_key(&field) {
             append_integer(response_out, 0);
             return Ok(());
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let value = unsafe { args[3].as_slice() }.to_vec();
+        let value = arg_slice_bytes(&args[3]).to_vec();
         hash.insert(field, value);
         self.save_hash_object(&key, &hash)?;
         append_integer(response_out, 1);
@@ -221,10 +204,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HEXISTS", "HEXISTS key field")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let field = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let field = arg_slice_bytes(&args[2]);
         let exists = self
             .load_hash_object(&key)?
             .map(|hash| hash.contains_key(field))
@@ -240,8 +221,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HKEYS", "HKEYS key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -265,8 +245,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HVALS", "HVALS key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -290,10 +269,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HSTRLEN", "HSTRLEN key field")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let field = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let field = arg_slice_bytes(&args[2]);
         let len = self
             .load_hash_object(&key)?
             .and_then(|hash| hash.get(field).map(|value| value.len() as i64))
@@ -314,10 +291,8 @@ impl RequestProcessor {
             "HSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let cursor = parse_u64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let cursor = parse_u64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -347,13 +322,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBY", "HINCRBY key field increment")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let increment = parse_i64_ascii(unsafe { args[3].as_slice() })
+        let increment = parse_i64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let field = unsafe { args[2].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let field = arg_slice_bytes(&args[2]).to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
 
         let current = match hash.get(&field) {
@@ -376,13 +348,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBYFLOAT", "HINCRBYFLOAT key field increment")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let increment = parse_f64_ascii(unsafe { args[3].as_slice() })
+        let increment = parse_f64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let field = unsafe { args[2].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let field = arg_slice_bytes(&args[2]).to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
 
         let current = match hash.get(&field) {
@@ -413,8 +382,7 @@ impl RequestProcessor {
             "HRANDFIELD key [count [WITHVALUES]]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let hash = self.load_hash_object(&key)?;
         let resp3 = self.resp_protocol_version() == 3;
 
@@ -433,8 +401,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let count_bytes = unsafe { args[2].as_slice() };
+        let count_bytes = arg_slice_bytes(&args[2]);
         let count = parse_i64_ascii(count_bytes).ok_or_else(|| {
             if looks_like_signed_integer(count_bytes) {
                 RequestExecutionError::ValueOutOfRange
@@ -443,8 +410,7 @@ impl RequestProcessor {
             }
         })?;
         let with_values = if args.len() == 4 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let option = unsafe { args[3].as_slice() };
+            let option = arg_slice_bytes(&args[3]);
             if !ascii_eq_ignore_case(option, b"WITHVALUES") {
                 return Err(RequestExecutionError::SyntaxError);
             }

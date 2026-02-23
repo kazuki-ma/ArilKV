@@ -28,6 +28,13 @@ const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 
+#[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: replication command processing inspects ArgSlice entries only
+    // while their backing receive buffer is still alive.
+    unsafe { arg.as_slice() }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct MasterEndpoint {
     host: String,
@@ -352,13 +359,11 @@ async fn process_upstream_frame(
 
     *applied_offset += frame_len as u64;
 
-    // SAFETY: arg slices reference data owned by the live upstream receive buffer.
-    let command_name = unsafe { args[0].as_slice() };
+    let command_name = arg_slice_bytes(&args[0]);
 
     if starts_with_ascii_no_case(command_name, b"REPLCONF") {
         if args.len() >= 2 {
-            // SAFETY: same lifetime guarantee as above.
-            let sub = unsafe { args[1].as_slice() };
+            let sub = arg_slice_bytes(&args[1]);
             if starts_with_ascii_no_case(sub, b"GETACK") {
                 write_resp_command(
                     stream,

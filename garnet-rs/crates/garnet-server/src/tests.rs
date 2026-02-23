@@ -755,7 +755,8 @@ async fn client_unblock_unblocks_blocking_pop_with_timeout_and_error_modes() {
         .write_all(&encode_resp_command(&[b"CLIENT", b"UNBLOCK", b"asd"]))
         .await
         .unwrap();
-    let invalid_id_response = read_resp_line_with_timeout(&mut controller, Duration::from_secs(1)).await;
+    let invalid_id_response =
+        read_resp_line_with_timeout(&mut controller, Duration::from_secs(1)).await;
     assert_eq!(
         invalid_id_response,
         b"-ERR value is not an integer or out of range"
@@ -817,8 +818,7 @@ async fn blocking_pipeline_preserves_waiter_fairness() {
     .await;
     wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
 
-    let pipelined_blpop =
-        read_exact_with_timeout(&mut pipelined, 23, Duration::from_secs(1)).await;
+    let pipelined_blpop = read_exact_with_timeout(&mut pipelined, 23, Duration::from_secs(1)).await;
     assert_eq!(pipelined_blpop, b"*2\r\n$6\r\nmylist\r\n$1\r\n2\r\n");
 
     let _ = shutdown_tx.send(());
@@ -4126,8 +4126,7 @@ fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     let mut owned = Vec::with_capacity(meta.argument_count);
     for arg in &args[..meta.argument_count] {
-        // SAFETY: ArgSlice references `frame`, which is alive for this conversion.
-        owned.push(unsafe { arg.as_slice() }.to_vec());
+        owned.push(arg_slice_bytes(&arg).to_vec());
     }
     owned
 }
@@ -4136,4 +4135,11 @@ fn owned_frame_args_from_frame(frame: &[u8]) -> crate::connection_owner_routing:
     let mut args = [ArgSlice::EMPTY; 64];
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     capture_owned_frame_args(frame, &args[..meta.argument_count]).unwrap()
+}
+
+#[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: test helpers use ArgSlice values derived from `frame` slices
+    // that remain alive for the conversion scope.
+    unsafe { arg.as_slice() }
 }

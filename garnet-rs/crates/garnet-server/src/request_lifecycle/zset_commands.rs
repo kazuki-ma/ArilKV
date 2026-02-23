@@ -14,18 +14,15 @@ impl RequestProcessor {
             "ZADD key score member [score member ...]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
 
         let mut index = 2usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let score = parse_f64_ascii(unsafe { args[index].as_slice() })
+            let score = parse_f64_ascii(arg_slice_bytes(&args[index]))
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let member = unsafe { args[index + 1].as_slice() }.to_vec();
+            let member = arg_slice_bytes(&args[index + 1]).to_vec();
             if zset.insert(member, score).is_none() {
                 inserted += 1;
             }
@@ -44,8 +41,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -56,8 +52,7 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for member in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            if zset.remove(unsafe { member.as_slice() }).is_some() {
+            if zset.remove(arg_slice_bytes(&member)).is_some() {
                 removed += 1;
             }
         }
@@ -78,13 +73,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZRANGE", "ZRANGE key start stop")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -125,8 +117,7 @@ impl RequestProcessor {
             "ZREVRANGE key start stop [WITHSCORES]",
         )?;
         let with_scores = if args.len() == 5 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let option = unsafe { args[4].as_slice() };
+            let option = arg_slice_bytes(&args[4]);
             if !ascii_eq_ignore_case(option, b"WITHSCORES") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -135,13 +126,10 @@ impl RequestProcessor {
             false
         };
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -201,10 +189,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "ZSCORE", "ZSCORE key member")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let member = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let member = arg_slice_bytes(&args[2]);
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -227,8 +213,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ZCARD", "ZCARD key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let count = self
             .load_zset_object(&key)?
             .map_or(0usize, |zset| zset.len());
@@ -243,13 +228,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let min = parse_zscore_bound(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let min = parse_zscore_bound(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let max = parse_zscore_bound(unsafe { args[3].as_slice() })
+        let max = parse_zscore_bound(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -273,13 +255,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let min = parse_zlex_bound(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let min = parse_zlex_bound(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::SyntaxError)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let max = parse_zlex_bound(unsafe { args[3].as_slice() })
+        let max = parse_zlex_bound(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::SyntaxError)?;
 
         let count = match self.load_zset_object(&key)? {
@@ -315,13 +294,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let min = parse_zlex_bound(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let min = parse_zlex_bound(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::SyntaxError)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let max = parse_zlex_bound(unsafe { args[3].as_slice() })
+        let max = parse_zlex_bound(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::SyntaxError)?;
 
         let mut zset = match self.load_zset_object(&key)? {
@@ -365,8 +341,7 @@ impl RequestProcessor {
             "ZINTERCARD",
             "ZINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let num_keys = parse_u64_ascii(unsafe { args[1].as_slice() })
+        let num_keys = parse_u64_ascii(arg_slice_bytes(&args[1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::SyntaxError);
@@ -384,13 +359,11 @@ impl RequestProcessor {
             if args.len() != key_end + 2 {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let option = unsafe { args[key_end].as_slice() };
+            let option = arg_slice_bytes(&args[key_end]);
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let parsed_limit = parse_u64_ascii(unsafe { args[key_end + 1].as_slice() })
+            let parsed_limit = parse_u64_ascii(arg_slice_bytes(&args[key_end + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -398,10 +371,7 @@ impl RequestProcessor {
 
         let keys: Vec<Vec<u8>> = args[key_start..key_end]
             .iter()
-            .map(|key| {
-                // SAFETY: caller guarantees argument backing memory validity.
-                unsafe { key.as_slice() }.to_vec()
-            })
+            .map(|key| arg_slice_bytes(&key).to_vec())
             .collect();
         let mut cardinality = compute_zinter_cardinality(self, &keys)?;
         if limit > 0 {
@@ -435,8 +405,7 @@ impl RequestProcessor {
             "ZDIFFSTORE",
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let destination = arg_slice_bytes(&args[1]).to_vec();
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         if option_start != args.len() {
             return Err(RequestExecutionError::SyntaxError);
@@ -486,8 +455,7 @@ impl RequestProcessor {
             "ZINTERSTORE",
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let destination = arg_slice_bytes(&args[1]).to_vec();
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -545,8 +513,7 @@ impl RequestProcessor {
             "ZUNIONSTORE",
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[1].as_slice() }.to_vec();
+        let destination = arg_slice_bytes(&args[1]).to_vec();
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -609,14 +576,10 @@ impl RequestProcessor {
             "ZRANGESTORE",
             "ZRANGESTORE dst src min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source = unsafe { args[2].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let left = unsafe { args[3].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let right = unsafe { args[4].as_slice() };
+        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let source = arg_slice_bytes(&args[2]).to_vec();
+        let left = arg_slice_bytes(&args[3]);
+        let right = arg_slice_bytes(&args[4]);
         let options = parse_zrangestore_options(args, 5)?;
 
         let selected = match self.load_zset_object(&source)? {
@@ -641,10 +604,8 @@ impl RequestProcessor {
             "ZSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let cursor = parse_u64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let cursor = parse_u64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -689,13 +650,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let increment = parse_f64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let increment = parse_f64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let member = unsafe { args[3].as_slice() }.to_vec();
+        let member = arg_slice_bytes(&args[3]).to_vec();
 
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
         let current = zset.get(&member).copied().unwrap_or(0.0);
@@ -715,13 +673,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
 
         let mut zset = match self.load_zset_object(&key)? {
@@ -763,13 +718,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let min = parse_zscore_bound(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let min = parse_zscore_bound(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let max = parse_zscore_bound(unsafe { args[3].as_slice() })
+        let max = parse_zscore_bound(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
 
         let mut zset = match self.load_zset_object(&key)? {
@@ -823,13 +775,10 @@ impl RequestProcessor {
             },
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let left_bound = parse_zscore_bound(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let left_bound = parse_zscore_bound(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let right_bound = parse_zscore_bound(unsafe { args[3].as_slice() })
+        let right_bound = parse_zscore_bound(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         let options = parse_zrange_by_score_options(args, 4)?;
 
@@ -884,13 +833,10 @@ impl RequestProcessor {
             },
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let left_bound = parse_zlex_bound(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let left_bound = parse_zlex_bound(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::SyntaxError)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let right_bound = parse_zlex_bound(unsafe { args[3].as_slice() })
+        let right_bound = parse_zlex_bound(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::SyntaxError)?;
         let limit = parse_zrangebylex_limit(args, 4)?;
         let (min_bound, max_bound) = if reverse {
@@ -942,8 +888,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let zset = self.load_zset_object(&key)?;
         let members = &args[2..];
 
@@ -951,8 +896,7 @@ impl RequestProcessor {
         response_out.extend_from_slice(members.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for member in members {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let member = unsafe { member.as_slice() };
+            let member = arg_slice_bytes(&member);
             let score = zset.as_ref().and_then(|zset| zset.get(member));
             match score {
                 Some(score) => append_bulk_string(response_out, score.to_string().as_bytes()),
@@ -974,8 +918,7 @@ impl RequestProcessor {
             "ZRANDMEMBER",
             "ZRANDMEMBER key [count [WITHSCORES]]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let zset = self.load_zset_object(&key)?;
         if args.len() == 2 {
             let Some(zset) = zset else {
@@ -991,12 +934,10 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let count = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let count = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let with_scores = if args.len() == 4 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let option = unsafe { args[3].as_slice() };
+            let option = arg_slice_bytes(&args[3]);
             if !ascii_eq_ignore_case(option, b"WITHSCORES") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -1089,10 +1030,8 @@ impl RequestProcessor {
             },
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let member = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let member = arg_slice_bytes(&args[2]);
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -1134,11 +1073,9 @@ impl RequestProcessor {
                 "ZPOPMIN key [count]"
             },
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let count = if args.len() == 3 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            parse_u64_ascii(unsafe { args[2].as_slice() })
+            parse_u64_ascii(arg_slice_bytes(&args[2]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?
         } else {
             1
@@ -1183,8 +1120,7 @@ impl RequestProcessor {
         parse_blocking_timeout_seconds(args, timeout_index)?;
 
         for key in &args[1..timeout_index] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { key.as_slice() }.to_vec();
+            let key = arg_slice_bytes(&key).to_vec();
             let Some(mut selected) = self.pop_zset_entries_from_key(&key, pop_max, 1)? else {
                 continue;
             };
@@ -1353,8 +1289,7 @@ fn parse_zrange_by_score_options(
     let mut options = ZrangeByScoreOptions::default();
     let mut index = start_index;
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"WITHSCORES") {
             if options.with_scores {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1367,11 +1302,9 @@ fn parse_zrange_by_score_options(
             if options.limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let offset = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+            let offset = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let count = parse_u64_ascii(unsafe { args[index + 2].as_slice() })
+            let count = parse_u64_ascii(arg_slice_bytes(&args[index + 2]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             options.limit = Some((
                 usize::try_from(offset).unwrap_or(usize::MAX),
@@ -1485,16 +1418,13 @@ fn parse_zrangebylex_limit(
     if args.len() != start_index + 3 {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let option = unsafe { args[start_index].as_slice() };
+    let option = arg_slice_bytes(&args[start_index]);
     if !ascii_eq_ignore_case(option, b"LIMIT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let offset = parse_u64_ascii(unsafe { args[start_index + 1].as_slice() })
+    let offset = parse_u64_ascii(arg_slice_bytes(&args[start_index + 1]))
         .ok_or(RequestExecutionError::ValueNotInteger)?;
-    // SAFETY: caller guarantees argument backing memory validity.
-    let count = parse_u64_ascii(unsafe { args[start_index + 2].as_slice() })
+    let count = parse_u64_ascii(arg_slice_bytes(&args[start_index + 2]))
         .ok_or(RequestExecutionError::ValueNotInteger)?;
     Ok(Some((
         usize::try_from(offset).unwrap_or(usize::MAX),
@@ -1509,8 +1439,7 @@ fn parse_zset_numkeys_and_keys(
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let numkeys = parse_u64_ascii(unsafe { args[numkeys_index].as_slice() })
+    let numkeys = parse_u64_ascii(arg_slice_bytes(&args[numkeys_index]))
         .ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys == 0 {
         return Err(RequestExecutionError::SyntaxError);
@@ -1525,10 +1454,7 @@ fn parse_zset_numkeys_and_keys(
     }
     let keys = args[key_start..key_end]
         .iter()
-        .map(|key| {
-            // SAFETY: caller guarantees argument backing memory validity.
-            unsafe { key.as_slice() }.to_vec()
-        })
+        .map(|key| arg_slice_bytes(&key).to_vec())
         .collect();
     Ok((keys, key_end))
 }
@@ -1543,8 +1469,7 @@ fn parse_zdiff_withscores(
     if start_index + 1 != args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let token = unsafe { args[start_index].as_slice() };
+    let token = arg_slice_bytes(&args[start_index]);
     if !ascii_eq_ignore_case(token, b"WITHSCORES") {
         return Err(RequestExecutionError::SyntaxError);
     }
@@ -1564,8 +1489,7 @@ fn parse_zset_combine_options(
     let mut seen_aggregate = false;
     let mut index = start_index;
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"WEIGHTS") {
             if seen_weights {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1576,8 +1500,7 @@ fn parse_zset_combine_options(
             for (weight_index, weight_arg) in
                 args[index + 1..index + 1 + num_keys].iter().enumerate()
             {
-                // SAFETY: caller guarantees argument backing memory validity.
-                let parsed = parse_f64_ascii(unsafe { weight_arg.as_slice() })
+                let parsed = parse_f64_ascii(arg_slice_bytes(&weight_arg))
                     .ok_or(RequestExecutionError::ValueNotFloat)?;
                 weights[weight_index] = parsed;
             }
@@ -1589,8 +1512,7 @@ fn parse_zset_combine_options(
             if seen_aggregate || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let aggregate_token = unsafe { args[index + 1].as_slice() };
+            let aggregate_token = arg_slice_bytes(&args[index + 1]);
             aggregate = if ascii_eq_ignore_case(aggregate_token, b"SUM") {
                 ZsetAggregateMode::Sum
             } else if ascii_eq_ignore_case(aggregate_token, b"MIN") {
@@ -1749,8 +1671,7 @@ fn parse_blocking_timeout_seconds(
     args: &[ArgSlice],
     index: usize,
 ) -> Result<f64, RequestExecutionError> {
-    // SAFETY: caller guarantees argument backing memory validity.
-    let timeout_token = unsafe { args[index].as_slice() };
+    let timeout_token = arg_slice_bytes(&args[index]);
     let timeout_text =
         std::str::from_utf8(timeout_token).map_err(|_| RequestExecutionError::ValueNotFloat)?;
     let timeout = match timeout_text.parse::<f64>() {
@@ -1811,8 +1732,7 @@ fn parse_zmpop_direction_and_count(
     if option_start >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let direction = unsafe { args[option_start].as_slice() };
+    let direction = arg_slice_bytes(&args[option_start]);
     let pop_max = if ascii_eq_ignore_case(direction, b"MAX") {
         true
     } else if ascii_eq_ignore_case(direction, b"MIN") {
@@ -1827,13 +1747,11 @@ fn parse_zmpop_direction_and_count(
         if option_start + 3 != args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let count_token = unsafe { args[option_start + 1].as_slice() };
+        let count_token = arg_slice_bytes(&args[option_start + 1]);
         if !ascii_eq_ignore_case(count_token, b"COUNT") {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let parsed = parse_u64_ascii(unsafe { args[option_start + 2].as_slice() })
+        let parsed = parse_u64_ascii(arg_slice_bytes(&args[option_start + 2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed == 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -1852,8 +1770,7 @@ fn parse_zrangestore_options(
     let mut limit = None;
     let mut index = start_index;
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"BYSCORE") {
             if mode != ZrangeStoreMode::Rank {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1882,11 +1799,9 @@ fn parse_zrangestore_options(
             if limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let offset = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+            let offset = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let count = parse_u64_ascii(unsafe { args[index + 2].as_slice() })
+            let count = parse_u64_ascii(arg_slice_bytes(&args[index + 2]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = Some((
                 usize::try_from(offset).unwrap_or(usize::MAX),

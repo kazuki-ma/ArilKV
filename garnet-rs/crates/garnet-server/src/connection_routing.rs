@@ -7,6 +7,13 @@ use crate::command_spec::command_is_owner_routable;
 use crate::command_spec::{command_key_access_pattern, KeyAccessPattern};
 use crate::{CommandId, RequestProcessor};
 
+#[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: routing helpers consume ArgSlice values while the request frame
+    // backing buffer is still alive in the caller.
+    unsafe { arg.as_slice() }
+}
+
 #[cfg(test)]
 pub(crate) fn owner_routed_shard_for_command(
     processor: &RequestProcessor,
@@ -17,8 +24,7 @@ pub(crate) fn owner_routed_shard_for_command(
         return None;
     }
 
-    // SAFETY: ArgSlice memory is owned by the live receive buffer in the caller.
-    let key = unsafe { args[1].as_slice() };
+    let key = arg_slice_bytes(&args[1]);
     Some(processor.string_store_shard_index(key))
 }
 
@@ -33,8 +39,7 @@ pub(crate) fn owner_shard_for_command(
 
     match command_key_access_pattern(command) {
         KeyAccessPattern::FirstKey | KeyAccessPattern::AllKeysFromArg1 => {
-            // SAFETY: ArgSlice memory is owned by the live request buffer in the caller.
-            let key = unsafe { args[1].as_slice() };
+            let key = arg_slice_bytes(&args[1]);
             processor.string_store_shard_index(key)
         }
         KeyAccessPattern::None => 0,
@@ -56,8 +61,7 @@ pub(crate) fn cluster_error_for_command(
             let config = cluster_store.load();
             let mut first_slot = None;
             for arg in &args[1..] {
-                // SAFETY: argument slices reference the current request frame.
-                let key = unsafe { arg.as_slice() };
+                let key = arg_slice_bytes(&arg);
                 let slot = redis_hash_slot(key);
 
                 if let Some(existing) = first_slot {
@@ -86,8 +90,7 @@ pub(crate) fn cluster_error_for_command(
             Ok((None, true))
         }
         KeyAccessPattern::FirstKey => {
-            // SAFETY: argument slices reference the current request frame.
-            let key = unsafe { args[1].as_slice() };
+            let key = arg_slice_bytes(&args[1]);
             let slot = redis_hash_slot(key);
             let error = cluster_redirection_for_slot(&cluster_store.load(), slot, asking_allowed)
                 .map_err(|cluster_error| {
@@ -123,8 +126,7 @@ pub(crate) fn command_hash_slot_for_transaction(
     }
     match command_key_access_pattern(command) {
         KeyAccessPattern::FirstKey | KeyAccessPattern::AllKeysFromArg1 => {
-            // SAFETY: argument slices reference the current request frame.
-            let key = unsafe { args[1].as_slice() };
+            let key = arg_slice_bytes(&args[1]);
             Some(redis_hash_slot(key))
         }
         KeyAccessPattern::None => None,

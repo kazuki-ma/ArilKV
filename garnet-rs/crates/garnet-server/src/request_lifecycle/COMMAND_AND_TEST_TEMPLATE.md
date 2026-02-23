@@ -12,10 +12,8 @@ pub(super) fn handle_mycommand(
 ) -> Result<(), RequestExecutionError> {
     require_exact_arity(args, 3, "MYCOMMAND", "MYCOMMAND key value")?;
 
-    // SAFETY: caller guarantees argument backing memory validity.
-    let key = unsafe { args[1].as_slice() };
-    // SAFETY: caller guarantees argument backing memory validity.
-    let value = unsafe { args[2].as_slice() };
+    let key = arg_slice_bytes(&args[1]);
+    let value = arg_slice_bytes(&args[2]);
 
     // Command logic...
     append_simple_string(response_out, b"OK");

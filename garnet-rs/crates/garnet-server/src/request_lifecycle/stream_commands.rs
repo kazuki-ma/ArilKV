@@ -14,10 +14,8 @@ impl RequestProcessor {
             "XADD key id field value [field value ...]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let requested_id = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let requested_id = arg_slice_bytes(&args[2]);
 
         let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
         let id = if requested_id == b"*" {
@@ -29,10 +27,8 @@ impl RequestProcessor {
         let mut fields = Vec::with_capacity((args.len() - 3) / 2);
         let mut index = 3usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let field = unsafe { args[index].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let value = unsafe { args[index + 1].as_slice() }.to_vec();
+            let field = arg_slice_bytes(&args[index]).to_vec();
+            let value = arg_slice_bytes(&args[index + 1]).to_vec();
             fields.push((field, value));
             index += 2;
         }
@@ -50,8 +46,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "XDEL", "XDEL key id [id ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
@@ -62,8 +57,7 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for id in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            if stream.entries.remove(unsafe { id.as_slice() }).is_some() {
+            if stream.entries.remove(arg_slice_bytes(&id)).is_some() {
                 removed += 1;
             }
         }
@@ -83,17 +77,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "XGROUP", "XGROUP <CREATE|SETID> key group id")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
 
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
             require_exact_arity(args, 5, "XGROUP", "XGROUP CREATE key group id")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[2].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let group = unsafe { args[3].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let id = unsafe { args[4].as_slice() }.to_vec();
+            let key = arg_slice_bytes(&args[2]).to_vec();
+            let group = arg_slice_bytes(&args[3]).to_vec();
+            let id = arg_slice_bytes(&args[4]).to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
@@ -103,12 +93,9 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"SETID") {
             require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[2].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let group = unsafe { args[3].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let id = unsafe { args[4].as_slice() }.to_vec();
+            let key = arg_slice_bytes(&args[2]).to_vec();
+            let group = arg_slice_bytes(&args[3]).to_vec();
+            let id = arg_slice_bytes(&args[4]).to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
@@ -130,20 +117,17 @@ impl RequestProcessor {
             "XREADGROUP",
             "XREADGROUP GROUP group consumer [NOACK] [COUNT count] STREAMS key >",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        if !ascii_eq_ignore_case(unsafe { args[1].as_slice() }, b"GROUP") {
+        if !ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"GROUP") {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let group = unsafe { args[2].as_slice() }.to_vec();
+        let group = arg_slice_bytes(&args[2]).to_vec();
         let mut count = 1usize;
         let mut key = None::<Vec<u8>>;
         let mut start_id = None::<Vec<u8>>;
         let mut index = 4usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"NOACK") {
                 index += 1;
                 continue;
@@ -152,8 +136,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                let parsed = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                let parsed = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 count = usize::try_from(parsed).unwrap_or(usize::MAX);
                 index += 2;
@@ -163,10 +146,8 @@ impl RequestProcessor {
                 if index + 2 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                key = Some(unsafe { args[index + 1].as_slice() }.to_vec());
-                // SAFETY: caller guarantees argument backing memory validity.
-                start_id = Some(unsafe { args[index + 2].as_slice() }.to_vec());
+                key = Some(arg_slice_bytes(&args[index + 1]).to_vec());
+                start_id = Some(arg_slice_bytes(&args[index + 2]).to_vec());
                 index += 3;
                 continue;
             }
@@ -255,14 +236,12 @@ impl RequestProcessor {
             if index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"COUNT") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                let parsed = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                let parsed = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 count = usize::try_from(parsed).unwrap_or(usize::MAX);
                 index += 2;
@@ -272,8 +251,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -296,10 +274,8 @@ impl RequestProcessor {
         let mut remaining = count;
         let mut stream_results = Vec::new();
         for stream_index in 0..stream_count {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[streams_index + stream_index].as_slice() }.to_vec();
-            // SAFETY: caller guarantees argument backing memory validity.
-            let raw_id = unsafe { args[streams_index + stream_count + stream_index].as_slice() };
+            let key = arg_slice_bytes(&args[streams_index + stream_index]).to_vec();
+            let raw_id = arg_slice_bytes(&args[streams_index + stream_count + stream_index]);
             let Some(stream) = self.load_stream_object(&key)? else {
                 continue;
             };
@@ -355,10 +331,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 4, "XACK", "XACK key group id [id ...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let group = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let group = arg_slice_bytes(&args[2]);
         let Some(stream) = self.load_stream_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
@@ -382,10 +356,8 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [start end count [consumer]]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let group = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let group = arg_slice_bytes(&args[2]);
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
         };
@@ -408,8 +380,7 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [start end count [consumer]]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let parsed_count = parse_i64_ascii(unsafe { args[5].as_slice() })
+        let parsed_count = parse_i64_ascii(arg_slice_bytes(&args[5]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed_count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -429,24 +400,19 @@ impl RequestProcessor {
             "XCLAIM",
             "XCLAIM key group consumer min-idle-time id [id ...] [options]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let group = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let group = arg_slice_bytes(&args[2]);
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
         };
         if !stream.groups.contains_key(group) {
             return Err(RequestExecutionError::NoGroup);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        parse_u64_ascii(unsafe { args[4].as_slice() })
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::ValueNotInteger)?;
 
         let mut option_start = args.len();
         for i in 6..args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[i].as_slice() };
+            let token = arg_slice_bytes(&args[i]);
             if is_xclaim_option_token(token) {
                 option_start = i;
                 break;
@@ -456,16 +422,14 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
         for id_arg in &args[5..option_start] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            if parse_stream_id(unsafe { id_arg.as_slice() }).is_none() {
+            if parse_stream_id(arg_slice_bytes(&id_arg)).is_none() {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
 
         let mut index = option_start;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"IDLE")
                 || ascii_eq_ignore_case(token, b"TIME")
                 || ascii_eq_ignore_case(token, b"RETRYCOUNT")
@@ -473,8 +437,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -483,8 +446,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                if parse_stream_id(unsafe { args[index + 1].as_slice() }).is_none() {
+                if parse_stream_id(arg_slice_bytes(&args[index + 1])).is_none() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 index += 2;
@@ -512,35 +474,28 @@ impl RequestProcessor {
             "XAUTOCLAIM",
             "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let group = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let group = arg_slice_bytes(&args[2]);
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
         };
         if !stream.groups.contains_key(group) {
             return Err(RequestExecutionError::NoGroup);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        parse_u64_ascii(unsafe { args[4].as_slice() })
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start_id = unsafe { args[5].as_slice() };
+        parse_u64_ascii(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start_id = arg_slice_bytes(&args[5]);
         if parse_stream_id(start_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
         }
 
         let mut index = 6usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"COUNT") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -565,10 +520,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "XSETID", "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let last_id = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let last_id = arg_slice_bytes(&args[2]);
         if parse_stream_id(last_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
         }
@@ -579,14 +532,12 @@ impl RequestProcessor {
         let mut seen_ref_mode = false;
         let mut index = 3usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"ENTRIESADDED") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -595,8 +546,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                if parse_stream_id(unsafe { args[index + 1].as_slice() }).is_none() {
+                if parse_stream_id(arg_slice_bytes(&args[index + 1])).is_none() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 index += 2;
@@ -627,18 +577,15 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "XINFO", "XINFO STREAM key FULL")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let full = unsafe { args[3].as_slice() };
+        let full = arg_slice_bytes(&args[3]);
         if !ascii_eq_ignore_case(full, b"FULL") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[2].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[2]).to_vec();
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
@@ -657,8 +604,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "XLEN", "XLEN key")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let count = self
             .load_stream_object(&key)?
             .map_or(0usize, |stream| stream.entries.len());
@@ -677,12 +623,9 @@ impl RequestProcessor {
             "XRANGE",
             "XRANGE key start end [COUNT count]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = unsafe { args[2].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let end = unsafe { args[3].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let start = arg_slice_bytes(&args[2]);
+        let end = arg_slice_bytes(&args[3]);
         let count = parse_stream_count_option(args)?;
         if count == 0 {
             response_out.extend_from_slice(b"*0\r\n");
@@ -713,12 +656,9 @@ impl RequestProcessor {
             "XREVRANGE",
             "XREVRANGE key end start [COUNT count]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let end = unsafe { args[2].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = unsafe { args[3].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let end = arg_slice_bytes(&args[2]);
+        let start = arg_slice_bytes(&args[3]);
         let count = parse_stream_count_option(args)?;
         if count == 0 {
             response_out.extend_from_slice(b"*0\r\n");
@@ -749,8 +689,7 @@ impl RequestProcessor {
             "XTRIM",
             "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let spec = parse_xtrim_spec(args)?;
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
@@ -872,14 +811,12 @@ fn parse_stream_count_option(args: &[ArgSlice]) -> Result<usize, RequestExecutio
     if args.len() == 4 {
         return Ok(usize::MAX);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let option = unsafe { args[4].as_slice() };
+    let option = arg_slice_bytes(&args[4]);
     if !ascii_eq_ignore_case(option, b"COUNT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let parsed = parse_u64_ascii(unsafe { args[5].as_slice() })
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    let parsed =
+        parse_u64_ascii(arg_slice_bytes(&args[5])).ok_or(RequestExecutionError::ValueNotInteger)?;
     if parsed > usize::MAX as u64 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
@@ -899,12 +836,10 @@ struct XtrimSpec {
 }
 
 fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionError> {
-    // SAFETY: caller guarantees argument backing memory validity.
-    let strategy_token = unsafe { args[2].as_slice() };
+    let strategy_token = arg_slice_bytes(&args[2]);
     let mut index = 3usize;
     if index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let marker = unsafe { args[index].as_slice() };
+        let marker = arg_slice_bytes(&args[index]);
         if marker == b"=" || marker == b"~" {
             index += 1;
         }
@@ -912,8 +847,7 @@ fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionErro
     if index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let threshold = unsafe { args[index].as_slice() };
+    let threshold = arg_slice_bytes(&args[index]);
     index += 1;
 
     let limit = if index == args.len() {
@@ -922,12 +856,10 @@ fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionErro
         if index + 2 != args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        if !ascii_eq_ignore_case(unsafe { args[index].as_slice() }, b"LIMIT") {
+        if !ascii_eq_ignore_case(arg_slice_bytes(&args[index]), b"LIMIT") {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let parsed = parse_i64_ascii(unsafe { args[index + 1].as_slice() })
+        let parsed = parse_i64_ascii(arg_slice_bytes(&args[index + 1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);

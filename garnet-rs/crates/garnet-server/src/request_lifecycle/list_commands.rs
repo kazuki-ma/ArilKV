@@ -8,12 +8,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSH", "LPUSH key value [value ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut list = self.load_list_object(&key)?.unwrap_or_default();
         for value in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            list.insert(0, unsafe { value.as_slice() }.to_vec());
+            list.insert(0, arg_slice_bytes(&value).to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -27,12 +25,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSH", "RPUSH key value [value ...]")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let mut list = self.load_list_object(&key)?.unwrap_or_default();
         for value in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            list.push(unsafe { value.as_slice() }.to_vec());
+            list.push(arg_slice_bytes(&value).to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -69,11 +65,9 @@ impl RequestProcessor {
         };
         ensure_one_of_arities(args, &[2, 3], command, expected)?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let count = if args.len() == 3 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let parsed = parse_i64_ascii(unsafe { args[2].as_slice() })
+            let parsed = parse_i64_ascii(arg_slice_bytes(&args[2]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed < 0 {
                 return Err(RequestExecutionError::ValueOutOfRangePositive);
@@ -156,13 +150,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LRANGE", "LRANGE key start stop")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -212,8 +203,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "LLEN", "LLEN key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let length = self
             .load_list_object(&key)?
             .map_or(0, |list| list.len() as i64);
@@ -227,10 +217,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "LINDEX", "LINDEX key index")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let index = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let index = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -258,10 +246,8 @@ impl RequestProcessor {
             "LPOS",
             "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let element = unsafe { args[2].as_slice() };
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let element = arg_slice_bytes(&args[2]);
         let options = parse_lpos_options(args, 3)?;
         let Some(list) = self.load_list_object(&key)? else {
             if options.count.is_some() {
@@ -343,13 +329,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LSET", "LSET key index element")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let index = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let index = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let value = unsafe { args[3].as_slice() }.to_vec();
+        let value = arg_slice_bytes(&args[3]).to_vec();
         let mut list = self
             .load_list_object(&key)?
             .ok_or(RequestExecutionError::NoSuchKey)?;
@@ -372,13 +355,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LTRIM", "LTRIM key start stop")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let start = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let stop = parse_i64_ascii(unsafe { args[3].as_slice() })
+        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -424,15 +404,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSHX", "LPUSHX key value [value ...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
         for value in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            list.insert(0, unsafe { value.as_slice() }.to_vec());
+            list.insert(0, arg_slice_bytes(&value).to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -445,15 +423,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSHX", "RPUSHX key value [value ...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
         for value in &args[2..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            list.push(unsafe { value.as_slice() }.to_vec());
+            list.push(arg_slice_bytes(&value).to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -466,13 +442,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LREM", "LREM key count element")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let count = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let count = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let target = unsafe { args[3].as_slice() }.to_vec();
+        let target = arg_slice_bytes(&args[3]).to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
@@ -524,14 +497,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 5, "LINSERT", "LINSERT key BEFORE|AFTER pivot element")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let position = unsafe { args[2].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let pivot = unsafe { args[3].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let element = unsafe { args[4].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
+        let position = arg_slice_bytes(&args[2]);
+        let pivot = arg_slice_bytes(&args[3]);
+        let element = arg_slice_bytes(&args[4]).to_vec();
 
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
@@ -566,16 +535,12 @@ impl RequestProcessor {
             "LMOVE",
             "LMOVE source destination LEFT|RIGHT LEFT|RIGHT",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[2].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source_side = parse_list_side(unsafe { args[3].as_slice() })
-            .ok_or(RequestExecutionError::SyntaxError)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination_side = parse_list_side(unsafe { args[4].as_slice() })
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let source = arg_slice_bytes(&args[1]).to_vec();
+        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source_side =
+            parse_list_side(arg_slice_bytes(&args[3])).ok_or(RequestExecutionError::SyntaxError)?;
+        let destination_side =
+            parse_list_side(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::SyntaxError)?;
 
         self.handle_lmove_like(
             &source,
@@ -593,10 +558,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "RPOPLPUSH", "RPOPLPUSH source destination")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[2].as_slice() }.to_vec();
+        let source = arg_slice_bytes(&args[1]).to_vec();
+        let destination = arg_slice_bytes(&args[2]).to_vec();
         self.handle_lmove_like(
             &source,
             &destination,
@@ -621,8 +584,7 @@ impl RequestProcessor {
         if option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let side = parse_list_side(unsafe { args[option_start].as_slice() })
+        let side = parse_list_side(arg_slice_bytes(&args[option_start]))
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, option_start + 1)?;
         self.handle_lmpop_like(&keys, side, count, response_out)
@@ -644,8 +606,7 @@ impl RequestProcessor {
         if option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let side = parse_list_side(unsafe { args[option_start].as_slice() })
+        let side = parse_list_side(arg_slice_bytes(&args[option_start]))
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, option_start + 1)?;
         self.handle_lmpop_like(&keys, side, count, response_out)
@@ -661,10 +622,7 @@ impl RequestProcessor {
         parse_blocking_timeout_seconds(args, timeout_index)?;
         let keys = args[1..timeout_index]
             .iter()
-            .map(|key| {
-                // SAFETY: caller guarantees argument backing memory validity.
-                unsafe { key.as_slice() }.to_vec()
-            })
+            .map(|key| arg_slice_bytes(&key).to_vec())
             .collect::<Vec<_>>();
         self.handle_blocking_pop_like(&keys, ListSide::Left, response_out)
     }
@@ -679,10 +637,7 @@ impl RequestProcessor {
         parse_blocking_timeout_seconds(args, timeout_index)?;
         let keys = args[1..timeout_index]
             .iter()
-            .map(|key| {
-                // SAFETY: caller guarantees argument backing memory validity.
-                unsafe { key.as_slice() }.to_vec()
-            })
+            .map(|key| arg_slice_bytes(&key).to_vec())
             .collect::<Vec<_>>();
         self.handle_blocking_pop_like(&keys, ListSide::Right, response_out)
     }
@@ -698,16 +653,12 @@ impl RequestProcessor {
             "BLMOVE",
             "BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[2].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source_side = parse_list_side(unsafe { args[3].as_slice() })
-            .ok_or(RequestExecutionError::SyntaxError)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination_side = parse_list_side(unsafe { args[4].as_slice() })
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let source = arg_slice_bytes(&args[1]).to_vec();
+        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source_side =
+            parse_list_side(arg_slice_bytes(&args[3])).ok_or(RequestExecutionError::SyntaxError)?;
+        let destination_side =
+            parse_list_side(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::SyntaxError)?;
         parse_blocking_timeout_seconds(args, 5)?;
         self.handle_lmove_like(
             &source,
@@ -729,10 +680,8 @@ impl RequestProcessor {
             "BRPOPLPUSH",
             "BRPOPLPUSH source destination timeout",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let source = unsafe { args[1].as_slice() }.to_vec();
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination = unsafe { args[2].as_slice() }.to_vec();
+        let source = arg_slice_bytes(&args[1]).to_vec();
+        let destination = arg_slice_bytes(&args[2]).to_vec();
         parse_blocking_timeout_seconds(args, 3)?;
         self.handle_lmove_like(
             &source,
@@ -893,10 +842,8 @@ fn parse_lpos_options(
         if index + 1 >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let option = unsafe { args[index].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let value = unsafe { args[index + 1].as_slice() };
+        let option = arg_slice_bytes(&args[index]);
+        let value = arg_slice_bytes(&args[index + 1]);
         if ascii_eq_ignore_case(option, b"RANK") {
             let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed == i64::MIN {
@@ -959,8 +906,7 @@ fn parse_list_numkeys_and_keys(
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let raw_numkeys = parse_i64_ascii(unsafe { args[numkeys_index].as_slice() })
+    let raw_numkeys = parse_i64_ascii(arg_slice_bytes(&args[numkeys_index]))
         .ok_or(RequestExecutionError::NumkeysMustBeGreaterThanZero)?;
     if raw_numkeys <= 0 {
         return Err(RequestExecutionError::NumkeysMustBeGreaterThanZero);
@@ -976,10 +922,7 @@ fn parse_list_numkeys_and_keys(
     }
     let keys = args[key_start..key_end]
         .iter()
-        .map(|key| {
-            // SAFETY: caller guarantees argument backing memory validity.
-            unsafe { key.as_slice() }.to_vec()
-        })
+        .map(|key| arg_slice_bytes(&key).to_vec())
         .collect();
     Ok((keys, key_end))
 }
@@ -994,13 +937,11 @@ fn parse_list_count_option(
     if start_index + 2 != args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let count_token = unsafe { args[start_index].as_slice() };
+    let count_token = arg_slice_bytes(&args[start_index]);
     if !ascii_eq_ignore_case(count_token, b"COUNT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let count = parse_i64_ascii(unsafe { args[start_index + 1].as_slice() })
+    let count = parse_i64_ascii(arg_slice_bytes(&args[start_index + 1]))
         .ok_or(RequestExecutionError::CountMustBeGreaterThanZero)?;
     if count <= 0 {
         return Err(RequestExecutionError::CountMustBeGreaterThanZero);
@@ -1012,8 +953,7 @@ fn parse_blocking_timeout_seconds(
     args: &[ArgSlice],
     index: usize,
 ) -> Result<f64, RequestExecutionError> {
-    // SAFETY: caller guarantees argument backing memory validity.
-    let timeout_token = unsafe { args[index].as_slice() };
+    let timeout_token = arg_slice_bytes(&args[index]);
     let timeout_text =
         std::str::from_utf8(timeout_token).map_err(|_| RequestExecutionError::ValueNotFloat)?;
     let timeout = match timeout_text.parse::<f64>() {

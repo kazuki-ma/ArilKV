@@ -50,7 +50,8 @@ pub use limited_fixed_buffer_pool::{
     ReturnStatus,
 };
 pub use request_lifecycle::{
-    MigrationEntry, MigrationValue, RequestExecutionError, RequestProcessor, RequestProcessorInitError,
+    MigrationEntry, MigrationValue, RequestExecutionError, RequestProcessor,
+    RequestProcessorInitError,
 };
 pub use server_runtime::{
     run, run_listener_with_shutdown, run_listener_with_shutdown_and_cluster,

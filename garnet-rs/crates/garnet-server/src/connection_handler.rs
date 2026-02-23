@@ -24,9 +24,7 @@ use crate::connection_routing::{cluster_error_for_command, command_hash_slot_for
 use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
-use crate::{
-    RequestExecutionError, RequestProcessor, ServerMetrics, ShardOwnerThreadPool,
-};
+use crate::{RequestExecutionError, RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
 
 const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
@@ -35,6 +33,14 @@ const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
+
+#[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: connection handler consumes ArgSlice values created from the
+    // current connection frame buffer, which remains alive while dispatching
+    // this frame.
+    unsafe { arg.as_slice() }
+}
 
 pub(crate) async fn handle_connection(
     mut stream: TcpStream,
@@ -62,13 +68,9 @@ pub(crate) async fn handle_connection(
     loop {
         // Read at least once (await), then drain any immediately-available bytes via try_read.
         // This reduces read-side wakeups/syscall count under small pipelined requests.
-        let bytes_read = read_and_drain_available(
-            &mut stream,
-            &mut read_buffer,
-            &mut receive_buffer,
-            &metrics,
-        )
-        .await?;
+        let bytes_read =
+            read_and_drain_available(&mut stream, &mut read_buffer, &mut receive_buffer, &metrics)
+                .await?;
         if bytes_read == 0 {
             return Ok(());
         }
@@ -146,7 +148,7 @@ pub(crate) async fn handle_connection(
                 continue;
             }
             // SAFETY: `args` points to the current frame bytes.
-            let command_name = unsafe { args[0].as_slice() };
+            let command_name = arg_slice_bytes(&args[0]);
             metrics.set_client_last_command(client_id, command_name);
 
             if command == CommandId::Client {
@@ -174,9 +176,9 @@ pub(crate) async fn handle_connection(
                     responses.extend_from_slice(b"' command\r\n");
                 } else {
                     // SAFETY: `args` points to the current request frame.
-                    let arg1 = unsafe { args[1].as_slice() };
+                    let arg1 = arg_slice_bytes(&args[1]);
                     // SAFETY: `args` points to the current request frame.
-                    let arg2 = unsafe { args[2].as_slice() };
+                    let arg2 = arg_slice_bytes(&args[2]);
 
                     if ascii_eq_ignore_case(arg1, b"NO") && ascii_eq_ignore_case(arg2, b"ONE") {
                         replication.become_master().await;
@@ -334,7 +336,7 @@ pub(crate) async fn handle_connection(
                         } else {
                             for key_arg in &args[1..argument_count] {
                                 // SAFETY: `args` points to the live command frame.
-                                let key = unsafe { key_arg.as_slice() };
+                                let key = arg_slice_bytes(&key_arg);
                                 let version = processor.watch_key_version(key);
                                 transaction.watch_key(key, version);
                             }
@@ -444,7 +446,9 @@ async fn read_and_drain_available(
     }
 
     receive_buffer.extend_from_slice(&read_buffer[..first]);
-    metrics.bytes_received.fetch_add(first as u64, Ordering::Relaxed);
+    metrics
+        .bytes_received
+        .fetch_add(first as u64, Ordering::Relaxed);
     let mut total = first;
 
     loop {
@@ -500,7 +504,9 @@ async fn execute_blocking_frame_on_owner_thread(
             if let Some(unblock_mode) = processor.take_client_unblock_request(client_id) {
                 clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
                 let response = match unblock_mode {
-                    ClientUnblockMode::Timeout => blocking_empty_response_for_command(command).to_vec(),
+                    ClientUnblockMode::Timeout => {
+                        blocking_empty_response_for_command(command).to_vec()
+                    }
                     ClientUnblockMode::Error => {
                         b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
                     }
@@ -672,7 +678,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
                 .map(|arg| {
                     // SAFETY: The argument slice was parsed from a live request frame and stays valid
                     // while the request is being executed.
-                    unsafe { arg.as_slice() }.to_vec()
+                    arg_slice_bytes(&arg).to_vec()
                 })
                 .collect()
         }
@@ -683,7 +689,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
             vec![
                 // SAFETY: The argument slice was parsed from a live request frame and stays valid
                 // while the request is being executed.
-                unsafe { args[1].as_slice() }.to_vec(),
+                arg_slice_bytes(&args[1]).to_vec(),
             ]
         }
         CommandId::Blmpop | CommandId::Bzmpop => {
@@ -692,7 +698,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
             }
             // SAFETY: The argument slice was parsed from a live request frame and stays valid
             // while the request is being executed.
-            let numkeys = parse_u64_ascii(unsafe { args[2].as_slice() }).unwrap_or(0) as usize;
+            let numkeys = parse_u64_ascii(arg_slice_bytes(&args[2])).unwrap_or(0) as usize;
             if numkeys == 0 {
                 return Vec::new();
             }
@@ -706,7 +712,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
                 .map(|arg| {
                     // SAFETY: The argument slice was parsed from a live request frame and stays valid
                     // while the request is being executed.
-                    unsafe { arg.as_slice() }.to_vec()
+                    arg_slice_bytes(&arg).to_vec()
                 })
                 .collect()
         }
@@ -717,7 +723,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
 fn parse_blocking_timeout_arg(args: &[ArgSlice], timeout_index: usize) -> Option<f64> {
     // SAFETY: The argument slice was parsed from a live request frame and stays valid
     // while the request is being executed.
-    let timeout_slice = unsafe { args.get(timeout_index)?.as_slice() };
+    let timeout_slice = arg_slice_bytes(args.get(timeout_index)?);
     if timeout_slice.is_empty() {
         return None;
     }
@@ -747,7 +753,7 @@ fn handle_client_command(
     }
 
     // SAFETY: `args` points to the current request frame.
-    let subcommand = unsafe { args[1].as_slice() };
+    let subcommand = arg_slice_bytes(&args[1]);
     if ascii_eq_ignore_case(subcommand, b"ID") {
         if args.len() != 2 {
             append_wrong_arity_error_for_command(response_out, CommandId::Client);
@@ -776,7 +782,7 @@ fn handle_client_command(
             return;
         }
         // SAFETY: `args` points to the current request frame.
-        let new_name = unsafe { args[2].as_slice() }.to_vec();
+        let new_name = arg_slice_bytes(&args[2]).to_vec();
         metrics.set_client_name(client_id, Some(new_name));
         append_simple_string(response_out, b"OK");
         return;
@@ -790,13 +796,13 @@ fn handle_client_command(
                 return;
             }
             // SAFETY: `args` points to the current request frame.
-            let option = unsafe { args[2].as_slice() };
+            let option = arg_slice_bytes(&args[2]);
             if !ascii_eq_ignore_case(option, b"ID") {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
                 return;
             }
             // SAFETY: `args` points to the current request frame.
-            let id_arg = unsafe { args[3].as_slice() };
+            let id_arg = arg_slice_bytes(&args[3]);
             let Some(parsed_id) = parse_u64_ascii(id_arg) else {
                 response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
                 return;
@@ -814,14 +820,14 @@ fn handle_client_command(
             return;
         }
         // SAFETY: `args` points to the current request frame.
-        let id_arg = unsafe { args[2].as_slice() };
+        let id_arg = arg_slice_bytes(&args[2]);
         let Some(target_client_id) = parse_u64_ascii(id_arg) else {
             response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
             return;
         };
         let unblock_mode = if args.len() == 4 {
             // SAFETY: `args` points to the current request frame.
-            let mode_arg = unsafe { args[3].as_slice() };
+            let mode_arg = arg_slice_bytes(&args[3]);
             if ascii_eq_ignore_case(mode_arg, b"TIMEOUT") {
                 ClientUnblockMode::Timeout
             } else if ascii_eq_ignore_case(mode_arg, b"ERROR") {
@@ -846,14 +852,14 @@ fn handle_client_command(
             return;
         }
         // SAFETY: `args` points to the current request frame.
-        let timeout_arg = unsafe { args[2].as_slice() };
+        let timeout_arg = arg_slice_bytes(&args[2]);
         if parse_u64_ascii(timeout_arg).is_none() {
             response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
             return;
         }
         if args.len() == 4 {
             // SAFETY: `args` points to the current request frame.
-            let mode = unsafe { args[3].as_slice() };
+            let mode = arg_slice_bytes(&args[3]);
             if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
                 return;
@@ -878,7 +884,7 @@ fn handle_client_command(
             return;
         }
         // SAFETY: `args` points to the current request frame.
-        let mode = unsafe { args[2].as_slice() };
+        let mode = arg_slice_bytes(&args[2]);
         if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
             response_out.extend_from_slice(b"-ERR syntax error\r\n");
             return;
@@ -929,21 +935,21 @@ fn lmpop_pop_command(command: CommandId, args: &[ArgSlice]) -> Option<&'static [
         CommandId::Lmpop => {
             let numkeys = parse_u64_ascii(
                 // SAFETY: args were parsed from the current request frame.
-                unsafe { args.get(1)?.as_slice() },
+                arg_slice_bytes(args.get(1)?),
             )? as usize;
             2usize.checked_add(numkeys)?
         }
         CommandId::Blmpop => {
             let numkeys = parse_u64_ascii(
                 // SAFETY: args were parsed from the current request frame.
-                unsafe { args.get(2)?.as_slice() },
+                arg_slice_bytes(args.get(2)?),
             )? as usize;
             3usize.checked_add(numkeys)?
         }
         _ => return None,
     };
     // SAFETY: args were parsed from the current request frame.
-    let direction = unsafe { args.get(direction_index)?.as_slice() };
+    let direction = arg_slice_bytes(args.get(direction_index)?);
     if ascii_eq_ignore_case(direction, b"LEFT") {
         Some(b"LPOP")
     } else if ascii_eq_ignore_case(direction, b"RIGHT") {
@@ -1209,11 +1215,11 @@ mod tests {
         let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
         assert_eq!(meta.argument_count, 3);
         // SAFETY: args reference `frame`, which is alive in this scope.
-        assert_eq!(unsafe { args[0].as_slice() }, b"SET");
+        assert_eq!(arg_slice_bytes(&args[0]), b"SET");
         // SAFETY: args reference `frame`, which is alive in this scope.
-        assert_eq!(unsafe { args[1].as_slice() }, b"key");
+        assert_eq!(arg_slice_bytes(&args[1]), b"key");
         // SAFETY: args reference `frame`, which is alive in this scope.
-        assert_eq!(unsafe { args[2].as_slice() }, b"value");
+        assert_eq!(arg_slice_bytes(&args[2]), b"value");
     }
 
     #[test]
@@ -1226,9 +1232,9 @@ mod tests {
         let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
         assert_eq!(meta.argument_count, 3);
         // SAFETY: args reference `frame`, which is alive in this scope.
-        assert_eq!(unsafe { args[1].as_slice() }, b"key with space");
+        assert_eq!(arg_slice_bytes(&args[1]), b"key with space");
         // SAFETY: args reference `frame`, which is alive in this scope.
-        assert_eq!(unsafe { args[2].as_slice() }, b"v'1");
+        assert_eq!(arg_slice_bytes(&args[2]), b"v'1");
     }
 
     #[test]

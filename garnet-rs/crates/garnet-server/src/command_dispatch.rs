@@ -5,6 +5,13 @@
 use crate::command_spec::{command_id_from_name, CommandId};
 use garnet_common::ArgSlice;
 
+#[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: this helper is only used by dispatch paths that guarantee the
+    // ArgSlice backing frame outlives command-name inspection.
+    unsafe { arg.as_slice() }
+}
+
 pub fn dispatch_command_name(command: &[u8]) -> CommandId {
     if is_ascii_eq_3(command, b"GET") {
         return CommandId::Get;
@@ -36,8 +43,7 @@ pub unsafe fn dispatch_from_arg_slices(args: &[ArgSlice]) -> CommandId {
     if args.is_empty() {
         return CommandId::Unknown;
     }
-    // SAFETY: guaranteed by caller per function contract.
-    let command = unsafe { args[0].as_slice() };
+    let command = arg_slice_bytes(&args[0]);
     dispatch_command_name(command)
 }
 

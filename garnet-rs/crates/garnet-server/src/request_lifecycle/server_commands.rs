@@ -113,8 +113,7 @@ impl RequestProcessor {
             append_simple_string(response_out, b"PONG");
             return Ok(());
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        append_bulk_string(response_out, unsafe { args[1].as_slice() });
+        append_bulk_string(response_out, arg_slice_bytes(&args[1]));
         Ok(())
     }
 
@@ -124,8 +123,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ECHO", "ECHO message")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        append_bulk_string(response_out, unsafe { args[1].as_slice() });
+        append_bulk_string(response_out, arg_slice_bytes(&args[1]));
         Ok(())
     }
 
@@ -139,8 +137,7 @@ impl RequestProcessor {
             return Ok(());
         }
         require_exact_arity(args, 2, "HELLO", "HELLO [2|3]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let version = parse_u64_ascii(unsafe { args[1].as_slice() })
+        let version = parse_u64_ascii(arg_slice_bytes(&args[1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if version != 2 && version != 3 {
             return Err(RequestExecutionError::SyntaxError);
@@ -197,8 +194,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SELECT", "SELECT index")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let index = parse_i64_ascii(unsafe { args[1].as_slice() })
+        let index = parse_i64_ascii(arg_slice_bytes(&args[1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if index != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
@@ -213,8 +209,7 @@ impl RequestProcessor {
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let target_db = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let target_db = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if target_db == 0 {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
@@ -228,11 +223,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SWAPDB", "SWAPDB index1 index2")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let index1 = parse_i64_ascii(unsafe { args[1].as_slice() })
+        let index1 = parse_i64_ascii(arg_slice_bytes(&args[1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let index2 = parse_i64_ascii(unsafe { args[2].as_slice() })
+        let index2 = parse_i64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if index1 != 0 || index2 != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
@@ -247,27 +240,22 @@ impl RequestProcessor {
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 6, "MIGRATE", MIGRATE_USAGE)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let host = unsafe { args[1].as_slice() };
+        let host = arg_slice_bytes(&args[1]);
         if host.is_empty() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let port = parse_u64_ascii(unsafe { args[2].as_slice() })
+        let port = parse_u64_ascii(arg_slice_bytes(&args[2]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if port > u16::MAX as u64 {
             return Err(RequestExecutionError::ValueNotInteger);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key_arg = unsafe { args[3].as_slice() };
-        // SAFETY: caller guarantees argument backing memory validity.
-        let destination_db = parse_i64_ascii(unsafe { args[4].as_slice() })
+        let key_arg = arg_slice_bytes(&args[3]);
+        let destination_db = parse_i64_ascii(arg_slice_bytes(&args[4]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if destination_db != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
-        // SAFETY: caller guarantees argument backing memory validity.
-        let timeout_millis = parse_i64_ascii(unsafe { args[5].as_slice() })
+        let timeout_millis = parse_i64_ascii(arg_slice_bytes(&args[5]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if timeout_millis <= 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -280,8 +268,7 @@ impl RequestProcessor {
 
         let mut index = 6usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"COPY") || ascii_eq_ignore_case(token, b"REPLACE") {
                 index += 1;
                 continue;
@@ -308,8 +295,7 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 for key in &args[index + 1..] {
-                    // SAFETY: caller guarantees argument backing memory validity.
-                    let key = unsafe { key.as_slice() };
+                    let key = arg_slice_bytes(&key);
                     if key.is_empty() {
                         return Err(RequestExecutionError::SyntaxError);
                     }
@@ -337,8 +323,7 @@ impl RequestProcessor {
             "CLIENT",
             "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-TOUCH> [arguments...]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"ID") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT ID")?;
             append_integer(response_out, 1);
@@ -372,12 +357,10 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"PAUSE") {
             ensure_one_of_arities(args, &[3, 4], "CLIENT", "CLIENT PAUSE timeout [WRITE|ALL]")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            parse_u64_ascii(unsafe { args[2].as_slice() })
+            parse_u64_ascii(arg_slice_bytes(&args[2]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if args.len() == 4 {
-                // SAFETY: caller guarantees argument backing memory validity.
-                let mode = unsafe { args[3].as_slice() };
+                let mode = arg_slice_bytes(&args[3]);
                 if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
                     return Err(RequestExecutionError::SyntaxError);
                 }
@@ -392,8 +375,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT NO-TOUCH on|off")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let mode = unsafe { args[2].as_slice() };
+            let mode = arg_slice_bytes(&args[2]);
             if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -422,12 +404,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "WAIT", "WAIT numreplicas timeout")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        parse_u64_ascii(unsafe { args[1].as_slice() })
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        parse_u64_ascii(unsafe { args[2].as_slice() })
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(arg_slice_bytes(&args[1])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(arg_slice_bytes(&args[2])).ok_or(RequestExecutionError::ValueNotInteger)?;
         append_integer(response_out, 0);
         Ok(())
     }
@@ -438,15 +416,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "WAITAOF", "WAITAOF numlocal numreplicas timeout")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let numlocal = parse_u64_ascii(unsafe { args[1].as_slice() })
+        let numlocal = parse_u64_ascii(arg_slice_bytes(&args[1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        parse_u64_ascii(unsafe { args[2].as_slice() })
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        parse_u64_ascii(unsafe { args[3].as_slice() })
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(arg_slice_bytes(&args[2])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(arg_slice_bytes(&args[3])).ok_or(RequestExecutionError::ValueNotInteger)?;
         if numlocal > 1 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -475,8 +448,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 1, 2, "BGSAVE", "BGSAVE [SCHEDULE]")?;
         if args.len() == 2 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let mode = unsafe { args[1].as_slice() };
+            let mode = arg_slice_bytes(&args[1]);
             if !ascii_eq_ignore_case(mode, b"SCHEDULE") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -534,12 +506,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         if args.len() >= 2 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let first_option = unsafe { args[1].as_slice() };
+            let first_option = arg_slice_bytes(&args[1]);
             if ascii_eq_ignore_case(first_option, b"VERSION") {
                 require_exact_arity(args, 3, "LOLWUT", "LOLWUT [VERSION version]")?;
-                // SAFETY: caller guarantees argument backing memory validity.
-                parse_u64_ascii(unsafe { args[2].as_slice() })
+                parse_u64_ascii(arg_slice_bytes(&args[2]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
             }
         }
@@ -553,15 +523,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MEMORY", "MEMORY USAGE key")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
             return Err(RequestExecutionError::UnknownCommand);
         }
         require_exact_arity(args, 3, "MEMORY", "MEMORY USAGE key")?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[2].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[2]).to_vec();
         self.expire_key_if_needed(&key)?;
 
         if let Some(value) = self.read_string_value(&key)? {
@@ -599,12 +567,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "DEBUG", "DEBUG subcommand [arguments...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"SET-ACTIVE-EXPIRE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG SET-ACTIVE-EXPIRE <0|1>")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let enabled = unsafe { args[2].as_slice() };
+            let enabled = arg_slice_bytes(&args[2]);
             if enabled != b"0" && enabled != b"1" {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -613,8 +579,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[2].as_slice() }.to_vec();
+            let key = arg_slice_bytes(&args[2]).to_vec();
             self.expire_key_if_needed(&key)?;
             let digest = self.debug_digest_value_for_key(&key)?;
             append_bulk_string(response_out, &digest);
@@ -629,13 +594,11 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "OBJECT", "OBJECT <ENCODING|REFCOUNT> key")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[2].as_slice() }.to_vec();
+            let key = arg_slice_bytes(&args[2]).to_vec();
             self.expire_key_if_needed(&key)?;
             if self.key_exists(&key)? {
                 append_bulk_string(response_out, b"raw");
@@ -645,9 +608,7 @@ impl RequestProcessor {
                 append_null_bulk_string(response_out);
                 return Ok(());
             };
-            if object_type == LIST_OBJECT_TYPE_TAG
-                && self.list_quicklist_encoding_is_forced(&key)
-            {
+            if object_type == LIST_OBJECT_TYPE_TAG && self.list_quicklist_encoding_is_forced(&key) {
                 append_bulk_string(response_out, b"quicklist");
                 return Ok(());
             }
@@ -665,8 +626,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"REFCOUNT") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT REFCOUNT key")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[2].as_slice() }.to_vec();
+            let key = arg_slice_bytes(&args[2]).to_vec();
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 append_integer(response_out, 1);
@@ -685,8 +645,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "KEYS", "KEYS pattern")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let pattern = unsafe { args[1].as_slice() };
+        let pattern = arg_slice_bytes(&args[1]);
 
         let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
@@ -771,22 +730,19 @@ impl RequestProcessor {
             "SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]",
         )?;
 
-        // SAFETY: caller guarantees argument backing memory validity.
-        let cursor = parse_u64_ascii(unsafe { args[1].as_slice() })
+        let cursor = parse_u64_ascii(arg_slice_bytes(&args[1]))
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let mut pattern: Option<&[u8]> = None;
         let mut count = 10usize;
         let mut type_filter: Option<ScanTypeFilter> = None;
         let mut index = 2usize;
         while index < args.len() {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { args[index].as_slice() };
+            let token = arg_slice_bytes(&args[index]);
             if ascii_eq_ignore_case(token, b"MATCH") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                pattern = Some(unsafe { args[index + 1].as_slice() });
+                pattern = Some(arg_slice_bytes(&args[index + 1]));
                 index += 2;
                 continue;
             }
@@ -794,8 +750,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                let parsed_count = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+                let parsed_count = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 if parsed_count == 0 {
                     return Err(RequestExecutionError::ValueOutOfRange);
@@ -808,8 +763,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SAFETY: caller guarantees argument backing memory validity.
-                let raw_type = unsafe { args[index + 1].as_slice() };
+                let raw_type = arg_slice_bytes(&args[index + 1]);
                 type_filter = Some(
                     parse_scan_type_filter(raw_type).ok_or(RequestExecutionError::SyntaxError)?,
                 );
@@ -892,8 +846,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "DUMP", "DUMP key")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let key = unsafe { args[1].as_slice() }.to_vec();
+        let key = arg_slice_bytes(&args[1]).to_vec();
         self.expire_key_if_needed(&key)?;
         if let Some(value) = self.read_string_value(&key)? {
             append_bulk_string(
@@ -943,8 +896,7 @@ impl RequestProcessor {
             "LATENCY",
             "LATENCY <DOCTOR|GRAPH|HISTORY|LATEST|RESET|HISTOGRAM|HELP> [arguments...]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "LATENCY", "LATENCY HELP")?;
             append_bulk_array(response_out, &LATENCY_HELP_LINES);
@@ -987,8 +939,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MODULE", "MODULE <LIST|HELP>")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"LIST") {
             require_exact_arity(args, 2, "MODULE", "MODULE LIST")?;
             response_out.extend_from_slice(b"*0\r\n");
@@ -1013,8 +964,7 @@ impl RequestProcessor {
             "SLOWLOG",
             "SLOWLOG <GET|LEN|RESET|HELP> [arguments...]",
         )?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG HELP")?;
             append_bulk_array(response_out, &SLOWLOG_HELP_LINES);
@@ -1033,8 +983,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"GET") {
             ensure_ranged_arity(args, 2, 3, "SLOWLOG", "SLOWLOG GET [count]")?;
             if args.len() == 3 {
-                // SAFETY: caller guarantees argument backing memory validity.
-                parse_i64_ascii(unsafe { args[2].as_slice() })
+                parse_i64_ascii(arg_slice_bytes(&args[2]))
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
             }
             response_out.extend_from_slice(b"*0\r\n");
@@ -1049,8 +998,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "ACL", "ACL <subcommand> [arguments...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "ACL", "ACL HELP")?;
             append_bulk_array(response_out, &ACL_HELP_LINES);
@@ -1090,8 +1038,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {
             require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let username = unsafe { args[2].as_slice() };
+            let username = arg_slice_bytes(&args[2]);
             if !ascii_eq_ignore_case(username, b"default") {
                 append_null_bulk_string(response_out);
                 return Ok(());
@@ -1121,12 +1068,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "CLUSTER", "CLUSTER <subcommand> [arguments...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"KEYSLOT") {
             require_exact_arity(args, 3, "CLUSTER", "CLUSTER KEYSLOT key")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let key = unsafe { args[2].as_slice() };
+            let key = arg_slice_bytes(&args[2]);
             append_integer(response_out, i64::from(redis_hash_slot(key)));
             return Ok(());
         }
@@ -1284,8 +1229,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PUBSUB", "PUBSUB <subcommand> [arguments ...]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if ascii_eq_ignore_case(subcommand, b"CHANNELS")
             || ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS")
         {
@@ -1305,8 +1249,7 @@ impl RequestProcessor {
             let pair_count = args.len().saturating_sub(2);
             response_out.extend_from_slice(format!("*{}\r\n", pair_count * 2).as_bytes());
             for channel in &args[2..] {
-                // SAFETY: caller guarantees argument backing memory validity.
-                let channel = unsafe { channel.as_slice() };
+                let channel = arg_slice_bytes(&channel);
                 append_bulk_string(response_out, channel);
                 append_integer(response_out, 0);
             }
@@ -1337,8 +1280,7 @@ impl RequestProcessor {
             "SHUTDOWN [NOSAVE|SAVE] [NOW|FORCE|ABORT]",
         )?;
         for option in &args[1..] {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let token = unsafe { option.as_slice() };
+            let token = arg_slice_bytes(&option);
             if ascii_eq_ignore_case(token, b"SAVE")
                 || ascii_eq_ignore_case(token, b"NOSAVE")
                 || ascii_eq_ignore_case(token, b"NOW")
@@ -1360,8 +1302,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
             return Err(RequestExecutionError::UnknownCommand);
         }
@@ -1375,14 +1316,12 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SCRIPT", "SCRIPT FLUSH [ASYNC|SYNC]")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
         if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
             return Err(RequestExecutionError::UnknownCommand);
         }
         if args.len() == 3 {
-            // SAFETY: caller guarantees argument backing memory validity.
-            let flush_mode = unsafe { args[2].as_slice() };
+            let flush_mode = arg_slice_bytes(&args[2]);
             if !ascii_eq_ignore_case(flush_mode, b"ASYNC")
                 && !ascii_eq_ignore_case(flush_mode, b"SYNC")
             {
@@ -1465,8 +1404,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "CONFIG", "CONFIG <GET|SET|RESETSTAT>")?;
-        // SAFETY: caller guarantees argument backing memory validity.
-        let subcommand = unsafe { args[1].as_slice() };
+        let subcommand = arg_slice_bytes(&args[1]);
 
         if ascii_eq_ignore_case(subcommand, b"RESETSTAT") {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
@@ -1476,10 +1414,8 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"SET") {
             require_exact_arity(args, 4, "CONFIG", "CONFIG SET parameter value")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let parameter = unsafe { args[2].as_slice() };
-            // SAFETY: caller guarantees argument backing memory validity.
-            let value = unsafe { args[3].as_slice() };
+            let parameter = arg_slice_bytes(&args[2]);
+            let value = arg_slice_bytes(&args[3]);
 
             if ascii_eq_ignore_case(parameter, b"ZSET-MAX-ZIPLIST-ENTRIES")
                 || ascii_eq_ignore_case(parameter, b"ZSET-MAX-LISTPACK-ENTRIES")
@@ -1502,8 +1438,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"GET") {
             require_exact_arity(args, 3, "CONFIG", "CONFIG GET parameter")?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            let pattern = unsafe { args[2].as_slice() };
+            let pattern = arg_slice_bytes(&args[2]);
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let zset_max_listpack_entries_value = zset_max_listpack_entries.to_string();
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
@@ -1678,16 +1613,13 @@ fn restore_from_dump_blob(
         "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
     )?;
 
-    // SAFETY: caller guarantees argument backing memory validity.
-    let key = unsafe { args[1].as_slice() }.to_vec();
-    // SAFETY: caller guarantees argument backing memory validity.
-    let ttl_input = parse_i64_ascii(unsafe { args[2].as_slice() })
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    let key = arg_slice_bytes(&args[1]).to_vec();
+    let ttl_input =
+        parse_i64_ascii(arg_slice_bytes(&args[2])).ok_or(RequestExecutionError::ValueNotInteger)?;
     if ttl_input < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
-    // SAFETY: caller guarantees argument backing memory validity.
-    let dump_blob = unsafe { args[3].as_slice() };
+    let dump_blob = arg_slice_bytes(&args[3]);
     let options = parse_restore_options(args, 4, command_name)?;
     let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
 
@@ -1747,8 +1679,7 @@ fn parse_restore_options(
     };
     let mut index = start_index;
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"REPLACE") {
             options.replace = true;
             index += 1;
@@ -1766,8 +1697,7 @@ fn parse_restore_options(
                 command_name,
                 "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
             )?;
-            // SAFETY: caller guarantees argument backing memory validity.
-            parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+            parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             index += 2;
             continue;
@@ -1836,8 +1766,7 @@ fn validate_scripting_numkeys(
     expected: &'static str,
 ) -> Result<(), RequestExecutionError> {
     ensure_min_arity(args, 3, command, expected)?;
-    // SAFETY: caller guarantees argument backing memory validity.
-    let numkeys_raw = unsafe { args[2].as_slice() };
+    let numkeys_raw = arg_slice_bytes(&args[2]);
     let numkeys = parse_i64_ascii(numkeys_raw).ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);
@@ -1851,8 +1780,7 @@ fn validate_scripting_numkeys(
 
 fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[ArgSlice], kind: &[u8]) {
     for (index, target) in targets.iter().enumerate() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let channel = unsafe { target.as_slice() };
+        let channel = arg_slice_bytes(&target);
         append_pubsub_ack(response_out, kind, Some(channel), index + 1);
     }
 }
@@ -1863,8 +1791,7 @@ fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[ArgSlice], kin
         return;
     }
     for (index, target) in targets.iter().enumerate() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let channel = unsafe { target.as_slice() };
+        let channel = arg_slice_bytes(&target);
         let remaining = targets.len().saturating_sub(index + 1);
         append_pubsub_ack(response_out, kind, Some(channel), remaining);
     }

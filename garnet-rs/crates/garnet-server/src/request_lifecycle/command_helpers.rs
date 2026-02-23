@@ -86,14 +86,12 @@ pub(super) fn parse_scan_match_count_options<'a>(
     };
     let mut index = start_index;
     while index < args.len() {
-        // SAFETY: caller guarantees argument backing memory validity.
-        let token = unsafe { args[index].as_slice() };
+        let token = arg_slice_bytes(&args[index]);
         if ascii_eq_ignore_case(token, b"MATCH") {
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            options.pattern = Some(unsafe { args[index + 1].as_slice() });
+            options.pattern = Some(arg_slice_bytes(&args[index + 1]));
             index += 2;
             continue;
         }
@@ -101,8 +99,7 @@ pub(super) fn parse_scan_match_count_options<'a>(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // SAFETY: caller guarantees argument backing memory validity.
-            let raw_count = parse_u64_ascii(unsafe { args[index + 1].as_slice() })
+            let raw_count = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count == 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
