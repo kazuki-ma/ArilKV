@@ -89,13 +89,13 @@ const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
 impl RequestProcessor {
     pub(super) fn handle_get(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         crate::debug_sync_point!("request_processor.handle_get.enter");
         require_exact_arity(args, 2, "GET", "GET key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
@@ -126,12 +126,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_strlen(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "STRLEN", "STRLEN key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
@@ -160,7 +160,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_getrange_like(args, response_out, false)
@@ -168,7 +168,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_substr(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_getrange_like(args, response_out, true)
@@ -176,7 +176,7 @@ impl RequestProcessor {
 
     fn handle_getrange_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         substr_alias: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -187,11 +187,11 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 4, command, expected)?;
 
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let end = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let end = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
@@ -226,17 +226,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_getbit(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "GETBIT", "GETBIT key offset")?;
-        let offset = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let offset = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if offset < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         let Some(value) = self.read_string_value(&key)? else {
             if self.object_key_exists(&key)? {
@@ -259,24 +259,24 @@ impl RequestProcessor {
 
     pub(super) fn handle_setbit(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SETBIT", "SETBIT key offset value")?;
-        let offset = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let offset = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if offset < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        let bit_value = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let bit_value = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let bit_value = match bit_value {
             0 => 0u8,
             1 => 1u8,
             _ => return Err(RequestExecutionError::ValueOutOfRange),
         };
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
         let mut value = match self.read_string_value(&key)? {
@@ -318,18 +318,18 @@ impl RequestProcessor {
 
     pub(super) fn handle_setrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SETRANGE", "SETRANGE key offset value")?;
-        let offset = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let offset = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if offset < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        let new_segment = arg_slice_bytes(&args[3]);
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let new_segment = args[3];
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
 
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
@@ -364,7 +364,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitcount(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_one_of_arities(
@@ -373,7 +373,7 @@ impl RequestProcessor {
             "BITCOUNT",
             "BITCOUNT key [start end [BYTE|BIT]]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         let Some(value) = self.read_string_value(&key)? else {
             if self.object_key_exists(&key)? {
@@ -392,12 +392,12 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let end = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let end = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let bit_mode = if args.len() == 5 {
-            let mode = arg_slice_bytes(&args[4]);
+            let mode = args[4];
             if ascii_eq_ignore_case(mode, b"BYTE") {
                 false
             } else if ascii_eq_ignore_case(mode, b"BIT") {
@@ -440,7 +440,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitpos(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(
@@ -450,8 +450,8 @@ impl RequestProcessor {
             "BITPOS",
             "BITPOS key bit [start [end [BYTE|BIT]]]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let bit = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let bit = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if bit != 0 && bit != 1 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -474,7 +474,7 @@ impl RequestProcessor {
 
         let mut mode_is_bit = false;
         if args.len() == 6 {
-            let mode = arg_slice_bytes(&args[5]);
+            let mode = args[5];
             if ascii_eq_ignore_case(mode, b"BYTE") {
                 mode_is_bit = false;
             } else if ascii_eq_ignore_case(mode, b"BIT") {
@@ -485,13 +485,13 @@ impl RequestProcessor {
         }
 
         let start = if args.len() >= 4 {
-            parse_i64_ascii(arg_slice_bytes(&args[3]))
+            parse_i64_ascii(args[3])
                 .ok_or(RequestExecutionError::ValueNotInteger)?
         } else {
             0
         };
         let end = if args.len() >= 5 {
-            parse_i64_ascii(arg_slice_bytes(&args[4]))
+            parse_i64_ascii(args[4])
                 .ok_or(RequestExecutionError::ValueNotInteger)?
         } else if mode_is_bit {
             let total_bits = value
@@ -560,21 +560,21 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 4, "BITOP", "BITOP operation destkey key [key ...]")?;
 
-        let operation = parse_bitop_operation(arg_slice_bytes(&args[1]))
+        let operation = parse_bitop_operation(args[1])
             .ok_or(RequestExecutionError::SyntaxError)?;
         if operation == BitopOperation::Not && args.len() != 4 {
             require_exact_arity(args, 4, "BITOP", "BITOP NOT destkey key")?;
         }
 
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let destination = args[2].to_vec();
         let source_keys = args[3..]
             .iter()
-            .map(|key| arg_slice_bytes(&key).to_vec())
+            .map(|key| key.to_vec())
             .collect::<Vec<_>>();
 
         let mut source_values = Vec::with_capacity(source_keys.len());
@@ -606,7 +606,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitfield(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_bitfield_impl(args, response_out, false)
@@ -614,7 +614,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitfield_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_bitfield_impl(args, response_out, true)
@@ -622,7 +622,7 @@ impl RequestProcessor {
 
     fn handle_bitfield_impl(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         read_only: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -636,7 +636,7 @@ impl RequestProcessor {
         };
         ensure_min_arity(args, 2, command, expected)?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
         let mut value = match self.read_string_value(&key)? {
@@ -656,7 +656,7 @@ impl RequestProcessor {
         let mut responses: Vec<Option<i64>> = Vec::new();
 
         while index < args.len() {
-            let subcommand = arg_slice_bytes(&args[index]);
+            let subcommand = args[index];
 
             if ascii_eq_ignore_case(subcommand, b"OVERFLOW") {
                 if read_only {
@@ -668,7 +668,7 @@ impl RequestProcessor {
                 if mode_index >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let mode = arg_slice_bytes(&args[mode_index]);
+                let mode = args[mode_index];
                 overflow_mode =
                     parse_bitfield_overflow_mode(mode).ok_or(RequestExecutionError::SyntaxError)?;
                 index = mode_index + 1;
@@ -686,8 +686,8 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
 
-                let encoding_token = arg_slice_bytes(&args[encoding_index]);
-                let offset_token = arg_slice_bytes(&args[offset_index]);
+                let encoding_token = args[encoding_index];
+                let offset_token = args[offset_index];
                 let encoding = parse_bitfield_encoding(encoding_token)?;
                 let offset = parse_bitfield_offset(offset_token, usize::from(encoding.bits))?;
                 let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
@@ -714,9 +714,9 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
 
-                let encoding_token = arg_slice_bytes(&args[encoding_index]);
-                let offset_token = arg_slice_bytes(&args[offset_index]);
-                let value_token = arg_slice_bytes(&args[value_index]);
+                let encoding_token = args[encoding_index];
+                let offset_token = args[offset_index];
+                let value_token = args[value_index];
                 let encoding = parse_bitfield_encoding(encoding_token)?;
                 let offset = parse_bitfield_offset(offset_token, usize::from(encoding.bits))?;
                 let set_value =
@@ -748,9 +748,9 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
 
-                let encoding_token = arg_slice_bytes(&args[encoding_index]);
-                let offset_token = arg_slice_bytes(&args[offset_index]);
-                let increment_token = arg_slice_bytes(&args[increment_index]);
+                let encoding_token = args[encoding_index];
+                let offset_token = args[offset_index];
+                let increment_token = args[increment_index];
                 let encoding = parse_bitfield_encoding(encoding_token)?;
                 let offset = parse_bitfield_offset(offset_token, usize::from(encoding.bits))?;
                 let increment = parse_i64_ascii(increment_token)
@@ -800,7 +800,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lcs(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -811,8 +811,8 @@ impl RequestProcessor {
         )?;
 
         let options = parse_lcs_options(args)?;
-        let left_key = arg_slice_bytes(&args[1]).to_vec();
-        let right_key = arg_slice_bytes(&args[2]).to_vec();
+        let left_key = args[1].to_vec();
+        let right_key = args[2].to_vec();
 
         self.expire_key_if_needed(&left_key)?;
         self.expire_key_if_needed(&right_key)?;
@@ -854,7 +854,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sort(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_sort_impl(args, response_out, false)
@@ -862,7 +862,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sort_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_sort_impl(args, response_out, true)
@@ -870,7 +870,7 @@ impl RequestProcessor {
 
     fn handle_sort_impl(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         read_only: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -883,7 +883,7 @@ impl RequestProcessor {
         )?;
 
         let options = parse_sort_options(args, read_only)?;
-        let source_key = arg_slice_bytes(&args[1]).to_vec();
+        let source_key = args[1].to_vec();
         let mut elements = load_sort_elements(self, &source_key)?;
 
         let by_pattern = options.by_pattern.as_deref();
@@ -1036,13 +1036,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_append(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "APPEND", "APPEND key value")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let append_value = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let append_value = args[2];
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
@@ -1102,11 +1102,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_getex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let action = parse_getex_action(args)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
 
         let Some(value) = self.read_string_value(&key)? else {
@@ -1167,14 +1167,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_incrbyfloat(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "INCRBYFLOAT", "INCRBYFLOAT key increment")?;
 
-        let increment = parse_f64_ascii(arg_slice_bytes(&args[2]))
+        let increment = parse_f64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
 
         let (current, expiration_unix_millis) = match self.read_string_value(&key)? {
@@ -1215,14 +1215,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_set(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         crate::debug_sync_point!("request_processor.handle_set.enter");
         ensure_min_arity(args, 3, "SET", "SET key value")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let value = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let value = args[2];
         let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
@@ -1320,15 +1320,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_setnx(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SETNX", "SETNX key value")?;
-        let set_command = ArgSlice::from_slice(b"SET")
-            .expect("static SET command name must fit within ArgSlice length");
-        let nx_option =
-            ArgSlice::from_slice(b"NX").expect("static NX option must fit within ArgSlice length");
-        let translated = [set_command, args[1], args[2], nx_option];
+        let translated: [&[u8]; 4] = [b"SET", args[1], args[2], b"NX"];
         let mut set_response = Vec::new();
         self.handle_set(&translated, &mut set_response)?;
         if set_response == b"+OK\r\n" {
@@ -1341,49 +1337,36 @@ impl RequestProcessor {
 
     pub(super) fn handle_setex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SETEX", "SETEX key seconds value")?;
-        let set_command = ArgSlice::from_slice(b"SET")
-            .expect("static SET command name must fit within ArgSlice length");
-        let ex_option =
-            ArgSlice::from_slice(b"EX").expect("static EX option must fit within ArgSlice length");
-        let translated = [set_command, args[1], args[3], ex_option, args[2]];
+        let translated: [&[u8]; 5] = [b"SET", args[1], args[3], b"EX", args[2]];
         self.handle_set(&translated, response_out)
     }
 
     pub(super) fn handle_psetex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "PSETEX", "PSETEX key milliseconds value")?;
-        let set_command = ArgSlice::from_slice(b"SET")
-            .expect("static SET command name must fit within ArgSlice length");
-        let px_option =
-            ArgSlice::from_slice(b"PX").expect("static PX option must fit within ArgSlice length");
-        let translated = [set_command, args[1], args[3], px_option, args[2]];
+        let translated: [&[u8]; 5] = [b"SET", args[1], args[3], b"PX", args[2]];
         self.handle_set(&translated, response_out)
     }
 
     pub(super) fn handle_getset(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "GETSET", "GETSET key value")?;
 
-        let get_command = ArgSlice::from_slice(b"GET")
-            .expect("static GET command name must fit within ArgSlice length");
-        let set_command = ArgSlice::from_slice(b"SET")
-            .expect("static SET command name must fit within ArgSlice length");
-
         let mut previous_value_response = Vec::new();
-        let get_args = [get_command, args[1]];
+        let get_args: [&[u8]; 2] = [b"GET", args[1]];
         self.handle_get(&get_args, &mut previous_value_response)?;
 
-        let set_args = [set_command, args[1], args[2]];
+        let set_args: [&[u8]; 3] = [b"SET", args[1], args[2]];
         let mut set_response = Vec::new();
         self.handle_set(&set_args, &mut set_response)?;
 
@@ -1393,17 +1376,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_getdel(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "GETDEL", "GETDEL key")?;
 
-        let get_command = ArgSlice::from_slice(b"GET")
-            .expect("static GET command name must fit within ArgSlice length");
-        let del_command = ArgSlice::from_slice(b"DEL")
-            .expect("static DEL command name must fit within ArgSlice length");
-
-        let get_args = [get_command, args[1]];
+        let get_args: [&[u8]; 2] = [b"GET", args[1]];
         let mut previous_value_response = Vec::new();
         self.handle_get(&get_args, &mut previous_value_response)?;
         if previous_value_response.as_slice() == b"$-1\r\n" {
@@ -1412,7 +1390,7 @@ impl RequestProcessor {
         }
 
         let mut del_response = Vec::new();
-        let del_args = [del_command, args[1]];
+        let del_args: [&[u8]; 2] = [b"DEL", args[1]];
         self.handle_del(&del_args, &mut del_response)?;
         response_out.extend_from_slice(&previous_value_response);
         Ok(())
@@ -1420,14 +1398,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_del(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "DEL", "DEL key [key ...]")?;
 
         let keys: Vec<Vec<u8>> = args[1..]
             .iter()
-            .map(|arg| arg_slice_bytes(&arg).to_vec())
+            .map(|arg| arg.to_vec())
             .collect();
 
         for key in &keys {
@@ -1468,14 +1446,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_touch(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "TOUCH", "TOUCH key [key ...]")?;
 
         let mut touched = 0i64;
         for arg in &args[1..] {
-            let key = arg_slice_bytes(&arg).to_vec();
+            let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 touched += 1;
@@ -1487,7 +1465,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_unlink(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "UNLINK", "UNLINK key [key ...]")?;
@@ -1496,7 +1474,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_rename(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_rename_internal(args, false, response_out)
@@ -1504,7 +1482,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_renamenx(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_rename_internal(args, true, response_out)
@@ -1512,7 +1490,7 @@ impl RequestProcessor {
 
     fn handle_rename_internal(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         only_if_absent: bool,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1522,8 +1500,8 @@ impl RequestProcessor {
             ("RENAME", "RENAME key newkey")
         };
         require_exact_arity(args, 3, command, expected)?;
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
 
         self.expire_key_if_needed(&source)?;
         self.expire_key_if_needed(&destination)?;
@@ -1561,7 +1539,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_copy(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1570,14 +1548,14 @@ impl RequestProcessor {
             "COPY",
             "COPY source destination [DB destination-db] [REPLACE]",
         )?;
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
 
         let mut replace = false;
         let mut destination_db = 0u64;
         let mut index = 3usize;
         while index < args.len() {
-            let option = arg_slice_bytes(&args[index]);
+            let option = args[index];
             if ascii_eq_ignore_case(option, b"REPLACE") {
                 replace = true;
                 index += 1;
@@ -1587,7 +1565,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let db_value = arg_slice_bytes(&args[index + 1]);
+                let db_value = args[index + 1];
                 destination_db =
                     parse_u64_ascii(db_value).ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
@@ -1626,7 +1604,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_incr_decr(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         delta: i64,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1637,13 +1615,13 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 2, command, expected)?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.apply_incr_decr_delta(&key, delta, response_out)
     }
 
     pub(super) fn handle_incrby_decrby(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         decrement: bool,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1654,7 +1632,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 3, command, expected)?;
 
-        let amount = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let amount = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let delta = if decrement {
             amount
@@ -1663,7 +1641,7 @@ impl RequestProcessor {
         } else {
             amount
         };
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.apply_incr_decr_delta(&key, delta, response_out)
     }
 
@@ -1725,14 +1703,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_exists(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "EXISTS", "EXISTS key [key ...]")?;
 
         let mut exists = 0i64;
         for arg in &args[1..] {
-            let key = arg_slice_bytes(&arg).to_vec();
+            let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 exists += 1;
@@ -1745,12 +1723,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_type(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "TYPE", "TYPE key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         if self.key_exists(&key)? {
             append_simple_string(response_out, b"string");
@@ -1769,7 +1747,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_mget(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MGET", "MGET key [key ...]")?;
@@ -1778,7 +1756,7 @@ impl RequestProcessor {
         response_out.extend_from_slice((args.len() - 1).to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for arg in &args[1..] {
-            let key = arg_slice_bytes(&arg).to_vec();
+            let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
             if let Some(value) = self.read_string_value(&key)? {
                 append_bulk_string(response_out, &value);
@@ -1791,14 +1769,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_mset(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 3, 1, "MSET", "MSET key value [key value ...]")?;
 
         for pair in args[1..].chunks_exact(2) {
-            let key = arg_slice_bytes(&pair[0]).to_vec();
-            let value = arg_slice_bytes(&pair[1]).to_vec();
+            let key = pair[0].to_vec();
+            let value = pair[1].to_vec();
             self.mset_single_pair(&key, &value)?;
         }
 
@@ -1808,7 +1786,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_msetnx(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 3, 1, "MSETNX", "MSETNX key value [key value ...]")?;
@@ -1817,8 +1795,8 @@ impl RequestProcessor {
             .chunks_exact(2)
             .map(|pair| {
                 (
-                    arg_slice_bytes(&pair[0]).to_vec(),
-                    arg_slice_bytes(&pair[1]).to_vec(),
+                    pair[0].to_vec(),
+                    pair[1].to_vec(),
                 )
             })
             .collect();
@@ -1840,15 +1818,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfadd(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "PFADD", "PFADD key element [element ...]")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut set = load_pf_set_for_key(self, &key)?.unwrap_or_default();
         let original_len = set.len();
         for element in &args[2..] {
-            set.insert(arg_slice_bytes(&element).to_vec());
+            set.insert(element.to_vec());
         }
         let changed = if set.len() != original_len { 1 } else { 0 };
         self.upsert_string_value_for_migration(&key, &encode_pf_set(&set), None)?;
@@ -1858,13 +1836,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfcount(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFCOUNT", "PFCOUNT key [key ...]")?;
         let mut cardinality_union = BTreeSet::new();
         for key_arg in &args[1..] {
-            let key = arg_slice_bytes(&key_arg).to_vec();
+            let key = key_arg.to_vec();
             if let Some(set) = load_pf_set_for_key(self, &key)? {
                 cardinality_union.extend(set);
             }
@@ -1875,7 +1853,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfmerge(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1884,12 +1862,12 @@ impl RequestProcessor {
             "PFMERGE",
             "PFMERGE destkey sourcekey [sourcekey ...]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let _ = load_pf_set_for_key(self, &destination)?;
 
         let mut merged = BTreeSet::new();
         for source_arg in &args[2..] {
-            let source = arg_slice_bytes(&source_arg).to_vec();
+            let source = source_arg.to_vec();
             if let Some(set) = load_pf_set_for_key(self, &source)? {
                 merged.extend(set);
             }
@@ -1901,11 +1879,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfdebug(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFDEBUG", "PFDEBUG <ENCODING|TODENSE|HELP> [key]")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "PFDEBUG", "PFDEBUG HELP")?;
             append_bulk_array(response_out, &PFDEBUG_HELP_LINES);
@@ -1926,7 +1904,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pfselftest(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "PFSELFTEST", "PFSELFTEST")?;
@@ -1990,7 +1968,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_expire(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_expire_like(args, response_out, false)
@@ -1998,7 +1976,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pexpire(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_expire_like(args, response_out, true)
@@ -2006,7 +1984,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_expireat(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_expireat_like(args, response_out, false)
@@ -2014,7 +1992,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pexpireat(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_expireat_like(args, response_out, true)
@@ -2022,7 +2000,7 @@ impl RequestProcessor {
 
     fn handle_expire_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         milliseconds: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -2033,9 +2011,9 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 3, command, expected)?;
 
-        let amount = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let amount = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
 
         self.expire_key_if_needed(&key)?;
         let string_exists = self.key_exists(&key)?;
@@ -2076,7 +2054,7 @@ impl RequestProcessor {
 
     fn handle_expireat_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         milliseconds: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -2087,9 +2065,9 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 3, command, expected)?;
 
-        let amount = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let amount = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
 
         self.expire_key_if_needed(&key)?;
         let string_exists = self.key_exists(&key)?;
@@ -2180,7 +2158,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_ttl(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_ttl_like(args, response_out, false)
@@ -2188,7 +2166,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pttl(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_ttl_like(args, response_out, true)
@@ -2196,7 +2174,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_expiretime(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_expiretime_like(args, response_out, false)
@@ -2204,7 +2182,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_pexpiretime(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_expiretime_like(args, response_out, true)
@@ -2212,7 +2190,7 @@ impl RequestProcessor {
 
     fn handle_ttl_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         milliseconds: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -2223,7 +2201,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 2, command, expected)?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
 
         if !self.key_exists_any(&key)? {
@@ -2255,7 +2233,7 @@ impl RequestProcessor {
 
     fn handle_expiretime_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         milliseconds: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -2266,7 +2244,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 2, command, expected)?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
 
         if !self.key_exists_any(&key)? {
@@ -2306,12 +2284,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_persist(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "PERSIST", "PERSIST key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         let string_exists = self.key_exists(&key)?;
         let object_exists = self.object_key_exists(&key)?;
@@ -2353,13 +2331,13 @@ enum GetExAction {
     DeleteNow,
 }
 
-fn parse_getex_action(args: &[ArgSlice]) -> Result<GetExAction, RequestExecutionError> {
+fn parse_getex_action(args: &[&[u8]]) -> Result<GetExAction, RequestExecutionError> {
     ensure_min_arity(args, 2, "GETEX", "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]")?;
     if args.len() == 2 {
         return Ok(GetExAction::KeepTtl);
     }
     if args.len() == 3 {
-        let option = arg_slice_bytes(&args[2]);
+        let option = args[2];
         if ascii_eq_ignore_case(option, b"PERSIST") {
             return Ok(GetExAction::Persist);
         }
@@ -2367,8 +2345,8 @@ fn parse_getex_action(args: &[ArgSlice]) -> Result<GetExAction, RequestExecution
     }
     require_exact_arity(args, 4, "GETEX", "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]")?;
 
-    let option = arg_slice_bytes(&args[2]);
-    let value = arg_slice_bytes(&args[3]);
+    let option = args[2];
+    let value = args[3];
 
     if ascii_eq_ignore_case(option, b"EX") || ascii_eq_ignore_case(option, b"PX") {
         let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
@@ -2624,14 +2602,14 @@ fn apply_bitfield_incrby(
     }
 }
 
-fn parse_lcs_options(args: &[ArgSlice]) -> Result<LcsOptions, RequestExecutionError> {
+fn parse_lcs_options(args: &[&[u8]]) -> Result<LcsOptions, RequestExecutionError> {
     let mut mode = LcsResponseMode::Sequence;
     let mut min_match_len = 0usize;
     let mut with_match_len = false;
     let mut index = 3usize;
 
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"LEN") {
             if mode != LcsResponseMode::Sequence {
                 return Err(RequestExecutionError::SyntaxError);
@@ -2658,7 +2636,7 @@ fn parse_lcs_options(args: &[ArgSlice]) -> Result<LcsOptions, RequestExecutionEr
             if value_index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let min_token = arg_slice_bytes(&args[value_index]);
+            let min_token = args[value_index];
             let parsed =
                 parse_i64_ascii(min_token).ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed < 0 {
@@ -2786,7 +2764,7 @@ fn append_lcs_idx_response(
 }
 
 fn parse_sort_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     read_only: bool,
 ) -> Result<SortOptions, RequestExecutionError> {
     let mut by_pattern = None;
@@ -2799,7 +2777,7 @@ fn parse_sort_options(
     let mut index = 2usize;
 
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"BY") {
             let value_index = index
                 .checked_add(1)
@@ -2807,7 +2785,7 @@ fn parse_sort_options(
             if value_index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            by_pattern = Some(arg_slice_bytes(&args[value_index]).to_vec());
+            by_pattern = Some(args[value_index].to_vec());
             index = value_index + 1;
             continue;
         }
@@ -2821,8 +2799,8 @@ fn parse_sort_options(
             if count_index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset_token = arg_slice_bytes(&args[offset_index]);
-            let count_token = arg_slice_bytes(&args[count_index]);
+            let offset_token = args[offset_index];
+            let count_token = args[count_index];
             let offset =
                 parse_i64_ascii(offset_token).ok_or(RequestExecutionError::ValueNotInteger)?;
             let count =
@@ -2849,7 +2827,7 @@ fn parse_sort_options(
             if pattern_index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            get_patterns.push(arg_slice_bytes(&args[pattern_index]).to_vec());
+            get_patterns.push(args[pattern_index].to_vec());
             index = pattern_index + 1;
             continue;
         }
@@ -2878,7 +2856,7 @@ fn parse_sort_options(
             if destination_index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            store_key = Some(arg_slice_bytes(&args[destination_index]).to_vec());
+            store_key = Some(args[destination_index].to_vec());
             index = destination_index + 1;
             continue;
         }

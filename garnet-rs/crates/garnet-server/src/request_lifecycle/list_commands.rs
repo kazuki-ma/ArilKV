@@ -3,15 +3,15 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_lpush(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSH", "LPUSH key value [value ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut list = self.load_list_object(&key)?.unwrap_or_default();
         for value in &args[2..] {
-            list.insert(0, arg_slice_bytes(&value).to_vec());
+            list.insert(0, value.to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -20,15 +20,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpush(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSH", "RPUSH key value [value ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut list = self.load_list_object(&key)?.unwrap_or_default();
         for value in &args[2..] {
-            list.push(arg_slice_bytes(&value).to_vec());
+            list.push(value.to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -37,7 +37,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_pop_like(args, response_out, ListSide::Left, "LPOP")
@@ -45,7 +45,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_pop_like(args, response_out, ListSide::Right, "RPOP")
@@ -53,7 +53,7 @@ impl RequestProcessor {
 
     fn handle_pop_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         side: ListSide,
         command: &'static str,
@@ -65,9 +65,9 @@ impl RequestProcessor {
         };
         ensure_one_of_arities(args, &[2, 3], command, expected)?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let count = if args.len() == 3 {
-            let parsed = parse_i64_ascii(arg_slice_bytes(&args[2]))
+            let parsed = parse_i64_ascii(args[2])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed < 0 {
                 return Err(RequestExecutionError::ValueOutOfRangePositive);
@@ -145,15 +145,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_lrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LRANGE", "LRANGE key start stop")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let stop = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -198,12 +198,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_llen(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "LLEN", "LLEN key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let length = self
             .load_list_object(&key)?
             .map_or(0, |list| list.len() as i64);
@@ -213,12 +213,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_lindex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "LINDEX", "LINDEX key index")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let index = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let index = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -237,7 +237,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpos(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -246,8 +246,8 @@ impl RequestProcessor {
             "LPOS",
             "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let element = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let element = args[2];
         let options = parse_lpos_options(args, 3)?;
         let Some(list) = self.load_list_object(&key)? else {
             if options.count.is_some() {
@@ -325,14 +325,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_lset(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LSET", "LSET key index element")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let index = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let index = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let value = arg_slice_bytes(&args[3]).to_vec();
+        let value = args[3].to_vec();
         let mut list = self
             .load_list_object(&key)?
             .ok_or(RequestExecutionError::NoSuchKey)?;
@@ -351,14 +351,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_ltrim(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LTRIM", "LTRIM key start stop")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let stop = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -400,17 +400,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpushx(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSHX", "LPUSHX key value [value ...]")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
         for value in &args[2..] {
-            list.insert(0, arg_slice_bytes(&value).to_vec());
+            list.insert(0, value.to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -419,17 +419,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpushx(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSHX", "RPUSHX key value [value ...]")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
         for value in &args[2..] {
-            list.push(arg_slice_bytes(&value).to_vec());
+            list.push(value.to_vec());
         }
         self.save_list_object(&key, &list)?;
         append_integer(response_out, list.len() as i64);
@@ -438,14 +438,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_lrem(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LREM", "LREM key count element")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let count = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let count = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let target = arg_slice_bytes(&args[3]).to_vec();
+        let target = args[3].to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
@@ -492,15 +492,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_linsert(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 5, "LINSERT", "LINSERT key BEFORE|AFTER pivot element")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let position = arg_slice_bytes(&args[2]);
-        let pivot = arg_slice_bytes(&args[3]);
-        let element = arg_slice_bytes(&args[4]).to_vec();
+        let key = args[1].to_vec();
+        let position = args[2];
+        let pivot = args[3];
+        let element = args[4].to_vec();
 
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
@@ -526,7 +526,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lmove(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(
@@ -535,12 +535,12 @@ impl RequestProcessor {
             "LMOVE",
             "LMOVE source destination LEFT|RIGHT LEFT|RIGHT",
         )?;
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
         let source_side =
-            parse_list_side(arg_slice_bytes(&args[3])).ok_or(RequestExecutionError::SyntaxError)?;
+            parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
-            parse_list_side(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::SyntaxError)?;
+            parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
 
         self.handle_lmove_like(
             &source,
@@ -553,13 +553,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpoplpush(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "RPOPLPUSH", "RPOPLPUSH source destination")?;
 
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
         self.handle_lmove_like(
             &source,
             &destination,
@@ -571,7 +571,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lmpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -584,7 +584,7 @@ impl RequestProcessor {
         if option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let side = parse_list_side(arg_slice_bytes(&args[option_start]))
+        let side = parse_list_side(args[option_start])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, option_start + 1)?;
         self.handle_lmpop_like(&keys, side, count, response_out)
@@ -592,7 +592,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_blmpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -606,7 +606,7 @@ impl RequestProcessor {
         if option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let side = parse_list_side(arg_slice_bytes(&args[option_start]))
+        let side = parse_list_side(args[option_start])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, option_start + 1)?;
         self.handle_lmpop_like(&keys, side, count, response_out)
@@ -614,7 +614,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_blpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "BLPOP", "BLPOP key [key ...] timeout")?;
@@ -622,14 +622,14 @@ impl RequestProcessor {
         parse_blocking_timeout_seconds(args, timeout_index)?;
         let keys = args[1..timeout_index]
             .iter()
-            .map(|key| arg_slice_bytes(&key).to_vec())
+            .map(|key| key.to_vec())
             .collect::<Vec<_>>();
         self.handle_blocking_pop_like(&keys, ListSide::Left, response_out)
     }
 
     pub(super) fn handle_brpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "BRPOP", "BRPOP key [key ...] timeout")?;
@@ -637,14 +637,14 @@ impl RequestProcessor {
         parse_blocking_timeout_seconds(args, timeout_index)?;
         let keys = args[1..timeout_index]
             .iter()
-            .map(|key| arg_slice_bytes(&key).to_vec())
+            .map(|key| key.to_vec())
             .collect::<Vec<_>>();
         self.handle_blocking_pop_like(&keys, ListSide::Right, response_out)
     }
 
     pub(super) fn handle_blmove(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(
@@ -653,12 +653,12 @@ impl RequestProcessor {
             "BLMOVE",
             "BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout",
         )?;
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
         let source_side =
-            parse_list_side(arg_slice_bytes(&args[3])).ok_or(RequestExecutionError::SyntaxError)?;
+            parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
-            parse_list_side(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::SyntaxError)?;
+            parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
         parse_blocking_timeout_seconds(args, 5)?;
         self.handle_lmove_like(
             &source,
@@ -671,7 +671,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_brpoplpush(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(
@@ -680,8 +680,8 @@ impl RequestProcessor {
             "BRPOPLPUSH",
             "BRPOPLPUSH source destination timeout",
         )?;
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
         parse_blocking_timeout_seconds(args, 3)?;
         self.handle_lmove_like(
             &source,
@@ -829,7 +829,7 @@ fn parse_list_side(input: &[u8]) -> Option<ListSide> {
 }
 
 fn parse_lpos_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
 ) -> Result<LposOptions, RequestExecutionError> {
     let mut options = LposOptions {
@@ -842,8 +842,8 @@ fn parse_lpos_options(
         if index + 1 >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let option = arg_slice_bytes(&args[index]);
-        let value = arg_slice_bytes(&args[index + 1]);
+        let option = args[index];
+        let value = args[index + 1];
         if ascii_eq_ignore_case(option, b"RANK") {
             let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed == i64::MIN {
@@ -900,13 +900,13 @@ fn push_list_side(list: &mut Vec<Vec<u8>>, side: ListSide, value: Vec<u8>) {
 }
 
 fn parse_list_numkeys_and_keys(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     numkeys_index: usize,
 ) -> Result<(Vec<Vec<u8>>, usize), RequestExecutionError> {
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let raw_numkeys = parse_i64_ascii(arg_slice_bytes(&args[numkeys_index]))
+    let raw_numkeys = parse_i64_ascii(args[numkeys_index])
         .ok_or(RequestExecutionError::NumkeysMustBeGreaterThanZero)?;
     if raw_numkeys <= 0 {
         return Err(RequestExecutionError::NumkeysMustBeGreaterThanZero);
@@ -922,13 +922,13 @@ fn parse_list_numkeys_and_keys(
     }
     let keys = args[key_start..key_end]
         .iter()
-        .map(|key| arg_slice_bytes(&key).to_vec())
+        .map(|key| key.to_vec())
         .collect();
     Ok((keys, key_end))
 }
 
 fn parse_list_count_option(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
 ) -> Result<usize, RequestExecutionError> {
     if start_index == args.len() {
@@ -937,11 +937,11 @@ fn parse_list_count_option(
     if start_index + 2 != args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let count_token = arg_slice_bytes(&args[start_index]);
+    let count_token = args[start_index];
     if !ascii_eq_ignore_case(count_token, b"COUNT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let count = parse_i64_ascii(arg_slice_bytes(&args[start_index + 1]))
+    let count = parse_i64_ascii(args[start_index + 1])
         .ok_or(RequestExecutionError::CountMustBeGreaterThanZero)?;
     if count <= 0 {
         return Err(RequestExecutionError::CountMustBeGreaterThanZero);
@@ -950,10 +950,10 @@ fn parse_list_count_option(
 }
 
 fn parse_blocking_timeout_seconds(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     index: usize,
 ) -> Result<f64, RequestExecutionError> {
-    let timeout_token = arg_slice_bytes(&args[index]);
+    let timeout_token = args[index];
     let timeout_text =
         std::str::from_utf8(timeout_token).map_err(|_| RequestExecutionError::ValueNotFloat)?;
     let timeout = match timeout_text.parse::<f64>() {

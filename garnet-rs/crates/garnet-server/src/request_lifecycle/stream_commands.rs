@@ -3,7 +3,7 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_xadd(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(
@@ -14,8 +14,8 @@ impl RequestProcessor {
             "XADD key id field value [field value ...]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let requested_id = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let requested_id = args[2];
 
         let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
         let id = if requested_id == b"*" {
@@ -27,8 +27,8 @@ impl RequestProcessor {
         let mut fields = Vec::with_capacity((args.len() - 3) / 2);
         let mut index = 3usize;
         while index < args.len() {
-            let field = arg_slice_bytes(&args[index]).to_vec();
-            let value = arg_slice_bytes(&args[index + 1]).to_vec();
+            let field = args[index].to_vec();
+            let value = args[index + 1].to_vec();
             fields.push((field, value));
             index += 2;
         }
@@ -41,12 +41,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_xdel(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "XDEL", "XDEL key id [id ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
@@ -57,7 +57,7 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for id in &args[2..] {
-            if stream.entries.remove(arg_slice_bytes(&id)).is_some() {
+            if stream.entries.remove(*id).is_some() {
                 removed += 1;
             }
         }
@@ -73,17 +73,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_xgroup(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "XGROUP", "XGROUP <CREATE|SETID> key group id")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
             require_exact_arity(args, 5, "XGROUP", "XGROUP CREATE key group id")?;
-            let key = arg_slice_bytes(&args[2]).to_vec();
-            let group = arg_slice_bytes(&args[3]).to_vec();
-            let id = arg_slice_bytes(&args[4]).to_vec();
+            let key = args[2].to_vec();
+            let group = args[3].to_vec();
+            let id = args[4].to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
@@ -93,9 +93,9 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"SETID") {
             require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
-            let key = arg_slice_bytes(&args[2]).to_vec();
-            let group = arg_slice_bytes(&args[3]).to_vec();
-            let id = arg_slice_bytes(&args[4]).to_vec();
+            let key = args[2].to_vec();
+            let group = args[3].to_vec();
+            let id = args[4].to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
@@ -108,7 +108,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xreadgroup(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -117,17 +117,17 @@ impl RequestProcessor {
             "XREADGROUP",
             "XREADGROUP GROUP group consumer [NOACK] [COUNT count] STREAMS key >",
         )?;
-        if !ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"GROUP") {
+        if !ascii_eq_ignore_case(args[1], b"GROUP") {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        let group = arg_slice_bytes(&args[2]).to_vec();
+        let group = args[2].to_vec();
         let mut count = 1usize;
         let mut key = None::<Vec<u8>>;
         let mut start_id = None::<Vec<u8>>;
         let mut index = 4usize;
         while index < args.len() {
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"NOACK") {
                 index += 1;
                 continue;
@@ -136,7 +136,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let parsed = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                let parsed = parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 count = usize::try_from(parsed).unwrap_or(usize::MAX);
                 index += 2;
@@ -146,8 +146,8 @@ impl RequestProcessor {
                 if index + 2 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                key = Some(arg_slice_bytes(&args[index + 1]).to_vec());
-                start_id = Some(arg_slice_bytes(&args[index + 2]).to_vec());
+                key = Some(args[index + 1].to_vec());
+                start_id = Some(args[index + 2].to_vec());
                 index += 3;
                 continue;
             }
@@ -220,7 +220,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xread(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -236,12 +236,12 @@ impl RequestProcessor {
             if index >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"COUNT") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let parsed = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                let parsed = parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 count = usize::try_from(parsed).unwrap_or(usize::MAX);
                 index += 2;
@@ -251,7 +251,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -274,8 +274,8 @@ impl RequestProcessor {
         let mut remaining = count;
         let mut stream_results = Vec::new();
         for stream_index in 0..stream_count {
-            let key = arg_slice_bytes(&args[streams_index + stream_index]).to_vec();
-            let raw_id = arg_slice_bytes(&args[streams_index + stream_count + stream_index]);
+            let key = args[streams_index + stream_index].to_vec();
+            let raw_id = args[streams_index + stream_count + stream_index];
             let Some(stream) = self.load_stream_object(&key)? else {
                 continue;
             };
@@ -327,12 +327,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_xack(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 4, "XACK", "XACK key group id [id ...]")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let group = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
@@ -347,7 +347,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xpending(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -356,8 +356,8 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [start end count [consumer]]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let group = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
         };
@@ -380,7 +380,7 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [start end count [consumer]]",
         )?;
-        let parsed_count = parse_i64_ascii(arg_slice_bytes(&args[5]))
+        let parsed_count = parse_i64_ascii(args[5])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed_count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -391,7 +391,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xclaim(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -400,19 +400,19 @@ impl RequestProcessor {
             "XCLAIM",
             "XCLAIM key group consumer min-idle-time id [id ...] [options]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let group = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
         };
         if !stream.groups.contains_key(group) {
             return Err(RequestExecutionError::NoGroup);
         }
-        parse_u64_ascii(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
 
         let mut option_start = args.len();
         for i in 6..args.len() {
-            let token = arg_slice_bytes(&args[i]);
+            let token = args[i];
             if is_xclaim_option_token(token) {
                 option_start = i;
                 break;
@@ -422,14 +422,14 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
         for id_arg in &args[5..option_start] {
-            if parse_stream_id(arg_slice_bytes(&id_arg)).is_none() {
+            if parse_stream_id(id_arg).is_none() {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
 
         let mut index = option_start;
         while index < args.len() {
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"IDLE")
                 || ascii_eq_ignore_case(token, b"TIME")
                 || ascii_eq_ignore_case(token, b"RETRYCOUNT")
@@ -437,7 +437,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -446,7 +446,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                if parse_stream_id(arg_slice_bytes(&args[index + 1])).is_none() {
+                if parse_stream_id(args[index + 1]).is_none() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 index += 2;
@@ -465,7 +465,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xautoclaim(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -474,28 +474,28 @@ impl RequestProcessor {
             "XAUTOCLAIM",
             "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let group = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
         };
         if !stream.groups.contains_key(group) {
             return Err(RequestExecutionError::NoGroup);
         }
-        parse_u64_ascii(arg_slice_bytes(&args[4])).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let start_id = arg_slice_bytes(&args[5]);
+        parse_u64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start_id = args[5];
         if parse_stream_id(start_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
         }
 
         let mut index = 6usize;
         while index < args.len() {
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"COUNT") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -516,12 +516,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_xsetid(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "XSETID", "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let last_id = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let last_id = args[2];
         if parse_stream_id(last_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
         }
@@ -532,12 +532,12 @@ impl RequestProcessor {
         let mut seen_ref_mode = false;
         let mut index = 3usize;
         while index < args.len() {
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"ENTRIESADDED") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
@@ -546,7 +546,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                if parse_stream_id(arg_slice_bytes(&args[index + 1])).is_none() {
+                if parse_stream_id(args[index + 1]).is_none() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 index += 2;
@@ -573,19 +573,19 @@ impl RequestProcessor {
 
     pub(super) fn handle_xinfo(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "XINFO", "XINFO STREAM key FULL")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        let full = arg_slice_bytes(&args[3]);
+        let full = args[3];
         if !ascii_eq_ignore_case(full, b"FULL") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        let key = arg_slice_bytes(&args[2]).to_vec();
+        let key = args[2].to_vec();
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
@@ -600,11 +600,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_xlen(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "XLEN", "XLEN key")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let count = self
             .load_stream_object(&key)?
             .map_or(0usize, |stream| stream.entries.len());
@@ -614,7 +614,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_one_of_arities(
@@ -623,9 +623,9 @@ impl RequestProcessor {
             "XRANGE",
             "XRANGE key start end [COUNT count]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let start = arg_slice_bytes(&args[2]);
-        let end = arg_slice_bytes(&args[3]);
+        let key = args[1].to_vec();
+        let start = args[2];
+        let end = args[3];
         let count = parse_stream_count_option(args)?;
         if count == 0 {
             response_out.extend_from_slice(b"*0\r\n");
@@ -647,7 +647,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xrevrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_one_of_arities(
@@ -656,9 +656,9 @@ impl RequestProcessor {
             "XREVRANGE",
             "XREVRANGE key end start [COUNT count]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let end = arg_slice_bytes(&args[2]);
-        let start = arg_slice_bytes(&args[3]);
+        let key = args[1].to_vec();
+        let end = args[2];
+        let start = args[3];
         let count = parse_stream_count_option(args)?;
         if count == 0 {
             response_out.extend_from_slice(b"*0\r\n");
@@ -680,7 +680,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xtrim(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -689,7 +689,7 @@ impl RequestProcessor {
             "XTRIM",
             "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let spec = parse_xtrim_spec(args)?;
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
@@ -807,16 +807,16 @@ fn append_null_array(response_out: &mut Vec<u8>) {
     response_out.extend_from_slice(b"*-1\r\n");
 }
 
-fn parse_stream_count_option(args: &[ArgSlice]) -> Result<usize, RequestExecutionError> {
+fn parse_stream_count_option(args: &[&[u8]]) -> Result<usize, RequestExecutionError> {
     if args.len() == 4 {
         return Ok(usize::MAX);
     }
-    let option = arg_slice_bytes(&args[4]);
+    let option = args[4];
     if !ascii_eq_ignore_case(option, b"COUNT") {
         return Err(RequestExecutionError::SyntaxError);
     }
     let parsed =
-        parse_u64_ascii(arg_slice_bytes(&args[5])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if parsed > usize::MAX as u64 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
@@ -835,11 +835,11 @@ struct XtrimSpec {
     limit: Option<usize>,
 }
 
-fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionError> {
-    let strategy_token = arg_slice_bytes(&args[2]);
+fn parse_xtrim_spec(args: &[&[u8]]) -> Result<XtrimSpec, RequestExecutionError> {
+    let strategy_token = args[2];
     let mut index = 3usize;
     if index < args.len() {
-        let marker = arg_slice_bytes(&args[index]);
+        let marker = args[index];
         if marker == b"=" || marker == b"~" {
             index += 1;
         }
@@ -847,7 +847,7 @@ fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionErro
     if index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let threshold = arg_slice_bytes(&args[index]);
+    let threshold = args[index];
     index += 1;
 
     let limit = if index == args.len() {
@@ -856,10 +856,10 @@ fn parse_xtrim_spec(args: &[ArgSlice]) -> Result<XtrimSpec, RequestExecutionErro
         if index + 2 != args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        if !ascii_eq_ignore_case(arg_slice_bytes(&args[index]), b"LIMIT") {
+        if !ascii_eq_ignore_case(args[index], b"LIMIT") {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let parsed = parse_i64_ascii(arg_slice_bytes(&args[index + 1]))
+        let parsed = parse_i64_ascii(args[index + 1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);

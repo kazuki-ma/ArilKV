@@ -8,7 +8,7 @@ pub(super) struct ScanMatchCountOptions<'a> {
 
 #[inline]
 pub(super) fn require_exact_arity(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     expected_count: usize,
     command: &'static str,
     expected: &'static str,
@@ -21,7 +21,7 @@ pub(super) fn require_exact_arity(
 
 #[inline]
 pub(super) fn ensure_min_arity(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     min_count: usize,
     command: &'static str,
     expected: &'static str,
@@ -34,7 +34,7 @@ pub(super) fn ensure_min_arity(
 
 #[inline]
 pub(super) fn ensure_ranged_arity(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     min_count: usize,
     max_count: usize,
     command: &'static str,
@@ -48,7 +48,7 @@ pub(super) fn ensure_ranged_arity(
 
 #[inline]
 pub(super) fn ensure_one_of_arities(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     allowed_counts: &[usize],
     command: &'static str,
     expected: &'static str,
@@ -61,7 +61,7 @@ pub(super) fn ensure_one_of_arities(
 
 #[inline]
 pub(super) fn ensure_paired_arity_after(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     min_count: usize,
     pair_start_index: usize,
     command: &'static str,
@@ -77,7 +77,7 @@ pub(super) fn ensure_paired_arity_after(
 }
 
 pub(super) fn parse_scan_match_count_options<'a>(
-    args: &'a [ArgSlice],
+    args: &'a [&'a [u8]],
     start_index: usize,
 ) -> Result<ScanMatchCountOptions<'a>, RequestExecutionError> {
     let mut options = ScanMatchCountOptions {
@@ -86,12 +86,12 @@ pub(super) fn parse_scan_match_count_options<'a>(
     };
     let mut index = start_index;
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"MATCH") {
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            options.pattern = Some(arg_slice_bytes(&args[index + 1]));
+            options.pattern = Some(args[index + 1]);
             index += 2;
             continue;
         }
@@ -99,7 +99,7 @@ pub(super) fn parse_scan_match_count_options<'a>(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let raw_count = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+            let raw_count = parse_u64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count == 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);

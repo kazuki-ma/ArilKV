@@ -126,12 +126,12 @@ impl Default for GeoRadiusOptions {
 impl RequestProcessor {
     pub(super) fn handle_geoadd(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "GEOADD", GEOADD_USAGE)?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let (options, mut index) = parse_geoadd_options(args, 2)?;
 
         let remaining = args.len().saturating_sub(index);
@@ -148,15 +148,15 @@ impl RequestProcessor {
         let mut changed = 0i64;
 
         while index + 2 < args.len() {
-            let longitude = parse_f64_ascii(arg_slice_bytes(&args[index]))
+            let longitude = parse_f64_ascii(args[index])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let latitude = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
+            let latitude = parse_f64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if !geo_coordinates_in_range(longitude, latitude) {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
 
-            let member = arg_slice_bytes(&args[index + 2]);
+            let member = args[index + 2];
             let previous = zset.get(member).copied();
 
             if options.nx && previous.is_some() {
@@ -199,18 +199,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_geopos(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "GEOPOS", GEOPOS_USAGE)?;
 
-        let key = arg_slice_bytes(&args[1]);
+        let key = args[1];
         let zset = self.load_zset_object(key)?;
 
         response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
         for member in &args[2..] {
-            let member = arg_slice_bytes(&member);
-            let Some(score) = zset.as_ref().and_then(|entries| entries.get(member)) else {
+            let Some(score) = zset.as_ref().and_then(|entries| entries.get(*member)) else {
                 append_null_bulk_string(response_out);
                 continue;
             };
@@ -230,19 +229,19 @@ impl RequestProcessor {
 
     pub(super) fn handle_geodist(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 4, 5, "GEODIST", GEODIST_USAGE)?;
 
         let unit_to_meters = if args.len() == 5 {
-            let unit = arg_slice_bytes(&args[4]);
+            let unit = args[4];
             parse_geo_unit_to_meters(unit)?
         } else {
             1.0
         };
 
-        let key = arg_slice_bytes(&args[1]);
+        let key = args[1];
         let zset = match self.load_zset_object(key)? {
             Some(entries) => entries,
             None => {
@@ -251,8 +250,8 @@ impl RequestProcessor {
             }
         };
 
-        let member_a = arg_slice_bytes(&args[2]);
-        let member_b = arg_slice_bytes(&args[3]);
+        let member_a = args[2];
+        let member_b = args[3];
         let Some(score_a) = zset.get(member_a).copied() else {
             append_null_bulk_string(response_out);
             return Ok(());
@@ -280,18 +279,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_geohash(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "GEOHASH", GEOHASH_USAGE)?;
 
-        let key = arg_slice_bytes(&args[1]);
+        let key = args[1];
         let zset = self.load_zset_object(key)?;
 
         response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
         for member in &args[2..] {
-            let member = arg_slice_bytes(&member);
-            let Some(score) = zset.as_ref().and_then(|entries| entries.get(member)) else {
+            let Some(score) = zset.as_ref().and_then(|entries| entries.get(*member)) else {
                 append_null_bulk_string(response_out);
                 continue;
             };
@@ -307,7 +305,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadius(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadius_common(args, response_out, true, "GEORADIUS", GEORADIUS_USAGE)
@@ -315,7 +313,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadius_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadius_common(
@@ -329,7 +327,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadiusbymember(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadiusbymember_common(
@@ -343,7 +341,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_georadiusbymember_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_georadiusbymember_common(
@@ -357,7 +355,7 @@ impl RequestProcessor {
 
     fn handle_georadius_common(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         allow_store: bool,
         command_name: &'static str,
@@ -365,20 +363,20 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 6, command_name, usage)?;
 
-        let source_key = arg_slice_bytes(&args[1]);
-        let longitude = parse_f64_ascii(arg_slice_bytes(&args[2]))
+        let source_key = args[1];
+        let longitude = parse_f64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let latitude = parse_f64_ascii(arg_slice_bytes(&args[3]))
+        let latitude = parse_f64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         if !geo_coordinates_in_range(longitude, latitude) {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        let radius = parse_f64_ascii(arg_slice_bytes(&args[4]))
+        let radius = parse_f64_ascii(args[4])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         if radius < 0.0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[5]))?;
+        let unit_to_meters = parse_geo_unit_to_meters(args[5])?;
         let radius_options = parse_georadius_options(args, 6, allow_store)?;
 
         let query_options = GeoSearchOptions {
@@ -409,7 +407,7 @@ impl RequestProcessor {
 
     fn handle_georadiusbymember_common(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         allow_store: bool,
         command_name: &'static str,
@@ -417,14 +415,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, command_name, usage)?;
 
-        let source_key = arg_slice_bytes(&args[1]);
-        let member = arg_slice_bytes(&args[2]).to_vec();
-        let radius = parse_f64_ascii(arg_slice_bytes(&args[3]))
+        let source_key = args[1];
+        let member = args[2].to_vec();
+        let radius = parse_f64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         if radius < 0.0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[4]))?;
+        let unit_to_meters = parse_geo_unit_to_meters(args[4])?;
         let radius_options = parse_georadius_options(args, 5, allow_store)?;
 
         let query_options = GeoSearchOptions {
@@ -452,25 +450,25 @@ impl RequestProcessor {
 
     pub(super) fn handle_geosearch(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 7, "GEOSEARCH", GEOSEARCH_USAGE)?;
         let options = parse_geosearch_options(args, 2, true, false)?;
-        let source_key = arg_slice_bytes(&args[1]);
+        let source_key = args[1];
         execute_geo_query(self, source_key, &options, None, response_out)
     }
 
     pub(super) fn handle_geosearchstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 8, "GEOSEARCHSTORE", GEOSEARCHSTORE_USAGE)?;
         let options = parse_geosearch_options(args, 3, false, true)?;
 
-        let destination_key = arg_slice_bytes(&args[1]).to_vec();
-        let source_key = arg_slice_bytes(&args[2]);
+        let destination_key = args[1].to_vec();
+        let source_key = args[2];
         execute_geo_query(
             self,
             source_key,
@@ -482,12 +480,12 @@ impl RequestProcessor {
 }
 
 fn parse_geoadd_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     mut index: usize,
 ) -> Result<(GeoAddOptions, usize), RequestExecutionError> {
     let mut options = GeoAddOptions::default();
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"NX") {
             options.nx = true;
             index += 1;
@@ -536,7 +534,7 @@ fn parse_geo_unit_to_meters(unit: &[u8]) -> Result<f64, RequestExecutionError> {
 }
 
 fn parse_geosearch_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     mut index: usize,
     allow_reply_options: bool,
     allow_store_dist: bool,
@@ -552,13 +550,13 @@ fn parse_geosearch_options(
     let mut store_dist = false;
 
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
 
         if ascii_eq_ignore_case(token, b"FROMMEMBER") {
             if origin.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let member = arg_slice_bytes(&args[index + 1]).to_vec();
+            let member = args[index + 1].to_vec();
             origin = Some(GeoSearchOrigin::FromMember(member));
             index += 2;
             continue;
@@ -567,9 +565,9 @@ fn parse_geosearch_options(
             if origin.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let longitude = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
+            let longitude = parse_f64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let latitude = parse_f64_ascii(arg_slice_bytes(&args[index + 2]))
+            let latitude = parse_f64_ascii(args[index + 2])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if !geo_coordinates_in_range(longitude, latitude) {
                 return Err(RequestExecutionError::ValueOutOfRange);
@@ -585,12 +583,12 @@ fn parse_geosearch_options(
             if shape.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let radius = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
+            let radius = parse_f64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if radius < 0.0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
-            let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[index + 2]))?;
+            let unit_to_meters = parse_geo_unit_to_meters(args[index + 2])?;
             shape = Some(GeoSearchShape::ByRadius {
                 radius_meters: radius * unit_to_meters,
                 unit_to_meters,
@@ -602,14 +600,14 @@ fn parse_geosearch_options(
             if shape.is_some() || index + 3 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let width = parse_f64_ascii(arg_slice_bytes(&args[index + 1]))
+            let width = parse_f64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let height = parse_f64_ascii(arg_slice_bytes(&args[index + 2]))
+            let height = parse_f64_ascii(args[index + 2])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
             if width < 0.0 || height < 0.0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
-            let unit_to_meters = parse_geo_unit_to_meters(arg_slice_bytes(&args[index + 3]))?;
+            let unit_to_meters = parse_geo_unit_to_meters(args[index + 3])?;
             shape = Some(GeoSearchShape::ByBox {
                 width_meters: width * unit_to_meters,
                 height_meters: height * unit_to_meters,
@@ -637,7 +635,7 @@ fn parse_geosearch_options(
             if count.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let raw_count = parse_i64_ascii(arg_slice_bytes(&args[index + 1]))
+            let raw_count = parse_i64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count <= 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
@@ -688,13 +686,13 @@ fn parse_geosearch_options(
 }
 
 fn parse_georadius_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     mut index: usize,
     allow_store: bool,
 ) -> Result<GeoRadiusOptions, RequestExecutionError> {
     let mut options = GeoRadiusOptions::default();
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"WITHDIST") {
             options.with_dist = true;
             index += 1;
@@ -714,7 +712,7 @@ fn parse_georadius_options(
             if options.count.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let raw_count = parse_i64_ascii(arg_slice_bytes(&args[index + 1]))
+            let raw_count = parse_i64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count <= 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
@@ -742,7 +740,7 @@ fn parse_georadius_options(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            options.store_key = Some(arg_slice_bytes(&args[index + 1]).to_vec());
+            options.store_key = Some(args[index + 1].to_vec());
             options.store_dist = false;
             index += 2;
             continue;
@@ -751,7 +749,7 @@ fn parse_georadius_options(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            options.store_key = Some(arg_slice_bytes(&args[index + 1]).to_vec());
+            options.store_key = Some(args[index + 1].to_vec());
             options.store_dist = true;
             index += 2;
             continue;

@@ -3,19 +3,19 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_hset(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 4, 2, "HSET", "HSET key field value [field value ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
 
         let mut index = 2usize;
         while index < args.len() {
-            let field = arg_slice_bytes(&args[index]).to_vec();
-            let value = arg_slice_bytes(&args[index + 1]).to_vec();
+            let field = args[index].to_vec();
+            let value = args[index + 1].to_vec();
             if hash.insert(field, value).is_none() {
                 inserted += 1;
             }
@@ -29,13 +29,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_hget(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HGET", "HGET key field")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let field = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let field = args[2];
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -53,12 +53,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_hdel(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HDEL", "HDEL key field [field ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -69,7 +69,7 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for field in &args[2..] {
-            if hash.remove(arg_slice_bytes(&field)).is_some() {
+            if hash.remove(*field).is_some() {
                 removed += 1;
             }
         }
@@ -85,12 +85,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_hgetall(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HGETALL", "HGETALL key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -112,12 +112,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_hlen(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HLEN", "HLEN key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let len = self
             .load_hash_object(&key)?
             .map(|hash| hash.len() as i64)
@@ -128,20 +128,19 @@ impl RequestProcessor {
 
     pub(super) fn handle_hmget(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HMGET", "HMGET key field [field ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let hash = self.load_hash_object(&key)?;
         let field_count = args.len() - 2;
         response_out.push(b'*');
         response_out.extend_from_slice(field_count.to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for field in &args[2..] {
-            let field = arg_slice_bytes(&field);
-            match hash.as_ref().and_then(|hash| hash.get(field)) {
+            match hash.as_ref().and_then(|hash| hash.get(*field)) {
                 Some(value) => append_bulk_string(response_out, value),
                 None => append_null_bulk_string(response_out),
             }
@@ -151,7 +150,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hmset(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(
@@ -162,12 +161,12 @@ impl RequestProcessor {
             "HMSET key field value [field value ...]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let mut index = 2usize;
         while index < args.len() {
-            let field = arg_slice_bytes(&args[index]).to_vec();
-            let value = arg_slice_bytes(&args[index + 1]).to_vec();
+            let field = args[index].to_vec();
+            let value = args[index + 1].to_vec();
             hash.insert(field, value);
             index += 2;
         }
@@ -178,19 +177,19 @@ impl RequestProcessor {
 
     pub(super) fn handle_hsetnx(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HSETNX", "HSETNX key field value")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
-        let field = arg_slice_bytes(&args[2]).to_vec();
+        let field = args[2].to_vec();
         if hash.contains_key(&field) {
             append_integer(response_out, 0);
             return Ok(());
         }
-        let value = arg_slice_bytes(&args[3]).to_vec();
+        let value = args[3].to_vec();
         hash.insert(field, value);
         self.save_hash_object(&key, &hash)?;
         append_integer(response_out, 1);
@@ -199,13 +198,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_hexists(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HEXISTS", "HEXISTS key field")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let field = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let field = args[2];
         let exists = self
             .load_hash_object(&key)?
             .map(|hash| hash.contains_key(field))
@@ -216,12 +215,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_hkeys(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HKEYS", "HKEYS key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -240,12 +239,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_hvals(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HVALS", "HVALS key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -264,13 +263,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_hstrlen(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HSTRLEN", "HSTRLEN key field")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let field = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let field = args[2];
         let len = self
             .load_hash_object(&key)?
             .and_then(|hash| hash.get(field).map(|value| value.len() as i64))
@@ -281,7 +280,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hscan(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -291,8 +290,8 @@ impl RequestProcessor {
             "HSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let cursor = parse_u64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let cursor = parse_u64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -317,15 +316,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_hincrby(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBY", "HINCRBY key field increment")?;
 
-        let increment = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let increment = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let field = arg_slice_bytes(&args[2]).to_vec();
+        let key = args[1].to_vec();
+        let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
 
         let current = match hash.get(&field) {
@@ -343,15 +342,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_hincrbyfloat(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBYFLOAT", "HINCRBYFLOAT key field increment")?;
 
-        let increment = parse_f64_ascii(arg_slice_bytes(&args[3]))
+        let increment = parse_f64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let field = arg_slice_bytes(&args[2]).to_vec();
+        let key = args[1].to_vec();
+        let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
 
         let current = match hash.get(&field) {
@@ -371,7 +370,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_hrandfield(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(
@@ -382,7 +381,7 @@ impl RequestProcessor {
             "HRANDFIELD key [count [WITHVALUES]]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let hash = self.load_hash_object(&key)?;
         let resp3 = self.resp_protocol_version() == 3;
 
@@ -401,7 +400,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count_bytes = arg_slice_bytes(&args[2]);
+        let count_bytes = args[2];
         let count = parse_i64_ascii(count_bytes).ok_or_else(|| {
             if looks_like_signed_integer(count_bytes) {
                 RequestExecutionError::ValueOutOfRange
@@ -410,7 +409,7 @@ impl RequestProcessor {
             }
         })?;
         let with_values = if args.len() == 4 {
-            let option = arg_slice_bytes(&args[3]);
+            let option = args[3];
             if !ascii_eq_ignore_case(option, b"WITHVALUES") {
                 return Err(RequestExecutionError::SyntaxError);
             }

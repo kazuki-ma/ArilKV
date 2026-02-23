@@ -1,7 +1,7 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
 use crate::debug_concurrency::{LockClass, OrderedMutex, OrderedMutexGuard};
-use crate::{dispatch_from_arg_slices, CommandId};
+use crate::{dispatch_command_name, CommandId};
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
@@ -453,12 +453,21 @@ impl RequestProcessor {
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        let mut arg_bytes = Vec::with_capacity(args.len());
+        extend_arg_bytes_from_slices(args, &mut arg_bytes);
+        self.execute_bytes(&arg_bytes, response_out)
+    }
+
+    pub(crate) fn execute_bytes(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
         if args.is_empty() {
             return Err(RequestExecutionError::UnknownCommand);
         }
 
-        // SAFETY: caller ensures ArgSlice points into a live request buffer.
-        let command = unsafe { dispatch_from_arg_slices(args) };
+        let command = dispatch_command_name(args[0]);
         match command {
             CommandId::Get => self.handle_get(args, response_out),
             CommandId::Set => self.handle_set(args, response_out),
@@ -702,11 +711,14 @@ impl RequestProcessor {
 }
 
 #[inline]
-fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
-    // SAFETY: request-lifecycle command execution only receives ArgSlice values
-    // produced from a parsed frame whose backing bytes live for the duration of
-    // the current dispatch call.
-    unsafe { arg.as_slice() }
+fn extend_arg_bytes_from_slices<'a>(args: &'a [ArgSlice], out: &mut Vec<&'a [u8]>) {
+    out.clear();
+    out.reserve(args.len().saturating_sub(out.capacity()));
+    for arg in args {
+        // SAFETY: callers invoke this at command-frame boundaries where each ArgSlice
+        // points into a live frame buffer for the duration of the dispatch.
+        out.push(unsafe { arg.as_slice() });
+    }
 }
 
 #[inline]
@@ -730,12 +742,12 @@ struct SetOptions {
     expiration: Option<ExpirationMetadata>,
 }
 
-fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionError> {
+fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError> {
     let mut options = SetOptions::default();
     let mut index = 3usize;
 
     while index < args.len() {
-        let option = arg_slice_bytes(&args[index]);
+        let option = args[index];
 
         if ascii_eq_ignore_case(option, b"NX") {
             if options.only_if_absent || options.only_if_present {
@@ -763,7 +775,7 @@ fn parse_set_options(args: &[ArgSlice]) -> Result<SetOptions, RequestExecutionEr
                 return Err(RequestExecutionError::SyntaxError);
             }
 
-            let value = arg_slice_bytes(&args[index + 1]);
+            let value = args[index + 1];
             let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidExpireTime)?;
             if amount == 0 {
                 return Err(RequestExecutionError::InvalidExpireTime);

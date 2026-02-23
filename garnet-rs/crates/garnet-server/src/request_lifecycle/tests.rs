@@ -63,6 +63,15 @@ fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
     response
 }
 
+fn arg_bytes_from_slices(args: &[ArgSlice]) -> Vec<&[u8]> {
+    let mut out = Vec::with_capacity(args.len());
+    for arg in args {
+        // SAFETY: test frames own backing storage for the full assertion scope.
+        out.push(unsafe { arg.as_slice() });
+    }
+    out
+}
+
 fn find_key_for_shard(processor: &RequestProcessor, shard: usize) -> Vec<u8> {
     for i in 0..20_000 {
         let candidate = format!("key-shard-{shard}-{i}").into_bytes();
@@ -87,7 +96,8 @@ fn parse_scan_match_count_options_supports_match_and_count() {
     let frame = encode_resp(&[b"SSCAN", b"k", b"0", b"COUNT", b"5", b"MATCH", b"a*"]);
     let mut args = [ArgSlice::EMPTY; 16];
     let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
-    let options = parse_scan_match_count_options(&args[..meta.argument_count], 3).unwrap();
+    let arg_bytes = arg_bytes_from_slices(&args[..meta.argument_count]);
+    let options = parse_scan_match_count_options(&arg_bytes, 3).unwrap();
     assert_eq!(options.pattern, Some(b"a*".as_slice()));
     assert_eq!(options.count, 5);
 }
@@ -97,8 +107,8 @@ fn parse_scan_match_count_options_rejects_zero_count() {
     let frame = encode_resp(&[b"SSCAN", b"k", b"0", b"COUNT", b"0"]);
     let mut args = [ArgSlice::EMPTY; 16];
     let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
-    let error =
-        parse_scan_match_count_options(&args[..meta.argument_count], 3).expect_err("must fail");
+    let arg_bytes = arg_bytes_from_slices(&args[..meta.argument_count]);
+    let error = parse_scan_match_count_options(&arg_bytes, 3).expect_err("must fail");
     assert_eq!(error, RequestExecutionError::ValueOutOfRange);
 }
 

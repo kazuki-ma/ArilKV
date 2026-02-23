@@ -80,7 +80,7 @@ const MIGRATE_USAGE: &str =
 impl RequestProcessor {
     pub(super) fn handle_quit(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "QUIT", "QUIT")?;
@@ -90,7 +90,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_time(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "TIME", "TIME")?;
@@ -105,7 +105,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_ping(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 1, 2, "PING", "PING [message]")?;
@@ -113,23 +113,23 @@ impl RequestProcessor {
             append_simple_string(response_out, b"PONG");
             return Ok(());
         }
-        append_bulk_string(response_out, arg_slice_bytes(&args[1]));
+        append_bulk_string(response_out, args[1]);
         Ok(())
     }
 
     pub(super) fn handle_echo(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ECHO", "ECHO message")?;
-        append_bulk_string(response_out, arg_slice_bytes(&args[1]));
+        append_bulk_string(response_out, args[1]);
         Ok(())
     }
 
     pub(super) fn handle_hello(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         if args.len() == 1 {
@@ -137,7 +137,7 @@ impl RequestProcessor {
             return Ok(());
         }
         require_exact_arity(args, 2, "HELLO", "HELLO [2|3]")?;
-        let version = parse_u64_ascii(arg_slice_bytes(&args[1]))
+        let version = parse_u64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if version != 2 && version != 3 {
             return Err(RequestExecutionError::SyntaxError);
@@ -149,7 +149,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_info(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "INFO", "INFO")?;
@@ -171,7 +171,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lastsave(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "LASTSAVE", "LASTSAVE")?;
@@ -181,7 +181,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_auth(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "AUTH", "AUTH [username] password")?;
@@ -190,11 +190,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_select(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SELECT", "SELECT index")?;
-        let index = parse_i64_ascii(arg_slice_bytes(&args[1]))
+        let index = parse_i64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if index != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
@@ -205,11 +205,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_move(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
-        let target_db = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let target_db = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if target_db == 0 {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
@@ -219,13 +219,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_swapdb(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SWAPDB", "SWAPDB index1 index2")?;
-        let index1 = parse_i64_ascii(arg_slice_bytes(&args[1]))
+        let index1 = parse_i64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let index2 = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let index2 = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if index1 != 0 || index2 != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
@@ -236,26 +236,26 @@ impl RequestProcessor {
 
     pub(super) fn handle_migrate(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 6, "MIGRATE", MIGRATE_USAGE)?;
-        let host = arg_slice_bytes(&args[1]);
+        let host = args[1];
         if host.is_empty() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let port = parse_u64_ascii(arg_slice_bytes(&args[2]))
+        let port = parse_u64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if port > u16::MAX as u64 {
             return Err(RequestExecutionError::ValueNotInteger);
         }
-        let key_arg = arg_slice_bytes(&args[3]);
-        let destination_db = parse_i64_ascii(arg_slice_bytes(&args[4]))
+        let key_arg = args[3];
+        let destination_db = parse_i64_ascii(args[4])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if destination_db != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
-        let timeout_millis = parse_i64_ascii(arg_slice_bytes(&args[5]))
+        let timeout_millis = parse_i64_ascii(args[5])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if timeout_millis <= 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -268,7 +268,7 @@ impl RequestProcessor {
 
         let mut index = 6usize;
         while index < args.len() {
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"COPY") || ascii_eq_ignore_case(token, b"REPLACE") {
                 index += 1;
                 continue;
@@ -295,7 +295,6 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 for key in &args[index + 1..] {
-                    let key = arg_slice_bytes(&key);
                     if key.is_empty() {
                         return Err(RequestExecutionError::SyntaxError);
                     }
@@ -314,7 +313,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_client(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -323,7 +322,7 @@ impl RequestProcessor {
             "CLIENT",
             "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-TOUCH> [arguments...]",
         )?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"ID") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT ID")?;
             append_integer(response_out, 1);
@@ -357,10 +356,10 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"PAUSE") {
             ensure_one_of_arities(args, &[3, 4], "CLIENT", "CLIENT PAUSE timeout [WRITE|ALL]")?;
-            parse_u64_ascii(arg_slice_bytes(&args[2]))
+            parse_u64_ascii(args[2])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             if args.len() == 4 {
-                let mode = arg_slice_bytes(&args[3]);
+                let mode = args[3];
                 if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
                     return Err(RequestExecutionError::SyntaxError);
                 }
@@ -375,7 +374,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT NO-TOUCH on|off")?;
-            let mode = arg_slice_bytes(&args[2]);
+            let mode = args[2];
             if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -387,7 +386,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_role(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "ROLE", "ROLE")?;
@@ -400,26 +399,26 @@ impl RequestProcessor {
 
     pub(super) fn handle_wait(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "WAIT", "WAIT numreplicas timeout")?;
-        parse_u64_ascii(arg_slice_bytes(&args[1])).ok_or(RequestExecutionError::ValueNotInteger)?;
-        parse_u64_ascii(arg_slice_bytes(&args[2])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         append_integer(response_out, 0);
         Ok(())
     }
 
     pub(super) fn handle_waitaof(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "WAITAOF", "WAITAOF numlocal numreplicas timeout")?;
-        let numlocal = parse_u64_ascii(arg_slice_bytes(&args[1]))
+        let numlocal = parse_u64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        parse_u64_ascii(arg_slice_bytes(&args[2])).ok_or(RequestExecutionError::ValueNotInteger)?;
-        parse_u64_ascii(arg_slice_bytes(&args[3])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if numlocal > 1 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -432,7 +431,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_save(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "SAVE", "SAVE")?;
@@ -443,12 +442,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_bgsave(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 1, 2, "BGSAVE", "BGSAVE [SCHEDULE]")?;
         if args.len() == 2 {
-            let mode = arg_slice_bytes(&args[1]);
+            let mode = args[1];
             if !ascii_eq_ignore_case(mode, b"SCHEDULE") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -460,7 +459,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bgrewriteaof(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "BGREWRITEAOF", "BGREWRITEAOF")?;
@@ -473,7 +472,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_readonly(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "READONLY", "READONLY")?;
@@ -482,7 +481,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_readwrite(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "READWRITE", "READWRITE")?;
@@ -491,7 +490,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_reset(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "RESET", "RESET")?;
@@ -502,14 +501,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_lolwut(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         if args.len() >= 2 {
-            let first_option = arg_slice_bytes(&args[1]);
+            let first_option = args[1];
             if ascii_eq_ignore_case(first_option, b"VERSION") {
                 require_exact_arity(args, 3, "LOLWUT", "LOLWUT [VERSION version]")?;
-                parse_u64_ascii(arg_slice_bytes(&args[2]))
+                parse_u64_ascii(args[2])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
             }
         }
@@ -519,17 +518,17 @@ impl RequestProcessor {
 
     pub(super) fn handle_memory(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MEMORY", "MEMORY USAGE key")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
             return Err(RequestExecutionError::UnknownCommand);
         }
         require_exact_arity(args, 3, "MEMORY", "MEMORY USAGE key")?;
 
-        let key = arg_slice_bytes(&args[2]).to_vec();
+        let key = args[2].to_vec();
         self.expire_key_if_needed(&key)?;
 
         if let Some(value) = self.read_string_value(&key)? {
@@ -553,7 +552,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_dbsize(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "DBSIZE", "DBSIZE")?;
@@ -563,14 +562,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_debug(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "DEBUG", "DEBUG subcommand [arguments...]")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"SET-ACTIVE-EXPIRE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG SET-ACTIVE-EXPIRE <0|1>")?;
-            let enabled = arg_slice_bytes(&args[2]);
+            let enabled = args[2];
             if enabled != b"0" && enabled != b"1" {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -579,7 +578,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
-            let key = arg_slice_bytes(&args[2]).to_vec();
+            let key = args[2].to_vec();
             self.expire_key_if_needed(&key)?;
             let digest = self.debug_digest_value_for_key(&key)?;
             append_bulk_string(response_out, &digest);
@@ -590,15 +589,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_object(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "OBJECT", "OBJECT <ENCODING|REFCOUNT> key")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
-            let key = arg_slice_bytes(&args[2]).to_vec();
+            let key = args[2].to_vec();
             self.expire_key_if_needed(&key)?;
             if self.key_exists(&key)? {
                 append_bulk_string(response_out, b"raw");
@@ -626,7 +625,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"REFCOUNT") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT REFCOUNT key")?;
-            let key = arg_slice_bytes(&args[2]).to_vec();
+            let key = args[2].to_vec();
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 append_integer(response_out, 1);
@@ -641,11 +640,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_keys(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "KEYS", "KEYS pattern")?;
-        let pattern = arg_slice_bytes(&args[1]);
+        let pattern = args[1];
 
         let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
@@ -681,7 +680,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_randomkey(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "RANDOMKEY", "RANDOMKEY")?;
@@ -720,7 +719,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_scan(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -730,19 +729,19 @@ impl RequestProcessor {
             "SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]",
         )?;
 
-        let cursor = parse_u64_ascii(arg_slice_bytes(&args[1]))
+        let cursor = parse_u64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let mut pattern: Option<&[u8]> = None;
         let mut count = 10usize;
         let mut type_filter: Option<ScanTypeFilter> = None;
         let mut index = 2usize;
         while index < args.len() {
-            let token = arg_slice_bytes(&args[index]);
+            let token = args[index];
             if ascii_eq_ignore_case(token, b"MATCH") {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                pattern = Some(arg_slice_bytes(&args[index + 1]));
+                pattern = Some(args[index + 1]);
                 index += 2;
                 continue;
             }
@@ -750,7 +749,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let parsed_count = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+                let parsed_count = parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 if parsed_count == 0 {
                     return Err(RequestExecutionError::ValueOutOfRange);
@@ -763,7 +762,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let raw_type = arg_slice_bytes(&args[index + 1]);
+                let raw_type = args[index + 1];
                 type_filter = Some(
                     parse_scan_type_filter(raw_type).ok_or(RequestExecutionError::SyntaxError)?,
                 );
@@ -832,7 +831,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_command(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "COMMAND", "COMMAND")?;
@@ -842,11 +841,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_dump(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "DUMP", "DUMP key")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         if let Some(value) = self.read_string_value(&key)? {
             append_bulk_string(
@@ -871,7 +870,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_restore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         restore_from_dump_blob(self, args, response_out, "RESTORE")
@@ -879,7 +878,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_restore_asking(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         restore_from_dump_blob(self, args, response_out, "RESTORE-ASKING")
@@ -887,7 +886,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_latency(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -896,7 +895,7 @@ impl RequestProcessor {
             "LATENCY",
             "LATENCY <DOCTOR|GRAPH|HISTORY|LATEST|RESET|HISTOGRAM|HELP> [arguments...]",
         )?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "LATENCY", "LATENCY HELP")?;
             append_bulk_array(response_out, &LATENCY_HELP_LINES);
@@ -935,11 +934,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_module(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MODULE", "MODULE <LIST|HELP>")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"LIST") {
             require_exact_arity(args, 2, "MODULE", "MODULE LIST")?;
             response_out.extend_from_slice(b"*0\r\n");
@@ -955,7 +954,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_slowlog(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -964,7 +963,7 @@ impl RequestProcessor {
             "SLOWLOG",
             "SLOWLOG <GET|LEN|RESET|HELP> [arguments...]",
         )?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG HELP")?;
             append_bulk_array(response_out, &SLOWLOG_HELP_LINES);
@@ -983,7 +982,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"GET") {
             ensure_ranged_arity(args, 2, 3, "SLOWLOG", "SLOWLOG GET [count]")?;
             if args.len() == 3 {
-                parse_i64_ascii(arg_slice_bytes(&args[2]))
+                parse_i64_ascii(args[2])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
             }
             response_out.extend_from_slice(b"*0\r\n");
@@ -994,11 +993,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_acl(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "ACL", "ACL <subcommand> [arguments...]")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "ACL", "ACL HELP")?;
             append_bulk_array(response_out, &ACL_HELP_LINES);
@@ -1038,7 +1037,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {
             require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
-            let username = arg_slice_bytes(&args[2]);
+            let username = args[2];
             if !ascii_eq_ignore_case(username, b"default") {
                 append_null_bulk_string(response_out);
                 return Ok(());
@@ -1064,14 +1063,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_cluster(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "CLUSTER", "CLUSTER <subcommand> [arguments...]")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"KEYSLOT") {
             require_exact_arity(args, 3, "CLUSTER", "CLUSTER KEYSLOT key")?;
-            let key = arg_slice_bytes(&args[2]);
+            let key = args[2];
             append_integer(response_out, i64::from(redis_hash_slot(key)));
             return Ok(());
         }
@@ -1111,7 +1110,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_failover(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1125,7 +1124,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_subscribe(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SUBSCRIBE", "SUBSCRIBE channel [channel ...]")?;
@@ -1135,7 +1134,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_psubscribe(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PSUBSCRIBE", "PSUBSCRIBE pattern [pattern ...]")?;
@@ -1145,7 +1144,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_ssubscribe(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1160,7 +1159,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_unsubscribe(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1175,7 +1174,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_punsubscribe(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1190,7 +1189,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sunsubscribe(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1205,7 +1204,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_publish(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "PUBLISH", "PUBLISH channel message")?;
@@ -1215,7 +1214,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_spublish(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SPUBLISH", "SPUBLISH shardchannel message")?;
@@ -1225,11 +1224,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_pubsub(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PUBSUB", "PUBSUB <subcommand> [arguments ...]")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"CHANNELS")
             || ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS")
         {
@@ -1249,7 +1248,6 @@ impl RequestProcessor {
             let pair_count = args.len().saturating_sub(2);
             response_out.extend_from_slice(format!("*{}\r\n", pair_count * 2).as_bytes());
             for channel in &args[2..] {
-                let channel = arg_slice_bytes(&channel);
                 append_bulk_string(response_out, channel);
                 append_integer(response_out, 0);
             }
@@ -1260,7 +1258,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_monitor(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "MONITOR", "MONITOR")?;
@@ -1270,7 +1268,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_shutdown(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -1280,7 +1278,7 @@ impl RequestProcessor {
             "SHUTDOWN [NOSAVE|SAVE] [NOW|FORCE|ABORT]",
         )?;
         for option in &args[1..] {
-            let token = arg_slice_bytes(&option);
+            let token = option;
             if ascii_eq_ignore_case(token, b"SAVE")
                 || ascii_eq_ignore_case(token, b"NOSAVE")
                 || ascii_eq_ignore_case(token, b"NOW")
@@ -1298,11 +1296,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_function(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
             return Err(RequestExecutionError::UnknownCommand);
         }
@@ -1312,16 +1310,16 @@ impl RequestProcessor {
 
     pub(super) fn handle_script(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SCRIPT", "SCRIPT FLUSH [ASYNC|SYNC]")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
         if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
             return Err(RequestExecutionError::UnknownCommand);
         }
         if args.len() == 3 {
-            let flush_mode = arg_slice_bytes(&args[2]);
+            let flush_mode = args[2];
             if !ascii_eq_ignore_case(flush_mode, b"ASYNC")
                 && !ascii_eq_ignore_case(flush_mode, b"SYNC")
             {
@@ -1334,7 +1332,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_eval(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         validate_scripting_numkeys(args, "EVAL", "EVAL script numkeys [key ...] [arg ...]")?;
@@ -1343,7 +1341,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_eval_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         validate_scripting_numkeys(
@@ -1356,7 +1354,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_evalsha(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         validate_scripting_numkeys(args, "EVALSHA", "EVALSHA sha1 numkeys [key ...] [arg ...]")?;
@@ -1365,7 +1363,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_evalsha_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         validate_scripting_numkeys(
@@ -1378,7 +1376,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_fcall(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         validate_scripting_numkeys(args, "FCALL", "FCALL function numkeys [key ...] [arg ...]")?;
@@ -1387,7 +1385,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_fcall_ro(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         validate_scripting_numkeys(
@@ -1400,11 +1398,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_config(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "CONFIG", "CONFIG <GET|SET|RESETSTAT>")?;
-        let subcommand = arg_slice_bytes(&args[1]);
+        let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"RESETSTAT") {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
@@ -1414,8 +1412,8 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"SET") {
             require_exact_arity(args, 4, "CONFIG", "CONFIG SET parameter value")?;
-            let parameter = arg_slice_bytes(&args[2]);
-            let value = arg_slice_bytes(&args[3]);
+            let parameter = args[2];
+            let value = args[3];
 
             if ascii_eq_ignore_case(parameter, b"ZSET-MAX-ZIPLIST-ENTRIES")
                 || ascii_eq_ignore_case(parameter, b"ZSET-MAX-LISTPACK-ENTRIES")
@@ -1438,7 +1436,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"GET") {
             require_exact_arity(args, 3, "CONFIG", "CONFIG GET parameter")?;
-            let pattern = arg_slice_bytes(&args[2]);
+            let pattern = args[2];
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let zset_max_listpack_entries_value = zset_max_listpack_entries.to_string();
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
@@ -1492,7 +1490,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_flushdb(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "FLUSHDB", "FLUSHDB")?;
@@ -1503,7 +1501,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_flushall(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "FLUSHALL", "FLUSHALL")?;
@@ -1602,7 +1600,7 @@ struct RestoreOptions {
 
 fn restore_from_dump_blob(
     processor: &RequestProcessor,
-    args: &[ArgSlice],
+    args: &[&[u8]],
     response_out: &mut Vec<u8>,
     command_name: &'static str,
 ) -> Result<(), RequestExecutionError> {
@@ -1613,13 +1611,13 @@ fn restore_from_dump_blob(
         "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
     )?;
 
-    let key = arg_slice_bytes(&args[1]).to_vec();
+    let key = args[1].to_vec();
     let ttl_input =
-        parse_i64_ascii(arg_slice_bytes(&args[2])).ok_or(RequestExecutionError::ValueNotInteger)?;
+        parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if ttl_input < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
-    let dump_blob = arg_slice_bytes(&args[3]);
+    let dump_blob = args[3];
     let options = parse_restore_options(args, 4, command_name)?;
     let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
 
@@ -1669,7 +1667,7 @@ fn restore_from_dump_blob(
 }
 
 fn parse_restore_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
     command_name: &'static str,
 ) -> Result<RestoreOptions, RequestExecutionError> {
@@ -1679,7 +1677,7 @@ fn parse_restore_options(
     };
     let mut index = start_index;
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"REPLACE") {
             options.replace = true;
             index += 1;
@@ -1697,7 +1695,7 @@ fn parse_restore_options(
                 command_name,
                 "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
             )?;
-            parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+            parse_u64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             index += 2;
             continue;
@@ -1761,12 +1759,12 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
 }
 
 fn validate_scripting_numkeys(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     command: &'static str,
     expected: &'static str,
 ) -> Result<(), RequestExecutionError> {
     ensure_min_arity(args, 3, command, expected)?;
-    let numkeys_raw = arg_slice_bytes(&args[2]);
+    let numkeys_raw = args[2];
     let numkeys = parse_i64_ascii(numkeys_raw).ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);
@@ -1778,20 +1776,18 @@ fn validate_scripting_numkeys(
     Ok(())
 }
 
-fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[ArgSlice], kind: &[u8]) {
-    for (index, target) in targets.iter().enumerate() {
-        let channel = arg_slice_bytes(&target);
+fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: &[u8]) {
+    for (index, &channel) in targets.iter().enumerate() {
         append_pubsub_ack(response_out, kind, Some(channel), index + 1);
     }
 }
 
-fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[ArgSlice], kind: &[u8]) {
+fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: &[u8]) {
     if targets.is_empty() {
         append_pubsub_ack(response_out, kind, None, 0);
         return;
     }
-    for (index, target) in targets.iter().enumerate() {
-        let channel = arg_slice_bytes(&target);
+    for (index, &channel) in targets.iter().enumerate() {
         let remaining = targets.len().saturating_sub(index + 1);
         append_pubsub_ack(response_out, kind, Some(channel), remaining);
     }

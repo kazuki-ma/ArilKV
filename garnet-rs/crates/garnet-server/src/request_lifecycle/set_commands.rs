@@ -3,16 +3,16 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_sadd(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut set = self.load_set_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
         for member in &args[2..] {
-            if set.insert(arg_slice_bytes(&member).to_vec()) {
+            if set.insert(member.to_vec()) {
                 inserted += 1;
             }
         }
@@ -23,12 +23,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_srem(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut set = match self.load_set_object(&key)? {
             Some(set) => set,
             None => {
@@ -38,7 +38,7 @@ impl RequestProcessor {
         };
         let mut removed = 0i64;
         for member in &args[2..] {
-            if set.remove(arg_slice_bytes(&member)) {
+            if set.remove(*member) {
                 removed += 1;
             }
         }
@@ -54,12 +54,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_smembers(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SMEMBERS", "SMEMBERS key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let set = match self.load_set_object(&key)? {
             Some(set) => set,
             None => {
@@ -79,13 +79,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_sismember(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SISMEMBER", "SISMEMBER key member")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let member = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let member = args[2];
         let set = match self.load_set_object(&key)? {
             Some(set) => set,
             None => {
@@ -99,12 +99,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_scard(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SCARD", "SCARD key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let len = self
             .load_set_object(&key)?
             .map_or(0, |set| set.len() as i64);
@@ -114,7 +114,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sscan(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -124,8 +124,8 @@ impl RequestProcessor {
             "SSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let cursor = parse_u64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let cursor = parse_u64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -150,20 +150,19 @@ impl RequestProcessor {
 
     pub(super) fn handle_smismember(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SMISMEMBER", "SMISMEMBER key member [member ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let set = self.load_set_object(&key)?;
         let members = &args[2..];
         response_out.push(b'*');
         response_out.extend_from_slice(members.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for member in members {
-            let member = arg_slice_bytes(&member);
-            let exists = set.as_ref().is_some_and(|set| set.contains(member));
+            let exists = set.as_ref().is_some_and(|set| set.contains(*member));
             append_integer(response_out, if exists { 1 } else { 0 });
         }
         Ok(())
@@ -171,12 +170,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_srandmember(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SRANDMEMBER", "SRANDMEMBER key [count]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let set = self.load_set_object(&key)?;
         if args.len() == 2 {
             let Some(set) = set else {
@@ -192,7 +191,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let count = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let Some(set) = set else {
             response_out.extend_from_slice(b"*0\r\n");
@@ -222,12 +221,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_spop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SPOP", "SPOP key [count]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut set = self.load_set_object(&key)?;
         if args.len() == 2 {
             let Some(mut set) = set.take() else {
@@ -252,7 +251,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let count = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -288,14 +287,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_smove(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SMOVE", "SMOVE source destination member")?;
 
-        let source = arg_slice_bytes(&args[1]).to_vec();
-        let destination = arg_slice_bytes(&args[2]).to_vec();
-        let member = arg_slice_bytes(&args[3]).to_vec();
+        let source = args[1].to_vec();
+        let destination = args[2].to_vec();
+        let member = args[3].to_vec();
 
         let mut source_set = match self.load_set_object(&source)? {
             Some(set) => set,
@@ -329,7 +328,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sunion(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SUNION", "SUNION key [key ...]")?;
@@ -341,7 +340,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sinter(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SINTER", "SINTER key [key ...]")?;
@@ -353,7 +352,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sintercard(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -362,7 +361,7 @@ impl RequestProcessor {
             "SINTERCARD",
             "SINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let num_keys = parse_u64_ascii(arg_slice_bytes(&args[1]))
+        let num_keys = parse_u64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::SyntaxError);
@@ -380,11 +379,11 @@ impl RequestProcessor {
             if args.len() != key_end + 2 {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let option = arg_slice_bytes(&args[key_end]);
+            let option = args[key_end];
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let parsed_limit = parse_u64_ascii(arg_slice_bytes(&args[key_end + 1]))
+            let parsed_limit = parse_u64_ascii(args[key_end + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -392,7 +391,7 @@ impl RequestProcessor {
 
         let keys: Vec<Vec<u8>> = args[key_start..key_end]
             .iter()
-            .map(|key| arg_slice_bytes(&key).to_vec())
+            .map(|key| key.to_vec())
             .collect();
         let inter = compute_sinter(self, &keys)?;
         let mut cardinality = inter.len();
@@ -405,7 +404,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sdiff(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SDIFF", "SDIFF key [key ...]")?;
@@ -417,7 +416,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sunionstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -426,7 +425,7 @@ impl RequestProcessor {
             "SUNIONSTORE",
             "SUNIONSTORE destination key [key ...]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let keys = collect_set_keys(args, 2);
         let union = compute_sunion(self, &keys)?;
         store_set_result(self, &destination, &union)?;
@@ -436,7 +435,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sinterstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -445,7 +444,7 @@ impl RequestProcessor {
             "SINTERSTORE",
             "SINTERSTORE destination key [key ...]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let keys = collect_set_keys(args, 2);
         let inter = compute_sinter(self, &keys)?;
         store_set_result(self, &destination, &inter)?;
@@ -455,7 +454,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_sdiffstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -464,7 +463,7 @@ impl RequestProcessor {
             "SDIFFSTORE",
             "SDIFFSTORE destination key [key ...]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let keys = collect_set_keys(args, 2);
         let diff = compute_sdiff(self, &keys)?;
         store_set_result(self, &destination, &diff)?;
@@ -508,10 +507,10 @@ fn select_random_members_with_replacement(
     selected
 }
 
-fn collect_set_keys(args: &[ArgSlice], first_key_index: usize) -> Vec<Vec<u8>> {
+fn collect_set_keys(args: &[&[u8]], first_key_index: usize) -> Vec<Vec<u8>> {
     args[first_key_index..]
         .iter()
-        .map(|key| arg_slice_bytes(&key).to_vec())
+        .map(|key| key.to_vec())
         .collect()
 }
 

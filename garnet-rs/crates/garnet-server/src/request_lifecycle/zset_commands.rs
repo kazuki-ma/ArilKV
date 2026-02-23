@@ -3,7 +3,7 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_zadd(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(
@@ -14,15 +14,15 @@ impl RequestProcessor {
             "ZADD key score member [score member ...]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
 
         let mut index = 2usize;
         while index < args.len() {
-            let score = parse_f64_ascii(arg_slice_bytes(&args[index]))
+            let score = parse_f64_ascii(args[index])
                 .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let member = arg_slice_bytes(&args[index + 1]).to_vec();
+            let member = args[index + 1].to_vec();
             if zset.insert(member, score).is_none() {
                 inserted += 1;
             }
@@ -36,12 +36,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrem(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let mut zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -52,7 +52,7 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for member in &args[2..] {
-            if zset.remove(arg_slice_bytes(&member)).is_some() {
+            if zset.remove(*member).is_some() {
                 removed += 1;
             }
         }
@@ -68,15 +68,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZRANGE", "ZRANGE key start stop")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let stop = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -106,7 +106,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrevrange(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(
@@ -117,7 +117,7 @@ impl RequestProcessor {
             "ZREVRANGE key start stop [WITHSCORES]",
         )?;
         let with_scores = if args.len() == 5 {
-            let option = arg_slice_bytes(&args[4]);
+            let option = args[4];
             if !ascii_eq_ignore_case(option, b"WITHSCORES") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -126,10 +126,10 @@ impl RequestProcessor {
             false
         };
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let stop = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -168,7 +168,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangebyscore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zrangebyscore_like(args, response_out, false)
@@ -176,7 +176,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrevrangebyscore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zrangebyscore_like(args, response_out, true)
@@ -184,13 +184,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_zscore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "ZSCORE", "ZSCORE key member")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let member = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let member = args[2];
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -208,12 +208,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_zcard(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ZCARD", "ZCARD key")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let count = self
             .load_zset_object(&key)?
             .map_or(0usize, |zset| zset.len());
@@ -223,15 +223,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_zcount(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let min = parse_zscore_bound(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let min = parse_zscore_bound(args[2])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let max = parse_zscore_bound(arg_slice_bytes(&args[3]))
+        let max = parse_zscore_bound(args[3])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -251,14 +251,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_zlexcount(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let min = parse_zlex_bound(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let min = parse_zlex_bound(args[2])
             .ok_or(RequestExecutionError::SyntaxError)?;
-        let max = parse_zlex_bound(arg_slice_bytes(&args[3]))
+        let max = parse_zlex_bound(args[3])
             .ok_or(RequestExecutionError::SyntaxError)?;
 
         let count = match self.load_zset_object(&key)? {
@@ -274,7 +274,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangebylex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zrangebylex_like(args, response_out, false)
@@ -282,7 +282,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrevrangebylex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zrangebylex_like(args, response_out, true)
@@ -290,14 +290,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebylex(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let min = parse_zlex_bound(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let min = parse_zlex_bound(args[2])
             .ok_or(RequestExecutionError::SyntaxError)?;
-        let max = parse_zlex_bound(arg_slice_bytes(&args[3]))
+        let max = parse_zlex_bound(args[3])
             .ok_or(RequestExecutionError::SyntaxError)?;
 
         let mut zset = match self.load_zset_object(&key)? {
@@ -332,7 +332,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zintercard(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -341,7 +341,7 @@ impl RequestProcessor {
             "ZINTERCARD",
             "ZINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let num_keys = parse_u64_ascii(arg_slice_bytes(&args[1]))
+        let num_keys = parse_u64_ascii(args[1])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::SyntaxError);
@@ -359,11 +359,11 @@ impl RequestProcessor {
             if args.len() != key_end + 2 {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let option = arg_slice_bytes(&args[key_end]);
+            let option = args[key_end];
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let parsed_limit = parse_u64_ascii(arg_slice_bytes(&args[key_end + 1]))
+            let parsed_limit = parse_u64_ascii(args[key_end + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -371,7 +371,7 @@ impl RequestProcessor {
 
         let keys: Vec<Vec<u8>> = args[key_start..key_end]
             .iter()
-            .map(|key| arg_slice_bytes(&key).to_vec())
+            .map(|key| key.to_vec())
             .collect();
         let mut cardinality = compute_zinter_cardinality(self, &keys)?;
         if limit > 0 {
@@ -383,7 +383,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zdiff(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZDIFF", "ZDIFF numkeys key [key ...] [WITHSCORES]")?;
@@ -396,7 +396,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zdiffstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -405,7 +405,7 @@ impl RequestProcessor {
             "ZDIFFSTORE",
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         if option_start != args.len() {
             return Err(RequestExecutionError::SyntaxError);
@@ -418,7 +418,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zinter(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -446,7 +446,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zinterstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -455,7 +455,7 @@ impl RequestProcessor {
             "ZINTERSTORE",
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -476,7 +476,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zunion(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -504,7 +504,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zunionstore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -513,7 +513,7 @@ impl RequestProcessor {
             "ZUNIONSTORE",
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
+        let destination = args[1].to_vec();
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -534,7 +534,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zmpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -550,7 +550,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bzmpop(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -567,7 +567,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangestore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -576,10 +576,10 @@ impl RequestProcessor {
             "ZRANGESTORE",
             "ZRANGESTORE dst src min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]",
         )?;
-        let destination = arg_slice_bytes(&args[1]).to_vec();
-        let source = arg_slice_bytes(&args[2]).to_vec();
-        let left = arg_slice_bytes(&args[3]);
-        let right = arg_slice_bytes(&args[4]);
+        let destination = args[1].to_vec();
+        let source = args[2].to_vec();
+        let left = args[3];
+        let right = args[4];
         let options = parse_zrangestore_options(args, 5)?;
 
         let selected = match self.load_zset_object(&source)? {
@@ -594,7 +594,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zscan(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
@@ -604,8 +604,8 @@ impl RequestProcessor {
             "ZSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let cursor = parse_u64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let cursor = parse_u64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -629,7 +629,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrank(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zrank_like(args, response_out, false)
@@ -637,7 +637,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrevrank(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zrank_like(args, response_out, true)
@@ -645,15 +645,15 @@ impl RequestProcessor {
 
     pub(super) fn handle_zincrby(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let increment = parse_f64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let increment = parse_f64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let member = arg_slice_bytes(&args[3]).to_vec();
+        let member = args[3].to_vec();
 
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
         let current = zset.get(&member).copied().unwrap_or(0.0);
@@ -669,14 +669,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebyrank(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let start = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let start = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(arg_slice_bytes(&args[3]))
+        let stop = parse_i64_ascii(args[3])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
 
         let mut zset = match self.load_zset_object(&key)? {
@@ -714,14 +714,14 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebyscore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let min = parse_zscore_bound(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let min = parse_zscore_bound(args[2])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let max = parse_zscore_bound(arg_slice_bytes(&args[3]))
+        let max = parse_zscore_bound(args[3])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
 
         let mut zset = match self.load_zset_object(&key)? {
@@ -756,7 +756,7 @@ impl RequestProcessor {
 
     fn handle_zrangebyscore_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         reverse: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -775,10 +775,10 @@ impl RequestProcessor {
             },
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let left_bound = parse_zscore_bound(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let left_bound = parse_zscore_bound(args[2])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let right_bound = parse_zscore_bound(arg_slice_bytes(&args[3]))
+        let right_bound = parse_zscore_bound(args[3])
             .ok_or(RequestExecutionError::ValueNotFloat)?;
         let options = parse_zrange_by_score_options(args, 4)?;
 
@@ -814,7 +814,7 @@ impl RequestProcessor {
 
     fn handle_zrangebylex_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         reverse: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -833,10 +833,10 @@ impl RequestProcessor {
             },
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let left_bound = parse_zlex_bound(arg_slice_bytes(&args[2]))
+        let key = args[1].to_vec();
+        let left_bound = parse_zlex_bound(args[2])
             .ok_or(RequestExecutionError::SyntaxError)?;
-        let right_bound = parse_zlex_bound(arg_slice_bytes(&args[3]))
+        let right_bound = parse_zlex_bound(args[3])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let limit = parse_zrangebylex_limit(args, 4)?;
         let (min_bound, max_bound) = if reverse {
@@ -884,11 +884,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_zmscore(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let zset = self.load_zset_object(&key)?;
         let members = &args[2..];
 
@@ -896,8 +896,7 @@ impl RequestProcessor {
         response_out.extend_from_slice(members.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for member in members {
-            let member = arg_slice_bytes(&member);
-            let score = zset.as_ref().and_then(|zset| zset.get(member));
+            let score = zset.as_ref().and_then(|zset| zset.get(*member));
             match score {
                 Some(score) => append_bulk_string(response_out, score.to_string().as_bytes()),
                 None => append_null_bulk_string(response_out),
@@ -908,7 +907,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrandmember(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(
@@ -918,7 +917,7 @@ impl RequestProcessor {
             "ZRANDMEMBER",
             "ZRANDMEMBER key [count [WITHSCORES]]",
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let zset = self.load_zset_object(&key)?;
         if args.len() == 2 {
             let Some(zset) = zset else {
@@ -934,10 +933,10 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count = parse_i64_ascii(arg_slice_bytes(&args[2]))
+        let count = parse_i64_ascii(args[2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         let with_scores = if args.len() == 4 {
-            let option = arg_slice_bytes(&args[3]);
+            let option = args[3];
             if !ascii_eq_ignore_case(option, b"WITHSCORES") {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -983,7 +982,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zpopmin(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zpop_like(args, response_out, false)
@@ -991,7 +990,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zpopmax(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_zpop_like(args, response_out, true)
@@ -999,7 +998,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bzpopmin(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_bzpop_like(args, response_out, false)
@@ -1007,7 +1006,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bzpopmax(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.handle_bzpop_like(args, response_out, true)
@@ -1015,7 +1014,7 @@ impl RequestProcessor {
 
     fn handle_zrank_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         reverse: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -1030,8 +1029,8 @@ impl RequestProcessor {
             },
         )?;
 
-        let key = arg_slice_bytes(&args[1]).to_vec();
-        let member = arg_slice_bytes(&args[2]);
+        let key = args[1].to_vec();
+        let member = args[2];
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -1058,7 +1057,7 @@ impl RequestProcessor {
 
     fn handle_zpop_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         pop_max: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -1073,9 +1072,9 @@ impl RequestProcessor {
                 "ZPOPMIN key [count]"
             },
         )?;
-        let key = arg_slice_bytes(&args[1]).to_vec();
+        let key = args[1].to_vec();
         let count = if args.len() == 3 {
-            parse_u64_ascii(arg_slice_bytes(&args[2]))
+            parse_u64_ascii(args[2])
                 .ok_or(RequestExecutionError::ValueNotInteger)?
         } else {
             1
@@ -1102,7 +1101,7 @@ impl RequestProcessor {
 
     fn handle_bzpop_like(
         &self,
-        args: &[ArgSlice],
+        args: &[&[u8]],
         response_out: &mut Vec<u8>,
         pop_max: bool,
     ) -> Result<(), RequestExecutionError> {
@@ -1120,7 +1119,7 @@ impl RequestProcessor {
         parse_blocking_timeout_seconds(args, timeout_index)?;
 
         for key in &args[1..timeout_index] {
-            let key = arg_slice_bytes(&key).to_vec();
+            let key = key.to_vec();
             let Some(mut selected) = self.pop_zset_entries_from_key(&key, pop_max, 1)? else {
                 continue;
             };
@@ -1283,13 +1282,13 @@ struct ZrangeByScoreOptions {
 }
 
 fn parse_zrange_by_score_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
 ) -> Result<ZrangeByScoreOptions, RequestExecutionError> {
     let mut options = ZrangeByScoreOptions::default();
     let mut index = start_index;
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"WITHSCORES") {
             if options.with_scores {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1302,9 +1301,9 @@ fn parse_zrange_by_score_options(
             if options.limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+            let offset = parse_u64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
-            let count = parse_u64_ascii(arg_slice_bytes(&args[index + 2]))
+            let count = parse_u64_ascii(args[index + 2])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             options.limit = Some((
                 usize::try_from(offset).unwrap_or(usize::MAX),
@@ -1409,7 +1408,7 @@ fn zlex_member_in_bounds(member: &[u8], min: ZlexBound<'_>, max: ZlexBound<'_>) 
 }
 
 fn parse_zrangebylex_limit(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
 ) -> Result<Option<(usize, usize)>, RequestExecutionError> {
     if args.len() == start_index {
@@ -1418,13 +1417,13 @@ fn parse_zrangebylex_limit(
     if args.len() != start_index + 3 {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let option = arg_slice_bytes(&args[start_index]);
+    let option = args[start_index];
     if !ascii_eq_ignore_case(option, b"LIMIT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let offset = parse_u64_ascii(arg_slice_bytes(&args[start_index + 1]))
+    let offset = parse_u64_ascii(args[start_index + 1])
         .ok_or(RequestExecutionError::ValueNotInteger)?;
-    let count = parse_u64_ascii(arg_slice_bytes(&args[start_index + 2]))
+    let count = parse_u64_ascii(args[start_index + 2])
         .ok_or(RequestExecutionError::ValueNotInteger)?;
     Ok(Some((
         usize::try_from(offset).unwrap_or(usize::MAX),
@@ -1433,13 +1432,13 @@ fn parse_zrangebylex_limit(
 }
 
 fn parse_zset_numkeys_and_keys(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     numkeys_index: usize,
 ) -> Result<(Vec<Vec<u8>>, usize), RequestExecutionError> {
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let numkeys = parse_u64_ascii(arg_slice_bytes(&args[numkeys_index]))
+    let numkeys = parse_u64_ascii(args[numkeys_index])
         .ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys == 0 {
         return Err(RequestExecutionError::SyntaxError);
@@ -1454,13 +1453,13 @@ fn parse_zset_numkeys_and_keys(
     }
     let keys = args[key_start..key_end]
         .iter()
-        .map(|key| arg_slice_bytes(&key).to_vec())
+        .map(|key| key.to_vec())
         .collect();
     Ok((keys, key_end))
 }
 
 fn parse_zdiff_withscores(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
 ) -> Result<bool, RequestExecutionError> {
     if start_index == args.len() {
@@ -1469,7 +1468,7 @@ fn parse_zdiff_withscores(
     if start_index + 1 != args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let token = arg_slice_bytes(&args[start_index]);
+    let token = args[start_index];
     if !ascii_eq_ignore_case(token, b"WITHSCORES") {
         return Err(RequestExecutionError::SyntaxError);
     }
@@ -1477,7 +1476,7 @@ fn parse_zdiff_withscores(
 }
 
 fn parse_zset_combine_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
     num_keys: usize,
     allow_with_scores: bool,
@@ -1489,7 +1488,7 @@ fn parse_zset_combine_options(
     let mut seen_aggregate = false;
     let mut index = start_index;
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"WEIGHTS") {
             if seen_weights {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1500,7 +1499,7 @@ fn parse_zset_combine_options(
             for (weight_index, weight_arg) in
                 args[index + 1..index + 1 + num_keys].iter().enumerate()
             {
-                let parsed = parse_f64_ascii(arg_slice_bytes(&weight_arg))
+                let parsed = parse_f64_ascii(weight_arg)
                     .ok_or(RequestExecutionError::ValueNotFloat)?;
                 weights[weight_index] = parsed;
             }
@@ -1512,7 +1511,7 @@ fn parse_zset_combine_options(
             if seen_aggregate || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let aggregate_token = arg_slice_bytes(&args[index + 1]);
+            let aggregate_token = args[index + 1];
             aggregate = if ascii_eq_ignore_case(aggregate_token, b"SUM") {
                 ZsetAggregateMode::Sum
             } else if ascii_eq_ignore_case(aggregate_token, b"MIN") {
@@ -1668,10 +1667,10 @@ fn append_bzpop_response(response_out: &mut Vec<u8>, key: &[u8], entry: &(Vec<u8
 }
 
 fn parse_blocking_timeout_seconds(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     index: usize,
 ) -> Result<f64, RequestExecutionError> {
-    let timeout_token = arg_slice_bytes(&args[index]);
+    let timeout_token = args[index];
     let timeout_text =
         std::str::from_utf8(timeout_token).map_err(|_| RequestExecutionError::ValueNotFloat)?;
     let timeout = match timeout_text.parse::<f64>() {
@@ -1726,13 +1725,13 @@ fn looks_numeric_timeout_token(token: &[u8]) -> bool {
 }
 
 fn parse_zmpop_direction_and_count(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     option_start: usize,
 ) -> Result<(bool, usize), RequestExecutionError> {
     if option_start >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let direction = arg_slice_bytes(&args[option_start]);
+    let direction = args[option_start];
     let pop_max = if ascii_eq_ignore_case(direction, b"MAX") {
         true
     } else if ascii_eq_ignore_case(direction, b"MIN") {
@@ -1747,11 +1746,11 @@ fn parse_zmpop_direction_and_count(
         if option_start + 3 != args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let count_token = arg_slice_bytes(&args[option_start + 1]);
+        let count_token = args[option_start + 1];
         if !ascii_eq_ignore_case(count_token, b"COUNT") {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let parsed = parse_u64_ascii(arg_slice_bytes(&args[option_start + 2]))
+        let parsed = parse_u64_ascii(args[option_start + 2])
             .ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed == 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -1762,7 +1761,7 @@ fn parse_zmpop_direction_and_count(
 }
 
 fn parse_zrangestore_options(
-    args: &[ArgSlice],
+    args: &[&[u8]],
     start_index: usize,
 ) -> Result<ZrangeStoreOptions, RequestExecutionError> {
     let mut mode = ZrangeStoreMode::Rank;
@@ -1770,7 +1769,7 @@ fn parse_zrangestore_options(
     let mut limit = None;
     let mut index = start_index;
     while index < args.len() {
-        let token = arg_slice_bytes(&args[index]);
+        let token = args[index];
         if ascii_eq_ignore_case(token, b"BYSCORE") {
             if mode != ZrangeStoreMode::Rank {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1799,9 +1798,9 @@ fn parse_zrangestore_options(
             if limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset = parse_u64_ascii(arg_slice_bytes(&args[index + 1]))
+            let offset = parse_u64_ascii(args[index + 1])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
-            let count = parse_u64_ascii(arg_slice_bytes(&args[index + 2]))
+            let count = parse_u64_ascii(args[index + 2])
                 .ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = Some((
                 usize::try_from(offset).unwrap_or(usize::MAX),
