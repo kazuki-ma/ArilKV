@@ -10,6 +10,10 @@ RUNTEXT_BIN="${REDIS_RUNTEXT_BIN:-${REDIS_REPO_ROOT}/runtest}"
 RESULT_DIR="${RESULT_DIR:-${SCRIPT_DIR}/results/redis-runtest-external-$(date +%Y%m%d-%H%M%S)}"
 GARNET_PORT="${GARNET_PORT:-6396}"
 GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
+RUNTEXT_TIMEOUT_SECONDS="${RUNTEXT_TIMEOUT_SECONDS:-}"
+RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
+RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY_CSV="${RESULT_DIR}/summary.csv"
@@ -86,6 +90,89 @@ run_runtest_case() {
     else
         record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=NA; runtest_exit_nonzero; log=${log_file}"
     fi
+}
+
+run_full_runtest_case() {
+    local case_name="$1"
+    local log_file="${RESULT_DIR}/${case_name}.log"
+    local failed_tests_file="${RESULT_DIR}/failed-tests.txt"
+    local cmd=(
+        "${RUNTEXT_BIN}"
+        --host 127.0.0.1
+        --port "${GARNET_PORT}"
+        --singledb
+        --force-resp3
+        --dont-clean
+        --durable
+    )
+    local extra_args=()
+
+    if [[ -n "${RUNTEXT_TIMEOUT_SECONDS}" ]]; then
+        cmd+=(--timeout "${RUNTEXT_TIMEOUT_SECONDS}")
+    fi
+    if [[ -n "${RUNTEXT_CLIENTS}" ]]; then
+        cmd+=(--clients "${RUNTEXT_CLIENTS}")
+    fi
+    if [[ -n "${RUNTEXT_EXTRA_ARGS}" ]]; then
+        # shellcheck disable=SC2206
+        extra_args=(${RUNTEXT_EXTRA_ARGS})
+        cmd+=("${extra_args[@]}")
+    fi
+
+    local exit_code=0
+    if (
+        cd "${REDIS_REPO_ROOT}"
+        "${cmd[@]}"
+    ) >"${log_file}" 2>&1; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+
+    local parsed_counts
+    parsed_counts="$(
+        awk '
+        BEGIN { esc = sprintf("%c", 27); ok = 0; err = 0; ignore = 0 }
+        {
+            line = $0
+            gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
+            gsub(/\r/, "", line)
+            if (line ~ /^\[ok\]:/) {
+                ok++
+            } else if (line ~ /^\[err\]:/) {
+                err++
+            } else if (line ~ /^\[ignore\]:/) {
+                ignore++
+            }
+        }
+        END { printf("%d,%d,%d\n", ok + 0, err + 0, ignore + 0) }
+        ' "${log_file}"
+    )"
+
+    local ok_count err_count ignore_count
+    IFS=',' read -r ok_count err_count ignore_count <<<"${parsed_counts}"
+
+    awk '
+    BEGIN { esc = sprintf("%c", 27) }
+    {
+        line = $0
+        gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
+        gsub(/\r/, "", line)
+        if (line ~ /^\[err\]:/) {
+            sub(/^\[err\]:[[:space:]]*/, "", line)
+            print line
+        }
+    }
+    ' "${log_file}" > "${failed_tests_file}"
+
+    local status="FAIL"
+    if [[ "${exit_code}" -eq 0 && "${err_count}" -eq 0 ]]; then
+        status="PASS"
+    fi
+
+    local details
+    details="mode=full; exit_code=${exit_code}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; log=${log_file}; failed_tests=${failed_tests_file}"
+    record_result "${case_name}" "${status}" "${details}"
 }
 
 run_cli_probe_case() {
@@ -179,33 +266,44 @@ if ! wait_for_ping "${GARNET_PORT}"; then
     exit 1
 fi
 
-run_runtest_case \
-    "redis_runtest_string_mget_mset" \
-    "unit/type/string" \
-    "SET and GET an item" \
-    "MGET" \
-    "MGET against non existing key" \
-    "MGET against non-string key" \
-    "MSET base case" \
-    "MSET with already existing - same key twice"
+case "${REDIS_RUNTEXT_MODE}" in
+    full)
+        run_full_runtest_case "redis_runtest_full_external"
+        ;;
+    subset)
+        run_runtest_case \
+            "redis_runtest_string_mget_mset" \
+            "unit/type/string" \
+            "SET and GET an item" \
+            "MGET" \
+            "MGET against non existing key" \
+            "MGET against non-string key" \
+            "MSET base case" \
+            "MSET with already existing - same key twice"
 
-run_runtest_case \
-    "redis_runtest_incrby_decrby" \
-    "unit/type/incr" \
-    "INCRBY over 32bit value with over 32bit increment" \
-    "DECRBY negation overflow" \
-    "DECRBY over 32bit value with over 32bit increment, negative res" \
-    "DECRBY against key is not exist"
+        run_runtest_case \
+            "redis_runtest_incrby_decrby" \
+            "unit/type/incr" \
+            "INCRBY over 32bit value with over 32bit increment" \
+            "DECRBY negation overflow" \
+            "DECRBY over 32bit value with over 32bit increment, negative res" \
+            "DECRBY against key is not exist"
 
-run_runtest_case \
-    "redis_runtest_keyspace_exists" \
-    "unit/keyspace" \
-    "EXISTS" \
-    "Zero length value in key. SET/GET/EXISTS"
+        run_runtest_case \
+            "redis_runtest_keyspace_exists" \
+            "unit/keyspace" \
+            "EXISTS" \
+            "Zero length value in key. SET/GET/EXISTS"
+        ;;
+    *)
+        echo "invalid REDIS_RUNTEXT_MODE: ${REDIS_RUNTEXT_MODE} (expected: full|subset)" >&2
+        exit 1
+        ;;
+esac
 
 run_cli_probe_case "redis_cli_type_probe"
 run_cli_scripting_probe_case "redis_cli_scripting_probe"
 
-echo "redis runtest external subset summary"
+echo "redis runtest external summary (mode=${REDIS_RUNTEXT_MODE})"
 cat "${SUMMARY_CSV}"
 echo "result_dir=${RESULT_DIR}"

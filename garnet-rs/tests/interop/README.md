@@ -36,10 +36,12 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
 - `redis_runtest_external_subset.sh`
   - Runs Redis official `runtest` in external-server mode against local Garnet:
     - `--host/--port --singledb --force-resp3`
-    - targeted subset for current implemented commands (`MGET/MSET/INCRBY/DECRBY/EXISTS`)
-  - Validates per-case executed test counts from runtest stdout:
-    - records `expected_ok` (selected tests) and `actual_ok` (parsed `[ok]` lines)
-    - marks a case `FAIL` when counts mismatch even if runtest exits `0`
+    - default mode is **full** (no `--single` / `--only` / `--tags` filters)
+    - optional compatibility-smoke mode: `REDIS_RUNTEXT_MODE=subset`
+  - Validates runtest stdout counts in all modes:
+    - parses `[ok]` / `[err]` / `[ignore]` counts from log
+    - extracts failed tests to `failed-tests.txt` when present
+    - marks run `FAIL` if exit is non-zero or parsed error count is non-zero
   - Includes a direct `redis-cli TYPE` probe (`string/hash/none`) in the same run.
   - Writes a CSV summary and per-case logs under
     `garnet-rs/tests/interop/results/...`.
@@ -68,7 +70,7 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
   - Full auto-generated compatibility report workflow:
     1. runs `build_command_status_matrix.sh`
     2. runs `build_command_maturity_matrix.sh`
-    3. runs `redis_runtest_external_subset.sh`
+    3. runs `redis_runtest_external_subset.sh` (default `full` probe mode)
     4. merges all outputs into a single report
   - Writes:
     - `docs/compatibility/compatibility-report.md`
@@ -91,6 +93,9 @@ chmod +x build_compatibility_report.sh
 ./build_command_status_matrix.sh
 ./build_command_maturity_matrix.sh
 ./build_compatibility_report.sh
+
+# optional: quick smoke mode (instead of default full probe)
+COMPAT_PROBE_MODE=subset ./build_compatibility_report.sh
 ```
 
 ## Required Flow For Command Edits
@@ -103,6 +108,12 @@ cargo test -p garnet-server -- --nocapture
 
 cd tests/interop
 REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis \
+./build_compatibility_report.sh
+
+# recommended for cleaner full-baseline compatibility signal
+REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis \
+GARNET_SCRIPTING_ENABLED=1 \
+GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=4096 \
 ./build_compatibility_report.sh
 ```
 
@@ -124,6 +135,7 @@ Recommended add-on checks:
 ## Patterns To Re-check
 
 - `redis_runtest_external_subset.sh` is a focused subset, not full Redis compatibility.
+  - default mode is full external runtest; subset mode is optional for faster smoke checks.
   - keep feature-level unit tests in `garnet-server` as the primary correctness gate.
 - `build_command_status_matrix.sh` updates canonical status files under `docs/compatibility/`.
   - run it whenever `CommandId`/`COMMAND` surface changes.
@@ -131,7 +143,7 @@ Recommended add-on checks:
   - if a command is intentionally minimal/disabled, encode it in
     `docs/compatibility/command-implementation-status.yaml`.
 - `build_compatibility_report.sh` is the canonical report generator.
-  - it merges declaration status, maturity comments, and external subset probe results.
+  - it merges declaration status, maturity comments, and external probe results.
 - Always verify test count lines in command output, not only exit code.
   - the expected test-case counts are part of regression safety.
 

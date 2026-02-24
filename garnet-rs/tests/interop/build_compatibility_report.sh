@@ -8,14 +8,15 @@ COMPAT_DIR="${WORKSPACE_ROOT}/docs/compatibility"
 STATUS_SCRIPT="${SCRIPT_DIR}/build_command_status_matrix.sh"
 MATURITY_SCRIPT="${SCRIPT_DIR}/build_command_maturity_matrix.sh"
 SUBSET_SCRIPT="${SCRIPT_DIR}/redis_runtest_external_subset.sh"
+COMPAT_PROBE_MODE="${COMPAT_PROBE_MODE:-full}"
 
 STATUS_CSV="${STATUS_CSV:-${COMPAT_DIR}/redis-command-status.csv}"
 MATURITY_CSV="${MATURITY_CSV:-${COMPAT_DIR}/redis-command-maturity.csv}"
 REPORT_MD="${REPORT_MD:-${COMPAT_DIR}/compatibility-report.md}"
 
 RESULT_ROOT="${RESULT_ROOT:-${SCRIPT_DIR}/results/compatibility-report-$(date +%Y%m%d-%H%M%S)}"
-SUBSET_RESULT_DIR="${SUBSET_RESULT_DIR:-${RESULT_ROOT}/redis-runtest-external-subset}"
-SUBSET_SUMMARY_CSV="${SUBSET_RESULT_DIR}/summary.csv"
+PROBE_RESULT_DIR="${PROBE_RESULT_DIR:-${RESULT_ROOT}/redis-runtest-external-${COMPAT_PROBE_MODE}}"
+PROBE_SUMMARY_CSV="${PROBE_RESULT_DIR}/summary.csv"
 
 if [[ ! -x "${STATUS_SCRIPT}" ]]; then
     echo "missing executable: ${STATUS_SCRIPT}" >&2
@@ -30,6 +31,17 @@ if [[ ! -x "${SUBSET_SCRIPT}" ]]; then
     exit 1
 fi
 
+case "${COMPAT_PROBE_MODE}" in
+    full)
+        ;;
+    subset)
+        ;;
+    *)
+        echo "invalid COMPAT_PROBE_MODE: ${COMPAT_PROBE_MODE} (expected: subset|full)" >&2
+        exit 1
+        ;;
+esac
+
 mkdir -p "${RESULT_ROOT}"
 
 echo "[1/4] building declared command status matrix..."
@@ -38,8 +50,8 @@ echo "[1/4] building declared command status matrix..."
 echo "[2/4] building command maturity matrix from yaml..."
 "${MATURITY_SCRIPT}"
 
-echo "[3/4] running redis runtest external subset..."
-RESULT_DIR="${SUBSET_RESULT_DIR}" "${SUBSET_SCRIPT}"
+echo "[3/4] running redis runtest external probe (mode=${COMPAT_PROBE_MODE})..."
+RESULT_DIR="${PROBE_RESULT_DIR}" REDIS_RUNTEXT_MODE="${COMPAT_PROBE_MODE}" "${SUBSET_SCRIPT}"
 
 if [[ ! -f "${STATUS_CSV}" ]]; then
     echo "status csv not found: ${STATUS_CSV}" >&2
@@ -49,8 +61,8 @@ if [[ ! -f "${MATURITY_CSV}" ]]; then
     echo "maturity csv not found: ${MATURITY_CSV}" >&2
     exit 1
 fi
-if [[ ! -f "${SUBSET_SUMMARY_CSV}" ]]; then
-    echo "subset summary csv not found: ${SUBSET_SUMMARY_CSV}" >&2
+if [[ ! -f "${PROBE_SUMMARY_CSV}" ]]; then
+    echo "probe summary csv not found: ${PROBE_SUMMARY_CSV}" >&2
     exit 1
 fi
 
@@ -65,9 +77,14 @@ partial_total="$(awk -F, 'NR>1 && $2=="SUPPORTED_DECLARED" && $5=="PARTIAL_MINIM
 disabled_total="$(awk -F, 'NR>1 && $2=="SUPPORTED_DECLARED" && $5=="DISABLED" {c++} END {print c+0}' "${MATURITY_CSV}")"
 full_ratio="$(awk -v full="${full_total}" -v total="${supported_declared}" 'BEGIN { if (total==0) print "0.00"; else printf "%.2f", (full*100.0)/total }')"
 
-subset_pass="$(awk -F, 'NR>1 && $2=="PASS" {c++} END {print c+0}' "${SUBSET_SUMMARY_CSV}")"
-subset_fail="$(awk -F, 'NR>1 && $2=="FAIL" {c++} END {print c+0}' "${SUBSET_SUMMARY_CSV}")"
-subset_total="$(awk -F, 'NR>1 {c++} END {print c+0}' "${SUBSET_SUMMARY_CSV}")"
+probe_pass="$(awk -F, 'NR>1 && $2=="PASS" {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
+probe_fail="$(awk -F, 'NR>1 && $2=="FAIL" {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
+probe_total="$(awk -F, 'NR>1 {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
+FAILED_TESTS_FILE="${PROBE_RESULT_DIR}/failed-tests.txt"
+FAILED_TESTS_COUNT=0
+if [[ -f "${FAILED_TESTS_FILE}" ]]; then
+    FAILED_TESTS_COUNT="$(awk 'END {print NR+0}' "${FAILED_TESTS_FILE}")"
+fi
 
 echo "[4/4] generating compatibility report..."
 {
@@ -80,7 +97,8 @@ echo "[4/4] generating compatibility report..."
     echo "- Command declaration source: \`docs/compatibility/redis-command-status.csv\`"
     echo "- Maturity source: \`docs/compatibility/command-implementation-status.yaml\` -> \`docs/compatibility/redis-command-maturity.csv\`"
     echo "- External behavioral probe: \`garnet-rs/tests/interop/redis_runtest_external_subset.sh\`"
-    echo "- External probe artifacts: \`${SUBSET_RESULT_DIR}\`"
+    echo "- External probe mode: \`${COMPAT_PROBE_MODE}\`"
+    echo "- External probe artifacts: \`${PROBE_RESULT_DIR}\`"
     echo
     echo "## Declaration Coverage Snapshot"
     echo
@@ -97,15 +115,41 @@ echo "[4/4] generating compatibility report..."
     echo "- \`DISABLED\`: \`${disabled_total}\`"
     echo "- Full ratio over declared commands: \`${full_ratio}%\`"
     echo
-    echo "## External Subset Probe Snapshot"
+    echo "## External Probe Snapshot"
     echo
-    echo "- Cases: \`${subset_total}\`"
-    echo "- PASS: \`${subset_pass}\`"
-    echo "- FAIL: \`${subset_fail}\`"
+    echo "- Cases: \`${probe_total}\`"
+    echo "- PASS: \`${probe_pass}\`"
+    echo "- FAIL: \`${probe_fail}\`"
     echo
     echo "| Case | Status | Details |"
     echo "|---|---|---|"
-    awk -F, 'NR>1 {printf("| `%s` | `%s` | %s |\n", $1, $2, $3)}' "${SUBSET_SUMMARY_CSV}"
+    awk -F, 'NR>1 {printf("| `%s` | `%s` | %s |\n", $1, $2, $3)}' "${PROBE_SUMMARY_CSV}"
+
+    if [[ -f "${FAILED_TESTS_FILE}" ]]; then
+        echo
+        echo "## External Probe Failed Tests"
+        echo
+        echo "- Failed tests extracted from runtest log: \`${FAILED_TESTS_COUNT}\`"
+        echo "- File: \`${FAILED_TESTS_FILE}\`"
+        if [[ "${FAILED_TESTS_COUNT}" -gt 0 ]]; then
+            echo
+            echo "| # | Test |"
+            echo "|---|---|"
+            awk '
+            NR <= 80 {
+                line = $0
+                gsub(/\|/, "\\|", line)
+                printf("| %d | `%s` |\n", NR, line)
+            }
+            END {
+                if (NR > 80) {
+                    printf("| ... | `%d more entries` |\n", NR - 80)
+                }
+            }
+            ' "${FAILED_TESTS_FILE}"
+        fi
+    fi
+
     echo
     echo "## Non-Full Commands (Declared Surface With Known Gaps)"
     echo
@@ -120,4 +164,4 @@ echo "[4/4] generating compatibility report..."
 } > "${REPORT_MD}"
 
 echo "wrote ${REPORT_MD}"
-echo "subset_result_dir=${SUBSET_RESULT_DIR}"
+echo "probe_result_dir=${PROBE_RESULT_DIR}"
