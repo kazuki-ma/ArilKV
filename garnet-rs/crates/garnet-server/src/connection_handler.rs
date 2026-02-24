@@ -12,8 +12,8 @@ use tokio::time::sleep;
 
 use crate::command_dispatch::dispatch_from_arg_slices;
 use crate::command_spec::{
-    command_has_valid_arity, command_is_mutating, command_transaction_control, CommandId,
-    TransactionControlCommand,
+    command_has_valid_arity, command_is_effectively_mutating, command_transaction_control,
+    CommandId, TransactionControlCommand,
 };
 use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
 use crate::connection_protocol::{
@@ -219,6 +219,14 @@ pub(crate) async fn handle_connection(
             }
 
             let transaction_control = command_transaction_control(command);
+            let command_mutating = command_is_effectively_mutating(
+                command,
+                if argument_count > 1 {
+                    Some(arg_slice_bytes(&args[1]))
+                } else {
+                    None
+                },
+            );
             if transaction_control == TransactionControlCommand::Asking {
                 if !command_has_valid_arity(command, argument_count) {
                     append_wrong_arity_error_for_command(&mut responses, command);
@@ -292,7 +300,7 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     _ => {
-                        if replication.is_replica_mode() && command_is_mutating(command) {
+                        if replication.is_replica_mode() && command_mutating {
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
@@ -354,7 +362,7 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     _ => {
-                        if replication.is_replica_mode() && command_is_mutating(command) {
+                        if replication.is_replica_mode() && command_mutating {
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
@@ -367,7 +375,7 @@ pub(crate) async fn handle_connection(
                         }
                         let mut replication_frame: Option<Vec<u8>> = None;
                         let mut wait_for_blocking_progress = false;
-                        let blocked_before = if command_is_mutating(command) {
+                        let blocked_before = if command_mutating {
                             processor.blocked_clients()
                         } else {
                             0
@@ -378,6 +386,7 @@ pub(crate) async fn handle_connection(
                             &owner_thread_pool,
                             &args[..argument_count],
                             command,
+                            command_mutating,
                             frame,
                             client_id,
                             &mut stream,
@@ -489,6 +498,7 @@ async fn execute_blocking_frame_on_owner_thread(
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     args: &[ArgSlice],
     command: CommandId,
+    command_mutating: bool,
     frame: &[u8],
     client_id: u64,
     stream: &mut TcpStream,
@@ -572,11 +582,10 @@ async fn execute_blocking_frame_on_owner_thread(
                 }
             };
 
-        let mutating_command = command_is_mutating(command);
         let should_replicate = if is_blocking_command(command) {
-            mutating_command && !is_blocking_empty_response(&frame_response)
+            command_mutating && !is_blocking_empty_response(&frame_response)
         } else {
-            mutating_command
+            command_mutating
         };
         if !is_blocking_command(command) || !is_blocking_empty_response(&frame_response) {
             if blocked {

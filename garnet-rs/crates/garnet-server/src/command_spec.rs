@@ -2740,6 +2740,29 @@ pub fn command_is_mutating(command: CommandId) -> bool {
     spec_for(command).is_mutating
 }
 
+pub fn command_is_effectively_mutating(command: CommandId, subcommand: Option<&[u8]>) -> bool {
+    if !command_is_mutating(command) {
+        return false;
+    }
+
+    match command {
+        CommandId::Script => {
+            subcommand_matches(subcommand, b"LOAD") || subcommand_matches(subcommand, b"FLUSH")
+        }
+        CommandId::Function => {
+            subcommand_matches(subcommand, b"LOAD")
+                || subcommand_matches(subcommand, b"RESTORE")
+                || subcommand_matches(subcommand, b"FLUSH")
+                || subcommand_matches(subcommand, b"DELETE")
+        }
+        _ => true,
+    }
+}
+
+fn subcommand_matches(subcommand: Option<&[u8]>, expected_upper: &[u8]) -> bool {
+    subcommand.is_some_and(|value| ascii_eq_ignore_case(value, expected_upper))
+}
+
 pub fn command_names_for_command_response() -> &'static [&'static [u8]] {
     COMMAND_RESPONSE_NAMES
         .get_or_init(|| {
@@ -2769,6 +2792,45 @@ mod tests {
         assert!(names.contains(&&b"REPLCONF"[..]));
         assert!(names.contains(&&b"PSYNC"[..]));
         assert!(names.contains(&&b"SYNC"[..]));
+    }
+
+    #[test]
+    fn command_effective_mutation_for_script_and_function_is_subcommand_aware() {
+        assert!(command_is_effectively_mutating(
+            CommandId::Script,
+            Some(b"LOAD")
+        ));
+        assert!(command_is_effectively_mutating(
+            CommandId::Script,
+            Some(b"FLUSH")
+        ));
+        assert!(!command_is_effectively_mutating(
+            CommandId::Script,
+            Some(b"EXISTS")
+        ));
+        assert!(!command_is_effectively_mutating(
+            CommandId::Script,
+            Some(b"HELP")
+        ));
+
+        assert!(command_is_effectively_mutating(
+            CommandId::Function,
+            Some(b"LOAD")
+        ));
+        assert!(command_is_effectively_mutating(
+            CommandId::Function,
+            Some(b"RESTORE")
+        ));
+        assert!(!command_is_effectively_mutating(
+            CommandId::Function,
+            Some(b"LIST")
+        ));
+        assert!(!command_is_effectively_mutating(
+            CommandId::Function,
+            Some(b"DUMP")
+        ));
+
+        assert!(command_is_effectively_mutating(CommandId::Set, None));
     }
 
     #[test]

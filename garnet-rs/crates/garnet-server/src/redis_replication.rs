@@ -2,7 +2,7 @@
 
 mod protocol;
 
-use crate::command_spec::command_is_mutating;
+use crate::command_spec::command_is_effectively_mutating;
 use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
 use crate::redis_replication::protocol::{
     decode_hex_bytes, discard_bulk_payload, generate_repl_id, parse_bulk_length, read_line,
@@ -383,7 +383,15 @@ async fn process_upstream_frame(
 
     // SAFETY: arg slices reference data owned by the live upstream receive buffer.
     let command_id = unsafe { dispatch_from_arg_slices(args) };
-    if !command_is_mutating(command_id) {
+    let command_mutating = command_is_effectively_mutating(
+        command_id,
+        if args.len() > 1 {
+            Some(arg_slice_bytes(&args[1]))
+        } else {
+            None
+        },
+    );
+    if !command_mutating {
         return Ok(());
     }
     match execute_frame_on_owner_thread(

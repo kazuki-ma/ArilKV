@@ -1410,6 +1410,18 @@ async fn replicaof_replication_propagates_function_load_and_fcall() {
     let master_port = master_addr.port().to_string();
     let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
     send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"SCRIPT", b"EXISTS", b"deadbeef"]),
+        b"*1\r\n:0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"FUNCTION", b"LIST"]),
+        b"*0\r\n",
+    )
+    .await;
 
     let library_source = b"#!lua name=lib_repl\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}\nredis.register_function{function_name='ro_get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}}";
     let mut function_replicated = false;
