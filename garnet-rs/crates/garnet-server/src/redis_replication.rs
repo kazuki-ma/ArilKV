@@ -140,6 +140,10 @@ impl RedisReplicationCoordinator {
         let _ = self.inner.downstream_tx.send(Arc::from(frame.to_vec()));
     }
 
+    pub(crate) fn subscribe_downstream(&self) -> broadcast::Receiver<Arc<[u8]>> {
+        self.inner.downstream_tx.subscribe()
+    }
+
     pub(crate) fn build_fullresync_payload(&self) -> Vec<u8> {
         let repl_offset = self.inner.master_repl_offset.load(Ordering::Relaxed);
         let mut response = Vec::with_capacity(256 + self.inner.empty_rdb_payload.len());
@@ -158,8 +162,17 @@ impl RedisReplicationCoordinator {
         response
     }
 
-    pub(crate) async fn serve_downstream_replica(&self, mut stream: TcpStream) -> io::Result<()> {
-        let mut subscriber = self.inner.downstream_tx.subscribe();
+    pub(crate) async fn serve_downstream_replica(&self, stream: TcpStream) -> io::Result<()> {
+        let subscriber = self.subscribe_downstream();
+        self.serve_downstream_replica_with_subscriber(stream, subscriber)
+            .await
+    }
+
+    pub(crate) async fn serve_downstream_replica_with_subscriber(
+        &self,
+        mut stream: TcpStream,
+        mut subscriber: broadcast::Receiver<Arc<[u8]>>,
+    ) -> io::Result<()> {
         let mut inbound_buf = [0u8; 1024];
         write_resp_command(&mut stream, &[b"SELECT", b"0"]).await?;
 

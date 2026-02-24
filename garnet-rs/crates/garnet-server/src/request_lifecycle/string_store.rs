@@ -296,6 +296,7 @@ impl RequestProcessor {
         self.untrack_string_key_in_shard(key, shard_index);
         if key_removed {
             self.record_lazy_expired_keys(1);
+            self.enqueue_lazy_expired_key_for_replication(key);
         }
         Ok(())
     }

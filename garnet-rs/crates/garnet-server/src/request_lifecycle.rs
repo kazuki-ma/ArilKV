@@ -228,6 +228,7 @@ pub struct RequestProcessor {
     blocked_clients: AtomicU64,
     watching_clients: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    lazy_expired_keys_for_replication: Mutex<Vec<Vec<u8>>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
     script_cache_insertion_order: Mutex<VecDeque<String>>,
     script_cache_hits: AtomicU64,
@@ -376,6 +377,7 @@ impl RequestProcessor {
             blocked_clients: AtomicU64::new(0),
             watching_clients: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
+            lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
             script_cache_insertion_order: Mutex::new(VecDeque::new()),
             script_cache_hits: AtomicU64::new(0),
@@ -430,6 +432,19 @@ impl RequestProcessor {
         if let Ok(mut calls) = self.command_calls.lock() {
             *calls.entry(normalized).or_insert(0) += 1;
         }
+    }
+
+    pub(crate) fn enqueue_lazy_expired_key_for_replication(&self, key: &[u8]) {
+        if let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() {
+            pending.push(key.to_vec());
+        }
+    }
+
+    pub(crate) fn take_lazy_expired_keys_for_replication(&self) -> Vec<Vec<u8>> {
+        let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut *pending)
     }
 
     pub(crate) fn reset_commandstats(&self) {

@@ -4149,6 +4149,23 @@ fn dbsize_does_not_lazy_expire_until_key_access() {
 }
 
 #[test]
+fn lazy_expire_tracks_replication_delete_keys_on_read_access() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n");
+    assert_command_response(&processor, "PSETEX lazy:key 1 value", b"+OK\r\n");
+    thread::sleep(Duration::from_millis(10));
+
+    assert_command_response(&processor, "GET lazy:key", b"$-1\r\n");
+    let queued = processor.take_lazy_expired_keys_for_replication();
+    assert_eq!(queued, vec![b"lazy:key".to_vec()]);
+    assert!(
+        processor
+            .take_lazy_expired_keys_for_replication()
+            .is_empty()
+    );
+}
+
+#[test]
 fn flushdb_clears_string_and_object_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

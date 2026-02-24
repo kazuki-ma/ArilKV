@@ -113,6 +113,7 @@ pub(crate) async fn handle_connection(
         let mut consumed = 0usize;
         responses.clear();
         let mut switch_to_replica_stream = false;
+        let mut replica_subscriber = None;
 
         loop {
             let mut inline_frame = Vec::new();
@@ -240,6 +241,7 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"PSYNC") {
+                replica_subscriber = Some(replication.subscribe_downstream());
                 responses.extend_from_slice(&replication.build_fullresync_payload());
                 consumed += frame_bytes_consumed;
                 switch_to_replica_stream = true;
@@ -247,6 +249,7 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"SYNC") {
+                replica_subscriber = Some(replication.subscribe_downstream());
                 responses.extend_from_slice(&replication.build_sync_payload());
                 consumed += frame_bytes_consumed;
                 switch_to_replica_stream = true;
@@ -453,6 +456,14 @@ pub(crate) async fn handle_connection(
                                     .extend_from_slice(b"-ERR owner routing execution failed\r\n");
                             }
                         }
+                        let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
+                        if !command_mutating {
+                            for key in lazy_expired_keys {
+                                let del_frame = encode_resp_frame(&[b"DEL".to_vec(), key]);
+                                processor.record_rdb_change(1);
+                                replication.publish_write_frame(&del_frame);
+                            }
+                        }
                         if let Some(frame_to_replicate) = replication_frame.as_ref() {
                             processor.record_rdb_change(1);
                             replication.publish_write_frame(frame_to_replicate);
@@ -478,6 +489,11 @@ pub(crate) async fn handle_connection(
             }
             if !responses.is_empty() {
                 stream.write_all(&responses).await?;
+            }
+            if let Some(subscriber) = replica_subscriber {
+                return replication
+                    .serve_downstream_replica_with_subscriber(stream, subscriber)
+                    .await;
             }
             return replication.serve_downstream_replica(stream).await;
         }
