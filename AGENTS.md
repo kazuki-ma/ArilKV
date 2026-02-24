@@ -12,6 +12,19 @@ This file defines default collaboration and execution rules for repository work,
 - Latest actor/locking guidance notes: `docs/performance/actor-lock-minimization-notes-2026-02-21.md`
 - TLA+ local workflow quickstart: `formal/tla/README.md`
 
+## Rust Toolchain And Make Workflow
+
+- Use `make` targets from repo root as the default entrypoint for `garnet-rs`.
+- Build/test runs use the stable release pinned in `rust-toolchain.toml`.
+- Formatting uses pinned nightly rustfmt through `Makefile` (`RUSTFMT_NIGHTLY`).
+- Avoid ad-hoc direct `cargo +toolchain ...` commands in normal workflow; prefer:
+  - `make fmt`
+  - `make fmt-check`
+  - `make check`
+  - `make test`
+  - `make test-server`
+  - `make clippy`
+
 ## Non-Negotiable Workflow
 
 1. Update `TODO_AND_STATUS.md` every iteration.
@@ -25,7 +38,7 @@ This file defines default collaboration and execution rules for repository work,
 ## Required Validation (Default)
 
 - Core test gate:
-  - `cd garnet-rs && cargo test -p garnet-server`
+  - `make test-server`
   - Verify displayed test-case counts and pass/fail summary.
 - If command-path or concurrency code changed:
   - Run hot-path benchmark comparison with identical parameters before/after.
@@ -38,7 +51,7 @@ This file defines default collaboration and execution rules for repository work,
 When command behavior or command declarations change (`request_lifecycle`,
 `command_spec`, `command_dispatch`), run this sequence:
 
-1. `cd garnet-rs && cargo test -p garnet-server -- --nocapture`
+1. `make test-server` (or `cd garnet-rs && cargo test -p garnet-server -- --nocapture` when stdout detail is required)
 2. `cd garnet-rs/tests/interop && REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis ./build_compatibility_report.sh`
 
 Commit the generated compatibility matrix files when status changes:
