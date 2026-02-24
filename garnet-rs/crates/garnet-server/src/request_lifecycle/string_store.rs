@@ -139,7 +139,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(super) fn key_exists_any(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+    pub(crate) fn key_exists_any(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         if self.key_exists(key)? {
             return Ok(true);
         }
@@ -205,7 +205,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(super) fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
+    pub(crate) fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
         let shard_index = self.string_store_shard_index_for_key(key);
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return None;

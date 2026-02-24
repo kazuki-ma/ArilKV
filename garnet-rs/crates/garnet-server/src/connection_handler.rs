@@ -1069,6 +1069,34 @@ fn replication_frame_for_command(
         return Some(encode_resp_frame(&parts));
     }
 
+    if matches!(
+        command,
+        CommandId::Set | CommandId::Setex | CommandId::Psetex
+    ) {
+        return rewrite_set_family_replication_frame(
+            processor,
+            command,
+            args,
+            frame_response,
+            original_frame,
+        );
+    }
+
+    if matches!(
+        command,
+        CommandId::Expire | CommandId::Pexpire | CommandId::Expireat | CommandId::Pexpireat
+    ) {
+        return rewrite_expire_family_replication_frame(processor, args, frame_response);
+    }
+
+    if command == CommandId::Getex {
+        return rewrite_getex_replication_frame(processor, args, frame_response, original_frame);
+    }
+
+    if matches!(command, CommandId::Restore | CommandId::RestoreAsking) {
+        return rewrite_restore_replication_frame(processor, args, frame_response, original_frame);
+    }
+
     if command == CommandId::Blmove {
         if frame_response == b"$-1\r\n" {
             return None;
@@ -1104,6 +1132,218 @@ fn replication_frame_for_command(
         return Some(encode_resp_frame(&[pop_command.to_vec(), key, count]));
     }
     Some(original_frame.to_vec())
+}
+
+fn rewrite_set_family_replication_frame(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    if frame_response != b"+OK\r\n" {
+        return Some(original_frame.to_vec());
+    }
+
+    let (key, value, pxat_token) = match command {
+        CommandId::Set => {
+            let Some(key) = args.get(1) else {
+                return Some(original_frame.to_vec());
+            };
+            let Some(value) = args.get(2) else {
+                return Some(original_frame.to_vec());
+            };
+            let mut pxat_token: Option<Vec<u8>> = None;
+            let mut has_expire_option = false;
+            let mut index = 3usize;
+            while index < args.len() {
+                // SAFETY: arguments are borrowed from the current frame.
+                let token = arg_slice_bytes(&args[index]);
+                if ascii_eq_ignore_case(token, b"EX")
+                    || ascii_eq_ignore_case(token, b"PX")
+                    || ascii_eq_ignore_case(token, b"EXAT")
+                {
+                    has_expire_option = true;
+                    break;
+                }
+                if ascii_eq_ignore_case(token, b"PXAT") {
+                    has_expire_option = true;
+                    pxat_token = Some(token.to_vec());
+                    break;
+                }
+                index += 1;
+            }
+            if !has_expire_option {
+                return Some(original_frame.to_vec());
+            }
+            (arg_slice_bytes(key), arg_slice_bytes(value), pxat_token)
+        }
+        CommandId::Setex => {
+            let Some(key) = args.get(1) else {
+                return Some(original_frame.to_vec());
+            };
+            let Some(value) = args.get(3) else {
+                return Some(original_frame.to_vec());
+            };
+            (arg_slice_bytes(key), arg_slice_bytes(value), None)
+        }
+        CommandId::Psetex => {
+            let Some(key) = args.get(1) else {
+                return Some(original_frame.to_vec());
+            };
+            let Some(value) = args.get(3) else {
+                return Some(original_frame.to_vec());
+            };
+            (arg_slice_bytes(key), arg_slice_bytes(value), None)
+        }
+        _ => return Some(original_frame.to_vec()),
+    };
+
+    if let Some(expiration_unix_millis) = processor.expiration_unix_millis_for_key(key) {
+        let mut pxat = pxat_token.unwrap_or_else(|| b"PXAT".to_vec());
+        if pxat.is_empty() {
+            pxat = b"PXAT".to_vec();
+        }
+        return Some(encode_resp_frame(&[
+            b"SET".to_vec(),
+            key.to_vec(),
+            value.to_vec(),
+            pxat,
+            expiration_unix_millis.to_string().into_bytes(),
+        ]));
+    }
+
+    match processor.key_exists_any(key) {
+        Ok(true) => Some(original_frame.to_vec()),
+        Ok(false) => Some(encode_resp_frame(&[b"DEL".to_vec(), key.to_vec()])),
+        Err(_) => Some(original_frame.to_vec()),
+    }
+}
+
+fn rewrite_expire_family_replication_frame(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+) -> Option<Vec<u8>> {
+    if parse_resp_integer(frame_response) != Some(1) {
+        return None;
+    }
+    let key = args.get(1).map(arg_slice_bytes)?;
+
+    match processor.key_exists_any(key) {
+        Ok(false) => Some(encode_resp_frame(&[b"DEL".to_vec(), key.to_vec()])),
+        Ok(true) => processor
+            .expiration_unix_millis_for_key(key)
+            .map(|expiration_unix_millis| {
+                encode_resp_frame(&[
+                    b"PEXPIREAT".to_vec(),
+                    key.to_vec(),
+                    expiration_unix_millis.to_string().into_bytes(),
+                ])
+            }),
+        Err(_) => None,
+    }
+}
+
+fn rewrite_getex_replication_frame(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    if frame_response == b"$-1\r\n" {
+        return None;
+    }
+    let key = match args.get(1) {
+        Some(key) => arg_slice_bytes(key),
+        None => return Some(original_frame.to_vec()),
+    };
+
+    let Some(option) = args.get(2).map(arg_slice_bytes) else {
+        return None;
+    };
+
+    if ascii_eq_ignore_case(option, b"PERSIST") {
+        return Some(encode_resp_frame(&[b"PERSIST".to_vec(), key.to_vec()]));
+    }
+
+    if ascii_eq_ignore_case(option, b"EX")
+        || ascii_eq_ignore_case(option, b"PX")
+        || ascii_eq_ignore_case(option, b"EXAT")
+        || ascii_eq_ignore_case(option, b"PXAT")
+    {
+        return match processor.key_exists_any(key) {
+            Ok(false) => Some(encode_resp_frame(&[b"DEL".to_vec(), key.to_vec()])),
+            Ok(true) => {
+                processor
+                    .expiration_unix_millis_for_key(key)
+                    .map(|expiration_unix_millis| {
+                        encode_resp_frame(&[
+                            b"PEXPIREAT".to_vec(),
+                            key.to_vec(),
+                            expiration_unix_millis.to_string().into_bytes(),
+                        ])
+                    })
+            }
+            Err(_) => Some(original_frame.to_vec()),
+        };
+    }
+
+    Some(original_frame.to_vec())
+}
+
+fn rewrite_restore_replication_frame(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    if frame_response != b"+OK\r\n" {
+        return Some(original_frame.to_vec());
+    }
+    let Some(key_arg) = args.get(1) else {
+        return Some(original_frame.to_vec());
+    };
+    let Some(payload_arg) = args.get(3) else {
+        return Some(original_frame.to_vec());
+    };
+    let key = arg_slice_bytes(key_arg);
+    let payload = arg_slice_bytes(payload_arg);
+
+    let Some(expiration_unix_millis) = processor.expiration_unix_millis_for_key(key) else {
+        return Some(original_frame.to_vec());
+    };
+
+    let mut option_parts = Vec::new();
+    let mut absttl_present = false;
+    for option in &args[4..] {
+        let token = arg_slice_bytes(option).to_vec();
+        if ascii_eq_ignore_case(&token, b"ABSTTL") {
+            absttl_present = true;
+        }
+        option_parts.push(token);
+    }
+    if !absttl_present {
+        option_parts.push(b"ABSTTL".to_vec());
+    }
+
+    let mut parts = vec![
+        b"RESTORE".to_vec(),
+        key.to_vec(),
+        expiration_unix_millis.to_string().into_bytes(),
+        payload.to_vec(),
+    ];
+    parts.extend(option_parts);
+    Some(encode_resp_frame(&parts))
+}
+
+fn parse_resp_integer(frame: &[u8]) -> Option<i64> {
+    if frame.first().copied()? != b':' {
+        return None;
+    }
+    let payload = frame.get(1..frame.len().checked_sub(2)?)?;
+    let text = std::str::from_utf8(payload).ok()?;
+    text.parse::<i64>().ok()
 }
 
 fn lmpop_pop_command(command: CommandId, args: &[ArgSlice]) -> Option<&'static [u8]> {
@@ -1464,5 +1704,115 @@ mod tests {
         assert_eq!(arg_slice_bytes(&rewritten_args[0]), b"EVAL");
         // SAFETY: parsed arguments borrow from `rewritten`, alive for this assertion scope.
         assert_eq!(arg_slice_bytes(&rewritten_args[1]), script);
+    }
+
+    #[test]
+    fn replication_rewrites_set_and_getex_expire_forms() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+
+        let set_ex_frame = encode_resp_frame(&[
+            b"SET".to_vec(),
+            b"foo".to_vec(),
+            b"bar".to_vec(),
+            b"EX".to_vec(),
+            b"100".to_vec(),
+        ]);
+        let mut set_ex_args = [ArgSlice::EMPTY; 8];
+        let set_ex_meta = parse_resp_command_arg_slices(&set_ex_frame, &mut set_ex_args).unwrap();
+        let mut set_ex_response = Vec::new();
+        processor
+            .execute(
+                &set_ex_args[..set_ex_meta.argument_count],
+                &mut set_ex_response,
+            )
+            .unwrap();
+        let rewritten_set = replication_frame_for_command(
+            &processor,
+            CommandId::Set,
+            &set_ex_args[..set_ex_meta.argument_count],
+            &set_ex_response,
+            &set_ex_frame,
+        )
+        .expect("SET EX replication rewrite must exist");
+        let mut rewritten_set_args = [ArgSlice::EMPTY; 8];
+        let rewritten_set_meta =
+            parse_resp_command_arg_slices(&rewritten_set, &mut rewritten_set_args).unwrap();
+        assert_eq!(rewritten_set_meta.argument_count, 5);
+        assert_eq!(arg_slice_bytes(&rewritten_set_args[0]), b"SET");
+        assert_eq!(arg_slice_bytes(&rewritten_set_args[1]), b"foo");
+        assert_eq!(arg_slice_bytes(&rewritten_set_args[2]), b"bar");
+        assert_eq!(arg_slice_bytes(&rewritten_set_args[3]), b"PXAT");
+
+        let getex_persist_frame =
+            encode_resp_frame(&[b"GETEX".to_vec(), b"foo".to_vec(), b"PERSIST".to_vec()]);
+        let mut getex_persist_args = [ArgSlice::EMPTY; 8];
+        let getex_persist_meta =
+            parse_resp_command_arg_slices(&getex_persist_frame, &mut getex_persist_args).unwrap();
+        let mut getex_persist_response = Vec::new();
+        processor
+            .execute(
+                &getex_persist_args[..getex_persist_meta.argument_count],
+                &mut getex_persist_response,
+            )
+            .unwrap();
+        let rewritten_persist = replication_frame_for_command(
+            &processor,
+            CommandId::Getex,
+            &getex_persist_args[..getex_persist_meta.argument_count],
+            &getex_persist_response,
+            &getex_persist_frame,
+        )
+        .expect("GETEX PERSIST rewrite must exist");
+        let mut rewritten_persist_args = [ArgSlice::EMPTY; 8];
+        let rewritten_persist_meta =
+            parse_resp_command_arg_slices(&rewritten_persist, &mut rewritten_persist_args).unwrap();
+        assert_eq!(rewritten_persist_meta.argument_count, 2);
+        assert_eq!(arg_slice_bytes(&rewritten_persist_args[0]), b"PERSIST");
+        assert_eq!(arg_slice_bytes(&rewritten_persist_args[1]), b"foo");
+
+        let set_frame = encode_resp_frame(&[b"SET".to_vec(), b"foo".to_vec(), b"bar".to_vec()]);
+        let mut set_args = [ArgSlice::EMPTY; 8];
+        let set_meta = parse_resp_command_arg_slices(&set_frame, &mut set_args).unwrap();
+        let mut set_response = Vec::new();
+        processor
+            .execute(&set_args[..set_meta.argument_count], &mut set_response)
+            .unwrap();
+        assert_eq!(set_response, b"+OK\r\n");
+
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let expired_millis = now_millis.saturating_sub(1000).to_string().into_bytes();
+        let getex_expired_frame = encode_resp_frame(&[
+            b"GETEX".to_vec(),
+            b"foo".to_vec(),
+            b"PXAT".to_vec(),
+            expired_millis,
+        ]);
+        let mut getex_expired_args = [ArgSlice::EMPTY; 8];
+        let getex_expired_meta =
+            parse_resp_command_arg_slices(&getex_expired_frame, &mut getex_expired_args).unwrap();
+        let mut getex_expired_response = Vec::new();
+        processor
+            .execute(
+                &getex_expired_args[..getex_expired_meta.argument_count],
+                &mut getex_expired_response,
+            )
+            .unwrap();
+        let rewritten_del = replication_frame_for_command(
+            &processor,
+            CommandId::Getex,
+            &getex_expired_args[..getex_expired_meta.argument_count],
+            &getex_expired_response,
+            &getex_expired_frame,
+        )
+        .expect("GETEX past-PXAT rewrite must exist");
+        let mut rewritten_del_args = [ArgSlice::EMPTY; 8];
+        let rewritten_del_meta =
+            parse_resp_command_arg_slices(&rewritten_del, &mut rewritten_del_args).unwrap();
+        assert_eq!(rewritten_del_meta.argument_count, 2);
+        assert_eq!(arg_slice_bytes(&rewritten_del_args[0]), b"DEL");
+        assert_eq!(arg_slice_bytes(&rewritten_del_args[1]), b"foo");
     }
 }
