@@ -28,6 +28,8 @@ pub enum RequestExecutionError {
     SyntaxError,
     InvalidExpireTime,
     InvalidGetExExpireTime,
+    InvalidExpireCommandExpireTime,
+    InvalidPExpireCommandExpireTime,
     WrongType,
     StorageBusy,
     StorageCapacityExceeded,
@@ -86,6 +88,12 @@ impl RequestExecutionError {
             }
             Self::InvalidGetExExpireTime => {
                 append_error(response_out, "ERR invalid expire time in 'getex' command")
+            }
+            Self::InvalidExpireCommandExpireTime => {
+                append_error(response_out, "ERR invalid expire time in 'expire' command")
+            }
+            Self::InvalidPExpireCommandExpireTime => {
+                append_error(response_out, "ERR invalid expire time in 'pexpire' command")
             }
             Self::WrongType => append_error(
                 response_out,

@@ -35,8 +35,8 @@ impl RequestProcessor {
         let expired_keys: Vec<Vec<u8>> = self
             .lock_string_expirations_for_shard(shard_index)
             .iter()
-            .filter_map(|(key, deadline)| {
-                if *deadline <= now {
+            .filter_map(|(key, metadata)| {
+                if metadata.deadline <= now {
                     Some(key.clone())
                 } else {
                     None
@@ -165,10 +165,15 @@ impl RequestProcessor {
         drop(session);
         drop(store);
 
-        self.set_string_expiration_deadline(
-            key,
-            expiration_unix_millis.and_then(instant_from_unix_millis),
-        );
+        let expiration = expiration_unix_millis.and_then(|unix_millis| {
+            let deadline = instant_from_unix_millis(unix_millis)?;
+            Some(ExpirationMetadata {
+                deadline,
+                unix_millis,
+            })
+        });
+        let shard_index = self.string_store_shard_index_for_key(key);
+        self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
         self.track_string_key(key);
         self.bump_watch_version(key);
         Ok(())
@@ -200,15 +205,13 @@ impl RequestProcessor {
     }
 
     pub(super) fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
-        let deadline = self.string_expiration_deadline(key)?;
-        let now = Instant::now();
-        let now_unix_millis = current_unix_time_millis()?;
-        if deadline <= now {
-            return Some(now_unix_millis);
+        let shard_index = self.string_store_shard_index_for_key(key);
+        if self.string_expiration_count_for_shard(shard_index) == 0 {
+            return None;
         }
-        let remaining = deadline.duration_since(now);
-        let remaining_millis = u64::try_from(remaining.as_millis()).ok()?;
-        now_unix_millis.checked_add(remaining_millis)
+        self.lock_string_expirations_for_shard(shard_index)
+            .get(key)
+            .map(|metadata| metadata.unix_millis)
     }
 
     pub(super) fn rewrite_existing_value_expiration(
@@ -258,7 +261,7 @@ impl RequestProcessor {
         let should_expire = {
             let mut expirations = self.lock_string_expirations_for_shard(shard_index);
             match expirations.get(key) {
-                Some(deadline) if *deadline <= Instant::now() => {
+                Some(metadata) if metadata.deadline <= Instant::now() => {
                     if expirations.remove(key).is_some() {
                         self.decrement_string_expiration_count(shard_index);
                     }
@@ -369,7 +372,7 @@ impl RequestProcessor {
     pub(super) fn lock_string_expirations_for_shard(
         &self,
         shard_index: usize,
-    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, Instant>> {
+    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, ExpirationMetadata>> {
         debug_assert!(shard_index < self.string_expirations.len());
         self.string_expirations[shard_index]
             .lock()
@@ -436,16 +439,16 @@ impl RequestProcessor {
         self.untrack_object_key_in_shard(key, shard_index);
     }
 
-    pub(super) fn set_string_expiration_deadline_in_shard(
+    pub(super) fn set_string_expiration_metadata_in_shard(
         &self,
         key: &[u8],
         shard_index: usize,
-        deadline: Option<Instant>,
+        expiration: Option<ExpirationMetadata>,
     ) {
         let mut expirations = self.lock_string_expirations_for_shard(shard_index);
-        match deadline {
-            Some(deadline) => {
-                let previous = expirations.insert(key.to_vec(), deadline);
+        match expiration {
+            Some(expiration) => {
+                let previous = expirations.insert(key.to_vec(), expiration);
                 if previous.is_none() {
                     self.increment_string_expiration_count(shard_index);
                 }
@@ -456,6 +459,30 @@ impl RequestProcessor {
                 }
             }
         }
+    }
+
+    pub(super) fn set_string_expiration_deadline_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: usize,
+        deadline: Option<Instant>,
+    ) {
+        let expiration = deadline.and_then(|deadline| {
+            let now = Instant::now();
+            let now_unix_millis = current_unix_time_millis()?;
+            let unix_millis = if deadline <= now {
+                now_unix_millis
+            } else {
+                let remaining_millis =
+                    u64::try_from(deadline.duration_since(now).as_millis()).ok()?;
+                now_unix_millis.checked_add(remaining_millis)?
+            };
+            Some(ExpirationMetadata {
+                deadline,
+                unix_millis,
+            })
+        });
+        self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
     }
 
     pub(super) fn set_string_expiration_deadline(&self, key: &[u8], deadline: Option<Instant>) {
@@ -483,7 +510,7 @@ impl RequestProcessor {
         }
         self.lock_string_expirations_for_shard(shard_index)
             .get(key)
-            .copied()
+            .map(|metadata| metadata.deadline)
     }
 
     pub(super) fn string_expiration_deadline(&self, key: &[u8]) -> Option<Instant> {

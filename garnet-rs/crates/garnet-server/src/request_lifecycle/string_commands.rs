@@ -1126,7 +1126,8 @@ impl RequestProcessor {
                 }
             }
             GetExAction::SetExpiration(expiration) => {
-                self.set_string_expiration_deadline(&key, Some(expiration.deadline));
+                let shard_index = self.string_store_shard_index_for_key(&key);
+                self.set_string_expiration_metadata_in_shard(&key, shard_index, Some(expiration));
                 if !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))? {
                     self.set_string_expiration_deadline(&key, None);
                     return Err(storage_failure(
@@ -1269,13 +1270,25 @@ impl RequestProcessor {
             }
         }
 
+        let preserved_expiration = if options.keep_ttl {
+            self.expiration_unix_millis_for_key(&key)
+                .map(|unix_millis| {
+                    let deadline =
+                        instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
+                    ExpirationMetadata {
+                        deadline,
+                        unix_millis,
+                    }
+                })
+        } else {
+            None
+        };
+        let effective_expiration = options.expiration.or(preserved_expiration);
+
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
-        let stored_value = encode_stored_value(
-            value,
-            options.expiration.map(|expiration| expiration.unix_millis),
-        );
-        if options.expiration.is_some() {
+        let stored_value = encode_stored_value(value, effective_expiration.map(|e| e.unix_millis));
+        if effective_expiration.is_some() {
             info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
         }
         session
@@ -1299,11 +1312,7 @@ impl RequestProcessor {
         if object_exists {
             self.untrack_object_key_in_shard(&key, shard_index);
         }
-        self.set_string_expiration_deadline_in_shard(
-            &key,
-            shard_index,
-            options.expiration.map(|e| e.deadline),
-        );
+        self.set_string_expiration_metadata_in_shard(&key, shard_index, effective_expiration);
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
 
@@ -1995,6 +2004,11 @@ impl RequestProcessor {
         };
         ensure_min_arity(args, 3, command, expected)?;
 
+        let overflow_error = if milliseconds {
+            RequestExecutionError::InvalidPExpireCommandExpireTime
+        } else {
+            RequestExecutionError::InvalidExpireCommandExpireTime
+        };
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
 
@@ -2010,15 +2024,21 @@ impl RequestProcessor {
             return Ok(());
         };
 
-        let now_unix_millis =
-            i128::from(current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?);
-        let target_unix_millis =
-            compute_relative_expire_target_unix_millis(amount, milliseconds, now_unix_millis)?;
+        let now_unix_millis = i64::try_from(
+            current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?,
+        )
+        .map_err(|_| overflow_error)?;
+        let target_unix_millis = compute_relative_expire_target_unix_millis(
+            amount,
+            milliseconds,
+            now_unix_millis,
+            overflow_error,
+        )?;
         let current_expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
         if !should_apply_expire_condition(
             options,
             current_expiration_unix_millis,
-            target_unix_millis,
+            i128::from(target_unix_millis),
         ) {
             append_integer(response_out, 0);
             return Ok(());
@@ -2033,11 +2053,17 @@ impl RequestProcessor {
             );
         }
 
-        let unix_millis = u64::try_from(target_unix_millis)
-            .map_err(|_| RequestExecutionError::ValueNotInteger)?;
-        let deadline =
-            instant_from_unix_millis(unix_millis).ok_or(RequestExecutionError::ValueNotInteger)?;
-        self.set_string_expiration_deadline(&key, Some(deadline));
+        let unix_millis = u64::try_from(target_unix_millis).map_err(|_| overflow_error)?;
+        let deadline = instant_from_unix_millis(unix_millis).ok_or(overflow_error)?;
+        let shard_index = self.string_store_shard_index_for_key(&key);
+        self.set_string_expiration_metadata_in_shard(
+            &key,
+            shard_index,
+            Some(ExpirationMetadata {
+                deadline,
+                unix_millis,
+            }),
+        );
         if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
             self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
@@ -2104,7 +2130,15 @@ impl RequestProcessor {
             .map_err(|_| RequestExecutionError::ValueNotInteger)?;
         let deadline =
             instant_from_unix_millis(unix_millis).ok_or(RequestExecutionError::ValueNotInteger)?;
-        self.set_string_expiration_deadline(&key, Some(deadline));
+        let shard_index = self.string_store_shard_index_for_key(&key);
+        self.set_string_expiration_metadata_in_shard(
+            &key,
+            shard_index,
+            Some(ExpirationMetadata {
+                deadline,
+                unix_millis,
+            }),
+        );
         if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
             self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
@@ -2213,23 +2247,45 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let deadline = self.string_expiration_deadline(&key);
-        match deadline {
-            None => append_integer(response_out, -1),
+        if let Some(expiration_unix_millis) = self.expiration_unix_millis_for_key(&key) {
+            let now_unix_millis =
+                current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?;
+            if expiration_unix_millis <= now_unix_millis {
+                self.expire_key_if_needed(&key)?;
+                append_integer(response_out, -2);
+                return Ok(());
+            }
+
+            let remaining_millis = expiration_unix_millis - now_unix_millis;
+            let ttl = if milliseconds {
+                remaining_millis.min(i64::MAX as u64) as i64
+            } else {
+                let rounded = remaining_millis.saturating_add(500) / 1000;
+                rounded.min(i64::MAX as u64) as i64
+            };
+            append_integer(response_out, ttl);
+            return Ok(());
+        }
+
+        match self.string_expiration_deadline(&key) {
+            None => {
+                append_integer(response_out, -1);
+            }
             Some(deadline) => {
                 let now = Instant::now();
                 if deadline <= now {
                     self.expire_key_if_needed(&key)?;
                     append_integer(response_out, -2);
-                } else {
-                    let remaining = deadline.duration_since(now);
-                    let ttl = if milliseconds {
-                        remaining.as_millis().min(i64::MAX as u128) as i64
-                    } else {
-                        remaining.as_secs().min(i64::MAX as u64) as i64
-                    };
-                    append_integer(response_out, ttl);
+                    return Ok(());
                 }
+
+                let remaining_millis = deadline.duration_since(now).as_millis();
+                let ttl = if milliseconds {
+                    remaining_millis.min(i64::MAX as u128) as i64
+                } else {
+                    ((remaining_millis.saturating_add(500)) / 1000).min(i64::MAX as u128) as i64
+                };
+                append_integer(response_out, ttl);
             }
         }
         Ok(())
@@ -2256,10 +2312,19 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        if let Some(expiration_unix_millis) = self.expiration_unix_millis_for_key(&key) {
+            let value = if milliseconds {
+                expiration_unix_millis.min(i64::MAX as u64) as i64
+            } else {
+                (expiration_unix_millis / 1000).min(i64::MAX as u64) as i64
+            };
+            append_integer(response_out, value);
+            return Ok(());
+        }
+
         match self.string_expiration_deadline(&key) {
             None => {
                 append_integer(response_out, -1);
-                Ok(())
             }
             Some(deadline) => {
                 let now = Instant::now();
@@ -2281,9 +2346,9 @@ impl RequestProcessor {
                     (expiration_unix_millis / 1000).min(i64::MAX as u128) as i64
                 };
                 append_integer(response_out, value);
-                Ok(())
             }
         }
+        Ok(())
     }
 
     pub(super) fn handle_persist(
@@ -2363,29 +2428,32 @@ fn parse_getex_action(args: &[&[u8]]) -> Result<GetExAction, RequestExecutionErr
     let value = args[3];
 
     if ascii_eq_ignore_case(option, b"EX") || ascii_eq_ignore_case(option, b"PX") {
-        let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
-        if amount == 0 {
+        let amount = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+        if amount <= 0 {
             return Err(RequestExecutionError::InvalidGetExExpireTime);
         }
-        let duration = if ascii_eq_ignore_case(option, b"EX") {
-            Duration::from_secs(amount)
-        } else {
-            Duration::from_millis(amount)
-        };
-        let expiration = expiration_metadata_from_duration(duration)
-            .ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
+        let expiration = expiration_metadata_from_relative_expire_amount(
+            amount,
+            ascii_eq_ignore_case(option, b"PX"),
+        )
+        .ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
         return Ok(GetExAction::SetExpiration(expiration));
     }
 
     if ascii_eq_ignore_case(option, b"EXAT") || ascii_eq_ignore_case(option, b"PXAT") {
-        let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
-        let unix_millis = if ascii_eq_ignore_case(option, b"EXAT") {
+        let amount = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+        if amount <= 0 {
+            return Err(RequestExecutionError::InvalidGetExExpireTime);
+        }
+        let unix_millis_i64 = if ascii_eq_ignore_case(option, b"EXAT") {
             amount
                 .checked_mul(1000)
                 .ok_or(RequestExecutionError::InvalidGetExExpireTime)?
         } else {
             amount
         };
+        let unix_millis = u64::try_from(unix_millis_i64)
+            .map_err(|_| RequestExecutionError::InvalidGetExExpireTime)?;
         let now_unix_millis =
             current_unix_time_millis().ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
         if unix_millis <= now_unix_millis {
@@ -2474,15 +2542,15 @@ fn should_apply_expire_condition(
 fn compute_relative_expire_target_unix_millis(
     amount: i64,
     milliseconds: bool,
-    now_unix_millis: i128,
-) -> Result<i128, RequestExecutionError> {
-    let multiplier = if milliseconds { 1i128 } else { 1000i128 };
-    let delta = i128::from(amount)
-        .checked_mul(multiplier)
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
-    now_unix_millis
-        .checked_add(delta)
-        .ok_or(RequestExecutionError::ValueNotInteger)
+    now_unix_millis: i64,
+    overflow_error: RequestExecutionError,
+) -> Result<i64, RequestExecutionError> {
+    let delta = if milliseconds {
+        amount
+    } else {
+        amount.checked_mul(1000).ok_or(overflow_error)?
+    };
+    now_unix_millis.checked_add(delta).ok_or(overflow_error)
 }
 
 fn compute_absolute_expire_target_unix_millis(

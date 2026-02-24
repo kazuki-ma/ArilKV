@@ -3404,6 +3404,86 @@ fn set_returns_error_for_invalid_expire_time() {
 }
 
 #[test]
+fn set_and_getex_validate_expire_arguments_like_redis() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "SET key value EX not-a-number",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SET key value EX 10000000000000000",
+        b"-ERR invalid expire time in 'set' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SET key value EXAT 0",
+        b"-ERR invalid expire time in 'set' command\r\n",
+    );
+
+    assert_command_response(&processor, "SET key value", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "GETEX key EX not-a-number",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GETEX key EX 10000000000000000",
+        b"-ERR invalid expire time in 'getex' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "GETEX key EXAT 0",
+        b"-ERR invalid expire time in 'getex' command\r\n",
+    );
+}
+
+#[test]
+fn set_supports_exat_pxat_and_keepttl() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let now_secs = current_unix_time_millis().unwrap() / 1000;
+    let exat_secs = now_secs + 2;
+    let set_exat = format!("SET key-exat value EXAT {exat_secs}");
+    assert_command_response(&processor, &set_exat, b"+OK\r\n");
+    assert_command_integer(&processor, "EXPIRETIME key-exat", exat_secs as i64);
+
+    let now_millis = current_unix_time_millis().unwrap();
+    let pxat_millis = now_millis + 1_500;
+    let set_pxat = format!("SET key-pxat value PXAT {pxat_millis}");
+    assert_command_response(&processor, &set_pxat, b"+OK\r\n");
+    assert_command_integer(&processor, "PEXPIRETIME key-pxat", pxat_millis as i64);
+
+    assert_command_response(&processor, "SET key-keep value EX 100", b"+OK\r\n");
+    assert_command_response(&processor, "SET key-keep value2 KEEPTTL", b"+OK\r\n");
+    let ttl = parse_integer_response(
+        &execute_command_line(&processor, "TTL key-keep").expect("TTL key-keep should succeed"),
+    );
+    assert!((90..=100).contains(&ttl));
+}
+
+#[test]
+fn expire_overflow_returns_command_specific_errors() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SET foo bar", b"+OK\r\n");
+
+    assert_command_error(
+        &processor,
+        "EXPIRE foo 9223370399119966",
+        b"-ERR invalid expire time in 'expire' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "PEXPIRE foo 9223372036854770000",
+        b"-ERR invalid expire time in 'pexpire' command\r\n",
+    );
+    assert_command_integer(&processor, "TTL foo", -1);
+}
+
+#[test]
 fn expire_ttl_and_pexpire_commands_work() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

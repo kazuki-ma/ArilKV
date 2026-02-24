@@ -209,7 +209,7 @@ pub(crate) enum ClientUnblockMode {
 pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, Instant>>>,
+    string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, ExpirationMetadata>>>,
     string_expiration_counts: Vec<AtomicUsize>,
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
@@ -978,6 +978,7 @@ struct SetOptions {
     only_if_absent: bool,
     only_if_present: bool,
     expiration: Option<ExpirationMetadata>,
+    keep_ttl: bool,
 }
 
 fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError> {
@@ -1005,8 +1006,17 @@ fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError
             continue;
         }
 
+        if ascii_eq_ignore_case(option, b"KEEPTTL") {
+            if options.keep_ttl || options.expiration.is_some() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.keep_ttl = true;
+            index += 1;
+            continue;
+        }
+
         if ascii_eq_ignore_case(option, b"EX") || ascii_eq_ignore_case(option, b"PX") {
-            if options.expiration.is_some() {
+            if options.expiration.is_some() || options.keep_ttl {
                 return Err(RequestExecutionError::SyntaxError);
             }
             if index + 1 >= args.len() {
@@ -1014,20 +1024,48 @@ fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError
             }
 
             let value = args[index + 1];
-            let amount = parse_u64_ascii(value).ok_or(RequestExecutionError::InvalidExpireTime)?;
-            if amount == 0 {
+            let amount = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if amount <= 0 {
                 return Err(RequestExecutionError::InvalidExpireTime);
             }
-
-            let duration = if ascii_eq_ignore_case(option, b"EX") {
-                Duration::from_secs(amount)
-            } else {
-                Duration::from_millis(amount)
-            };
             options.expiration = Some(
-                expiration_metadata_from_duration(duration)
-                    .ok_or(RequestExecutionError::InvalidExpireTime)?,
+                expiration_metadata_from_relative_expire_amount(
+                    amount,
+                    ascii_eq_ignore_case(option, b"PX"),
+                )
+                .ok_or(RequestExecutionError::InvalidExpireTime)?,
             );
+            index += 2;
+            continue;
+        }
+
+        if ascii_eq_ignore_case(option, b"EXAT") || ascii_eq_ignore_case(option, b"PXAT") {
+            if options.expiration.is_some() || options.keep_ttl {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            if index + 1 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+
+            let value = args[index + 1];
+            let amount = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if amount <= 0 {
+                return Err(RequestExecutionError::InvalidExpireTime);
+            }
+            let unix_millis_i64 = if ascii_eq_ignore_case(option, b"EXAT") {
+                amount.checked_mul(1000)
+            } else {
+                Some(amount)
+            };
+            let unix_millis =
+                u64::try_from(unix_millis_i64.ok_or(RequestExecutionError::InvalidExpireTime)?)
+                    .map_err(|_| RequestExecutionError::InvalidExpireTime)?;
+            let deadline = instant_from_unix_millis(unix_millis)
+                .ok_or(RequestExecutionError::InvalidExpireTime)?;
+            options.expiration = Some(ExpirationMetadata {
+                deadline,
+                unix_millis,
+            });
             index += 2;
             continue;
         }
@@ -1043,11 +1081,22 @@ fn current_unix_time_millis() -> Option<u64> {
     u64::try_from(now.as_millis()).ok()
 }
 
-fn expiration_metadata_from_duration(duration: Duration) -> Option<ExpirationMetadata> {
-    let deadline = Instant::now().checked_add(duration)?;
-    let now_millis = u128::from(current_unix_time_millis()?);
-    let expiration_millis = now_millis.checked_add(duration.as_millis())?;
-    let unix_millis = u64::try_from(expiration_millis).ok()?;
+fn expiration_metadata_from_relative_expire_amount(
+    amount: i64,
+    milliseconds: bool,
+) -> Option<ExpirationMetadata> {
+    if amount <= 0 {
+        return None;
+    }
+    let now_millis = i64::try_from(current_unix_time_millis()?).ok()?;
+    let delta = if milliseconds {
+        amount
+    } else {
+        amount.checked_mul(1000)?
+    };
+    let unix_millis_i64 = now_millis.checked_add(delta)?;
+    let unix_millis = u64::try_from(unix_millis_i64).ok()?;
+    let deadline = instant_from_unix_millis(unix_millis)?;
     Some(ExpirationMetadata {
         deadline,
         unix_millis,
