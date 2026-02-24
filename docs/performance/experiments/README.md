@@ -7,6 +7,8 @@
 - Base directory: `docs/performance/experiments/2026-02-21/`
 - Date: `2026-02-23`
 - Base directory: `docs/performance/experiments/2026-02-23/`
+- Date: `2026-02-24`
+- Base directory: `docs/performance/experiments/2026-02-24/`
 
 ## Reports
 
@@ -23,6 +25,13 @@
 11. `docs/performance/experiments/2026-02-23/13.02-docker-linux-median-owner-thread-count/`
 12. `docs/performance/experiments/2026-02-23/13.03-single-port-current-thread-runtime-rejected/`
 13. `docs/performance/experiments/2026-02-23/13.04-owner-result-channel-mode-rejected/`
+14. `docs/performance/experiments/2026-02-23/13.05-listener-owner-colocation-accepted/`
+15. `docs/performance/experiments/2026-02-23/13.06-linux-hotspot-refresh-owner-pinned/`
+16. `docs/performance/experiments/2026-02-23/13.07-owner-pinned-dragonfly-comparison-milestone/`
+17. `docs/performance/experiments/2026-02-23/13.08-memtier-wide-sweep-owner-pinned/`
+18. `docs/performance/experiments/2026-02-23/13.09-set-allocation-hotpath-reduction/`
+19. `docs/performance/experiments/2026-02-23/13.10-argslice-unsafe-encapsulation-ab/`
+20. `docs/performance/experiments/2026-02-24/13.11-argslice-boundary-dispatch-ab-accepted/`
 
 ## Patterns To Re-check For New Experiments
 
