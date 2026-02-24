@@ -7321,6 +7321,9 @@ fn function_help_list_kill_delete_flush_and_stats_cover_minimal_surface() {
     assert!(list_text.contains("lib_admin"));
     assert!(list_text.contains("rw_set"));
     assert!(list_text.contains("ro_get"));
+    assert!(list_text.contains("description"));
+    assert!(list_text.contains("flags"));
+    assert!(list_text.contains("no-writes"));
     assert!(!list_text.contains("library_code"));
 
     let list_with_code = execute_frame(
@@ -7408,10 +7411,10 @@ fn function_dump_and_restore_roundtrip_supports_append_and_replace_modes() {
         b"$13\r\nrestore:value\r\n",
     );
 
-    assert_command_error(
+    assert_command_response(
         &processor,
         "FUNCTION RESTORE abc APPEND",
-        b"-ERR syntax error\r\n",
+        b"-ERR DUMP payload version or checksum are wrong\r\n",
     );
     assert_eq!(
         execute_frame_error(
@@ -7465,6 +7468,38 @@ fn fcall_executes_write_function_when_scripting_is_enabled() {
         b"+OK\r\n",
     );
     assert_command_response(&processor, "GET fcall:key", b"$11\r\nfcall:value\r\n");
+}
+
+#[test]
+fn function_list_includes_description_field_from_named_descriptor() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=lib_desc\nredis.register_function{function_name='f1', description='some desc', callback=function(keys, args) return 'ok' end}";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", library_source])
+        ),
+        b"$8\r\nlib_desc\r\n"
+    );
+    let list_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LIST"]));
+    let list_text = String::from_utf8_lossy(&list_response);
+    assert!(list_text.contains("description"));
+    assert!(list_text.contains("some desc"));
+}
+
+#[test]
+fn command_getkeys_supports_fcall_and_fcall_ro() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    assert_command_response(
+        &processor,
+        "COMMAND GETKEYS FCALL fn 2 key1 key2 arg1",
+        b"*2\r\n$4\r\nkey1\r\n$4\r\nkey2\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "COMMAND GETKEYS FCALL_RO fn 1 keyA arg1",
+        b"*1\r\n$4\r\nkeyA\r\n",
+    );
 }
 
 #[test]

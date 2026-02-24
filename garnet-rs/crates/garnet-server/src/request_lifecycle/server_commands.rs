@@ -599,6 +599,37 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"RELOAD") {
+            ensure_min_arity(args, 2, "DEBUG", "DEBUG RELOAD [NOSAVE] [NOFLUSH] [MERGE]")?;
+            let mut noflush = false;
+            let mut merge = false;
+            for option in &args[2..] {
+                let token = option;
+                if ascii_eq_ignore_case(token, b"NOSAVE") {
+                    continue;
+                }
+                if ascii_eq_ignore_case(token, b"NOFLUSH") {
+                    noflush = true;
+                    continue;
+                }
+                if ascii_eq_ignore_case(token, b"MERGE") {
+                    merge = true;
+                    continue;
+                }
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            if noflush && !merge {
+                append_error(
+                    response_out,
+                    b"ERR Error trying to load the RDB payload with NOFLUSH only",
+                );
+                return Ok(());
+            }
+            // Compatibility path: in-memory test mode has no RDB reload boundary.
+            // Redis tests use DEBUG RELOAD as a persistence synchronization hook.
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
             let key = args[2].to_vec();
@@ -856,9 +887,41 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 1, "COMMAND", "COMMAND")?;
-        append_bulk_array(response_out, command_names_for_command_response());
-        Ok(())
+        ensure_min_arity(args, 1, "COMMAND", "COMMAND")?;
+        if args.len() == 1 {
+            append_bulk_array(response_out, command_names_for_command_response());
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(args[1], b"GETKEYS") {
+            ensure_min_arity(args, 4, "COMMAND", "COMMAND GETKEYS command [arg ...]")?;
+            let target = args[2];
+            if ascii_eq_ignore_case(target, b"FCALL") || ascii_eq_ignore_case(target, b"FCALL_RO") {
+                ensure_min_arity(
+                    args,
+                    5,
+                    "COMMAND",
+                    "COMMAND GETKEYS FCALL function numkeys [key ...] [arg ...]",
+                )?;
+                let Some(numkeys) = parse_i64_ascii(args[4]) else {
+                    return Err(RequestExecutionError::ValueNotInteger);
+                };
+                if numkeys < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                let key_count =
+                    usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                if key_count > args.len().saturating_sub(5) {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                let end = 5 + key_count;
+                append_bulk_array(response_out, &args[5..end]);
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        Err(RequestExecutionError::SyntaxError)
     }
 
     pub(super) fn handle_dump(

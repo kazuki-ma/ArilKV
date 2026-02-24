@@ -29,8 +29,6 @@ const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
 const SCRIPT_FUNCTION_LIST_USAGE: &str = "FUNCTION LIST [WITHCODE]";
 const SCRIPT_FUNCTION_DELETE_USAGE: &str = "FUNCTION DELETE library-name";
 const SCRIPT_FUNCTION_DUMP_USAGE: &str = "FUNCTION DUMP";
-const SCRIPT_FUNCTION_RESTORE_USAGE: &str =
-    "FUNCTION RESTORE serialized-value [FLUSH|APPEND|REPLACE]";
 const SCRIPT_FUNCTION_FLUSH_USAGE: &str = "FUNCTION FLUSH [ASYNC|SYNC]";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
@@ -87,11 +85,13 @@ enum RespFrame {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct PendingFunctionRegistration {
     name: String,
+    description: String,
     read_only: bool,
 }
 
 struct RegisterFunctionBinding {
     name: String,
+    description: String,
     read_only: bool,
     callback: LuaFunction,
 }
@@ -137,9 +137,22 @@ impl RequestProcessor {
             if !self.scripting_enabled() {
                 return Err(RequestExecutionError::ScriptingDisabled);
             }
-            ensure_ranged_arity(args, 3, 4, "FUNCTION", SCRIPT_FUNCTION_RESTORE_USAGE)?;
+            if args.len() != 3 && args.len() != 4 {
+                append_error(
+                    response_out,
+                    b"ERR unknown subcommand or wrong number of arguments for 'restore'. Try FUNCTION HELP.",
+                );
+                return Ok(());
+            }
             let mode = parse_function_restore_mode(args.get(3).copied())?;
-            self.restore_function_registry(args[2], mode)?;
+            match self.restore_function_registry(args[2], mode) {
+                Ok(()) => {}
+                Err(RequestExecutionError::InvalidDumpPayload) => {
+                    RequestExecutionError::InvalidDumpPayload.append_resp_error(response_out);
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            }
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -181,27 +194,44 @@ impl RequestProcessor {
             if !self.scripting_enabled() {
                 return Err(RequestExecutionError::ScriptingDisabled);
             }
-            ensure_ranged_arity(args, 3, 4, "FUNCTION", SCRIPT_FUNCTION_LOAD_USAGE)?;
-            let (replace, source_index) = match args.len() {
-                3 => (false, 2),
-                4 => {
-                    if !ascii_eq_ignore_case(args[2], b"REPLACE") {
-                        return Err(RequestExecutionError::SyntaxError);
-                    }
-                    (true, 3)
-                }
-                _ => {
-                    return Err(RequestExecutionError::WrongArity {
-                        command: "FUNCTION",
-                        expected: SCRIPT_FUNCTION_LOAD_USAGE,
-                    });
-                }
+            ensure_min_arity(args, 3, "FUNCTION", SCRIPT_FUNCTION_LOAD_USAGE)?;
+            let (replace, source_index) = if args.len() == 3 {
+                (false, 2)
+            } else if ascii_eq_ignore_case(args[2], b"REPLACE") && args.len() == 4 {
+                (true, 3)
+            } else {
+                append_error(response_out, b"ERR Unknown option given");
+                return Ok(());
             };
 
             let library_source = args[source_index];
             self.validate_script_size_limit(library_source)?;
-            let library_name = parse_function_library_name(library_source)?;
-            let registrations = self.collect_function_registrations(library_source)?;
+            let library_name = match parse_function_library_name(library_source) {
+                Ok(name) => name,
+                Err(FunctionLibraryParseError::InvalidLibraryName) => {
+                    append_error(
+                        response_out,
+                        b"ERR Library names can only contain letters, numbers, or underscores(_)",
+                    );
+                    return Ok(());
+                }
+                Err(FunctionLibraryParseError::EngineNotFound(engine)) => {
+                    let message = format!("ERR Engine '{engine}' not found");
+                    append_error(response_out, message.as_bytes());
+                    return Ok(());
+                }
+                Err(FunctionLibraryParseError::Syntax) => {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+            };
+            let registrations = match self.collect_function_registrations(library_source) {
+                Ok(registrations) => registrations,
+                Err(RequestExecutionError::SyntaxError) => {
+                    append_error(response_out, b"ERR Error compiling function");
+                    return Ok(());
+                }
+                Err(error) => return Err(error),
+            };
             self.store_function_library(
                 library_name.clone(),
                 library_source,
@@ -212,7 +242,8 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        Err(RequestExecutionError::UnknownCommand)
+        append_error(response_out, b"ERR unknown subcommand");
+        Ok(())
     }
 
     pub(super) fn handle_script(
@@ -395,7 +426,11 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let key_count = validate_scripting_numkeys(args, "FCALL", SCRIPT_FCALL_USAGE)?;
+        let Some(key_count) =
+            validate_fcall_numkeys(args, "FCALL", SCRIPT_FCALL_USAGE, response_out)
+        else {
+            return Ok(());
+        };
         if !self.scripting_enabled() {
             return Err(RequestExecutionError::ScriptingDisabled);
         }
@@ -419,7 +454,11 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let key_count = validate_scripting_numkeys(args, "FCALL_RO", SCRIPT_FCALL_RO_USAGE)?;
+        let Some(key_count) =
+            validate_fcall_numkeys(args, "FCALL_RO", SCRIPT_FCALL_RO_USAGE, response_out)
+        else {
+            return Ok(());
+        };
         if !self.scripting_enabled() {
             return Err(RequestExecutionError::ScriptingDisabled);
         }
@@ -553,9 +592,10 @@ impl RequestProcessor {
         let replace = matches!(mode, FunctionRestoreMode::Replace);
         for (library_name, library_source) in libraries {
             self.validate_script_size_limit(&library_source)?;
-            let parsed_name = parse_function_library_name(&library_source)?;
+            let parsed_name = parse_function_library_name(&library_source)
+                .map_err(|_| RequestExecutionError::InvalidDumpPayload)?;
             if parsed_name != library_name {
-                return Err(RequestExecutionError::SyntaxError);
+                return Err(RequestExecutionError::InvalidDumpPayload);
             }
             let registrations = self.collect_function_registrations(&library_source)?;
             self.store_function_library(parsed_name, &library_source, &registrations, replace)?;
@@ -606,7 +646,23 @@ impl RequestProcessor {
             response_out.extend_from_slice(function_names.len().to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
             for function_name in function_names {
+                let descriptor = registry.functions.get(&function_name);
+                let (description, read_only) = descriptor
+                    .map(|entry| (entry.description.as_str(), entry.read_only))
+                    .unwrap_or(("", false));
+
+                response_out.extend_from_slice(b"*6\r\n");
+                append_bulk_string(response_out, b"name");
                 append_bulk_string(response_out, function_name.as_bytes());
+                append_bulk_string(response_out, b"description");
+                append_bulk_string(response_out, description.as_bytes());
+                append_bulk_string(response_out, b"flags");
+                if read_only {
+                    response_out.extend_from_slice(b"*1\r\n");
+                    append_bulk_string(response_out, b"no-writes");
+                } else {
+                    response_out.extend_from_slice(b"*0\r\n");
+                }
             }
 
             if with_code {
@@ -677,8 +733,9 @@ impl RequestProcessor {
             let registration_names_ref = Rc::clone(&registration_names);
             let register_function_fn = scope.create_function(move |_lua, values: MultiValue| {
                 let binding = parse_register_function_binding(values)?;
+                let normalized_name = binding.name.to_ascii_lowercase();
                 let mut names = registration_names_ref.borrow_mut();
-                if !names.insert(binding.name.clone()) {
+                if !names.insert(normalized_name.clone()) {
                     return Err(LuaError::RuntimeError(
                         "ERR Function already registered".to_string(),
                     ));
@@ -686,7 +743,8 @@ impl RequestProcessor {
                 registrations_ref
                     .borrow_mut()
                     .push(PendingFunctionRegistration {
-                        name: binding.name,
+                        name: normalized_name,
+                        description: binding.description,
                         read_only: binding.read_only,
                     });
                 Ok(())
@@ -748,13 +806,14 @@ impl RequestProcessor {
             .unwrap_or_default();
         let existing_library_name_set = existing_library_names
             .iter()
-            .map(String::as_str)
-            .collect::<HashSet<&str>>();
+            .map(|name| name.to_ascii_lowercase())
+            .collect::<HashSet<String>>();
 
         for registration in registrations {
-            if let Some(existing) = registry.functions.get(&registration.name) {
+            let normalized_name = registration.name.to_ascii_lowercase();
+            if let Some(existing) = registry.functions.get(&normalized_name) {
                 if existing.library_name != library_name
-                    && !existing_library_name_set.contains(registration.name.as_str())
+                    && !existing_library_name_set.contains(&normalized_name)
                 {
                     return Err(RequestExecutionError::FunctionNameAlreadyExists);
                 }
@@ -771,7 +830,10 @@ impl RequestProcessor {
         }
 
         for registration in registrations {
-            if registry.functions.contains_key(&registration.name) {
+            if registry
+                .functions
+                .contains_key(&registration.name.to_ascii_lowercase())
+            {
                 return Err(RequestExecutionError::FunctionNameAlreadyExists);
             }
         }
@@ -782,11 +844,13 @@ impl RequestProcessor {
 
         let mut registered_names = Vec::with_capacity(registrations.len());
         for registration in registrations {
-            registered_names.push(registration.name.clone());
+            let normalized_name = registration.name.to_ascii_lowercase();
+            registered_names.push(normalized_name.clone());
             registry.functions.insert(
-                registration.name.clone(),
+                normalized_name,
                 LoadedFunctionDescriptor {
                     library_name: library_name.clone(),
+                    description: registration.description.clone(),
                     read_only: registration.read_only,
                 },
             );
@@ -803,6 +867,7 @@ impl RequestProcessor {
     ) -> Result<(Vec<u8>, bool), RequestExecutionError> {
         let function_name_text =
             std::str::from_utf8(function_name).map_err(|_| RequestExecutionError::SyntaxError)?;
+        let normalized_function_name = function_name_text.to_ascii_lowercase();
         let Ok(registry) = self.function_registry.lock() else {
             return Err(storage_failure(
                 "function.registry",
@@ -811,7 +876,7 @@ impl RequestProcessor {
         };
         let descriptor = registry
             .functions
-            .get(function_name_text)
+            .get(&normalized_function_name)
             .ok_or(RequestExecutionError::FunctionNotFound)?;
         let source = registry
             .library_sources
@@ -925,7 +990,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) {
         let function_name_text = match std::str::from_utf8(function_name) {
-            Ok(name) => name.to_string(),
+            Ok(name) => name.to_ascii_lowercase(),
             Err(_) => {
                 append_error(
                     response_out,
@@ -972,7 +1037,8 @@ impl RequestProcessor {
             let registered_functions_ref = registered_functions.clone();
             let register_function_fn = scope.create_function(move |_lua, values: MultiValue| {
                 let binding = parse_register_function_binding(values)?;
-                registered_functions_ref.set(binding.name.as_str(), binding.callback)?;
+                let normalized_name = binding.name.to_ascii_lowercase();
+                registered_functions_ref.set(normalized_name.as_str(), binding.callback)?;
                 Ok(())
             })?;
 
@@ -1406,6 +1472,7 @@ fn parse_register_function_binding(values: MultiValue) -> mlua::Result<RegisterF
         }
         Ok(RegisterFunctionBinding {
             name: name.to_string(),
+            description: String::new(),
             read_only: false,
             callback,
         })
@@ -1455,28 +1522,28 @@ fn parse_function_dump_payload(
     payload: &[u8],
 ) -> Result<Vec<(String, Vec<u8>)>, RequestExecutionError> {
     if payload.len() < 8 {
-        return Err(RequestExecutionError::SyntaxError);
+        return Err(RequestExecutionError::InvalidDumpPayload);
     }
     if &payload[0..4] != FUNCTION_DUMP_MAGIC {
-        return Err(RequestExecutionError::SyntaxError);
+        return Err(RequestExecutionError::InvalidDumpPayload);
     }
 
     let mut cursor = 4usize;
-    let library_count =
-        read_u32_le(payload, &mut cursor).ok_or(RequestExecutionError::SyntaxError)? as usize;
+    let library_count = read_u32_le(payload, &mut cursor)
+        .ok_or(RequestExecutionError::InvalidDumpPayload)? as usize;
     let mut libraries = Vec::with_capacity(library_count);
     for _ in 0..library_count {
         let library_name_bytes = read_len_prefixed_bytes(payload, &mut cursor)
-            .ok_or(RequestExecutionError::SyntaxError)?;
+            .ok_or(RequestExecutionError::InvalidDumpPayload)?;
         let library_name = std::str::from_utf8(library_name_bytes)
-            .map_err(|_| RequestExecutionError::SyntaxError)?
+            .map_err(|_| RequestExecutionError::InvalidDumpPayload)?
             .to_owned();
         let source_bytes = read_len_prefixed_bytes(payload, &mut cursor)
-            .ok_or(RequestExecutionError::SyntaxError)?;
+            .ok_or(RequestExecutionError::InvalidDumpPayload)?;
         libraries.push((library_name, source_bytes.to_vec()));
     }
     if cursor != payload.len() {
-        return Err(RequestExecutionError::SyntaxError);
+        return Err(RequestExecutionError::InvalidDumpPayload);
     }
     Ok(libraries)
 }
@@ -1530,12 +1597,26 @@ fn parse_register_function_binding_from_table(
             "ERR redis.register_function descriptor requires callback function".to_string(),
         )
     })?;
+    let description = parse_register_function_description(&descriptor)?;
     let read_only = parse_register_function_flags(&descriptor)?;
     Ok(RegisterFunctionBinding {
         name: name.to_string(),
+        description,
         read_only,
         callback,
     })
+}
+
+fn parse_register_function_description(descriptor: &LuaTable) -> mlua::Result<String> {
+    let description = descriptor.get::<LuaValue>("description")?;
+    match description {
+        LuaValue::Nil => Ok(String::new()),
+        LuaValue::String(text) => Ok(text.to_string_lossy()),
+        _ => Err(LuaError::RuntimeError(
+            "ERR description argument given to redis.register_function must be a string"
+                .to_string(),
+        )),
+    }
 }
 
 fn parse_register_function_flags(descriptor: &LuaTable) -> mlua::Result<bool> {
@@ -1567,27 +1648,44 @@ fn parse_register_function_flags(descriptor: &LuaTable) -> mlua::Result<bool> {
     }
 }
 
-fn parse_function_library_name(library_source: &[u8]) -> Result<String, RequestExecutionError> {
+enum FunctionLibraryParseError {
+    Syntax,
+    InvalidLibraryName,
+    EngineNotFound(String),
+}
+
+fn parse_function_library_name(library_source: &[u8]) -> Result<String, FunctionLibraryParseError> {
     let source_text =
-        std::str::from_utf8(library_source).map_err(|_| RequestExecutionError::SyntaxError)?;
+        std::str::from_utf8(library_source).map_err(|_| FunctionLibraryParseError::Syntax)?;
     let first_line = source_text
         .lines()
         .next()
-        .ok_or(RequestExecutionError::SyntaxError)?;
+        .ok_or(FunctionLibraryParseError::Syntax)?;
     let first_line = first_line.trim();
-    if !first_line.starts_with("#!lua") {
-        return Err(RequestExecutionError::SyntaxError);
+    if !first_line.starts_with("#!") {
+        return Err(FunctionLibraryParseError::Syntax);
     }
-    let rest = first_line.trim_start_matches("#!lua").trim();
-    for token in rest.split_whitespace() {
+    let rest = first_line.trim_start_matches("#!").trim();
+    let mut tokens = rest.split_whitespace();
+    let engine = tokens.next().ok_or(FunctionLibraryParseError::Syntax)?;
+    if !engine.eq_ignore_ascii_case("lua") {
+        return Err(FunctionLibraryParseError::EngineNotFound(
+            engine.to_string(),
+        ));
+    }
+    for token in tokens {
         if let Some(name) = token.strip_prefix("name=") {
-            if !name.is_empty() {
+            if !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+            {
                 return Ok(name.to_string());
             }
-            return Err(RequestExecutionError::SyntaxError);
+            return Err(FunctionLibraryParseError::InvalidLibraryName);
         }
     }
-    Err(RequestExecutionError::SyntaxError)
+    Err(FunctionLibraryParseError::Syntax)
 }
 
 fn strip_lua_shebang(source: &[u8]) -> &[u8] {
@@ -1637,6 +1735,37 @@ fn validate_scripting_numkeys(
         return Err(RequestExecutionError::SyntaxError);
     }
     Ok(key_count)
+}
+
+fn validate_fcall_numkeys(
+    args: &[&[u8]],
+    command: &'static str,
+    expected: &'static str,
+    response_out: &mut Vec<u8>,
+) -> Option<usize> {
+    if let Err(error) = ensure_min_arity(args, 3, command, expected) {
+        error.append_resp_error(response_out);
+        return None;
+    }
+
+    let Some(numkeys) = parse_i64_ascii(args[2]) else {
+        append_error(response_out, b"ERR Bad number of keys provided");
+        return None;
+    };
+    if numkeys < 0 {
+        append_error(response_out, b"ERR Number of keys can't be negative");
+        return None;
+    }
+
+    let key_count = usize::try_from(numkeys).ok()?;
+    if key_count > args.len().saturating_sub(3) {
+        append_error(
+            response_out,
+            b"ERR Number of keys can't be greater than number of args",
+        );
+        return None;
+    }
+    Some(key_count)
 }
 
 fn normalize_sha1(raw: &[u8]) -> String {

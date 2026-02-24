@@ -191,6 +191,7 @@ struct StreamObject {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoadedFunctionDescriptor {
     library_name: String,
+    description: String,
     read_only: bool,
 }
 
