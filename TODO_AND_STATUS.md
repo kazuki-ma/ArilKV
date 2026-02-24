@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-24
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 251
+> **Current Iteration**: 252
 
 ---
 
@@ -300,6 +300,13 @@
 | 11.129 | Publish compatibility reality-check report (declared vs implemented behavior vs external test coverage) | DONE | 11.128 | Added `docs/compatibility/compatibility-reality-check-2026-02-24.md` documenting explicit disabled/minimal command surfaces (`EVAL*`, `FCALL*`, `MIGRATE`, `SHUTDOWN`, cluster-disabled paths, minimal pubsub/admin paths), current external gate scope limits, and why `SUPPORTED_DECLARED=241/241` does not imply full behavior parity. |
 | 11.130 | Add automated command-maturity audit (`FULL`/`PARTIAL_MINIMAL`/`DISABLED`) and integrate it into interop workflow | DONE | 11.129 | Added single-source YAML status registry `docs/compatibility/command-implementation-status.yaml`, generator `garnet-rs/tests/interop/build_command_maturity_matrix.sh`, and end-to-end report pipeline `garnet-rs/tests/interop/build_compatibility_report.sh` that merges declaration status + maturity comments + `redis_runtest_external_subset.sh` results into `docs/compatibility/compatibility-report.md`. Updated interop workflow docs (`garnet-rs/tests/interop/README.md`, `AGENTS.md`) and generated new artifacts (`redis-command-maturity.csv`, `redis-command-maturity-summary.md`, `compatibility-report.md`). |
 | 11.131 | Enforce Redis external subset test-case count verification from stdout logs | DONE | 11.130 | Hardened `garnet-rs/tests/interop/redis_runtest_external_subset.sh` so each case records both `expected_ok` and parsed `actual_ok` counts from runtest output (ANSI-safe parsing) and marks mismatches as `FAIL` instead of trusting exit code only. Re-ran `build_compatibility_report.sh` and confirmed `expected_ok == actual_ok` for all subset cases (`6/4/2`). |
+| 11.132 | Import returned DeepResearch report for Lua-engine selection and publish actionable notes | DONE | 11.131 | Imported `/Users/kazuki-matsuda/Downloads/deep-research-report (4).md` to `docs/performance/lua-engine-crate-selection-deepresearch-2026-02-24.md`, added digest `docs/performance/lua-engine-crate-selection-notes-2026-02-24.md`, and updated Phase 11B `DR-005` to `RECEIVED` (`pending=0`). |
+| 11.133 | Add `mlua` feature-gated plumbing with scripting kill-switch default (`disabled`) | TODO | 11.132 | Keep current disabled response as default path, add runtime/config gate to enable scripting safely in controlled rollout. |
+| 11.134 | Implement script-cache foundation (`SHA1`, volatile semantics, bounded metrics) | TODO | 11.133 | Add in-memory cache primitives and observability before enabling broad scripting execution paths. |
+| 11.135 | Implement minimal read-only scripting path (`EVAL_RO`/`EVALSHA_RO`) | TODO | 11.134 | Provide `KEYS`/`ARGV` and `redis.call`/`redis.pcall` read-only enforcement on owner-thread execution model. |
+| 11.136 | Implement `SCRIPT` cache command parity (`LOAD`/`EXISTS`/`FLUSH`) + `NOSCRIPT` behavior | TODO | 11.135 | Align cache lifecycle and `EVALSHA*` compatibility behavior with Redis expectations. |
+| 11.137 | Implement minimal function surface (`FUNCTION LOAD` + `FCALL_RO`) | TODO | 11.136 | Add conservative read-only function execution path and key-argument validation semantics. |
+| 11.138 | Add scripting hardening/observability + replication/AOF compatibility tests | TODO | 11.137 | Cover timeout/memory/cache-eviction controls, plus replication-effect semantics and integration tests. |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
@@ -359,7 +366,7 @@ DeepResearch request status legend for this section:
 - `REQUESTED_WAITING`: instruction is created and request has been submitted by human; result not returned/imported yet.
 - `RECEIVED`: result returned and imported to repo notes/docs.
 
-Current pending (`REQUESTED_WAITING`) count: `1`
+Current pending (`REQUESTED_WAITING`) count: `0`
 
 | ID | Requested At | Topic | Instruction Path | Owner | Status | Result Path | Notes |
 |---|---|---|---|---|---|---|---|
@@ -367,7 +374,7 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | DR-002 | 2026-02-21 | Actor model + lock minimization for owner-thread architecture | `docs/performance/DEEPRESEARCH_ACTOR_LOCK_MINIMIZATION_INSTRUCTION_2026-02-21.md` | Human | RECEIVED | `docs/performance/actor-lock-minimization-deepresearch-2026-02-21.md` | Imported report and extracted actionable notes to `docs/performance/actor-lock-minimization-notes-2026-02-21.md`. |
 | DR-003 | 2026-02-21 | Kernel-path reduction / bypass feasibility for GET/SET hot path | `docs/performance/DEEPRESEARCH_KERNEL_PATH_REDUCTION_INSTRUCTION_2026-02-21.md` | Human | RECEIVED | `docs/performance/kernel-path-reduction-deepresearch-2026-02-23.md` | Imported from `/Users/kazuki-matsuda/Downloads/deep-research-report (4).md`; actionable digest added at `docs/performance/kernel-path-reduction-notes-2026-02-23.md`. |
 | DR-004 | 2026-02-22 | TLA+ onboarding and model-checking scope for owner-thread actor correctness | `docs/performance/DEEPRESEARCH_TLAPLUS_MODELING_INSTRUCTION_2026-02-22.md` | Human | RECEIVED | `docs/performance/tlaplus-onboarding-model-checking-deepresearch-2026-02-22.md` | Imported from `/Users/kazuki-matsuda/Downloads/deep-research-report (4).md`; actionable digest added at `docs/performance/tlaplus-onboarding-model-checking-notes-2026-02-22.md`. |
-| DR-005 | 2026-02-24 | Rust Lua engine crate selection + integration strategy for Redis scripting (`EVAL*`/`FCALL*`) | `docs/performance/DEEPRESEARCH_LUA_ENGINE_CRATE_SELECTION_INSTRUCTION_2026-02-24.md` | Human | REQUESTED_WAITING | (pending) | New request: choose practical crate and phased integration plan to replace current `ScriptingDisabled` behavior. |
+| DR-005 | 2026-02-24 | Rust Lua engine crate selection + integration strategy for Redis scripting (`EVAL*`/`FCALL*`) | `docs/performance/DEEPRESEARCH_LUA_ENGINE_CRATE_SELECTION_INSTRUCTION_2026-02-24.md` | Human | RECEIVED | `docs/performance/lua-engine-crate-selection-deepresearch-2026-02-24.md` | Imported from `/Users/kazuki-matsuda/Downloads/deep-research-report (4).md`; actionable digest added at `docs/performance/lua-engine-crate-selection-notes-2026-02-24.md`. |
 
 ---
 
@@ -781,3 +788,4 @@ Current pending (`REQUESTED_WAITING`) count: `1`
 | 249 | 2026-02-24 | 11.130 | DONE | Added behavior-maturity automation and full compatibility report generation: new YAML registry `docs/compatibility/command-implementation-status.yaml`, matrix generator `garnet-rs/tests/interop/build_command_maturity_matrix.sh`, and one-shot pipeline `garnet-rs/tests/interop/build_compatibility_report.sh` that regenerates declaration matrix + maturity matrix + external subset results and outputs `docs/compatibility/compatibility-report.md`. Verified real run completed successfully (`subset cases=4, pass=4, fail=0`, result dir `.../compatibility-report-20260224-133627`). |
 | 250 | 2026-02-24 | 11.131 | DONE | Tightened Redis external subset verification to check stdout-derived test counts per case (`expected_ok` vs `actual_ok`, ANSI-safe parse) and reran the full auto-report flow. Latest generated report (`docs/compatibility/compatibility-report.md`) now embeds count-verified subset details from `.../compatibility-report-20260224-133929/redis-runtest-external-subset` with all cases PASS. |
 | 251 | 2026-02-24 | 11.102 | DONE | Closed remaining `unit/type/list` external gaps by fixing blocking wait turn/fairness behavior and wakeup replication canonicalization. Added regression tests for linked BLMOVE chain observability, BRPOPLPUSH wakeup WATCH invalidation, and INFO COMMANDSTATS counting. External validation now passes fully (`ok=253, err=0, ignore=31`, result dir `.../unit-type-list-after-repl-format-fix-20260224-141135`). |
+| 252 | 2026-02-24 | 11.132 / DR-005 | DONE | Imported returned Lua-engine DeepResearch report into `docs/performance/lua-engine-crate-selection-deepresearch-2026-02-24.md`, added actionable notes `docs/performance/lua-engine-crate-selection-notes-2026-02-24.md`, updated Phase 11B `DR-005` to `RECEIVED` (`pending=0`), and registered scripting follow-up backlog items (`11.133`-`11.138`). |
