@@ -586,6 +586,14 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"LOADAOF") {
+            require_exact_arity(args, 2, "DEBUG", "DEBUG LOADAOF")?;
+            // Compatibility path: in-memory test mode has no persisted AOF replay boundary.
+            // Redis tests use DEBUG LOADAOF as a synchronization hook; returning OK keeps
+            // semantics for current appendonly-disabled/runtime-local execution.
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
             let key = args[2].to_vec();

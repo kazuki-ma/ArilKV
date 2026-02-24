@@ -6650,6 +6650,12 @@ fn debug_set_active_expire_returns_ok() {
 }
 
 #[test]
+fn debug_loadaof_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEBUG LOADAOF", b"+OK\r\n");
+}
+
+#[test]
 fn object_encoding_and_refcount_report_basic_metadata() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
