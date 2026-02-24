@@ -1356,6 +1356,127 @@ async fn replicaof_replication_rewrites_evalsha_after_replica_cache_flush() {
 }
 
 #[tokio::test]
+async fn replicaof_replication_propagates_function_load_and_fcall() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let replica_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            replica_listener,
+            1024,
+            replica_metrics_task,
+            async move {
+                let _ = replica_shutdown_rx.await;
+            },
+            None,
+            replica_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+
+    let library_source = b"#!lua name=lib_repl\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}\nredis.register_function{function_name='ro_get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}}";
+    let mut function_replicated = false;
+    for _ in 0..80 {
+        send_and_expect(
+            &mut master_client,
+            &encode_resp_command(&[b"FUNCTION", b"LOAD", b"REPLACE", library_source]),
+            b"$8\r\nlib_repl\r\n",
+        )
+        .await;
+
+        let probe = encode_resp_command(&[b"FCALL_RO", b"ro_get", b"1", b"repl:function:probe"]);
+        replica_client.write_all(&probe).await.unwrap();
+        let mut response = [0u8; 128];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(200),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if &response[..bytes_read] == b"$-1\r\n" {
+            function_replicated = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        function_replicated,
+        "replica did not receive replicated function library"
+    );
+
+    let key = b"repl:function:key";
+    let mut replicated = false;
+    for _ in 0..80 {
+        let fcall_rw = encode_resp_command(&[b"FCALL", b"rw_set", b"1", key, b"v1"]);
+        send_and_expect(&mut master_client, &fcall_rw, b"+OK\r\n").await;
+
+        let fcall_ro = encode_resp_command(&[b"FCALL_RO", b"ro_get", b"1", key]);
+        replica_client.write_all(&fcall_ro).await.unwrap();
+        let mut response = [0u8; 128];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(200),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if &response[..bytes_read] == b"$2\r\nv1\r\n" {
+            replicated = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+
+    assert!(
+        replicated,
+        "replica did not receive function library and fcall updates"
+    );
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_starts_with_select_db_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
