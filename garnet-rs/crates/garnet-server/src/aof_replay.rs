@@ -240,4 +240,26 @@ mod tests {
             .unwrap();
         assert_eq!(response, b"$2\r\nv1\r\n");
     }
+
+    #[test]
+    fn replay_aof_applies_function_load_and_fcall_when_scripting_enabled() {
+        let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true)
+            .expect("processor initializes");
+        let library_source = b"#!lua name=lib_aof\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}";
+        let operations = vec![
+            encode_resp_frame(&[b"FUNCTION", b"LOAD", library_source]),
+            encode_resp_frame(&[b"FCALL", b"rw_set", b"1", b"aof:function:key", b"v1"]),
+        ];
+        let applied = replay_aof_operations(&processor, &operations).unwrap();
+        assert_eq!(applied, 2);
+
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+        let get_frame = encode_resp_frame(&[b"GET", b"aof:function:key"]);
+        let meta = parse_resp_command_arg_slices(&get_frame, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$2\r\nv1\r\n");
+    }
 }
