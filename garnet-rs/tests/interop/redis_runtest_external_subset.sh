@@ -47,6 +47,7 @@ run_runtest_case() {
     local unit="$2"
     shift 2
     local log_file="${RESULT_DIR}/${case_name}.log"
+    local expected_ok="$#"
     local cmd=(
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
@@ -65,9 +66,25 @@ run_runtest_case() {
         cd "${REDIS_REPO_ROOT}"
         "${cmd[@]}"
     ) >"${log_file}" 2>&1; then
-        record_result "${case_name}" "PASS" "unit=${unit}; tests=$#; log=${log_file}"
+        local actual_ok
+        actual_ok="$(
+            awk '
+            BEGIN { esc = sprintf("%c", 27); ok = 0 }
+            {
+                line = $0
+                gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
+                if (line ~ /^\[ok\]:/) ok++
+            }
+            END { print ok + 0 }
+            ' "${log_file}"
+        )"
+        if [[ "${actual_ok}" -eq "${expected_ok}" ]]; then
+            record_result "${case_name}" "PASS" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=${actual_ok}; log=${log_file}"
+        else
+            record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=${actual_ok}; mismatch; log=${log_file}"
+        fi
     else
-        record_result "${case_name}" "FAIL" "unit=${unit}; tests=$#; log=${log_file}"
+        record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=NA; runtest_exit_nonzero; log=${log_file}"
     fi
 }
 

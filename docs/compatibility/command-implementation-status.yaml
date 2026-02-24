@@ -1,0 +1,727 @@
+schema_version: 1
+last_updated: 2026-02-24
+status_enum: [FULL, PARTIAL_MINIMAL, DISABLED]
+commands:
+  - command: ACL
+    status: PARTIAL_MINIMAL
+    comment: "Minimal ACL subcommand surface only."
+  - command: APPEND
+    status: FULL
+    comment: ""
+  - command: ASKING
+    status: FULL
+    comment: ""
+  - command: AUTH
+    status: FULL
+    comment: ""
+  - command: BGREWRITEAOF
+    status: PARTIAL_MINIMAL
+    comment: "Compatibility response surface only; full AOF rewrite lifecycle semantics are not implemented."
+  - command: BGSAVE
+    status: PARTIAL_MINIMAL
+    comment: "Compatibility response surface only; does not provide full Redis background-save lifecycle behavior."
+  - command: BITCOUNT
+    status: FULL
+    comment: ""
+  - command: BITFIELD
+    status: FULL
+    comment: ""
+  - command: BITFIELD_RO
+    status: FULL
+    comment: ""
+  - command: BITOP
+    status: FULL
+    comment: ""
+  - command: BITPOS
+    status: FULL
+    comment: ""
+  - command: BLMOVE
+    status: FULL
+    comment: ""
+  - command: BLMPOP
+    status: FULL
+    comment: ""
+  - command: BLPOP
+    status: FULL
+    comment: ""
+  - command: BRPOP
+    status: FULL
+    comment: ""
+  - command: BRPOPLPUSH
+    status: FULL
+    comment: ""
+  - command: BZMPOP
+    status: FULL
+    comment: ""
+  - command: BZPOPMAX
+    status: FULL
+    comment: ""
+  - command: BZPOPMIN
+    status: FULL
+    comment: ""
+  - command: CLIENT
+    status: PARTIAL_MINIMAL
+    comment: "Narrow subset implementation including minimal CLIENT LIST behavior for dependent tests."
+  - command: CLUSTER
+    status: PARTIAL_MINIMAL
+    comment: "Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled."
+  - command: COMMAND
+    status: FULL
+    comment: ""
+  - command: CONFIG
+    status: FULL
+    comment: ""
+  - command: COPY
+    status: FULL
+    comment: ""
+  - command: DBSIZE
+    status: FULL
+    comment: ""
+  - command: DEBUG
+    status: FULL
+    comment: ""
+  - command: DECR
+    status: FULL
+    comment: ""
+  - command: DECRBY
+    status: FULL
+    comment: ""
+  - command: DEL
+    status: FULL
+    comment: ""
+  - command: DISCARD
+    status: FULL
+    comment: ""
+  - command: DUMP
+    status: FULL
+    comment: ""
+  - command: ECHO
+    status: FULL
+    comment: ""
+  - command: EVAL
+    status: DISABLED
+    comment: ""
+  - command: EVALSHA
+    status: DISABLED
+    comment: ""
+  - command: EVALSHA_RO
+    status: DISABLED
+    comment: ""
+  - command: EVAL_RO
+    status: DISABLED
+    comment: ""
+  - command: EXEC
+    status: FULL
+    comment: ""
+  - command: EXISTS
+    status: FULL
+    comment: ""
+  - command: EXPIRE
+    status: FULL
+    comment: ""
+  - command: EXPIREAT
+    status: FULL
+    comment: ""
+  - command: EXPIRETIME
+    status: FULL
+    comment: ""
+  - command: FAILOVER
+    status: DISABLED
+    comment: ""
+  - command: FCALL
+    status: DISABLED
+    comment: ""
+  - command: FCALL_RO
+    status: DISABLED
+    comment: ""
+  - command: FLUSHALL
+    status: FULL
+    comment: ""
+  - command: FLUSHDB
+    status: FULL
+    comment: ""
+  - command: FUNCTION
+    status: PARTIAL_MINIMAL
+    comment: "Currently limited to FLUSH-compatible behavior."
+  - command: GEOADD
+    status: FULL
+    comment: ""
+  - command: GEODIST
+    status: FULL
+    comment: ""
+  - command: GEOHASH
+    status: FULL
+    comment: ""
+  - command: GEOPOS
+    status: FULL
+    comment: ""
+  - command: GEORADIUS
+    status: FULL
+    comment: ""
+  - command: GEORADIUSBYMEMBER
+    status: FULL
+    comment: ""
+  - command: GEORADIUSBYMEMBER_RO
+    status: FULL
+    comment: ""
+  - command: GEORADIUS_RO
+    status: FULL
+    comment: ""
+  - command: GEOSEARCH
+    status: FULL
+    comment: ""
+  - command: GEOSEARCHSTORE
+    status: FULL
+    comment: ""
+  - command: GET
+    status: FULL
+    comment: ""
+  - command: GETBIT
+    status: FULL
+    comment: ""
+  - command: GETDEL
+    status: FULL
+    comment: ""
+  - command: GETEX
+    status: FULL
+    comment: ""
+  - command: GETRANGE
+    status: FULL
+    comment: ""
+  - command: GETSET
+    status: FULL
+    comment: ""
+  - command: HDEL
+    status: FULL
+    comment: ""
+  - command: HELLO
+    status: FULL
+    comment: ""
+  - command: HEXISTS
+    status: FULL
+    comment: ""
+  - command: HGET
+    status: FULL
+    comment: ""
+  - command: HGETALL
+    status: FULL
+    comment: ""
+  - command: HINCRBY
+    status: FULL
+    comment: ""
+  - command: HINCRBYFLOAT
+    status: FULL
+    comment: ""
+  - command: HKEYS
+    status: FULL
+    comment: ""
+  - command: HLEN
+    status: FULL
+    comment: ""
+  - command: HMGET
+    status: FULL
+    comment: ""
+  - command: HMSET
+    status: FULL
+    comment: ""
+  - command: HRANDFIELD
+    status: FULL
+    comment: ""
+  - command: HSCAN
+    status: FULL
+    comment: ""
+  - command: HSET
+    status: FULL
+    comment: ""
+  - command: HSETNX
+    status: FULL
+    comment: ""
+  - command: HSTRLEN
+    status: FULL
+    comment: ""
+  - command: HVALS
+    status: FULL
+    comment: ""
+  - command: INCR
+    status: FULL
+    comment: ""
+  - command: INCRBY
+    status: FULL
+    comment: ""
+  - command: INCRBYFLOAT
+    status: FULL
+    comment: ""
+  - command: INFO
+    status: FULL
+    comment: ""
+  - command: KEYS
+    status: FULL
+    comment: ""
+  - command: LASTSAVE
+    status: FULL
+    comment: ""
+  - command: LATENCY
+    status: PARTIAL_MINIMAL
+    comment: "Minimal admin and introspection compatibility surface."
+  - command: LCS
+    status: FULL
+    comment: ""
+  - command: LINDEX
+    status: FULL
+    comment: ""
+  - command: LINSERT
+    status: FULL
+    comment: ""
+  - command: LLEN
+    status: FULL
+    comment: ""
+  - command: LMOVE
+    status: FULL
+    comment: ""
+  - command: LMPOP
+    status: FULL
+    comment: ""
+  - command: LOLWUT
+    status: FULL
+    comment: ""
+  - command: LPOP
+    status: FULL
+    comment: ""
+  - command: LPOS
+    status: FULL
+    comment: ""
+  - command: LPUSH
+    status: FULL
+    comment: ""
+  - command: LPUSHX
+    status: FULL
+    comment: ""
+  - command: LRANGE
+    status: FULL
+    comment: ""
+  - command: LREM
+    status: FULL
+    comment: ""
+  - command: LSET
+    status: FULL
+    comment: ""
+  - command: LTRIM
+    status: FULL
+    comment: ""
+  - command: MEMORY
+    status: FULL
+    comment: ""
+  - command: MGET
+    status: FULL
+    comment: ""
+  - command: MIGRATE
+    status: DISABLED
+    comment: ""
+  - command: MODULE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal admin and introspection compatibility surface."
+  - command: MONITOR
+    status: PARTIAL_MINIMAL
+    comment: "Compatibility ACK response surface only."
+  - command: MOVE
+    status: FULL
+    comment: ""
+  - command: MSET
+    status: FULL
+    comment: ""
+  - command: MSETNX
+    status: FULL
+    comment: ""
+  - command: MULTI
+    status: FULL
+    comment: ""
+  - command: OBJECT
+    status: FULL
+    comment: ""
+  - command: PERSIST
+    status: FULL
+    comment: ""
+  - command: PEXPIRE
+    status: FULL
+    comment: ""
+  - command: PEXPIREAT
+    status: FULL
+    comment: ""
+  - command: PEXPIRETIME
+    status: FULL
+    comment: ""
+  - command: PFADD
+    status: FULL
+    comment: ""
+  - command: PFCOUNT
+    status: FULL
+    comment: ""
+  - command: PFDEBUG
+    status: FULL
+    comment: ""
+  - command: PFMERGE
+    status: FULL
+    comment: ""
+  - command: PFSELFTEST
+    status: FULL
+    comment: ""
+  - command: PING
+    status: FULL
+    comment: ""
+  - command: PSETEX
+    status: FULL
+    comment: ""
+  - command: PSUBSCRIBE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: PSYNC
+    status: FULL
+    comment: ""
+  - command: PTTL
+    status: FULL
+    comment: ""
+  - command: PUBLISH
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: PUBSUB
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: PUNSUBSCRIBE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: QUIT
+    status: FULL
+    comment: ""
+  - command: RANDOMKEY
+    status: FULL
+    comment: ""
+  - command: READONLY
+    status: DISABLED
+    comment: ""
+  - command: READWRITE
+    status: DISABLED
+    comment: ""
+  - command: RENAME
+    status: FULL
+    comment: ""
+  - command: RENAMENX
+    status: FULL
+    comment: ""
+  - command: REPLCONF
+    status: FULL
+    comment: ""
+  - command: REPLICAOF
+    status: FULL
+    comment: ""
+  - command: RESET
+    status: FULL
+    comment: ""
+  - command: RESTORE
+    status: FULL
+    comment: ""
+  - command: RESTORE-ASKING
+    status: FULL
+    comment: ""
+  - command: ROLE
+    status: PARTIAL_MINIMAL
+    comment: "Returns fixed master-role shape; full role-state semantics are not implemented."
+  - command: RPOP
+    status: FULL
+    comment: ""
+  - command: RPOPLPUSH
+    status: FULL
+    comment: ""
+  - command: RPUSH
+    status: FULL
+    comment: ""
+  - command: RPUSHX
+    status: FULL
+    comment: ""
+  - command: SADD
+    status: FULL
+    comment: ""
+  - command: SAVE
+    status: FULL
+    comment: ""
+  - command: SCAN
+    status: FULL
+    comment: ""
+  - command: SCARD
+    status: FULL
+    comment: ""
+  - command: SCRIPT
+    status: PARTIAL_MINIMAL
+    comment: "Currently limited to FLUSH-compatible behavior."
+  - command: SDIFF
+    status: FULL
+    comment: ""
+  - command: SDIFFSTORE
+    status: FULL
+    comment: ""
+  - command: SELECT
+    status: FULL
+    comment: ""
+  - command: SET
+    status: FULL
+    comment: ""
+  - command: SETBIT
+    status: FULL
+    comment: ""
+  - command: SETEX
+    status: FULL
+    comment: ""
+  - command: SETNX
+    status: FULL
+    comment: ""
+  - command: SETRANGE
+    status: FULL
+    comment: ""
+  - command: SHUTDOWN
+    status: DISABLED
+    comment: ""
+  - command: SINTER
+    status: FULL
+    comment: ""
+  - command: SINTERCARD
+    status: FULL
+    comment: ""
+  - command: SINTERSTORE
+    status: FULL
+    comment: ""
+  - command: SISMEMBER
+    status: FULL
+    comment: ""
+  - command: SLAVEOF
+    status: FULL
+    comment: ""
+  - command: SLOWLOG
+    status: PARTIAL_MINIMAL
+    comment: "Minimal admin and introspection compatibility surface."
+  - command: SMEMBERS
+    status: FULL
+    comment: ""
+  - command: SMISMEMBER
+    status: FULL
+    comment: ""
+  - command: SMOVE
+    status: FULL
+    comment: ""
+  - command: SORT
+    status: FULL
+    comment: ""
+  - command: SORT_RO
+    status: FULL
+    comment: ""
+  - command: SPOP
+    status: FULL
+    comment: ""
+  - command: SPUBLISH
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: SRANDMEMBER
+    status: FULL
+    comment: ""
+  - command: SREM
+    status: FULL
+    comment: ""
+  - command: SSCAN
+    status: FULL
+    comment: ""
+  - command: SSUBSCRIBE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: STRLEN
+    status: FULL
+    comment: ""
+  - command: SUBSCRIBE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: SUBSTR
+    status: FULL
+    comment: ""
+  - command: SUNION
+    status: FULL
+    comment: ""
+  - command: SUNIONSTORE
+    status: FULL
+    comment: ""
+  - command: SUNSUBSCRIBE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: SWAPDB
+    status: FULL
+    comment: ""
+  - command: SYNC
+    status: FULL
+    comment: ""
+  - command: TIME
+    status: FULL
+    comment: ""
+  - command: TOUCH
+    status: FULL
+    comment: ""
+  - command: TTL
+    status: FULL
+    comment: ""
+  - command: TYPE
+    status: FULL
+    comment: ""
+  - command: UNLINK
+    status: FULL
+    comment: ""
+  - command: UNSUBSCRIBE
+    status: PARTIAL_MINIMAL
+    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+  - command: UNWATCH
+    status: FULL
+    comment: ""
+  - command: WAIT
+    status: PARTIAL_MINIMAL
+    comment: "Minimal compatibility behavior; full replication and durability semantics are not implemented."
+  - command: WAITAOF
+    status: PARTIAL_MINIMAL
+    comment: "Minimal compatibility behavior; full replication and durability semantics are not implemented."
+  - command: WATCH
+    status: FULL
+    comment: ""
+  - command: XACK
+    status: FULL
+    comment: ""
+  - command: XADD
+    status: FULL
+    comment: ""
+  - command: XAUTOCLAIM
+    status: FULL
+    comment: ""
+  - command: XCLAIM
+    status: FULL
+    comment: ""
+  - command: XDEL
+    status: FULL
+    comment: ""
+  - command: XGROUP
+    status: FULL
+    comment: ""
+  - command: XINFO
+    status: FULL
+    comment: ""
+  - command: XLEN
+    status: FULL
+    comment: ""
+  - command: XPENDING
+    status: FULL
+    comment: ""
+  - command: XRANGE
+    status: FULL
+    comment: ""
+  - command: XREAD
+    status: FULL
+    comment: ""
+  - command: XREADGROUP
+    status: FULL
+    comment: ""
+  - command: XREVRANGE
+    status: FULL
+    comment: ""
+  - command: XSETID
+    status: FULL
+    comment: ""
+  - command: XTRIM
+    status: FULL
+    comment: ""
+  - command: ZADD
+    status: FULL
+    comment: ""
+  - command: ZCARD
+    status: FULL
+    comment: ""
+  - command: ZCOUNT
+    status: FULL
+    comment: ""
+  - command: ZDIFF
+    status: FULL
+    comment: ""
+  - command: ZDIFFSTORE
+    status: FULL
+    comment: ""
+  - command: ZINCRBY
+    status: FULL
+    comment: ""
+  - command: ZINTER
+    status: FULL
+    comment: ""
+  - command: ZINTERCARD
+    status: FULL
+    comment: ""
+  - command: ZINTERSTORE
+    status: FULL
+    comment: ""
+  - command: ZLEXCOUNT
+    status: FULL
+    comment: ""
+  - command: ZMPOP
+    status: FULL
+    comment: ""
+  - command: ZMSCORE
+    status: FULL
+    comment: ""
+  - command: ZPOPMAX
+    status: FULL
+    comment: ""
+  - command: ZPOPMIN
+    status: FULL
+    comment: ""
+  - command: ZRANDMEMBER
+    status: FULL
+    comment: ""
+  - command: ZRANGE
+    status: FULL
+    comment: ""
+  - command: ZRANGEBYLEX
+    status: FULL
+    comment: ""
+  - command: ZRANGEBYSCORE
+    status: FULL
+    comment: ""
+  - command: ZRANGESTORE
+    status: FULL
+    comment: ""
+  - command: ZRANK
+    status: FULL
+    comment: ""
+  - command: ZREM
+    status: FULL
+    comment: ""
+  - command: ZREMRANGEBYLEX
+    status: FULL
+    comment: ""
+  - command: ZREMRANGEBYRANK
+    status: FULL
+    comment: ""
+  - command: ZREMRANGEBYSCORE
+    status: FULL
+    comment: ""
+  - command: ZREVRANGE
+    status: FULL
+    comment: ""
+  - command: ZREVRANGEBYLEX
+    status: FULL
+    comment: ""
+  - command: ZREVRANGEBYSCORE
+    status: FULL
+    comment: ""
+  - command: ZREVRANK
+    status: FULL
+    comment: ""
+  - command: ZSCAN
+    status: FULL
+    comment: ""
+  - command: ZSCORE
+    status: FULL
+    comment: ""
+  - command: ZUNION
+    status: FULL
+    comment: ""
+  - command: ZUNIONSTORE
+    status: FULL
+    comment: ""

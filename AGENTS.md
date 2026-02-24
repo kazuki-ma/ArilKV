@@ -39,13 +39,15 @@ When command behavior or command declarations change (`request_lifecycle`,
 `command_spec`, `command_dispatch`), run this sequence:
 
 1. `cd garnet-rs && cargo test -p garnet-server -- --nocapture`
-2. `cd garnet-rs/tests/interop && REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis ./redis_runtest_external_subset.sh`
-3. `cd garnet-rs/tests/interop && ./build_command_status_matrix.sh`
+2. `cd garnet-rs/tests/interop && REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis ./build_compatibility_report.sh`
 
 Commit the generated compatibility matrix files when status changes:
 
 - `docs/compatibility/redis-command-status.csv`
 - `docs/compatibility/redis-command-status-summary.md`
+- `docs/compatibility/redis-command-maturity.csv`
+- `docs/compatibility/redis-command-maturity-summary.md`
+- `docs/compatibility/compatibility-report.md`
 
 ## Implementation Reference Policy
 

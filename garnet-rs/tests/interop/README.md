@@ -37,6 +37,9 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
   - Runs Redis official `runtest` in external-server mode against local Garnet:
     - `--host/--port --singledb --force-resp3`
     - targeted subset for current implemented commands (`MGET/MSET/INCRBY/DECRBY/EXISTS`)
+  - Validates per-case executed test counts from runtest stdout:
+    - records `expected_ok` (selected tests) and `actual_ok` (parsed `[ok]` lines)
+    - marks a case `FAIL` when counts mismatch even if runtest exits `0`
   - Includes a direct `redis-cli TYPE` probe (`string/hash/none`) in the same run.
   - Writes a CSV summary and per-case logs under
     `garnet-rs/tests/interop/results/...`.
@@ -50,6 +53,26 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
     - `docs/compatibility/redis-command-status.csv`
     - `docs/compatibility/redis-command-status-summary.md`
 
+- `build_command_maturity_matrix.sh`
+  - Joins command declaration matrix with behavior maturity status from
+    `docs/compatibility/command-implementation-status.yaml`.
+  - Maturity enum:
+    - `FULL`
+    - `PARTIAL_MINIMAL`
+    - `DISABLED`
+  - Writes:
+    - `docs/compatibility/redis-command-maturity.csv`
+    - `docs/compatibility/redis-command-maturity-summary.md`
+
+- `build_compatibility_report.sh`
+  - Full auto-generated compatibility report workflow:
+    1. runs `build_command_status_matrix.sh`
+    2. runs `build_command_maturity_matrix.sh`
+    3. runs `redis_runtest_external_subset.sh`
+    4. merges all outputs into a single report
+  - Writes:
+    - `docs/compatibility/compatibility-report.md`
+
 ## Usage
 
 ```bash
@@ -58,12 +81,16 @@ chmod +x command_coverage_audit.sh cluster_capability_matrix.sh
 chmod +x replication_capability_matrix.sh
 chmod +x redis_runtest_external_subset.sh
 chmod +x build_command_status_matrix.sh
+chmod +x build_command_maturity_matrix.sh
+chmod +x build_compatibility_report.sh
 
 ./command_coverage_audit.sh
 ./cluster_capability_matrix.sh
 ./replication_capability_matrix.sh
 ./redis_runtest_external_subset.sh
 ./build_command_status_matrix.sh
+./build_command_maturity_matrix.sh
+./build_compatibility_report.sh
 ```
 
 ## Required Flow For Command Edits
@@ -76,14 +103,16 @@ cargo test -p garnet-server -- --nocapture
 
 cd tests/interop
 REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis \
-./redis_runtest_external_subset.sh
-./build_command_status_matrix.sh
+./build_compatibility_report.sh
 ```
 
 If command status changed, include these generated files in the commit:
 
 - `docs/compatibility/redis-command-status.csv`
 - `docs/compatibility/redis-command-status-summary.md`
+- `docs/compatibility/redis-command-maturity.csv`
+- `docs/compatibility/redis-command-maturity-summary.md`
+- `docs/compatibility/compatibility-report.md`
 
 Recommended add-on checks:
 
@@ -98,6 +127,11 @@ Recommended add-on checks:
   - keep feature-level unit tests in `garnet-server` as the primary correctness gate.
 - `build_command_status_matrix.sh` updates canonical status files under `docs/compatibility/`.
   - run it whenever `CommandId`/`COMMAND` surface changes.
+- `build_command_maturity_matrix.sh` requires one YAML entry per declared command.
+  - if a command is intentionally minimal/disabled, encode it in
+    `docs/compatibility/command-implementation-status.yaml`.
+- `build_compatibility_report.sh` is the canonical report generator.
+  - it merges declaration status, maturity comments, and external subset probe results.
 - Always verify test count lines in command output, not only exit code.
   - the expected test-case counts are part of regression safety.
 
