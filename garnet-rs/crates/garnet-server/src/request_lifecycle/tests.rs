@@ -4129,6 +4129,22 @@ fn dbsize_counts_string_and_object_keys() {
 }
 
 #[test]
+fn dbsize_does_not_lazy_expire_until_key_access() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n");
+    assert_command_response(&processor, "PSETEX key1 500 a", b"+OK\r\n");
+    assert_command_response(&processor, "PSETEX key2 500 a", b"+OK\r\n");
+    assert_command_response(&processor, "PSETEX key3 500 a", b"+OK\r\n");
+
+    assert_command_integer(&processor, "DBSIZE", 3);
+    thread::sleep(Duration::from_millis(650));
+    assert_command_integer(&processor, "DBSIZE", 3);
+
+    assert_command_response(&processor, "MGET key1 key2 key3", b"*3\r\n$-1\r\n$-1\r\n$-1\r\n");
+    assert_command_integer(&processor, "DBSIZE", 0);
+}
+
+#[test]
 fn flushdb_clears_string_and_object_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

@@ -1473,23 +1473,7 @@ impl RequestProcessor {
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
         let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
-
-        let mut count = 0i64;
-        for key in keys {
-            self.expire_key_if_needed(&key)?;
-            let string_exists = self.key_exists(&key)?;
-            let object_exists = self.object_key_exists(&key)?;
-            if string_exists || object_exists {
-                count += 1;
-            }
-            if !string_exists {
-                self.untrack_string_key(&key);
-            }
-            if !object_exists {
-                self.untrack_object_key(&key);
-            }
-        }
-        Ok(count)
+        Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
     }
 
     fn debug_digest_value_for_key(&self, key: &[u8]) -> Result<Vec<u8>, RequestExecutionError> {
