@@ -99,17 +99,17 @@ commands:
     status: FULL
     comment: ""
   - command: EVAL
-    status: DISABLED
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; executes Lua via mlua (Lua 5.1 vendored) with KEYS/ARGV and redis.call/pcall bridge."
   - command: EVALSHA
-    status: DISABLED
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; returns NOSCRIPT on missing SHA and executes cached script body."
   - command: EVALSHA_RO
-    status: DISABLED
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection inside redis.call/pcall."
   - command: EVAL_RO
-    status: DISABLED
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; write commands are rejected from script context."
   - command: EXEC
     status: FULL
     comment: ""
@@ -130,10 +130,10 @@ commands:
     comment: ""
   - command: FCALL
     status: DISABLED
-    comment: ""
+    comment: "FUNCTION/FCALL runtime is not implemented yet; command remains disabled."
   - command: FCALL_RO
     status: DISABLED
-    comment: ""
+    comment: "FUNCTION/FCALL runtime is not implemented yet; command remains disabled."
   - command: FLUSHALL
     status: FULL
     comment: ""
@@ -451,7 +451,7 @@ commands:
     comment: ""
   - command: SCRIPT
     status: PARTIAL_MINIMAL
-    comment: "Currently limited to FLUSH-compatible behavior."
+    comment: "Supports FLUSH plus LOAD/EXISTS when scripting is enabled; HELP/KILL/DEBUG and full Redis script-admin surface are not implemented."
   - command: SDIFF
     status: FULL
     comment: ""

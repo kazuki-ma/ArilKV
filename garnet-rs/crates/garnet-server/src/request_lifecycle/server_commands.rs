@@ -1292,108 +1292,6 @@ impl RequestProcessor {
         })
     }
 
-    pub(super) fn handle_function(
-        &self,
-        args: &[&[u8]],
-        response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
-        let subcommand = args[1];
-        if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
-            return Err(RequestExecutionError::UnknownCommand);
-        }
-        append_simple_string(response_out, b"OK");
-        Ok(())
-    }
-
-    pub(super) fn handle_script(
-        &self,
-        args: &[&[u8]],
-        response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        ensure_ranged_arity(args, 2, 3, "SCRIPT", "SCRIPT FLUSH [ASYNC|SYNC]")?;
-        let subcommand = args[1];
-        if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
-            return Err(RequestExecutionError::UnknownCommand);
-        }
-        if args.len() == 3 {
-            let flush_mode = args[2];
-            if !ascii_eq_ignore_case(flush_mode, b"ASYNC")
-                && !ascii_eq_ignore_case(flush_mode, b"SYNC")
-            {
-                return Err(RequestExecutionError::UnknownCommand);
-            }
-        }
-        append_simple_string(response_out, b"OK");
-        Ok(())
-    }
-
-    pub(super) fn handle_eval(
-        &self,
-        args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(args, "EVAL", "EVAL script numkeys [key ...] [arg ...]")?;
-        Err(RequestExecutionError::ScriptingDisabled)
-    }
-
-    pub(super) fn handle_eval_ro(
-        &self,
-        args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(
-            args,
-            "EVAL_RO",
-            "EVAL_RO script numkeys [key ...] [arg ...]",
-        )?;
-        Err(RequestExecutionError::ScriptingDisabled)
-    }
-
-    pub(super) fn handle_evalsha(
-        &self,
-        args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(args, "EVALSHA", "EVALSHA sha1 numkeys [key ...] [arg ...]")?;
-        Err(RequestExecutionError::ScriptingDisabled)
-    }
-
-    pub(super) fn handle_evalsha_ro(
-        &self,
-        args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(
-            args,
-            "EVALSHA_RO",
-            "EVALSHA_RO sha1 numkeys [key ...] [arg ...]",
-        )?;
-        Err(RequestExecutionError::ScriptingDisabled)
-    }
-
-    pub(super) fn handle_fcall(
-        &self,
-        args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(args, "FCALL", "FCALL function numkeys [key ...] [arg ...]")?;
-        Err(RequestExecutionError::ScriptingDisabled)
-    }
-
-    pub(super) fn handle_fcall_ro(
-        &self,
-        args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
-    ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(
-            args,
-            "FCALL_RO",
-            "FCALL_RO function numkeys [key ...] [arg ...]",
-        )?;
-        Err(RequestExecutionError::ScriptingDisabled)
-    }
-
     pub(super) fn handle_config(
         &self,
         args: &[&[u8]],
@@ -1754,24 +1652,6 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
         }
         _ => None,
     }
-}
-
-fn validate_scripting_numkeys(
-    args: &[&[u8]],
-    command: &'static str,
-    expected: &'static str,
-) -> Result<(), RequestExecutionError> {
-    ensure_min_arity(args, 3, command, expected)?;
-    let numkeys_raw = args[2];
-    let numkeys = parse_i64_ascii(numkeys_raw).ok_or(RequestExecutionError::ValueNotInteger)?;
-    if numkeys < 0 {
-        return Err(RequestExecutionError::ValueOutOfRange);
-    }
-    let key_count = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-    if key_count > args.len().saturating_sub(3) {
-        return Err(RequestExecutionError::SyntaxError);
-    }
-    Ok(())
 }
 
 fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: &[u8]) {

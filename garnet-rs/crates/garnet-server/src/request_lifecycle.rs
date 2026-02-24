@@ -26,6 +26,7 @@ const GARNET_PAGE_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_PAGE_SIZE_BITS";
 const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES";
 const GARNET_STRING_STORE_SHARDS_ENV: &str = "GARNET_TSAVORITE_STRING_STORE_SHARDS";
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
+const GARNET_SCRIPTING_ENABLED_ENV: &str = "GARNET_SCRIPTING_ENABLED";
 const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 18;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 18;
@@ -43,6 +44,7 @@ mod list_commands;
 mod migration;
 mod object_store;
 mod resp;
+mod scripting;
 mod server_commands;
 mod session_functions;
 mod set_commands;
@@ -58,7 +60,8 @@ use self::command_helpers::{
     parse_scan_match_count_options, require_exact_arity,
 };
 use self::config::{
-    scale_hash_index_bits_for_shards, string_store_shard_count_from_env, tsavorite_config_from_env,
+    scale_hash_index_bits_for_shards, scripting_enabled_from_env,
+    string_store_shard_count_from_env, tsavorite_config_from_env,
 };
 #[cfg(test)]
 use self::config::{string_store_shard_count_from_values, tsavorite_config_from_values};
@@ -67,8 +70,8 @@ use self::errors::{
     map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
 };
 use self::resp::{
-    append_bulk_array, append_bulk_string, append_integer, append_null, append_null_array,
-    append_null_bulk_string, append_simple_string, ascii_eq_ignore_case,
+    append_bulk_array, append_bulk_string, append_error, append_integer, append_null,
+    append_null_array, append_null_bulk_string, append_simple_string, ascii_eq_ignore_case,
 };
 use self::session_functions::{KvSessionFunctions, ObjectSessionFunctions};
 use self::value_codec::{
@@ -150,6 +153,8 @@ pub struct RequestProcessor {
     blocked_clients: AtomicU64,
     watching_clients: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    script_cache: Mutex<HashMap<String, Vec<u8>>>,
+    scripting_enabled: bool,
     zset_max_listpack_entries: AtomicUsize,
     list_max_listpack_size: AtomicI64,
     functions: KvSessionFunctions,
@@ -158,11 +163,30 @@ pub struct RequestProcessor {
 
 impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
-        Self::new_with_string_store_shards(string_store_shard_count_from_env())
+        Self::new_with_options(
+            string_store_shard_count_from_env(),
+            scripting_enabled_from_env(),
+        )
     }
 
+    #[cfg(test)]
     fn new_with_string_store_shards(
         store_shard_count: usize,
+    ) -> Result<Self, RequestProcessorInitError> {
+        Self::new_with_options(store_shard_count, scripting_enabled_from_env())
+    }
+
+    #[cfg(test)]
+    fn new_with_string_store_shards_and_scripting(
+        store_shard_count: usize,
+        scripting_enabled: bool,
+    ) -> Result<Self, RequestProcessorInitError> {
+        Self::new_with_options(store_shard_count, scripting_enabled)
+    }
+
+    fn new_with_options(
+        store_shard_count: usize,
+        scripting_enabled: bool,
     ) -> Result<Self, RequestProcessorInitError> {
         let store_shard_count = store_shard_count.max(1);
         let store_config = tsavorite_config_from_env();
@@ -236,6 +260,8 @@ impl RequestProcessor {
             blocked_clients: AtomicU64::new(0),
             watching_clients: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
+            script_cache: Mutex::new(HashMap::new()),
+            scripting_enabled,
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
             functions: KvSessionFunctions,
@@ -306,6 +332,10 @@ impl RequestProcessor {
             payload.push_str(",usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0\r\n");
         }
         payload
+    }
+
+    pub(super) fn scripting_enabled(&self) -> bool {
+        self.scripting_enabled
     }
 
     pub(crate) fn increment_blocked_clients(&self) {

@@ -3,7 +3,7 @@ use tsavorite::TsavoriteKvConfig;
 use super::{
     DEFAULT_SERVER_HASH_INDEX_SIZE_BITS, DEFAULT_STRING_STORE_SHARDS,
     GARNET_HASH_INDEX_SIZE_BITS_ENV, GARNET_MAX_IN_MEMORY_PAGES_ENV, GARNET_PAGE_SIZE_BITS_ENV,
-    GARNET_STRING_OWNER_THREADS_ENV, GARNET_STRING_STORE_SHARDS_ENV,
+    GARNET_SCRIPTING_ENABLED_ENV, GARNET_STRING_OWNER_THREADS_ENV, GARNET_STRING_STORE_SHARDS_ENV,
     SINGLE_OWNER_THREAD_STRING_STORE_SHARDS,
 };
 
@@ -47,6 +47,10 @@ pub(super) fn string_store_shard_count_from_env() -> usize {
     string_store_shard_count_from_values(explicit_shards, owner_threads)
 }
 
+pub(super) fn scripting_enabled_from_env() -> bool {
+    parse_env_bool(GARNET_SCRIPTING_ENABLED_ENV).unwrap_or(false)
+}
+
 pub(super) fn string_store_shard_count_from_values(
     explicit_shards: Option<usize>,
     owner_threads: Option<usize>,
@@ -77,4 +81,13 @@ fn parse_env_u8(key: &str) -> Option<u8> {
 
 fn parse_env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok()?.parse::<usize>().ok()
+}
+
+fn parse_env_bool(key: &str) -> Option<bool> {
+    let value = std::env::var(key).ok()?;
+    match value.as_str() {
+        "1" | "true" | "TRUE" | "True" | "yes" | "YES" | "on" | "ON" => Some(true),
+        "0" | "false" | "FALSE" | "False" | "no" | "NO" | "off" | "OFF" => Some(false),
+        _ => None,
+    }
 }

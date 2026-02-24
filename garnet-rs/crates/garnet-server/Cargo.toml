@@ -16,6 +16,8 @@ garnet-cluster = { path = "../garnet-cluster" }
 tsavorite = { path = "../tsavorite" }
 mimalloc = { version = "0.1", default-features = false, optional = true }
 core_affinity = "0.8"
+mlua = { version = "0.11.6", features = ["lua51", "vendored"] }
+sha1 = "0.10"
 
 [dev-dependencies]
 criterion.workspace = true

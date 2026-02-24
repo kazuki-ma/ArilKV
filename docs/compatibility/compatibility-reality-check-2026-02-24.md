@@ -41,10 +41,16 @@ It does not validate semantic completeness for each command.
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:311`
 - `SHUTDOWN` -> `ERR SHUTDOWN is disabled in this server`
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1292`
-- `EVAL`, `EVAL_RO`, `EVALSHA`, `EVALSHA_RO`, `FCALL`, `FCALL_RO`
-  - currently return `ScriptingDisabled`
-  - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1339`
-  - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1396`
+- `FCALL`, `FCALL_RO`
+  - remain disabled (`ERR FCALL* is disabled in this server`) even when scripting is enabled
+  - `garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs`
+
+## A2. Feature-Gated Scripting Surface
+
+- `EVAL`, `EVAL_RO`, `EVALSHA`, `EVALSHA_RO` are implemented but guarded by `GARNET_SCRIPTING_ENABLED` (default off).
+- when disabled, these commands return `ERR scripting is disabled in this server`.
+- when enabled, execution uses `mlua` (Lua 5.1 vendored) with `KEYS`/`ARGV` and `redis.call`/`redis.pcall`.
+- `EVALSHA*` returns `NOSCRIPT` when SHA is missing.
 
 ## B. Cluster-Support-Disabled Paths
 
@@ -67,9 +73,10 @@ It does not validate semantic completeness for each command.
 
 ## D. Scripting Admin Surface Is Partial
 
-- `SCRIPT` and `FUNCTION` currently support a narrow `FLUSH`-style path
-  - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1297`
-  - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1311`
+- `SCRIPT` supports `FLUSH` plus `LOAD`/`EXISTS` (the latter two behind `GARNET_SCRIPTING_ENABLED`).
+- `FUNCTION` remains minimal (`FLUSH` only); `FUNCTION LOAD` and `FCALL*` runtime semantics are still pending.
+- implementation path:
+  - `garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs`
 
 ## What External Checks Currently Miss
 

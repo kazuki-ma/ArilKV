@@ -19,6 +19,11 @@ This directory owns command execution semantics and RESP response construction.
   - `numkeys` must be integer > 0.
   - direction must be `LEFT|RIGHT`.
   - optional `COUNT` must be `COUNT <positive integer>`.
+- Scripting (`EVAL*`, `SCRIPT`) is feature-gated by runtime env:
+  - `GARNET_SCRIPTING_ENABLED=1` enables Lua execution.
+  - default is disabled; command paths must preserve disabled behavior.
+  - `SCRIPT LOAD/EXISTS` and `EVALSHA*` share SHA1 cache semantics (`NOSCRIPT` on miss).
+  - `EVAL_RO`/`EVALSHA_RO` must reject mutating commands via `redis.call`/`redis.pcall`.
 - Blocking list commands use owner-thread polling with wait-queue fairness:
   - timeout is parsed as float seconds and enforced (including non-turn queue waits).
   - waiter order is tracked per key; queue cleanup runs on wake/timeout/disconnect.

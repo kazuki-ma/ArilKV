@@ -14,6 +14,12 @@ pub(super) fn append_simple_string(response_out: &mut Vec<u8>, value: &[u8]) {
     response_out.extend_from_slice(b"\r\n");
 }
 
+pub(super) fn append_error(response_out: &mut Vec<u8>, message: &[u8]) {
+    response_out.push(b'-');
+    response_out.extend_from_slice(message);
+    response_out.extend_from_slice(b"\r\n");
+}
+
 pub(super) fn append_bulk_string(response_out: &mut Vec<u8>, value: &[u8]) {
     response_out.extend_from_slice(b"$");
     response_out.extend_from_slice(value.len().to_string().as_bytes());

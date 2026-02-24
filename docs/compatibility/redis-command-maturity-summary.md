@@ -1,14 +1,14 @@
 # Redis Command Maturity Summary
 
-- Generated at: 2026-02-24T05:12:30Z
+- Generated at: 2026-02-24T12:11:31Z
 - Status source: `docs/compatibility/redis-command-status.csv`
 - Implementation source: `docs/compatibility/command-implementation-status.yaml`
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
 
 - Supported declared commands: `241`
 - `FULL`: `207`
-- `PARTIAL_MINIMAL`: `23`
-- `DISABLED`: `11`
+- `PARTIAL_MINIMAL`: `27`
+- `DISABLED`: `7`
 - Full implementation ratio over declared commands: `85.89%`
 
 ## Non-Full Commands
@@ -20,13 +20,13 @@
 | `BGSAVE` | `PARTIAL_MINIMAL` | Compatibility response surface only; does not provide full Redis background-save lifecycle behavior. |
 | `CLIENT` | `PARTIAL_MINIMAL` | Narrow subset implementation including minimal CLIENT LIST behavior for dependent tests. |
 | `CLUSTER` | `PARTIAL_MINIMAL` | Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled. |
-| `EVAL` | `DISABLED` | - |
-| `EVALSHA` | `DISABLED` | - |
-| `EVALSHA_RO` | `DISABLED` | - |
-| `EVAL_RO` | `DISABLED` | - |
+| `EVAL` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; executes Lua via mlua (Lua 5.1 vendored) with KEYS/ARGV and redis.call/pcall bridge. |
+| `EVALSHA` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; returns NOSCRIPT on missing SHA and executes cached script body. |
+| `EVALSHA_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection inside redis.call/pcall. |
+| `EVAL_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; write commands are rejected from script context. |
 | `FAILOVER` | `DISABLED` | - |
-| `FCALL` | `DISABLED` | - |
-| `FCALL_RO` | `DISABLED` | - |
+| `FCALL` | `DISABLED` | FUNCTION/FCALL runtime is not implemented yet; command remains disabled. |
+| `FCALL_RO` | `DISABLED` | FUNCTION/FCALL runtime is not implemented yet; command remains disabled. |
 | `FUNCTION` | `PARTIAL_MINIMAL` | Currently limited to FLUSH-compatible behavior. |
 | `LATENCY` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `MIGRATE` | `DISABLED` | - |
@@ -39,7 +39,7 @@
 | `READONLY` | `DISABLED` | - |
 | `READWRITE` | `DISABLED` | - |
 | `ROLE` | `PARTIAL_MINIMAL` | Returns fixed master-role shape; full role-state semantics are not implemented. |
-| `SCRIPT` | `PARTIAL_MINIMAL` | Currently limited to FLUSH-compatible behavior. |
+| `SCRIPT` | `PARTIAL_MINIMAL` | Supports FLUSH plus LOAD/EXISTS when scripting is enabled; HELP/KILL/DEBUG and full Redis script-admin surface are not implemented. |
 | `SHUTDOWN` | `DISABLED` | - |
 | `SLOWLOG` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `SPUBLISH` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |

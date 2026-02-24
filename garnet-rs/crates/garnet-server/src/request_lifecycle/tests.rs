@@ -6848,6 +6848,83 @@ fn scripting_eval_and_fcall_commands_validate_numkeys_then_return_disabled() {
         b"-ERR value is not an integer or out of range\r\n",
     );
     assert_command_error(&processor, "EVAL \"return 1\" 1", b"-ERR syntax error\r\n");
+    assert_command_error(
+        &processor,
+        "SCRIPT LOAD \"return 1\"",
+        b"-ERR scripting is disabled in this server\r\n",
+    );
+}
+
+#[test]
+fn scripting_eval_executes_when_enabled() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(&processor, "EVAL \"return 1\" 0", b":1\r\n");
+    assert_command_response(&processor, "EVAL \"return 'pong'\" 0", b"$4\r\npong\r\n");
+    assert_command_response(
+        &processor,
+        "EVAL \"redis.call('SET','k','v'); return redis.call('GET','k')\" 0",
+        b"$1\r\nv\r\n",
+    );
+}
+
+#[test]
+fn scripting_eval_ro_rejects_write_calls() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let response = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL_RO", b"return redis.call('SET','k','v')", b"0"]),
+    );
+    let response_text = String::from_utf8_lossy(&response);
+    assert!(response_text.starts_with("-ERR Error running script:"));
+    assert!(response_text.contains("Write commands are not allowed from read-only scripts"));
+}
+
+#[test]
+fn script_load_exists_evalsha_and_flush_when_enabled() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    let script_load = encode_resp(&[b"SCRIPT", b"LOAD", b"return redis.call('PING')"]);
+    let sha_response = execute_frame(&processor, &script_load);
+    let sha = parse_bulk_payload(&sha_response).expect("SCRIPT LOAD returns sha1 bulk string");
+    assert_eq!(sha.len(), 40);
+
+    let exists_frame = encode_resp(&[b"SCRIPT", b"EXISTS", sha.as_slice(), b"deadbeef"]);
+    assert_eq!(
+        execute_frame(&processor, &exists_frame),
+        b"*2\r\n:1\r\n:0\r\n"
+    );
+
+    let evalsha_frame = encode_resp(&[b"EVALSHA", sha.as_slice(), b"0"]);
+    assert_eq!(execute_frame(&processor, &evalsha_frame), b"+PONG\r\n");
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SCRIPT", b"FLUSH"])),
+        b"+OK\r\n"
+    );
+
+    let mut args = [ArgSlice::EMPTY; 16];
+    let evalsha_after_flush = encode_resp(&[b"EVALSHA", sha.as_slice(), b"0"]);
+    let meta = parse_resp_command_arg_slices(&evalsha_after_flush, &mut args).unwrap();
+    let mut response = Vec::new();
+    let error = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    error.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-NOSCRIPT No matching script. Please use EVAL.\r\n"
+    );
+}
+
+#[test]
+fn fcall_remains_disabled_when_scripting_is_enabled() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    assert_command_error(
+        &processor,
+        "FCALL fn 0",
+        b"-ERR FCALL is disabled in this server\r\n",
+    );
 }
 
 #[test]
