@@ -99,8 +99,8 @@ pub(super) fn parse_scan_match_count_options<'a>(
             if index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let raw_count = parse_u64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let raw_count =
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count == 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }

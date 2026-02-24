@@ -1,6 +1,6 @@
 # Redis Command Maturity Summary
 
-- Generated at: 2026-02-24T12:32:17Z
+- Generated at: 2026-02-24T12:46:47Z
 - Status source: `docs/compatibility/redis-command-status.csv`
 - Implementation source: `docs/compatibility/command-implementation-status.yaml`
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
@@ -21,7 +21,7 @@
 | `CLIENT` | `PARTIAL_MINIMAL` | Narrow subset implementation including minimal CLIENT LIST behavior for dependent tests. |
 | `CLUSTER` | `PARTIAL_MINIMAL` | Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled. |
 | `EVAL` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; executes Lua via mlua (Lua 5.1 vendored) with KEYS/ARGV and redis.call/pcall bridge. |
-| `EVALSHA` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; returns NOSCRIPT on missing SHA and executes cached script body. |
+| `EVALSHA` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; returns NOSCRIPT on missing SHA and executes cached script body. Replication normalizes mutating EVALSHA to EVAL payloads. |
 | `EVALSHA_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection inside redis.call/pcall. |
 | `EVAL_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; write commands are rejected from script context. |
 | `FAILOVER` | `DISABLED` | - |
@@ -39,7 +39,7 @@
 | `READONLY` | `DISABLED` | - |
 | `READWRITE` | `DISABLED` | - |
 | `ROLE` | `PARTIAL_MINIMAL` | Returns fixed master-role shape; full role-state semantics are not implemented. |
-| `SCRIPT` | `PARTIAL_MINIMAL` | Supports FLUSH plus LOAD/EXISTS when scripting is enabled; HELP/KILL/DEBUG and full Redis script-admin surface are not implemented. |
+| `SCRIPT` | `PARTIAL_MINIMAL` | Supports FLUSH plus LOAD/EXISTS when scripting is enabled. Runtime hardening env knobs are supported (max script bytes; cache max entries; Lua memory limit; execution timeout); but HELP/KILL/DEBUG and full Redis script-admin surface are not implemented. |
 | `SHUTDOWN` | `DISABLED` | - |
 | `SLOWLOG` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `SPUBLISH` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |

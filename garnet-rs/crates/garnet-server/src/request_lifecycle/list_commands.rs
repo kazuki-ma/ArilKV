@@ -67,8 +67,7 @@ impl RequestProcessor {
 
         let key = args[1].to_vec();
         let count = if args.len() == 3 {
-            let parsed = parse_i64_ascii(args[2])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let parsed = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed < 0 {
                 return Err(RequestExecutionError::ValueOutOfRangePositive);
             }
@@ -151,10 +150,8 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "LRANGE", "LRANGE key start stop")?;
 
         let key = args[1].to_vec();
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
@@ -218,8 +215,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "LINDEX", "LINDEX key index")?;
         let key = args[1].to_vec();
-        let index = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
@@ -330,8 +326,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LSET", "LSET key index element")?;
         let key = args[1].to_vec();
-        let index = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let value = args[3].to_vec();
         let mut list = self
             .load_list_object(&key)?
@@ -356,10 +351,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LTRIM", "LTRIM key start stop")?;
         let key = args[1].to_vec();
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
@@ -443,8 +436,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LREM", "LREM key count element")?;
         let key = args[1].to_vec();
-        let count = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let target = args[3].to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
@@ -537,8 +529,7 @@ impl RequestProcessor {
         )?;
         let source = args[1].to_vec();
         let destination = args[2].to_vec();
-        let source_side =
-            parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
+        let source_side = parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
 
@@ -584,8 +575,7 @@ impl RequestProcessor {
         if option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let side = parse_list_side(args[option_start])
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let side = parse_list_side(args[option_start]).ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, option_start + 1)?;
         self.handle_lmpop_like(&keys, side, count, response_out)
     }
@@ -606,8 +596,7 @@ impl RequestProcessor {
         if option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let side = parse_list_side(args[option_start])
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let side = parse_list_side(args[option_start]).ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, option_start + 1)?;
         self.handle_lmpop_like(&keys, side, count, response_out)
     }
@@ -655,8 +644,7 @@ impl RequestProcessor {
         )?;
         let source = args[1].to_vec();
         let destination = args[2].to_vec();
-        let source_side =
-            parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
+        let source_side = parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
         parse_blocking_timeout_seconds(args, 5)?;

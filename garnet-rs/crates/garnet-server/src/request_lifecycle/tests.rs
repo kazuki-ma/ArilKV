@@ -6928,7 +6928,10 @@ fn function_load_and_fcall_ro_work_when_scripting_is_enabled() {
     );
     assert_command_response(&processor, "SET mykey myvalue", b"+OK\r\n");
     assert_eq!(
-        execute_frame(&processor, &encode_resp(&[b"FCALL_RO", b"ro_get", b"1", b"mykey"])),
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FCALL_RO", b"ro_get", b"1", b"mykey"])
+        ),
         b"$7\r\nmyvalue\r\n"
     );
 }
@@ -6938,7 +6941,10 @@ fn fcall_ro_rejects_non_readonly_registered_function() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     let library_source = b"#!lua name=lib_rw\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}";
     let function_load = encode_resp(&[b"FUNCTION", b"LOAD", library_source]);
-    assert_eq!(execute_frame(&processor, &function_load), b"$6\r\nlib_rw\r\n");
+    assert_eq!(
+        execute_frame(&processor, &function_load),
+        b"$6\r\nlib_rw\r\n"
+    );
     assert_command_error(
         &processor,
         "FCALL_RO rw_set 1 k v",
@@ -6951,7 +6957,10 @@ fn function_flush_clears_loaded_functions() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     let library_source = b"#!lua name=lib_flush\nredis.register_function{function_name='ro_ping', callback=function(keys, args) return redis.call('PING') end, flags={'no-writes'}}";
     let function_load = encode_resp(&[b"FUNCTION", b"LOAD", library_source]);
-    assert_eq!(execute_frame(&processor, &function_load), b"$9\r\nlib_flush\r\n");
+    assert_eq!(
+        execute_frame(&processor, &function_load),
+        b"$9\r\nlib_flush\r\n"
+    );
     assert_command_response(&processor, "FUNCTION FLUSH", b"+OK\r\n");
     assert_command_error(
         &processor,
@@ -6976,6 +6985,101 @@ fn fcall_and_function_load_gating_behavior() {
         "FUNCTION LOAD \"#!lua name=lib redis.register_function('f', function(keys, args) return 1 end)\"",
         b"-ERR scripting is disabled in this server\r\n",
     );
+}
+
+#[test]
+fn scripting_runtime_rejects_oversized_script_payloads() {
+    let processor = RequestProcessor::new_with_string_store_shards_scripting_and_runtime(
+        1,
+        true,
+        Some(8),
+        None,
+        None,
+        None,
+    )
+    .unwrap();
+    assert_command_error(
+        &processor,
+        "EVAL \"return 'too-long'\" 0",
+        b"-ERR script is larger than the configured max script size\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SCRIPT LOAD \"return 'too-long'\"",
+        b"-ERR script is larger than the configured max script size\r\n",
+    );
+}
+
+#[test]
+fn scripting_runtime_applies_cache_eviction_and_exposes_info_metrics() {
+    let processor = RequestProcessor::new_with_string_store_shards_scripting_and_runtime(
+        1,
+        true,
+        None,
+        Some(2),
+        Some(2048),
+        None,
+    )
+    .unwrap();
+
+    let sha1 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"SCRIPT", b"LOAD", b"return 1"]),
+    ))
+    .unwrap();
+    let sha2 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"SCRIPT", b"LOAD", b"return 2"]),
+    ))
+    .unwrap();
+    let sha3 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"SCRIPT", b"LOAD", b"return 3"]),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SCRIPT", b"EXISTS", &sha1, &sha2, &sha3]),
+        ),
+        b"*3\r\n:0\r\n:1\r\n:1\r\n"
+    );
+
+    let info_payload = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload");
+    let info_text = String::from_utf8_lossy(&info_payload);
+    assert!(info_text.contains("scripting_cache_entries:2"));
+    assert!(info_text.contains("scripting_cache_evictions:1"));
+    assert!(info_text.contains("scripting_cache_hits:2"));
+    assert!(info_text.contains("scripting_cache_misses:1"));
+    assert!(info_text.contains("scripting_cache_max_entries:2"));
+    assert!(info_text.contains("scripting_max_memory_bytes:2048"));
+}
+
+#[test]
+fn scripting_runtime_times_out_long_running_script() {
+    let processor = RequestProcessor::new_with_string_store_shards_scripting_and_runtime(
+        1,
+        true,
+        None,
+        None,
+        None,
+        Some(1),
+    )
+    .unwrap();
+
+    assert_command_response(
+        &processor,
+        "EVAL \"local x = 0 for i=1,100000000 do x = x + i end return x\" 0",
+        b"-ERR script execution timed out\r\n",
+    );
+
+    let info_payload = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload");
+    let info_text = String::from_utf8_lossy(&info_payload);
+    assert!(info_text.contains("scripting_runtime_timeouts:1"));
+    assert!(info_text.contains("scripting_max_execution_millis:1"));
 }
 
 #[test]

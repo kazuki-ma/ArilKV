@@ -1,10 +1,12 @@
 use tsavorite::TsavoriteKvConfig;
 
 use super::{
-    DEFAULT_SERVER_HASH_INDEX_SIZE_BITS, DEFAULT_STRING_STORE_SHARDS,
+    ScriptingRuntimeConfig, DEFAULT_SERVER_HASH_INDEX_SIZE_BITS, DEFAULT_STRING_STORE_SHARDS,
     GARNET_HASH_INDEX_SIZE_BITS_ENV, GARNET_MAX_IN_MEMORY_PAGES_ENV, GARNET_PAGE_SIZE_BITS_ENV,
-    GARNET_SCRIPTING_ENABLED_ENV, GARNET_STRING_OWNER_THREADS_ENV, GARNET_STRING_STORE_SHARDS_ENV,
-    SINGLE_OWNER_THREAD_STRING_STORE_SHARDS,
+    GARNET_SCRIPTING_CACHE_MAX_ENTRIES_ENV, GARNET_SCRIPTING_ENABLED_ENV,
+    GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV, GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV,
+    GARNET_SCRIPTING_MAX_SCRIPT_BYTES_ENV, GARNET_STRING_OWNER_THREADS_ENV,
+    GARNET_STRING_STORE_SHARDS_ENV, SINGLE_OWNER_THREAD_STRING_STORE_SHARDS,
 };
 
 pub(super) fn tsavorite_config_from_env() -> TsavoriteKvConfig {
@@ -51,6 +53,29 @@ pub(super) fn scripting_enabled_from_env() -> bool {
     parse_env_bool(GARNET_SCRIPTING_ENABLED_ENV).unwrap_or(false)
 }
 
+pub(super) fn scripting_runtime_config_from_env() -> ScriptingRuntimeConfig {
+    scripting_runtime_config_from_values(
+        parse_env_usize(GARNET_SCRIPTING_MAX_SCRIPT_BYTES_ENV),
+        parse_env_usize(GARNET_SCRIPTING_CACHE_MAX_ENTRIES_ENV),
+        parse_env_usize(GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV),
+        parse_env_u64(GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV),
+    )
+}
+
+pub(super) fn scripting_runtime_config_from_values(
+    max_script_bytes: Option<usize>,
+    cache_max_entries: Option<usize>,
+    max_memory_bytes: Option<usize>,
+    max_execution_millis: Option<u64>,
+) -> ScriptingRuntimeConfig {
+    ScriptingRuntimeConfig {
+        max_script_bytes: max_script_bytes.unwrap_or(0),
+        cache_max_entries: cache_max_entries.unwrap_or(0),
+        max_memory_bytes: max_memory_bytes.unwrap_or(0),
+        max_execution_millis: max_execution_millis.unwrap_or(0),
+    }
+}
+
 pub(super) fn string_store_shard_count_from_values(
     explicit_shards: Option<usize>,
     owner_threads: Option<usize>,
@@ -81,6 +106,10 @@ fn parse_env_u8(key: &str) -> Option<u8> {
 
 fn parse_env_usize(key: &str) -> Option<usize> {
     std::env::var(key).ok()?.parse::<usize>().ok()
+}
+
+fn parse_env_u64(key: &str) -> Option<u64> {
+    std::env::var(key).ok()?.parse::<u64>().ok()
 }
 
 fn parse_env_bool(key: &str) -> Option<bool> {

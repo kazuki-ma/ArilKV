@@ -166,12 +166,23 @@ impl RequestProcessor {
         let blocked_clients = self.blocked_clients();
         let watching_clients = self.watching_clients();
         let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
+        let scripting_runtime = self.scripting_runtime_config();
         let payload = format!(
-            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_changes_since_last_save:{}\r\n",
+            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_changes_since_last_save:{}\r\n# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
             blocked_clients,
             watching_clients,
             dbsize,
             rdb_changes_since_last_save,
+            if self.scripting_enabled() { 1 } else { 0 },
+            self.script_cache_entry_count(),
+            scripting_runtime.cache_max_entries,
+            self.script_cache_hits(),
+            self.script_cache_misses(),
+            self.script_cache_evictions(),
+            self.script_runtime_timeouts(),
+            scripting_runtime.max_script_bytes,
+            scripting_runtime.max_memory_bytes,
+            scripting_runtime.max_execution_millis,
         );
         append_bulk_string(response_out, payload.as_bytes());
         Ok(())

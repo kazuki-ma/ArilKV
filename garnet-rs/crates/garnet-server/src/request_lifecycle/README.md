@@ -22,9 +22,15 @@ This directory owns command execution semantics and RESP response construction.
 - Scripting (`EVAL*`, `SCRIPT`) is feature-gated by runtime env:
   - `GARNET_SCRIPTING_ENABLED=1` enables Lua execution.
   - default is disabled; command paths must preserve disabled behavior.
+  - runtime hardening knobs:
+    - `GARNET_SCRIPTING_MAX_SCRIPT_BYTES` (0 = unlimited, reject oversized script payloads).
+    - `GARNET_SCRIPTING_CACHE_MAX_ENTRIES` (0 = unlimited, FIFO evicts oldest cached SHA).
+    - `GARNET_SCRIPTING_MAX_MEMORY_BYTES` (0 = unlimited, per-Lua-state memory limit).
+    - `GARNET_SCRIPTING_MAX_EXECUTION_MILLIS` (0 = unlimited, instruction-hook timeout).
   - `SCRIPT LOAD/EXISTS` and `EVALSHA*` share SHA1 cache semantics (`NOSCRIPT` on miss).
   - `EVAL_RO`/`EVALSHA_RO` must reject mutating commands via `redis.call`/`redis.pcall`.
   - `FUNCTION LOAD [REPLACE]` + `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
+  - `INFO` exposes scripting observability (`scripting_cache_*`, `scripting_runtime_timeouts`, and configured limit values).
 - Blocking list commands use owner-thread polling with wait-queue fairness:
   - timeout is parsed as float seconds and enforced (including non-turn queue waits).
   - waiter order is tracked per key; queue cleanup runs on wake/timeout/disconnect.

@@ -125,8 +125,7 @@ impl RequestProcessor {
         )?;
 
         let key = args[1].to_vec();
-        let cursor = parse_u64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
         let Some(set) = self.load_set_object(&key)? else {
@@ -191,8 +190,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let Some(set) = set else {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
@@ -251,8 +249,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -361,8 +358,7 @@ impl RequestProcessor {
             "SINTERCARD",
             "SINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let num_keys = parse_u64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let num_keys = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::SyntaxError);
         }
@@ -383,8 +379,8 @@ impl RequestProcessor {
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let parsed_limit = parse_u64_ascii(args[key_end + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let parsed_limit =
+                parse_u64_ascii(args[key_end + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         }

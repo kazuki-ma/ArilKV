@@ -57,6 +57,7 @@ pub fn replay_aof_operations(
 mod tests {
     use super::*;
     use garnet_common::parse_resp_command_arg_slices;
+    use sha1::{Digest, Sha1};
     use tsavorite::{compact_aof_file, AofWriter, AofWriterConfig, CheckpointAofCoordinator};
 
     fn temp_path(suffix: &str) -> std::path::PathBuf {
@@ -65,6 +66,17 @@ mod tests {
             .unwrap()
             .as_nanos();
         std::env::temp_dir().join(format!("garnet-aof-replay-{}-{}.aof", suffix, nanos))
+    }
+
+    fn encode_resp_frame(parts: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+        for part in parts {
+            out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
+            out.extend_from_slice(part);
+            out.extend_from_slice(b"\r\n");
+        }
+        out
     }
 
     #[test]
@@ -196,5 +208,36 @@ mod tests {
             .unwrap();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("invalid AOF operation frame"));
+    }
+
+    #[test]
+    fn replay_aof_applies_script_load_and_evalsha_when_scripting_enabled() {
+        let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true)
+            .expect("processor initializes");
+        let script = b"redis.call('SET', KEYS[1], ARGV[1]); return ARGV[1]";
+
+        let mut hasher = Sha1::new();
+        hasher.update(script);
+        let script_sha = hasher.finalize();
+        let sha_hex = script_sha
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+
+        let operations = vec![
+            encode_resp_frame(&[b"SCRIPT", b"LOAD", script]),
+            encode_resp_frame(&[b"EVALSHA", sha_hex.as_bytes(), b"1", b"aof:lua:key", b"v1"]),
+        ];
+        let applied = replay_aof_operations(&processor, &operations).unwrap();
+        assert_eq!(applied, 2);
+
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+        let get_frame = encode_resp_frame(&[b"GET", b"aof:lua:key"]);
+        let meta = parse_resp_command_arg_slices(&get_frame, &mut args).unwrap();
+        processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"$2\r\nv1\r\n");
     }
 }

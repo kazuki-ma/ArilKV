@@ -390,6 +390,7 @@ pub(crate) async fn handle_connection(
                                 responses.extend_from_slice(&frame_response);
                                 if should_replicate {
                                     replication_frame = replication_frame_for_command(
+                                        &processor,
                                         command,
                                         &args[..argument_count],
                                         &frame_response,
@@ -983,11 +984,31 @@ fn parse_u64_ascii(value: &[u8]) -> Option<u64> {
 }
 
 fn replication_frame_for_command(
+    processor: &RequestProcessor,
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
     original_frame: &[u8],
 ) -> Option<Vec<u8>> {
+    if command == CommandId::Evalsha {
+        if args.len() < 3 {
+            return Some(original_frame.to_vec());
+        }
+        // SAFETY: args were parsed from the current request frame.
+        let sha1 = arg_slice_bytes(args.get(1)?);
+        let Some(script) = processor.cached_script_for_sha(sha1) else {
+            return Some(original_frame.to_vec());
+        };
+        let mut parts = Vec::with_capacity(args.len());
+        parts.push(b"EVAL".to_vec());
+        parts.push(script);
+        for arg in &args[2..] {
+            // SAFETY: args were parsed from the current request frame.
+            parts.push(arg_slice_bytes(arg).to_vec());
+        }
+        return Some(encode_resp_frame(&parts));
+    }
+
     if command == CommandId::Blmove {
         if frame_response == b"$-1\r\n" {
             return None;
@@ -1338,5 +1359,51 @@ mod tests {
             parse_inline_frame(b"SET key value"),
             InlineFrameParse::Incomplete
         ));
+    }
+
+    #[test]
+    fn replication_rewrites_evalsha_to_eval_with_script_body() {
+        let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true)
+            .expect("processor must initialize");
+        let script = b"redis.call('SET', KEYS[1], ARGV[1]); return ARGV[1]";
+
+        let script_load_frame =
+            encode_resp_frame(&[b"SCRIPT".to_vec(), b"LOAD".to_vec(), script.to_vec()]);
+        let mut load_args = [ArgSlice::EMPTY; 8];
+        let load_meta = parse_resp_command_arg_slices(&script_load_frame, &mut load_args).unwrap();
+        let mut load_response = Vec::new();
+        processor
+            .execute(&load_args[..load_meta.argument_count], &mut load_response)
+            .unwrap();
+        assert!(load_response.starts_with(b"$40\r\n"));
+        let sha = load_response[5..45].to_vec();
+
+        let evalsha_frame = encode_resp_frame(&[
+            b"EVALSHA".to_vec(),
+            sha,
+            b"1".to_vec(),
+            b"repl:key".to_vec(),
+            b"v1".to_vec(),
+        ]);
+        let mut evalsha_args = [ArgSlice::EMPTY; 8];
+        let evalsha_meta =
+            parse_resp_command_arg_slices(&evalsha_frame, &mut evalsha_args).unwrap();
+        let rewritten = replication_frame_for_command(
+            &processor,
+            CommandId::Evalsha,
+            &evalsha_args[..evalsha_meta.argument_count],
+            b"$2\r\nv1\r\n",
+            &evalsha_frame,
+        )
+        .expect("rewritten frame must exist");
+
+        let mut rewritten_args = [ArgSlice::EMPTY; 8];
+        let rewritten_meta =
+            parse_resp_command_arg_slices(&rewritten, &mut rewritten_args).unwrap();
+        assert_eq!(rewritten_meta.argument_count, 5);
+        // SAFETY: parsed arguments borrow from `rewritten`, alive for this assertion scope.
+        assert_eq!(arg_slice_bytes(&rewritten_args[0]), b"EVAL");
+        // SAFETY: parsed arguments borrow from `rewritten`, alive for this assertion scope.
+        assert_eq!(arg_slice_bytes(&rewritten_args[1]), script);
     }
 }

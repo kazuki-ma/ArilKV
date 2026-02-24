@@ -27,6 +27,10 @@ const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAG
 const GARNET_STRING_STORE_SHARDS_ENV: &str = "GARNET_TSAVORITE_STRING_STORE_SHARDS";
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_SCRIPTING_ENABLED_ENV: &str = "GARNET_SCRIPTING_ENABLED";
+const GARNET_SCRIPTING_MAX_SCRIPT_BYTES_ENV: &str = "GARNET_SCRIPTING_MAX_SCRIPT_BYTES";
+const GARNET_SCRIPTING_CACHE_MAX_ENTRIES_ENV: &str = "GARNET_SCRIPTING_CACHE_MAX_ENTRIES";
+const GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV: &str = "GARNET_SCRIPTING_MAX_MEMORY_BYTES";
+const GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV: &str = "GARNET_SCRIPTING_MAX_EXECUTION_MILLIS";
 const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 18;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 18;
@@ -34,6 +38,14 @@ const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct ScriptingRuntimeConfig {
+    max_script_bytes: usize,
+    cache_max_entries: usize,
+    max_memory_bytes: usize,
+    max_execution_millis: u64,
+}
 
 mod command_helpers;
 mod config;
@@ -61,10 +73,14 @@ use self::command_helpers::{
 };
 use self::config::{
     scale_hash_index_bits_for_shards, scripting_enabled_from_env,
-    string_store_shard_count_from_env, tsavorite_config_from_env,
+    scripting_runtime_config_from_env, string_store_shard_count_from_env,
+    tsavorite_config_from_env,
 };
 #[cfg(test)]
-use self::config::{string_store_shard_count_from_values, tsavorite_config_from_values};
+use self::config::{
+    scripting_runtime_config_from_values, string_store_shard_count_from_values,
+    tsavorite_config_from_values,
+};
 pub use self::errors::RequestExecutionError;
 use self::errors::{
     map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
@@ -167,6 +183,12 @@ pub struct RequestProcessor {
     watching_clients: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
+    script_cache_insertion_order: Mutex<VecDeque<String>>,
+    script_cache_hits: AtomicU64,
+    script_cache_misses: AtomicU64,
+    script_cache_evictions: AtomicU64,
+    script_runtime_timeouts: AtomicU64,
+    scripting_runtime_config: ScriptingRuntimeConfig,
     function_registry: Mutex<FunctionRegistry>,
     scripting_enabled: bool,
     zset_max_listpack_entries: AtomicUsize,
@@ -180,6 +202,7 @@ impl RequestProcessor {
         Self::new_with_options(
             string_store_shard_count_from_env(),
             scripting_enabled_from_env(),
+            scripting_runtime_config_from_env(),
         )
     }
 
@@ -187,20 +210,50 @@ impl RequestProcessor {
     fn new_with_string_store_shards(
         store_shard_count: usize,
     ) -> Result<Self, RequestProcessorInitError> {
-        Self::new_with_options(store_shard_count, scripting_enabled_from_env())
+        Self::new_with_options(
+            store_shard_count,
+            scripting_enabled_from_env(),
+            scripting_runtime_config_from_env(),
+        )
     }
 
     #[cfg(test)]
-    fn new_with_string_store_shards_and_scripting(
+    pub(crate) fn new_with_string_store_shards_and_scripting(
         store_shard_count: usize,
         scripting_enabled: bool,
     ) -> Result<Self, RequestProcessorInitError> {
-        Self::new_with_options(store_shard_count, scripting_enabled)
+        Self::new_with_options(
+            store_shard_count,
+            scripting_enabled,
+            scripting_runtime_config_from_values(None, None, None, None),
+        )
+    }
+
+    #[cfg(test)]
+    fn new_with_string_store_shards_scripting_and_runtime(
+        store_shard_count: usize,
+        scripting_enabled: bool,
+        max_script_bytes: Option<usize>,
+        cache_max_entries: Option<usize>,
+        max_memory_bytes: Option<usize>,
+        max_execution_millis: Option<u64>,
+    ) -> Result<Self, RequestProcessorInitError> {
+        Self::new_with_options(
+            store_shard_count,
+            scripting_enabled,
+            scripting_runtime_config_from_values(
+                max_script_bytes,
+                cache_max_entries,
+                max_memory_bytes,
+                max_execution_millis,
+            ),
+        )
     }
 
     fn new_with_options(
         store_shard_count: usize,
         scripting_enabled: bool,
+        scripting_runtime_config: ScriptingRuntimeConfig,
     ) -> Result<Self, RequestProcessorInitError> {
         let store_shard_count = store_shard_count.max(1);
         let store_config = tsavorite_config_from_env();
@@ -275,6 +328,12 @@ impl RequestProcessor {
             watching_clients: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
             script_cache: Mutex::new(HashMap::new()),
+            script_cache_insertion_order: Mutex::new(VecDeque::new()),
+            script_cache_hits: AtomicU64::new(0),
+            script_cache_misses: AtomicU64::new(0),
+            script_cache_evictions: AtomicU64::new(0),
+            script_runtime_timeouts: AtomicU64::new(0),
+            scripting_runtime_config,
             function_registry: Mutex::new(FunctionRegistry::default()),
             scripting_enabled,
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
@@ -351,6 +410,57 @@ impl RequestProcessor {
 
     pub(super) fn scripting_enabled(&self) -> bool {
         self.scripting_enabled
+    }
+
+    pub(super) fn scripting_runtime_config(&self) -> ScriptingRuntimeConfig {
+        self.scripting_runtime_config
+    }
+
+    pub(super) fn script_cache_entry_count(&self) -> usize {
+        self.script_cache
+            .lock()
+            .map(|cache| cache.len())
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn cached_script_for_sha(&self, sha1: &[u8]) -> Option<Vec<u8>> {
+        let normalized = String::from_utf8_lossy(sha1).to_ascii_lowercase();
+        let Ok(cache) = self.script_cache.lock() else {
+            return None;
+        };
+        cache.get(&normalized).cloned()
+    }
+
+    pub(super) fn script_cache_hits(&self) -> u64 {
+        self.script_cache_hits.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn script_cache_misses(&self) -> u64 {
+        self.script_cache_misses.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn script_cache_evictions(&self) -> u64 {
+        self.script_cache_evictions.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn script_runtime_timeouts(&self) -> u64 {
+        self.script_runtime_timeouts.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn record_script_cache_hit(&self) {
+        self.script_cache_hits.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_script_cache_miss(&self) {
+        self.script_cache_misses.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_script_cache_eviction(&self) {
+        self.script_cache_evictions.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_script_runtime_timeout(&self) {
+        self.script_runtime_timeouts.fetch_add(1, Ordering::Relaxed);
     }
 
     pub(crate) fn increment_blocked_clients(&self) {

@@ -51,6 +51,12 @@ It does not validate semantic completeness for each command.
 - when disabled, these commands return `ERR scripting is disabled in this server`.
 - when enabled, execution uses `mlua` (Lua 5.1 vendored) with `KEYS`/`ARGV` and `redis.call`/`redis.pcall`.
 - `EVALSHA*` returns `NOSCRIPT` when SHA is missing.
+- mutating `EVALSHA` replication is normalized to `EVAL` payloads to avoid replica-side `NOSCRIPT` on script-cache divergence.
+- runtime hardening controls are env-driven:
+  - `GARNET_SCRIPTING_MAX_SCRIPT_BYTES`
+  - `GARNET_SCRIPTING_CACHE_MAX_ENTRIES`
+  - `GARNET_SCRIPTING_MAX_MEMORY_BYTES`
+  - `GARNET_SCRIPTING_MAX_EXECUTION_MILLIS`
 
 ## B. Cluster-Support-Disabled Paths
 
@@ -73,7 +79,7 @@ It does not validate semantic completeness for each command.
 
 ## D. Scripting Admin Surface Is Partial
 
-- `SCRIPT` supports `FLUSH` plus `LOAD`/`EXISTS` (the latter two behind `GARNET_SCRIPTING_ENABLED`).
+- `SCRIPT` supports `FLUSH` plus `LOAD`/`EXISTS` (the latter two behind `GARNET_SCRIPTING_ENABLED`) with cache-limit eviction and INFO observability fields for scripting runtime/cache counters.
 - `FUNCTION` supports `FLUSH` and `LOAD [REPLACE]` with `redis.register_function`.
 - `FCALL_RO` supports read-only functions (`no-writes` flag) behind `GARNET_SCRIPTING_ENABLED`.
 - remaining gaps: full FUNCTION admin surface and write-capable `FCALL`.

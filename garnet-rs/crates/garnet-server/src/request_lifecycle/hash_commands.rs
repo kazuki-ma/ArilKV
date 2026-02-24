@@ -291,8 +291,7 @@ impl RequestProcessor {
         )?;
 
         let key = args[1].to_vec();
-        let cursor = parse_u64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
         let Some(hash) = self.load_hash_object(&key)? else {
@@ -321,8 +320,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBY", "HINCRBY key field increment")?;
 
-        let increment = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let increment = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
@@ -347,8 +345,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBYFLOAT", "HINCRBYFLOAT key field increment")?;
 
-        let increment = parse_f64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let increment = parse_f64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let key = args[1].to_vec();
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();

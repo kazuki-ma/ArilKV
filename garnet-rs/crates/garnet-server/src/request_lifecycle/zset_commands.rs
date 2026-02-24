@@ -20,8 +20,7 @@ impl RequestProcessor {
 
         let mut index = 2usize;
         while index < args.len() {
-            let score = parse_f64_ascii(args[index])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            let score = parse_f64_ascii(args[index]).ok_or(RequestExecutionError::ValueNotFloat)?;
             let member = args[index + 1].to_vec();
             if zset.insert(member, score).is_none() {
                 inserted += 1;
@@ -74,10 +73,8 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "ZRANGE", "ZRANGE key start stop")?;
 
         let key = args[1].to_vec();
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -127,10 +124,8 @@ impl RequestProcessor {
         };
 
         let key = args[1].to_vec();
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -229,10 +224,8 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
 
         let key = args[1].to_vec();
-        let min = parse_zscore_bound(args[2])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let max = parse_zscore_bound(args[3])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let max = parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -256,10 +249,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
         let key = args[1].to_vec();
-        let min = parse_zlex_bound(args[2])
-            .ok_or(RequestExecutionError::SyntaxError)?;
-        let max = parse_zlex_bound(args[3])
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
+        let max = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
 
         let count = match self.load_zset_object(&key)? {
             Some(zset) => zset
@@ -295,10 +286,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
         let key = args[1].to_vec();
-        let min = parse_zlex_bound(args[2])
-            .ok_or(RequestExecutionError::SyntaxError)?;
-        let max = parse_zlex_bound(args[3])
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
+        let max = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
 
         let mut zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -341,8 +330,7 @@ impl RequestProcessor {
             "ZINTERCARD",
             "ZINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let num_keys = parse_u64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let num_keys = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::SyntaxError);
         }
@@ -363,8 +351,8 @@ impl RequestProcessor {
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let parsed_limit = parse_u64_ascii(args[key_end + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let parsed_limit =
+                parse_u64_ascii(args[key_end + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         }
@@ -605,8 +593,7 @@ impl RequestProcessor {
         )?;
 
         let key = args[1].to_vec();
-        let cursor = parse_u64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
         let Some(zset) = self.load_zset_object(&key)? else {
@@ -651,8 +638,7 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
         let key = args[1].to_vec();
-        let increment = parse_f64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let increment = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let member = args[3].to_vec();
 
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
@@ -674,10 +660,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
         let key = args[1].to_vec();
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
 
         let mut zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -719,10 +703,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
         let key = args[1].to_vec();
-        let min = parse_zscore_bound(args[2])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let max = parse_zscore_bound(args[3])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let max = parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
 
         let mut zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -776,10 +758,9 @@ impl RequestProcessor {
         )?;
 
         let key = args[1].to_vec();
-        let left_bound = parse_zscore_bound(args[2])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let right_bound = parse_zscore_bound(args[3])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let left_bound = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let right_bound =
+            parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let options = parse_zrange_by_score_options(args, 4)?;
 
         let zset = match self.load_zset_object(&key)? {
@@ -834,10 +815,8 @@ impl RequestProcessor {
         )?;
 
         let key = args[1].to_vec();
-        let left_bound = parse_zlex_bound(args[2])
-            .ok_or(RequestExecutionError::SyntaxError)?;
-        let right_bound = parse_zlex_bound(args[3])
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let left_bound = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
+        let right_bound = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let limit = parse_zrangebylex_limit(args, 4)?;
         let (min_bound, max_bound) = if reverse {
             (right_bound, left_bound)
@@ -933,8 +912,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let count = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let with_scores = if args.len() == 4 {
             let option = args[3];
             if !ascii_eq_ignore_case(option, b"WITHSCORES") {
@@ -1074,8 +1052,7 @@ impl RequestProcessor {
         )?;
         let key = args[1].to_vec();
         let count = if args.len() == 3 {
-            parse_u64_ascii(args[2])
-                .ok_or(RequestExecutionError::ValueNotInteger)?
+            parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?
         } else {
             1
         };
@@ -1301,10 +1278,10 @@ fn parse_zrange_by_score_options(
             if options.limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset = parse_u64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
-            let count = parse_u64_ascii(args[index + 2])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let offset =
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let count =
+                parse_u64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             options.limit = Some((
                 usize::try_from(offset).unwrap_or(usize::MAX),
                 usize::try_from(count).unwrap_or(usize::MAX),
@@ -1421,10 +1398,10 @@ fn parse_zrangebylex_limit(
     if !ascii_eq_ignore_case(option, b"LIMIT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let offset = parse_u64_ascii(args[start_index + 1])
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
-    let count = parse_u64_ascii(args[start_index + 2])
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    let offset =
+        parse_u64_ascii(args[start_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    let count =
+        parse_u64_ascii(args[start_index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
     Ok(Some((
         usize::try_from(offset).unwrap_or(usize::MAX),
         usize::try_from(count).unwrap_or(usize::MAX),
@@ -1438,8 +1415,8 @@ fn parse_zset_numkeys_and_keys(
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let numkeys = parse_u64_ascii(args[numkeys_index])
-        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    let numkeys =
+        parse_u64_ascii(args[numkeys_index]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys == 0 {
         return Err(RequestExecutionError::SyntaxError);
     }
@@ -1499,8 +1476,8 @@ fn parse_zset_combine_options(
             for (weight_index, weight_arg) in
                 args[index + 1..index + 1 + num_keys].iter().enumerate()
             {
-                let parsed = parse_f64_ascii(weight_arg)
-                    .ok_or(RequestExecutionError::ValueNotFloat)?;
+                let parsed =
+                    parse_f64_ascii(weight_arg).ok_or(RequestExecutionError::ValueNotFloat)?;
                 weights[weight_index] = parsed;
             }
             seen_weights = true;
@@ -1798,10 +1775,10 @@ fn parse_zrangestore_options(
             if limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset = parse_u64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
-            let count = parse_u64_ascii(args[index + 2])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let offset =
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let count =
+                parse_u64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = Some((
                 usize::try_from(offset).unwrap_or(usize::MAX),
                 usize::try_from(count).unwrap_or(usize::MAX),

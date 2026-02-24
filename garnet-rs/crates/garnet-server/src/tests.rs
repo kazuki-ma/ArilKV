@@ -1214,6 +1214,148 @@ async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
 }
 
 #[tokio::test]
+async fn replicaof_replication_rewrites_evalsha_after_replica_cache_flush() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let replica_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            replica_listener,
+            1024,
+            replica_metrics_task,
+            async move {
+                let _ = replica_shutdown_rx.await;
+            },
+            None,
+            replica_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+
+    let script = b"redis.call('SET', KEYS[1], ARGV[1]); return ARGV[1]";
+    let sha = send_and_read_bulk_payload(
+        &mut master_client,
+        &encode_resp_command(&[b"SCRIPT", b"LOAD", script]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(sha.len(), 40);
+
+    let key = b"repl:lua:key";
+    let mut replicated_v1 = false;
+    for _ in 0..50 {
+        let evalsha_v1 = encode_resp_command(&[b"EVALSHA", sha.as_slice(), b"1", key, b"v1"]);
+        send_and_expect(&mut master_client, &evalsha_v1, b"$2\r\nv1\r\n").await;
+
+        let get_frame = encode_resp_command(&[b"GET", key]);
+        replica_client.write_all(&get_frame).await.unwrap();
+        let mut response = [0u8; 64];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(200),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if &response[..bytes_read] == b"$2\r\nv1\r\n" {
+            replicated_v1 = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(replicated_v1, "replica did not receive first evalsha write");
+
+    send_and_expect(
+        &mut replica_client,
+        b"*3\r\n$9\r\nREPLICAOF\r\n$2\r\nNO\r\n$3\r\nONE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut replica_client,
+        b"*2\r\n$6\r\nSCRIPT\r\n$5\r\nFLUSH\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"EVALSHA", sha.as_slice(), b"1", key, b"probe"]),
+        b"-NOSCRIPT No matching script. Please use EVAL.\r\n",
+    )
+    .await;
+
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+
+    let mut replicated_v2 = false;
+    for _ in 0..80 {
+        let evalsha_v2 = encode_resp_command(&[b"EVALSHA", sha.as_slice(), b"1", key, b"v2"]);
+        send_and_expect(&mut master_client, &evalsha_v2, b"$2\r\nv2\r\n").await;
+
+        let get_frame = encode_resp_command(&[b"GET", key]);
+        replica_client.write_all(&get_frame).await.unwrap();
+        let mut response = [0u8; 64];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(200),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if &response[..bytes_read] == b"$2\r\nv2\r\n" {
+            replicated_v2 = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(
+        replicated_v2,
+        "replica did not receive second evalsha write"
+    );
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_starts_with_select_db_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

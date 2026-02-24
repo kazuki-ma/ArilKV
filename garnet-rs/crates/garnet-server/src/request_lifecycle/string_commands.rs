@@ -187,10 +187,8 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 4, command, expected)?;
 
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let end = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
@@ -230,8 +228,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "GETBIT", "GETBIT key offset")?;
-        let offset = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let offset = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if offset < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -263,14 +260,12 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SETBIT", "SETBIT key offset value")?;
-        let offset = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let offset = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if offset < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        let bit_value = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let bit_value = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let bit_value = match bit_value {
             0 => 0u8,
             1 => 1u8,
@@ -322,8 +317,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SETRANGE", "SETRANGE key offset value")?;
-        let offset = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let offset = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if offset < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -392,10 +386,8 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let start = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let end = parse_i64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let bit_mode = if args.len() == 5 {
             let mode = args[4];
             if ascii_eq_ignore_case(mode, b"BYTE") {
@@ -451,8 +443,7 @@ impl RequestProcessor {
             "BITPOS key bit [start [end [BYTE|BIT]]]",
         )?;
         let key = args[1].to_vec();
-        let bit = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let bit = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if bit != 0 && bit != 1 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -485,14 +476,12 @@ impl RequestProcessor {
         }
 
         let start = if args.len() >= 4 {
-            parse_i64_ascii(args[3])
-                .ok_or(RequestExecutionError::ValueNotInteger)?
+            parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?
         } else {
             0
         };
         let end = if args.len() >= 5 {
-            parse_i64_ascii(args[4])
-                .ok_or(RequestExecutionError::ValueNotInteger)?
+            parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?
         } else if mode_is_bit {
             let total_bits = value
                 .len()
@@ -565,17 +554,13 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 4, "BITOP", "BITOP operation destkey key [key ...]")?;
 
-        let operation = parse_bitop_operation(args[1])
-            .ok_or(RequestExecutionError::SyntaxError)?;
+        let operation = parse_bitop_operation(args[1]).ok_or(RequestExecutionError::SyntaxError)?;
         if operation == BitopOperation::Not && args.len() != 4 {
             require_exact_arity(args, 4, "BITOP", "BITOP NOT destkey key")?;
         }
 
         let destination = args[2].to_vec();
-        let source_keys = args[3..]
-            .iter()
-            .map(|key| key.to_vec())
-            .collect::<Vec<_>>();
+        let source_keys = args[3..].iter().map(|key| key.to_vec()).collect::<Vec<_>>();
 
         let mut source_values = Vec::with_capacity(source_keys.len());
         for key in &source_keys {
@@ -1172,8 +1157,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "INCRBYFLOAT", "INCRBYFLOAT key increment")?;
 
-        let increment = parse_f64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let increment = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
 
@@ -1403,10 +1387,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "DEL", "DEL key [key ...]")?;
 
-        let keys: Vec<Vec<u8>> = args[1..]
-            .iter()
-            .map(|arg| arg.to_vec())
-            .collect();
+        let keys: Vec<Vec<u8>> = args[1..].iter().map(|arg| arg.to_vec()).collect();
 
         for key in &keys {
             self.expire_key_if_needed(key)?;
@@ -1632,8 +1613,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 3, command, expected)?;
 
-        let amount = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let delta = if decrement {
             amount
                 .checked_neg()
@@ -1793,12 +1773,7 @@ impl RequestProcessor {
 
         let key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> = args[1..]
             .chunks_exact(2)
-            .map(|pair| {
-                (
-                    pair[0].to_vec(),
-                    pair[1].to_vec(),
-                )
-            })
+            .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
             .collect();
 
         for (key, _) in &key_value_pairs {
@@ -2011,8 +1986,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 3, command, expected)?;
 
-        let amount = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
 
         self.expire_key_if_needed(&key)?;
@@ -2065,8 +2039,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 3, command, expected)?;
 
-        let amount = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
 
         self.expire_key_if_needed(&key)?;

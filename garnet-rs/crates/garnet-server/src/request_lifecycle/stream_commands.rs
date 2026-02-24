@@ -251,8 +251,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(args[index + 1])
-                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
             }
@@ -380,8 +379,8 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [start end count [consumer]]",
         )?;
-        let parsed_count = parse_i64_ascii(args[5])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let parsed_count =
+            parse_i64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed_count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -437,8 +436,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(args[index + 1])
-                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
             }
@@ -495,8 +493,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(args[index + 1])
-                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
             }
@@ -537,8 +534,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                parse_u64_ascii(args[index + 1])
-                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
             }
@@ -815,8 +811,7 @@ fn parse_stream_count_option(args: &[&[u8]]) -> Result<usize, RequestExecutionEr
     if !ascii_eq_ignore_case(option, b"COUNT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let parsed =
-        parse_u64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    let parsed = parse_u64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if parsed > usize::MAX as u64 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
@@ -859,8 +854,8 @@ fn parse_xtrim_spec(args: &[&[u8]]) -> Result<XtrimSpec, RequestExecutionError> 
         if !ascii_eq_ignore_case(args[index], b"LIMIT") {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let parsed = parse_i64_ascii(args[index + 1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let parsed =
+            parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }

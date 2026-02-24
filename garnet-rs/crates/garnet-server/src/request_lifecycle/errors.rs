@@ -52,6 +52,8 @@ pub enum RequestExecutionError {
     FunctionNameAlreadyExists,
     FunctionNotFound,
     FunctionNotReadOnly,
+    ScriptTooBig,
+    ScriptExecutionTimedOut,
     NoScript,
     ScriptingDisabled,
 }
@@ -152,6 +154,13 @@ impl RequestExecutionError {
                 response_out,
                 "ERR Can not execute a non read-only function with FCALL_RO",
             ),
+            Self::ScriptTooBig => append_error(
+                response_out,
+                "ERR script is larger than the configured max script size",
+            ),
+            Self::ScriptExecutionTimedOut => {
+                append_error(response_out, "ERR script execution timed out")
+            }
             Self::NoScript => {
                 append_error(response_out, "NOSCRIPT No matching script. Please use EVAL.")
             }

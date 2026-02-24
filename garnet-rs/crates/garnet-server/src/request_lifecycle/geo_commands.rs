@@ -148,10 +148,10 @@ impl RequestProcessor {
         let mut changed = 0i64;
 
         while index + 2 < args.len() {
-            let longitude = parse_f64_ascii(args[index])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let latitude = parse_f64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            let longitude =
+                parse_f64_ascii(args[index]).ok_or(RequestExecutionError::ValueNotFloat)?;
+            let latitude =
+                parse_f64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotFloat)?;
             if !geo_coordinates_in_range(longitude, latitude) {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
@@ -364,15 +364,12 @@ impl RequestProcessor {
         ensure_min_arity(args, 6, command_name, usage)?;
 
         let source_key = args[1];
-        let longitude = parse_f64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
-        let latitude = parse_f64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let longitude = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let latitude = parse_f64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
         if !geo_coordinates_in_range(longitude, latitude) {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        let radius = parse_f64_ascii(args[4])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let radius = parse_f64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotFloat)?;
         if radius < 0.0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -417,8 +414,7 @@ impl RequestProcessor {
 
         let source_key = args[1];
         let member = args[2].to_vec();
-        let radius = parse_f64_ascii(args[3])
-            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        let radius = parse_f64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
         if radius < 0.0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -565,10 +561,10 @@ fn parse_geosearch_options(
             if origin.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let longitude = parse_f64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let latitude = parse_f64_ascii(args[index + 2])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            let longitude =
+                parse_f64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotFloat)?;
+            let latitude =
+                parse_f64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotFloat)?;
             if !geo_coordinates_in_range(longitude, latitude) {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
@@ -583,8 +579,8 @@ fn parse_geosearch_options(
             if shape.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let radius = parse_f64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            let radius =
+                parse_f64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotFloat)?;
             if radius < 0.0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
@@ -600,10 +596,10 @@ fn parse_geosearch_options(
             if shape.is_some() || index + 3 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let width = parse_f64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
-            let height = parse_f64_ascii(args[index + 2])
-                .ok_or(RequestExecutionError::ValueNotFloat)?;
+            let width =
+                parse_f64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotFloat)?;
+            let height =
+                parse_f64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotFloat)?;
             if width < 0.0 || height < 0.0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
@@ -635,8 +631,8 @@ fn parse_geosearch_options(
             if count.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let raw_count = parse_i64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let raw_count =
+                parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count <= 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }
@@ -712,8 +708,8 @@ fn parse_georadius_options(
             if options.count.is_some() || index + 1 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let raw_count = parse_i64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            let raw_count =
+                parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if raw_count <= 0 {
                 return Err(RequestExecutionError::ValueOutOfRange);
             }

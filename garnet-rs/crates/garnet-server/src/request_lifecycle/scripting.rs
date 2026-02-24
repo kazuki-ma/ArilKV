@@ -2,13 +2,14 @@ use super::*;
 use crate::command_spec::command_is_mutating;
 use crate::{dispatch_command_name, CommandId};
 use mlua::{
-    Error as LuaError, Function as LuaFunction, Lua, MultiValue, Table as LuaTable,
-    Value as LuaValue,
+    Error as LuaError, Function as LuaFunction, HookTriggers, Lua, MultiValue, Table as LuaTable,
+    Value as LuaValue, VmState,
 };
 use sha1::{Digest, Sha1};
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 const SCRIPT_EVAL_USAGE: &str = "EVAL script numkeys [key ...] [arg ...]";
 const SCRIPT_EVAL_RO_USAGE: &str = "EVAL_RO script numkeys [key ...] [arg ...]";
@@ -21,6 +22,8 @@ const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
 const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
+const SCRIPT_TIMEOUT_ERROR_TEXT: &str = "ERR script execution timed out";
+const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScriptMutability {
@@ -85,13 +88,16 @@ impl RequestProcessor {
                     }
                     (true, 3)
                 }
-                _ => return Err(RequestExecutionError::WrongArity {
-                    command: "FUNCTION",
-                    expected: SCRIPT_FUNCTION_LOAD_USAGE,
-                }),
+                _ => {
+                    return Err(RequestExecutionError::WrongArity {
+                        command: "FUNCTION",
+                        expected: SCRIPT_FUNCTION_LOAD_USAGE,
+                    })
+                }
             };
 
             let library_source = args[source_index];
+            self.validate_script_size_limit(library_source)?;
             let library_name = parse_function_library_name(library_source)?;
             let registrations = self.collect_function_registrations(library_source)?;
             self.store_function_library(
@@ -136,6 +142,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"LOAD") {
             require_exact_arity(args, 3, "SCRIPT", SCRIPT_LOAD_USAGE)?;
+            self.validate_script_size_limit(args[2])?;
             let sha1 = self.cache_script(args[2]);
             append_bulk_string(response_out, sha1.as_bytes());
             return Ok(());
@@ -167,6 +174,7 @@ impl RequestProcessor {
         }
         let key_count = validate_scripting_numkeys(args, "EVAL", SCRIPT_EVAL_USAGE)?;
         let script = args[1];
+        self.validate_script_size_limit(script)?;
         let key_start = 3;
         let key_end = key_start + key_count;
         let _ = self.cache_script(script);
@@ -191,6 +199,7 @@ impl RequestProcessor {
         }
         let key_count = validate_scripting_numkeys(args, "EVAL_RO", SCRIPT_EVAL_RO_USAGE)?;
         let script = args[1];
+        self.validate_script_size_limit(script)?;
         let key_start = 3;
         let key_end = key_start + key_count;
         let _ = self.cache_script(script);
@@ -295,8 +304,29 @@ impl RequestProcessor {
 
     fn cache_script(&self, script: &[u8]) -> String {
         let sha1 = script_sha1_hex(script);
+        let cache_max_entries = self.scripting_runtime_config().cache_max_entries;
         if let Ok(mut cache) = self.script_cache.lock() {
-            cache.entry(sha1.clone()).or_insert_with(|| script.to_vec());
+            let mut inserted = false;
+            if let std::collections::hash_map::Entry::Vacant(slot) = cache.entry(sha1.clone()) {
+                slot.insert(script.to_vec());
+                inserted = true;
+            }
+            if inserted {
+                if let Ok(mut insertion_order) = self.script_cache_insertion_order.lock() {
+                    insertion_order.push_back(sha1.clone());
+                    if cache_max_entries > 0 {
+                        while cache.len() > cache_max_entries {
+                            if let Some(evicted_sha) = insertion_order.pop_front() {
+                                if cache.remove(&evicted_sha).is_some() {
+                                    self.record_script_cache_eviction();
+                                }
+                            } else {
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
         }
         sha1
     }
@@ -304,15 +334,33 @@ impl RequestProcessor {
     fn get_cached_script(&self, sha1: &[u8]) -> Option<Vec<u8>> {
         let normalized = normalize_sha1(sha1);
         let Ok(cache) = self.script_cache.lock() else {
+            self.record_script_cache_miss();
             return None;
         };
-        cache.get(&normalized).cloned()
+        let result = cache.get(&normalized).cloned();
+        if result.is_some() {
+            self.record_script_cache_hit();
+        } else {
+            self.record_script_cache_miss();
+        }
+        result
     }
 
     fn clear_script_cache(&self) {
         if let Ok(mut cache) = self.script_cache.lock() {
             cache.clear();
         }
+        if let Ok(mut insertion_order) = self.script_cache_insertion_order.lock() {
+            insertion_order.clear();
+        }
+    }
+
+    fn validate_script_size_limit(&self, script: &[u8]) -> Result<(), RequestExecutionError> {
+        let max_script_bytes = self.scripting_runtime_config().max_script_bytes;
+        if max_script_bytes > 0 && script.len() > max_script_bytes {
+            return Err(RequestExecutionError::ScriptTooBig);
+        }
+        Ok(())
     }
 
     fn clear_function_registry(&self) {
@@ -328,9 +376,12 @@ impl RequestProcessor {
         library_source: &[u8],
     ) -> Result<Vec<PendingFunctionRegistration>, RequestExecutionError> {
         let lua = Lua::new();
+        self.configure_lua_runtime_limits(&lua)
+            .map_err(|_| RequestExecutionError::SyntaxError)?;
         let registrations: Rc<RefCell<Vec<PendingFunctionRegistration>>> =
             Rc::new(RefCell::new(Vec::new()));
-        let registration_names: Rc<RefCell<HashSet<String>>> = Rc::new(RefCell::new(HashSet::new()));
+        let registration_names: Rc<RefCell<HashSet<String>>> =
+            Rc::new(RefCell::new(HashSet::new()));
         let run_result = lua.scope(|scope| {
             let globals = lua.globals();
             let redis_table = lua.create_table()?;
@@ -367,7 +418,13 @@ impl RequestProcessor {
 
         match run_result {
             Ok(()) => {}
-            Err(_) => return Err(RequestExecutionError::SyntaxError),
+            Err(error) => {
+                if lua_error_is_timeout(&error) {
+                    self.record_script_runtime_timeout();
+                    return Err(RequestExecutionError::ScriptExecutionTimedOut);
+                }
+                return Err(RequestExecutionError::SyntaxError);
+            }
         }
 
         let registrations = registrations.borrow().clone();
@@ -385,7 +442,10 @@ impl RequestProcessor {
         replace: bool,
     ) -> Result<(), RequestExecutionError> {
         let Ok(mut registry) = self.function_registry.lock() else {
-            return Err(storage_failure("function.registry", "function registry lock poisoned"));
+            return Err(storage_failure(
+                "function.registry",
+                "function registry lock poisoned",
+            ));
         };
 
         let library_exists = registry.library_sources.contains_key(&library_name);
@@ -456,7 +516,10 @@ impl RequestProcessor {
         let function_name_text =
             std::str::from_utf8(function_name).map_err(|_| RequestExecutionError::SyntaxError)?;
         let Ok(registry) = self.function_registry.lock() else {
-            return Err(storage_failure("function.registry", "function registry lock poisoned"));
+            return Err(storage_failure(
+                "function.registry",
+                "function registry lock poisoned",
+            ));
         };
         let descriptor = registry
             .functions
@@ -478,6 +541,14 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) {
         let lua = Lua::new();
+        if let Err(error) = self.configure_lua_runtime_limits(&lua) {
+            let message = format!(
+                "ERR Error running script: {}",
+                sanitize_error_text(&error.to_string())
+            );
+            append_error(response_out, message.as_bytes());
+            return;
+        }
         let run_result = lua.scope(|scope| {
             let globals = lua.globals();
             let keys_table = lua.create_table_with_capacity(keys.len(), 0)?;
@@ -542,6 +613,11 @@ impl RequestProcessor {
                 }
             }
             Err(error) => {
+                if lua_error_is_timeout(&error) {
+                    self.record_script_runtime_timeout();
+                    append_error(response_out, SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes());
+                    return;
+                }
                 let message = format!(
                     "ERR Error running script: {}",
                     sanitize_error_text(&error.to_string())
@@ -563,12 +639,23 @@ impl RequestProcessor {
         let function_name_text = match std::str::from_utf8(function_name) {
             Ok(name) => name.to_string(),
             Err(_) => {
-                append_error(response_out, b"ERR Error running function: invalid function name");
+                append_error(
+                    response_out,
+                    b"ERR Error running function: invalid function name",
+                );
                 return;
             }
         };
 
         let lua = Lua::new();
+        if let Err(error) = self.configure_lua_runtime_limits(&lua) {
+            let message = format!(
+                "ERR Error running function: {}",
+                sanitize_error_text(&error.to_string())
+            );
+            append_error(response_out, message.as_bytes());
+            return;
+        }
         let run_result = lua.scope(|scope| {
             let globals = lua.globals();
             let redis_table = lua.create_table()?;
@@ -642,6 +729,11 @@ impl RequestProcessor {
                 }
             }
             Err(error) => {
+                if lua_error_is_timeout(&error) {
+                    self.record_script_runtime_timeout();
+                    append_error(response_out, SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes());
+                    return;
+                }
                 let message = format!(
                     "ERR Error running function: {}",
                     sanitize_error_text(&error.to_string())
@@ -709,6 +801,33 @@ impl RequestProcessor {
             other => resp_frame_to_lua_value(lua, other),
         }
     }
+
+    fn configure_lua_runtime_limits(&self, lua: &Lua) -> mlua::Result<()> {
+        let config = self.scripting_runtime_config();
+        if config.max_memory_bytes > 0 {
+            let _ = lua.set_memory_limit(config.max_memory_bytes)?;
+        }
+        if config.max_execution_millis > 0 {
+            let timeout = Duration::from_millis(config.max_execution_millis);
+            let started = Instant::now();
+            lua.set_hook(
+                HookTriggers::new().every_nth_instruction(LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE),
+                move |_lua, _debug| {
+                    if started.elapsed() > timeout {
+                        return Err(LuaError::RuntimeError(
+                            SCRIPT_TIMEOUT_ERROR_TEXT.to_string(),
+                        ));
+                    }
+                    Ok(VmState::Continue)
+                },
+            )?;
+        }
+        Ok(())
+    }
+}
+
+fn lua_error_is_timeout(error: &LuaError) -> bool {
+    error.to_string().contains(SCRIPT_TIMEOUT_ERROR_TEXT)
 }
 
 fn lua_call_error_or_pcall_error(
@@ -1058,8 +1177,7 @@ fn parse_register_function_flags(descriptor: &LuaTable) -> mlua::Result<bool> {
                     }
                     _ => {
                         return Err(LuaError::RuntimeError(
-                            "ERR redis.register_function flags entries must be strings"
-                                .to_string(),
+                            "ERR redis.register_function flags entries must be strings".to_string(),
                         ));
                     }
                 }
@@ -1073,7 +1191,8 @@ fn parse_register_function_flags(descriptor: &LuaTable) -> mlua::Result<bool> {
 }
 
 fn parse_function_library_name(library_source: &[u8]) -> Result<String, RequestExecutionError> {
-    let source_text = std::str::from_utf8(library_source).map_err(|_| RequestExecutionError::SyntaxError)?;
+    let source_text =
+        std::str::from_utf8(library_source).map_err(|_| RequestExecutionError::SyntaxError)?;
     let first_line = source_text
         .lines()
         .next()
