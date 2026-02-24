@@ -41,8 +41,8 @@ It does not validate semantic completeness for each command.
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:311`
 - `SHUTDOWN` -> `ERR SHUTDOWN is disabled in this server`
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1292`
-- `FCALL`, `FCALL_RO`
-  - remain disabled (`ERR FCALL* is disabled in this server`) even when scripting is enabled
+- `FCALL`
+  - write-capable function execution remains disabled (`ERR FCALL is disabled in this server`)
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs`
 
 ## A2. Feature-Gated Scripting Surface
@@ -74,7 +74,9 @@ It does not validate semantic completeness for each command.
 ## D. Scripting Admin Surface Is Partial
 
 - `SCRIPT` supports `FLUSH` plus `LOAD`/`EXISTS` (the latter two behind `GARNET_SCRIPTING_ENABLED`).
-- `FUNCTION` remains minimal (`FLUSH` only); `FUNCTION LOAD` and `FCALL*` runtime semantics are still pending.
+- `FUNCTION` supports `FLUSH` and `LOAD [REPLACE]` with `redis.register_function`.
+- `FCALL_RO` supports read-only functions (`no-writes` flag) behind `GARNET_SCRIPTING_ENABLED`.
+- remaining gaps: full FUNCTION admin surface and write-capable `FCALL`.
 - implementation path:
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs`
 

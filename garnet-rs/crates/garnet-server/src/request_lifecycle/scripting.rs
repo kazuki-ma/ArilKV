@@ -1,9 +1,14 @@
 use super::*;
 use crate::command_spec::command_is_mutating;
 use crate::{dispatch_command_name, CommandId};
-use mlua::{Error as LuaError, Lua, MultiValue, Table as LuaTable, Value as LuaValue};
+use mlua::{
+    Error as LuaError, Function as LuaFunction, Lua, MultiValue, Table as LuaTable,
+    Value as LuaValue,
+};
 use sha1::{Digest, Sha1};
+use std::cell::RefCell;
 use std::fmt::Write;
+use std::rc::Rc;
 
 const SCRIPT_EVAL_USAGE: &str = "EVAL script numkeys [key ...] [arg ...]";
 const SCRIPT_EVAL_RO_USAGE: &str = "EVAL_RO script numkeys [key ...] [arg ...]";
@@ -11,7 +16,8 @@ const SCRIPT_EVALSHA_USAGE: &str = "EVALSHA sha1 numkeys [key ...] [arg ...]";
 const SCRIPT_EVALSHA_RO_USAGE: &str = "EVALSHA_RO sha1 numkeys [key ...] [arg ...]";
 const SCRIPT_FCALL_USAGE: &str = "FCALL function numkeys [key ...] [arg ...]";
 const SCRIPT_FCALL_RO_USAGE: &str = "FCALL_RO function numkeys [key ...] [arg ...]";
-const SCRIPT_FUNCTION_USAGE: &str = "FUNCTION FLUSH";
+const SCRIPT_FUNCTION_USAGE: &str = "FUNCTION <FLUSH|LOAD> [args]";
+const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
 const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
@@ -38,19 +44,67 @@ enum RespFrame {
     Null,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PendingFunctionRegistration {
+    name: String,
+    read_only: bool,
+}
+
+struct RegisterFunctionBinding {
+    name: String,
+    read_only: bool,
+    callback: LuaFunction,
+}
+
 impl RequestProcessor {
     pub(super) fn handle_function(
         &self,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 2, "FUNCTION", SCRIPT_FUNCTION_USAGE)?;
+        ensure_min_arity(args, 2, "FUNCTION", SCRIPT_FUNCTION_USAGE)?;
         let subcommand = args[1];
-        if !ascii_eq_ignore_case(subcommand, b"FLUSH") {
-            return Err(RequestExecutionError::UnknownCommand);
+
+        if ascii_eq_ignore_case(subcommand, b"FLUSH") {
+            require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
+            self.clear_function_registry();
+            append_simple_string(response_out, b"OK");
+            return Ok(());
         }
-        append_simple_string(response_out, b"OK");
-        Ok(())
+
+        if ascii_eq_ignore_case(subcommand, b"LOAD") {
+            if !self.scripting_enabled() {
+                return Err(RequestExecutionError::ScriptingDisabled);
+            }
+            ensure_ranged_arity(args, 3, 4, "FUNCTION", SCRIPT_FUNCTION_LOAD_USAGE)?;
+            let (replace, source_index) = match args.len() {
+                3 => (false, 2),
+                4 => {
+                    if !ascii_eq_ignore_case(args[2], b"REPLACE") {
+                        return Err(RequestExecutionError::SyntaxError);
+                    }
+                    (true, 3)
+                }
+                _ => return Err(RequestExecutionError::WrongArity {
+                    command: "FUNCTION",
+                    expected: SCRIPT_FUNCTION_LOAD_USAGE,
+                }),
+            };
+
+            let library_source = args[source_index];
+            let library_name = parse_function_library_name(library_source)?;
+            let registrations = self.collect_function_registrations(library_source)?;
+            self.store_function_library(
+                library_name.clone(),
+                library_source,
+                &registrations,
+                replace,
+            )?;
+            append_bulk_string(response_out, library_name.as_bytes());
+            return Ok(());
+        }
+
+        Err(RequestExecutionError::UnknownCommand)
     }
 
     pub(super) fn handle_script(
@@ -215,15 +269,28 @@ impl RequestProcessor {
     pub(super) fn handle_fcall_ro(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(args, "FCALL_RO", SCRIPT_FCALL_RO_USAGE)?;
+        let key_count = validate_scripting_numkeys(args, "FCALL_RO", SCRIPT_FCALL_RO_USAGE)?;
         if !self.scripting_enabled() {
             return Err(RequestExecutionError::ScriptingDisabled);
         }
-        Err(RequestExecutionError::CommandDisabled {
-            command: "FCALL_RO",
-        })
+        let function_name = args[1];
+        let (library_source, read_only) = self.resolve_function_target(function_name)?;
+        if !read_only {
+            return Err(RequestExecutionError::FunctionNotReadOnly);
+        }
+        let key_start = 3;
+        let key_end = key_start + key_count;
+        self.execute_lua_function(
+            &library_source,
+            function_name,
+            &args[key_start..key_end],
+            &args[key_end..],
+            ScriptMutability::ReadOnly,
+            response_out,
+        );
+        Ok(())
     }
 
     fn cache_script(&self, script: &[u8]) -> String {
@@ -246,6 +313,160 @@ impl RequestProcessor {
         if let Ok(mut cache) = self.script_cache.lock() {
             cache.clear();
         }
+    }
+
+    fn clear_function_registry(&self) {
+        if let Ok(mut registry) = self.function_registry.lock() {
+            registry.functions.clear();
+            registry.library_sources.clear();
+            registry.library_function_names.clear();
+        }
+    }
+
+    fn collect_function_registrations(
+        &self,
+        library_source: &[u8],
+    ) -> Result<Vec<PendingFunctionRegistration>, RequestExecutionError> {
+        let lua = Lua::new();
+        let registrations: Rc<RefCell<Vec<PendingFunctionRegistration>>> =
+            Rc::new(RefCell::new(Vec::new()));
+        let registration_names: Rc<RefCell<HashSet<String>>> = Rc::new(RefCell::new(HashSet::new()));
+        let run_result = lua.scope(|scope| {
+            let globals = lua.globals();
+            let redis_table = lua.create_table()?;
+            let registrations_ref = Rc::clone(&registrations);
+            let registration_names_ref = Rc::clone(&registration_names);
+            let register_function_fn = scope.create_function(move |_lua, values: MultiValue| {
+                let binding = parse_register_function_binding(values)?;
+                let mut names = registration_names_ref.borrow_mut();
+                if !names.insert(binding.name.clone()) {
+                    return Err(LuaError::RuntimeError(
+                        "ERR Function already registered".to_string(),
+                    ));
+                }
+                registrations_ref
+                    .borrow_mut()
+                    .push(PendingFunctionRegistration {
+                        name: binding.name,
+                        read_only: binding.read_only,
+                    });
+                Ok(())
+            })?;
+            let log_fn =
+                scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
+            redis_table.set("register_function", register_function_fn)?;
+            redis_table.set("log", log_fn)?;
+            redis_table.set("LOG_DEBUG", 0)?;
+            redis_table.set("LOG_VERBOSE", 1)?;
+            redis_table.set("LOG_NOTICE", 2)?;
+            redis_table.set("LOG_WARNING", 3)?;
+            globals.set("redis", redis_table)?;
+            lua.load(strip_lua_shebang(library_source)).exec()?;
+            Ok::<(), LuaError>(())
+        });
+
+        match run_result {
+            Ok(()) => {}
+            Err(_) => return Err(RequestExecutionError::SyntaxError),
+        }
+
+        let registrations = registrations.borrow().clone();
+        if registrations.is_empty() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        Ok(registrations)
+    }
+
+    fn store_function_library(
+        &self,
+        library_name: String,
+        library_source: &[u8],
+        registrations: &[PendingFunctionRegistration],
+        replace: bool,
+    ) -> Result<(), RequestExecutionError> {
+        let Ok(mut registry) = self.function_registry.lock() else {
+            return Err(storage_failure("function.registry", "function registry lock poisoned"));
+        };
+
+        let library_exists = registry.library_sources.contains_key(&library_name);
+        if library_exists && !replace {
+            return Err(RequestExecutionError::FunctionLibraryAlreadyExists);
+        }
+
+        let existing_library_names = registry
+            .library_function_names
+            .get(&library_name)
+            .cloned()
+            .unwrap_or_default();
+        let existing_library_name_set = existing_library_names
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<&str>>();
+
+        for registration in registrations {
+            if let Some(existing) = registry.functions.get(&registration.name) {
+                if existing.library_name != library_name
+                    && !existing_library_name_set.contains(registration.name.as_str())
+                {
+                    return Err(RequestExecutionError::FunctionNameAlreadyExists);
+                }
+            }
+        }
+
+        if library_exists {
+            if let Some(old_names) = registry.library_function_names.remove(&library_name) {
+                for old_name in old_names {
+                    registry.functions.remove(&old_name);
+                }
+            }
+            registry.library_sources.remove(&library_name);
+        }
+
+        for registration in registrations {
+            if registry.functions.contains_key(&registration.name) {
+                return Err(RequestExecutionError::FunctionNameAlreadyExists);
+            }
+        }
+
+        registry
+            .library_sources
+            .insert(library_name.clone(), library_source.to_vec());
+
+        let mut registered_names = Vec::with_capacity(registrations.len());
+        for registration in registrations {
+            registered_names.push(registration.name.clone());
+            registry.functions.insert(
+                registration.name.clone(),
+                LoadedFunctionDescriptor {
+                    library_name: library_name.clone(),
+                    read_only: registration.read_only,
+                },
+            );
+        }
+        registry
+            .library_function_names
+            .insert(library_name, registered_names);
+        Ok(())
+    }
+
+    fn resolve_function_target(
+        &self,
+        function_name: &[u8],
+    ) -> Result<(Vec<u8>, bool), RequestExecutionError> {
+        let function_name_text =
+            std::str::from_utf8(function_name).map_err(|_| RequestExecutionError::SyntaxError)?;
+        let Ok(registry) = self.function_registry.lock() else {
+            return Err(storage_failure("function.registry", "function registry lock poisoned"));
+        };
+        let descriptor = registry
+            .functions
+            .get(function_name_text)
+            .ok_or(RequestExecutionError::FunctionNotFound)?;
+        let source = registry
+            .library_sources
+            .get(&descriptor.library_name)
+            .ok_or(RequestExecutionError::FunctionNotFound)?;
+        Ok((source.clone(), descriptor.read_only))
     }
 
     fn execute_lua_script(
@@ -323,6 +544,106 @@ impl RequestProcessor {
             Err(error) => {
                 let message = format!(
                     "ERR Error running script: {}",
+                    sanitize_error_text(&error.to_string())
+                );
+                append_error(response_out, message.as_bytes());
+            }
+        }
+    }
+
+    fn execute_lua_function(
+        &self,
+        library_source: &[u8],
+        function_name: &[u8],
+        keys: &[&[u8]],
+        argv: &[&[u8]],
+        mutability: ScriptMutability,
+        response_out: &mut Vec<u8>,
+    ) {
+        let function_name_text = match std::str::from_utf8(function_name) {
+            Ok(name) => name.to_string(),
+            Err(_) => {
+                append_error(response_out, b"ERR Error running function: invalid function name");
+                return;
+            }
+        };
+
+        let lua = Lua::new();
+        let run_result = lua.scope(|scope| {
+            let globals = lua.globals();
+            let redis_table = lua.create_table()?;
+            let call_fn = scope.create_function(move |lua, values: MultiValue| {
+                self.execute_lua_redis_call(lua, values, mutability, LuaCallMode::Call)
+            })?;
+            let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
+                self.execute_lua_redis_call(lua, values, mutability, LuaCallMode::PCall)
+            })?;
+            let sha1hex_fn = scope.create_function(|_, value: mlua::String| {
+                Ok(script_sha1_hex(value.as_bytes().as_ref()))
+            })?;
+            let status_reply_fn = scope.create_function(|lua, value: mlua::String| {
+                let table = lua.create_table()?;
+                table.set("ok", value)?;
+                Ok(table)
+            })?;
+            let error_reply_fn = scope.create_function(|lua, value: mlua::String| {
+                let table = lua.create_table()?;
+                table.set("err", value)?;
+                Ok(table)
+            })?;
+            let log_fn =
+                scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
+            let registered_functions = lua.create_table()?;
+            let registered_functions_ref = registered_functions.clone();
+            let register_function_fn = scope.create_function(move |_lua, values: MultiValue| {
+                let binding = parse_register_function_binding(values)?;
+                registered_functions_ref.set(binding.name.as_str(), binding.callback)?;
+                Ok(())
+            })?;
+
+            redis_table.set("call", call_fn)?;
+            redis_table.set("pcall", pcall_fn)?;
+            redis_table.set("sha1hex", sha1hex_fn)?;
+            redis_table.set("status_reply", status_reply_fn)?;
+            redis_table.set("error_reply", error_reply_fn)?;
+            redis_table.set("register_function", register_function_fn)?;
+            redis_table.set("log", log_fn)?;
+            redis_table.set("LOG_DEBUG", 0)?;
+            redis_table.set("LOG_VERBOSE", 1)?;
+            redis_table.set("LOG_NOTICE", 2)?;
+            redis_table.set("LOG_WARNING", 3)?;
+            globals.set("redis", redis_table)?;
+
+            lua.load(strip_lua_shebang(library_source)).exec()?;
+
+            let callback = registered_functions
+                .get::<LuaFunction>(function_name_text.as_str())
+                .map_err(|_| LuaError::RuntimeError("ERR Function not found".to_string()))?;
+            let keys_table = lua.create_table_with_capacity(keys.len(), 0)?;
+            for (index, key) in keys.iter().enumerate() {
+                keys_table.set(index + 1, lua.create_string(key)?)?;
+            }
+            let argv_table = lua.create_table_with_capacity(argv.len(), 0)?;
+            for (index, arg) in argv.iter().enumerate() {
+                argv_table.set(index + 1, lua.create_string(arg)?)?;
+            }
+            let value: LuaValue = callback.call((keys_table, argv_table))?;
+            Ok::<LuaValue, LuaError>(value)
+        });
+
+        match run_result {
+            Ok(value) => {
+                if let Err(error_message) = append_lua_value_as_resp(value, response_out) {
+                    let message = format!(
+                        "ERR Error running function: {}",
+                        sanitize_error_text(&error_message)
+                    );
+                    append_error(response_out, message.as_bytes());
+                }
+            }
+            Err(error) => {
+                let message = format!(
+                    "ERR Error running function: {}",
                     sanitize_error_text(&error.to_string())
                 );
                 append_error(response_out, message.as_bytes());
@@ -635,6 +956,153 @@ fn parse_resp_i64(bytes: &[u8]) -> Result<i64, String> {
         std::str::from_utf8(bytes).map_err(|_| "RESP integer is not valid UTF-8".to_string())?;
     text.parse::<i64>()
         .map_err(|_| "RESP integer parse error".to_string())
+}
+
+fn parse_register_function_binding(values: MultiValue) -> mlua::Result<RegisterFunctionBinding> {
+    if values.is_empty() {
+        return Err(LuaError::RuntimeError(
+            "ERR redis.register_function requires arguments".to_string(),
+        ));
+    }
+
+    if values.len() == 1 {
+        match values.into_iter().next().expect("single value must exist") {
+            LuaValue::Table(descriptor) => parse_register_function_binding_from_table(descriptor),
+            _ => Err(LuaError::RuntimeError(
+                "ERR redis.register_function expects (name, callback) or descriptor table"
+                    .to_string(),
+            )),
+        }
+    } else if values.len() == 2 {
+        let mut values = values.into_iter();
+        let name = match values.next().expect("first value must exist") {
+            LuaValue::String(name) => name.to_string_lossy(),
+            _ => {
+                return Err(LuaError::RuntimeError(
+                    "ERR redis.register_function name must be a string".to_string(),
+                ));
+            }
+        };
+        let callback = match values.next().expect("second value must exist") {
+            LuaValue::Function(callback) => callback,
+            _ => {
+                return Err(LuaError::RuntimeError(
+                    "ERR redis.register_function callback must be a function".to_string(),
+                ));
+            }
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(LuaError::RuntimeError(
+                "ERR redis.register_function name must not be empty".to_string(),
+            ));
+        }
+        Ok(RegisterFunctionBinding {
+            name: name.to_string(),
+            read_only: false,
+            callback,
+        })
+    } else {
+        Err(LuaError::RuntimeError(
+            "ERR redis.register_function received too many arguments".to_string(),
+        ))
+    }
+}
+
+fn parse_register_function_binding_from_table(
+    descriptor: LuaTable,
+) -> mlua::Result<RegisterFunctionBinding> {
+    let name: Option<String> = descriptor.get("function_name")?;
+    let name = match name {
+        Some(name) => Some(name),
+        None => descriptor.get("name")?,
+    }
+    .ok_or_else(|| {
+        LuaError::RuntimeError(
+            "ERR redis.register_function descriptor requires function_name".to_string(),
+        )
+    })?;
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(LuaError::RuntimeError(
+            "ERR redis.register_function name must not be empty".to_string(),
+        ));
+    }
+
+    let callback: LuaFunction = descriptor.get("callback").map_err(|_| {
+        LuaError::RuntimeError(
+            "ERR redis.register_function descriptor requires callback function".to_string(),
+        )
+    })?;
+    let read_only = parse_register_function_flags(&descriptor)?;
+    Ok(RegisterFunctionBinding {
+        name: name.to_string(),
+        read_only,
+        callback,
+    })
+}
+
+fn parse_register_function_flags(descriptor: &LuaTable) -> mlua::Result<bool> {
+    let flags = descriptor.get::<LuaValue>("flags")?;
+    match flags {
+        LuaValue::Nil => Ok(false),
+        LuaValue::String(flag) => Ok(flag.to_string_lossy().eq_ignore_ascii_case("no-writes")),
+        LuaValue::Table(flags_table) => {
+            for entry in flags_table.sequence_values::<LuaValue>() {
+                let value = entry?;
+                match value {
+                    LuaValue::String(flag) => {
+                        if flag.to_string_lossy().eq_ignore_ascii_case("no-writes") {
+                            return Ok(true);
+                        }
+                    }
+                    _ => {
+                        return Err(LuaError::RuntimeError(
+                            "ERR redis.register_function flags entries must be strings"
+                                .to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(false)
+        }
+        _ => Err(LuaError::RuntimeError(
+            "ERR redis.register_function flags must be a string or array".to_string(),
+        )),
+    }
+}
+
+fn parse_function_library_name(library_source: &[u8]) -> Result<String, RequestExecutionError> {
+    let source_text = std::str::from_utf8(library_source).map_err(|_| RequestExecutionError::SyntaxError)?;
+    let first_line = source_text
+        .lines()
+        .next()
+        .ok_or(RequestExecutionError::SyntaxError)?;
+    let first_line = first_line.trim();
+    if !first_line.starts_with("#!lua") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let rest = first_line.trim_start_matches("#!lua").trim();
+    for token in rest.split_whitespace() {
+        if let Some(name) = token.strip_prefix("name=") {
+            if !name.is_empty() {
+                return Ok(name.to_string());
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+    }
+    Err(RequestExecutionError::SyntaxError)
+}
+
+fn strip_lua_shebang(source: &[u8]) -> &[u8] {
+    if !source.starts_with(b"#!") {
+        return source;
+    }
+    match source.iter().position(|byte| *byte == b'\n') {
+        Some(index) if index + 1 < source.len() => &source[index + 1..],
+        Some(_) => &[],
+        None => &[],
+    }
 }
 
 fn command_allowed_from_script(command: CommandId) -> bool {

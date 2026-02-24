@@ -2329,7 +2329,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: Some(ArityPolicy::Exact(2)),
+        arity_policy: Some(ArityPolicy::Min(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -3023,6 +3023,7 @@ mod tests {
         assert!(!command_has_valid_arity(CommandId::Flushdb, 2));
         assert!(command_has_valid_arity(CommandId::Flushall, 1));
         assert!(command_has_valid_arity(CommandId::Function, 2));
+        assert!(command_has_valid_arity(CommandId::Function, 3));
         assert!(!command_has_valid_arity(CommandId::Function, 1));
         assert!(command_has_valid_arity(CommandId::Script, 2));
         assert!(command_has_valid_arity(CommandId::Script, 3));

@@ -48,6 +48,10 @@ pub enum RequestExecutionError {
     SourceDestinationObjectsSame,
     WaitAofAppendOnlyDisabled,
     ClusterSupportDisabled,
+    FunctionLibraryAlreadyExists,
+    FunctionNameAlreadyExists,
+    FunctionNotFound,
+    FunctionNotReadOnly,
     NoScript,
     ScriptingDisabled,
 }
@@ -136,6 +140,17 @@ impl RequestExecutionError {
             Self::ClusterSupportDisabled => append_error(
                 response_out,
                 "ERR This instance has cluster support disabled",
+            ),
+            Self::FunctionLibraryAlreadyExists => {
+                append_error(response_out, "ERR Library already exists")
+            }
+            Self::FunctionNameAlreadyExists => {
+                append_error(response_out, "ERR Function already exists")
+            }
+            Self::FunctionNotFound => append_error(response_out, "ERR Function not found"),
+            Self::FunctionNotReadOnly => append_error(
+                response_out,
+                "ERR Can not execute a non read-only function with FCALL_RO",
             ),
             Self::NoScript => {
                 append_error(response_out, "NOSCRIPT No matching script. Please use EVAL.")

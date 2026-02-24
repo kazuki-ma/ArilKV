@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-24
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 253
+> **Current Iteration**: 254
 
 ---
 
@@ -305,7 +305,7 @@
 | 11.134 | Implement script-cache foundation (`SHA1`, volatile semantics, bounded metrics) | DONE | 11.133 | Added in-memory script cache keyed by SHA1 (`sha1` crate), cache insert on `EVAL` and `SCRIPT LOAD`, lookup for `EVALSHA*`, and explicit cache reset on `SCRIPT FLUSH`. |
 | 11.135 | Implement minimal read-only scripting path (`EVAL_RO`/`EVALSHA_RO`) | DONE | 11.134 | Implemented Lua execution bridge (`redis.call`/`redis.pcall`, `KEYS`/`ARGV`, Lua<->RESP conversion) with read-only enforcement rejecting mutating commands from `EVAL_RO`/`EVALSHA_RO`. |
 | 11.136 | Implement `SCRIPT` cache command parity (`LOAD`/`EXISTS`/`FLUSH`) + `NOSCRIPT` behavior | DONE | 11.135 | Added `SCRIPT LOAD`, `SCRIPT EXISTS`, and `SCRIPT FLUSH [ASYNC|SYNC]`; added `NOSCRIPT No matching script. Please use EVAL.` for missing `EVALSHA*` hashes. |
-| 11.137 | Implement minimal function surface (`FUNCTION LOAD` + `FCALL_RO`) | TODO | 11.136 | Add conservative read-only function execution path and key-argument validation semantics. |
+| 11.137 | Implement minimal function surface (`FUNCTION LOAD` + `FCALL_RO`) | DONE | 11.136 | Added `FUNCTION LOAD [REPLACE]` with shebang library-name parsing, function registry, duplicate-name/library checks, and `FUNCTION FLUSH` registry clear. Implemented `FCALL_RO` execution for `no-writes` registered functions with scripting flag gating preserved (`GARNET_SCRIPTING_ENABLED`, default off); `FCALL` remains explicitly disabled. |
 | 11.138 | Add scripting hardening/observability + replication/AOF compatibility tests | TODO | 11.137 | Cover timeout/memory/cache-eviction controls, plus replication-effect semantics and integration tests. |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
@@ -790,3 +790,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 251 | 2026-02-24 | 11.102 | DONE | Closed remaining `unit/type/list` external gaps by fixing blocking wait turn/fairness behavior and wakeup replication canonicalization. Added regression tests for linked BLMOVE chain observability, BRPOPLPUSH wakeup WATCH invalidation, and INFO COMMANDSTATS counting. External validation now passes fully (`ok=253, err=0, ignore=31`, result dir `.../unit-type-list-after-repl-format-fix-20260224-141135`). |
 | 252 | 2026-02-24 | 11.132 / DR-005 | DONE | Imported returned Lua-engine DeepResearch report into `docs/performance/lua-engine-crate-selection-deepresearch-2026-02-24.md`, added actionable notes `docs/performance/lua-engine-crate-selection-notes-2026-02-24.md`, updated Phase 11B `DR-005` to `RECEIVED` (`pending=0`), and registered scripting follow-up backlog items (`11.133`-`11.138`). |
 | 253 | 2026-02-24 | 11.133/11.134/11.135/11.136 | DONE | Implemented Lua scripting foundation with `mlua` (`lua51+vendored`) behind `GARNET_SCRIPTING_ENABLED` default-off flag; added SHA1 script cache + `SCRIPT LOAD/EXISTS/FLUSH` + `NOSCRIPT` on missing `EVALSHA*`; enabled `EVAL`/`EVAL_RO`/`EVALSHA`/`EVALSHA_RO` execution with `KEYS`/`ARGV`, `redis.call`/`redis.pcall`, and read-only write rejection. Added unit coverage (`cargo test -p garnet-server -- --nocapture`: `217 + 23 + 1` pass) and regenerated compatibility artifacts via `build_compatibility_report.sh` (`expected_ok==actual_ok`: `6/4/2`, result dir `.../compatibility-report-20260224-211127/redis-runtest-external-subset`). Bundled 4 TODOs in one commit because all changes were mechanically coupled inside one scripting-surface integration. |
+| 254 | 2026-02-24 | 11.137 | DONE | Added minimal function surface with registry-backed `FUNCTION LOAD [REPLACE]` (library shebang parsing, duplicate-name/library validation, and `FUNCTION FLUSH` cleanup) plus `FCALL_RO` execution for `no-writes` registered functions. Preserved default-off scripting kill-switch (`GARNET_SCRIPTING_ENABLED`) and kept `FCALL` explicitly disabled. Validation: `cargo test -p garnet-server -- --nocapture` (`220 + 23 + 1` pass) and regenerated compatibility report with stdout count verification (`expected_ok==actual_ok`: `6/4/2`, result dir `.../compatibility-report-20260224-213214/redis-runtest-external-subset`). |

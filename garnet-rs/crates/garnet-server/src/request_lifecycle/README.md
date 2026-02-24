@@ -24,6 +24,7 @@ This directory owns command execution semantics and RESP response construction.
   - default is disabled; command paths must preserve disabled behavior.
   - `SCRIPT LOAD/EXISTS` and `EVALSHA*` share SHA1 cache semantics (`NOSCRIPT` on miss).
   - `EVAL_RO`/`EVALSHA_RO` must reject mutating commands via `redis.call`/`redis.pcall`.
+  - `FUNCTION LOAD [REPLACE]` + `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
 - Blocking list commands use owner-thread polling with wait-queue fairness:
   - timeout is parsed as float seconds and enforced (including non-turn queue waits).
   - waiter order is tracked per key; queue cleanup runs on wake/timeout/disconnect.

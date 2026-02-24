@@ -6918,12 +6918,63 @@ fn script_load_exists_evalsha_and_flush_when_enabled() {
 }
 
 #[test]
-fn fcall_remains_disabled_when_scripting_is_enabled() {
+fn function_load_and_fcall_ro_work_when_scripting_is_enabled() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=lib_readonly\nredis.register_function{function_name='ro_get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}}";
+    let function_load = encode_resp(&[b"FUNCTION", b"LOAD", library_source]);
+    assert_eq!(
+        execute_frame(&processor, &function_load),
+        b"$12\r\nlib_readonly\r\n"
+    );
+    assert_command_response(&processor, "SET mykey myvalue", b"+OK\r\n");
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"FCALL_RO", b"ro_get", b"1", b"mykey"])),
+        b"$7\r\nmyvalue\r\n"
+    );
+}
+
+#[test]
+fn fcall_ro_rejects_non_readonly_registered_function() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=lib_rw\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}";
+    let function_load = encode_resp(&[b"FUNCTION", b"LOAD", library_source]);
+    assert_eq!(execute_frame(&processor, &function_load), b"$6\r\nlib_rw\r\n");
+    assert_command_error(
+        &processor,
+        "FCALL_RO rw_set 1 k v",
+        b"-ERR Can not execute a non read-only function with FCALL_RO\r\n",
+    );
+}
+
+#[test]
+fn function_flush_clears_loaded_functions() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=lib_flush\nredis.register_function{function_name='ro_ping', callback=function(keys, args) return redis.call('PING') end, flags={'no-writes'}}";
+    let function_load = encode_resp(&[b"FUNCTION", b"LOAD", library_source]);
+    assert_eq!(execute_frame(&processor, &function_load), b"$9\r\nlib_flush\r\n");
+    assert_command_response(&processor, "FUNCTION FLUSH", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "FCALL_RO ro_ping 0",
+        b"-ERR Function not found\r\n",
+    );
+}
+
+#[test]
+fn fcall_and_function_load_gating_behavior() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     assert_command_error(
         &processor,
         "FCALL fn 0",
         b"-ERR FCALL is disabled in this server\r\n",
+    );
+
+    let processor_disabled =
+        RequestProcessor::new_with_string_store_shards_and_scripting(1, false).unwrap();
+    assert_command_error(
+        &processor_disabled,
+        "FUNCTION LOAD \"#!lua name=lib redis.register_function('f', function(keys, args) return 1 end)\"",
+        b"-ERR scripting is disabled in this server\r\n",
     );
 }
 

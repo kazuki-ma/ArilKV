@@ -129,6 +129,19 @@ struct StreamObject {
     groups: BTreeMap<Vec<u8>, Vec<u8>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct LoadedFunctionDescriptor {
+    library_name: String,
+    read_only: bool,
+}
+
+#[derive(Debug, Default)]
+struct FunctionRegistry {
+    functions: HashMap<String, LoadedFunctionDescriptor>,
+    library_sources: HashMap<String, Vec<u8>>,
+    library_function_names: HashMap<String, Vec<String>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientUnblockMode {
     Timeout,
@@ -154,6 +167,7 @@ pub struct RequestProcessor {
     watching_clients: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
+    function_registry: Mutex<FunctionRegistry>,
     scripting_enabled: bool,
     zset_max_listpack_entries: AtomicUsize,
     list_max_listpack_size: AtomicI64,
@@ -261,6 +275,7 @@ impl RequestProcessor {
             watching_clients: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
             script_cache: Mutex::new(HashMap::new()),
+            function_registry: Mutex::new(FunctionRegistry::default()),
             scripting_enabled,
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),

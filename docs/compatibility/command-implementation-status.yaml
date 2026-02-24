@@ -130,10 +130,10 @@ commands:
     comment: ""
   - command: FCALL
     status: DISABLED
-    comment: "FUNCTION/FCALL runtime is not implemented yet; command remains disabled."
+    comment: "Write-capable FCALL execution remains disabled."
   - command: FCALL_RO
-    status: DISABLED
-    comment: "FUNCTION/FCALL runtime is not implemented yet; command remains disabled."
+    status: PARTIAL_MINIMAL
+    comment: "Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD with no-writes flag."
   - command: FLUSHALL
     status: FULL
     comment: ""
@@ -142,7 +142,7 @@ commands:
     comment: ""
   - command: FUNCTION
     status: PARTIAL_MINIMAL
-    comment: "Currently limited to FLUSH-compatible behavior."
+    comment: "Supports FLUSH and LOAD [REPLACE] with redis.register_function parsing; full FUNCTION management surface is not implemented."
   - command: GEOADD
     status: FULL
     comment: ""
