@@ -6819,6 +6819,27 @@ fn script_flush_sync_returns_ok() {
 }
 
 #[test]
+fn script_help_debug_and_kill_cover_minimal_surface() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let help_response = execute_frame(&processor, &encode_resp(&[b"SCRIPT", b"HELP"]));
+    assert!(help_response.starts_with(b"*6\r\n"));
+    let help_text = String::from_utf8_lossy(&help_response);
+    assert!(help_text.contains("LOAD <script>"));
+
+    assert_command_response(&processor, "SCRIPT DEBUG YES", b"+OK\r\n");
+    assert_command_response(&processor, "SCRIPT DEBUG SYNC", b"+OK\r\n");
+    assert_command_response(&processor, "SCRIPT DEBUG NO", b"+OK\r\n");
+    assert_command_error(&processor, "SCRIPT DEBUG MAYBE", b"-ERR syntax error\r\n");
+
+    assert_command_response(
+        &processor,
+        "SCRIPT KILL",
+        b"-NOTBUSY No scripts in execution right now.\r\n",
+    );
+}
+
+#[test]
 fn scripting_eval_and_fcall_commands_validate_numkeys_then_return_disabled() {
     let processor = RequestProcessor::new().unwrap();
 

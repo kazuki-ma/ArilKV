@@ -22,8 +22,18 @@ const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
 const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
+const SCRIPT_DEBUG_USAGE: &str = "SCRIPT DEBUG YES|SYNC|NO";
 const SCRIPT_TIMEOUT_ERROR_TEXT: &str = "ERR script execution timed out";
 const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
+
+const SCRIPT_HELP_LINES: [&[u8]; 6] = [
+    b"SCRIPT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"DEBUG (YES|SYNC|NO) -- Set the debug mode for subsequent scripts executed.",
+    b"EXISTS <sha1> [<sha1> ...] -- Return information about the existence of scripts in the cache.",
+    b"FLUSH [ASYNC|SYNC] -- Flush the Lua scripts cache.",
+    b"KILL -- Kill the currently executing Lua script.",
+    b"LOAD <script> -- Load a script into the scripts cache without executing it.",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScriptMutability {
@@ -120,6 +130,31 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SCRIPT", "SCRIPT <subcommand> [arg ...]")?;
         let subcommand = args[1];
+
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "SCRIPT", "SCRIPT HELP")?;
+            append_bulk_array(response_out, &SCRIPT_HELP_LINES);
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"KILL") {
+            require_exact_arity(args, 2, "SCRIPT", "SCRIPT KILL")?;
+            append_error(response_out, b"NOTBUSY No scripts in execution right now.");
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"DEBUG") {
+            require_exact_arity(args, 3, "SCRIPT", SCRIPT_DEBUG_USAGE)?;
+            let mode = args[2];
+            if !ascii_eq_ignore_case(mode, b"YES")
+                && !ascii_eq_ignore_case(mode, b"SYNC")
+                && !ascii_eq_ignore_case(mode, b"NO")
+            {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
 
         if ascii_eq_ignore_case(subcommand, b"FLUSH") {
             ensure_ranged_arity(args, 2, 3, "SCRIPT", SCRIPT_FLUSH_USAGE)?;

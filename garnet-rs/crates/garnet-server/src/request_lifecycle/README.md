@@ -28,6 +28,7 @@ This directory owns command execution semantics and RESP response construction.
     - `GARNET_SCRIPTING_MAX_MEMORY_BYTES` (0 = unlimited, per-Lua-state memory limit).
     - `GARNET_SCRIPTING_MAX_EXECUTION_MILLIS` (0 = unlimited, instruction-hook timeout).
   - `SCRIPT LOAD/EXISTS` and `EVALSHA*` share SHA1 cache semantics (`NOSCRIPT` on miss).
+  - `SCRIPT HELP/DEBUG/KILL` return minimal compatibility responses.
   - `EVAL_RO`/`EVALSHA_RO` must reject mutating commands via `redis.call`/`redis.pcall`.
   - `FUNCTION LOAD [REPLACE]`, `FCALL`, and `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
   - `INFO` exposes scripting observability (`scripting_cache_*`, `scripting_runtime_timeouts`, and configured limit values).

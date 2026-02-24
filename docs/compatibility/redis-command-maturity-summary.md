@@ -1,6 +1,6 @@
 # Redis Command Maturity Summary
 
-- Generated at: 2026-02-24T12:50:22Z
+- Generated at: 2026-02-24T12:54:22Z
 - Status source: `docs/compatibility/redis-command-status.csv`
 - Implementation source: `docs/compatibility/command-implementation-status.yaml`
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
@@ -39,7 +39,7 @@
 | `READONLY` | `DISABLED` | - |
 | `READWRITE` | `DISABLED` | - |
 | `ROLE` | `PARTIAL_MINIMAL` | Returns fixed master-role shape; full role-state semantics are not implemented. |
-| `SCRIPT` | `PARTIAL_MINIMAL` | Supports FLUSH plus LOAD/EXISTS when scripting is enabled. Runtime hardening env knobs are supported (max script bytes; cache max entries; Lua memory limit; execution timeout); but HELP/KILL/DEBUG and full Redis script-admin surface are not implemented. |
+| `SCRIPT` | `PARTIAL_MINIMAL` | Supports FLUSH/LOAD/EXISTS plus HELP/DEBUG/KILL minimal behavior (runtime hardening env knobs included); but full Redis script-admin semantics are not implemented. |
 | `SHUTDOWN` | `DISABLED` | - |
 | `SLOWLOG` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `SPUBLISH` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |

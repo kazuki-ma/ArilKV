@@ -451,7 +451,7 @@ commands:
     comment: ""
   - command: SCRIPT
     status: PARTIAL_MINIMAL
-    comment: "Supports FLUSH plus LOAD/EXISTS when scripting is enabled. Runtime hardening env knobs are supported (max script bytes, cache max entries, Lua memory limit, execution timeout), but HELP/KILL/DEBUG and full Redis script-admin surface are not implemented."
+    comment: "Supports FLUSH/LOAD/EXISTS plus HELP/DEBUG/KILL minimal behavior (runtime hardening env knobs included), but full Redis script-admin semantics are not implemented."
   - command: SDIFF
     status: FULL
     comment: ""
