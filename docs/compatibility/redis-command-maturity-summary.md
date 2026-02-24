@@ -1,6 +1,6 @@
 # Redis Command Maturity Summary
 
-- Generated at: 2026-02-24T13:15:10Z
+- Generated at: 2026-02-24T13:19:11Z
 - Status source: `docs/compatibility/redis-command-status.csv`
 - Implementation source: `docs/compatibility/command-implementation-status.yaml`
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`

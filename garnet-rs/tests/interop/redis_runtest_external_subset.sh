@@ -112,6 +112,44 @@ run_cli_probe_case() {
     fi
 }
 
+run_cli_scripting_probe_case() {
+    local case_name="$1"
+    local log_file="${RESULT_DIR}/${case_name}.log"
+    local status="FAIL"
+    local details=""
+
+    {
+        eval_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw EVAL "return 1" 0 2>&1 || true)"
+        echo "eval_output=${eval_output}"
+        if [[ "${eval_output}" == "1" || "${eval_output}" == "(integer) 1" ]]; then
+            local library_source
+            library_source=$'#!lua name=lib_probe\nredis.register_function{function_name=\'ro_ping\', callback=function(keys, args) return redis.call(\'PING\') end, flags={\'no-writes\'}}'
+            load_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION LOAD REPLACE "${library_source}" 2>&1 || true)"
+            echo "function_load_output=${load_output}"
+            fcall_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FCALL_RO ro_ping 0 2>&1 || true)"
+            echo "fcall_ro_output=${fcall_output}"
+            flush_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION FLUSH 2>&1 || true)"
+            echo "function_flush_output=${flush_output}"
+
+            if [[ "${load_output}" == "lib_probe" && "${fcall_output}" == "PONG" ]]; then
+                status="PASS"
+                details="scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok; log=${log_file}"
+            else
+                status="FAIL"
+                details="scripting_enabled_mode_unexpected_output; log=${log_file}"
+            fi
+        elif [[ "${eval_output}" == *"scripting is disabled in this server"* ]]; then
+            status="PASS"
+            details="scripting_disabled_mode; eval disabled as expected; log=${log_file}"
+        else
+            status="FAIL"
+            details="unexpected_eval_output; log=${log_file}"
+        fi
+    } >"${log_file}" 2>&1
+
+    record_result "${case_name}" "${status}" "${details}"
+}
+
 require_cmd redis-cli
 require_cmd cargo
 require_cmd "${RUNTEXT_BIN}"
@@ -166,6 +204,7 @@ run_runtest_case \
     "Zero length value in key. SET/GET/EXISTS"
 
 run_cli_probe_case "redis_cli_type_probe"
+run_cli_scripting_probe_case "redis_cli_scripting_probe"
 
 echo "redis runtest external subset summary"
 cat "${SUMMARY_CSV}"
