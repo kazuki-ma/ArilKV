@@ -41,8 +41,8 @@ It does not validate semantic completeness for each command.
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:311`
 - `SHUTDOWN` -> `ERR SHUTDOWN is disabled in this server`
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs:1292`
-- `FCALL`
-  - write-capable function execution remains disabled (`ERR FCALL is disabled in this server`)
+- `FCALL`/`FCALL_RO` are implemented behind `GARNET_SCRIPTING_ENABLED` for functions loaded via `FUNCTION LOAD`.
+  - `FCALL_RO` still rejects non-read-only registrations (`no-writes` enforcement).
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs`
 
 ## A2. Feature-Gated Scripting Surface
@@ -81,8 +81,8 @@ It does not validate semantic completeness for each command.
 
 - `SCRIPT` supports `FLUSH` plus `LOAD`/`EXISTS` (the latter two behind `GARNET_SCRIPTING_ENABLED`) with cache-limit eviction and INFO observability fields for scripting runtime/cache counters.
 - `FUNCTION` supports `FLUSH` and `LOAD [REPLACE]` with `redis.register_function`.
-- `FCALL_RO` supports read-only functions (`no-writes` flag) behind `GARNET_SCRIPTING_ENABLED`.
-- remaining gaps: full FUNCTION admin surface and write-capable `FCALL`.
+- `FCALL` and `FCALL_RO` are available behind `GARNET_SCRIPTING_ENABLED` (`FCALL_RO` enforces `no-writes`).
+- remaining gaps: full FUNCTION admin surface (`DELETE`/`LIST`/`STATS`/`KILL` style coverage) and deeper Redis function-library semantics.
 - implementation path:
   - `garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs`
 

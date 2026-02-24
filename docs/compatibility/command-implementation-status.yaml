@@ -129,8 +129,8 @@ commands:
     status: DISABLED
     comment: ""
   - command: FCALL
-    status: DISABLED
-    comment: "Write-capable FCALL execution remains disabled."
+    status: PARTIAL_MINIMAL
+    comment: "Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD."
   - command: FCALL_RO
     status: PARTIAL_MINIMAL
     comment: "Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD with no-writes flag."

@@ -1,14 +1,14 @@
 # Redis Command Maturity Summary
 
-- Generated at: 2026-02-24T12:46:47Z
+- Generated at: 2026-02-24T12:50:22Z
 - Status source: `docs/compatibility/redis-command-status.csv`
 - Implementation source: `docs/compatibility/command-implementation-status.yaml`
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
 
 - Supported declared commands: `241`
 - `FULL`: `207`
-- `PARTIAL_MINIMAL`: `28`
-- `DISABLED`: `6`
+- `PARTIAL_MINIMAL`: `29`
+- `DISABLED`: `5`
 - Full implementation ratio over declared commands: `85.89%`
 
 ## Non-Full Commands
@@ -25,7 +25,7 @@
 | `EVALSHA_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection inside redis.call/pcall. |
 | `EVAL_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED; write commands are rejected from script context. |
 | `FAILOVER` | `DISABLED` | - |
-| `FCALL` | `DISABLED` | Write-capable FCALL execution remains disabled. |
+| `FCALL` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD. |
 | `FCALL_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD with no-writes flag. |
 | `FUNCTION` | `PARTIAL_MINIMAL` | Supports FLUSH and LOAD [REPLACE] with redis.register_function parsing; full FUNCTION management surface is not implemented. |
 | `LATENCY` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |

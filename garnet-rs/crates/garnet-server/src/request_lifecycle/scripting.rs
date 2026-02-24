@@ -266,13 +266,25 @@ impl RequestProcessor {
     pub(super) fn handle_fcall(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        validate_scripting_numkeys(args, "FCALL", SCRIPT_FCALL_USAGE)?;
+        let key_count = validate_scripting_numkeys(args, "FCALL", SCRIPT_FCALL_USAGE)?;
         if !self.scripting_enabled() {
             return Err(RequestExecutionError::ScriptingDisabled);
         }
-        Err(RequestExecutionError::CommandDisabled { command: "FCALL" })
+        let function_name = args[1];
+        let (library_source, _read_only) = self.resolve_function_target(function_name)?;
+        let key_start = 3;
+        let key_end = key_start + key_count;
+        self.execute_lua_function(
+            &library_source,
+            function_name,
+            &args[key_start..key_end],
+            &args[key_end..],
+            ScriptMutability::ReadWrite,
+            response_out,
+        );
+        Ok(())
     }
 
     pub(super) fn handle_fcall_ro(

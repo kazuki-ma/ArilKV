@@ -6970,16 +6970,36 @@ fn function_flush_clears_loaded_functions() {
 }
 
 #[test]
+fn fcall_executes_write_function_when_scripting_is_enabled() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=lib_mut\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", library_source])
+        ),
+        b"$7\r\nlib_mut\r\n"
+    );
+    assert_command_response(
+        &processor,
+        "FCALL rw_set 1 fcall:key fcall:value",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "GET fcall:key", b"$11\r\nfcall:value\r\n");
+}
+
+#[test]
 fn fcall_and_function_load_gating_behavior() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
-    assert_command_error(
-        &processor,
-        "FCALL fn 0",
-        b"-ERR FCALL is disabled in this server\r\n",
-    );
+    assert_command_error(&processor, "FCALL fn 0", b"-ERR Function not found\r\n");
 
     let processor_disabled =
         RequestProcessor::new_with_string_store_shards_and_scripting(1, false).unwrap();
+    assert_command_error(
+        &processor_disabled,
+        "FCALL fn 0",
+        b"-ERR scripting is disabled in this server\r\n",
+    );
     assert_command_error(
         &processor_disabled,
         "FUNCTION LOAD \"#!lua name=lib redis.register_function('f', function(keys, args) return 1 end)\"",

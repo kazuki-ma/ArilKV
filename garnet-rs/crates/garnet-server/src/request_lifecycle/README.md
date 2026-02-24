@@ -29,7 +29,7 @@ This directory owns command execution semantics and RESP response construction.
     - `GARNET_SCRIPTING_MAX_EXECUTION_MILLIS` (0 = unlimited, instruction-hook timeout).
   - `SCRIPT LOAD/EXISTS` and `EVALSHA*` share SHA1 cache semantics (`NOSCRIPT` on miss).
   - `EVAL_RO`/`EVALSHA_RO` must reject mutating commands via `redis.call`/`redis.pcall`.
-  - `FUNCTION LOAD [REPLACE]` + `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
+  - `FUNCTION LOAD [REPLACE]`, `FCALL`, and `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
   - `INFO` exposes scripting observability (`scripting_cache_*`, `scripting_runtime_timeouts`, and configured limit values).
 - Blocking list commands use owner-thread polling with wait-queue fairness:
   - timeout is parsed as float seconds and enforced (including non-turn queue waits).
