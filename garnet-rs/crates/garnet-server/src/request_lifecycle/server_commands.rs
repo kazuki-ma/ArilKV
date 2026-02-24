@@ -137,8 +137,7 @@ impl RequestProcessor {
             return Ok(());
         }
         require_exact_arity(args, 2, "HELLO", "HELLO [2|3]")?;
-        let version = parse_u64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let version = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if version != 2 && version != 3 {
             return Err(RequestExecutionError::SyntaxError);
         }
@@ -152,7 +151,16 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 1, "INFO", "INFO")?;
+        ensure_one_of_arities(args, &[1, 2], "INFO", "INFO [section]")?;
+
+        if args.len() == 2 {
+            let section = args[1];
+            if ascii_eq_ignore_case(section, b"COMMANDSTATS") {
+                let payload = self.render_commandstats_info_payload();
+                append_bulk_string(response_out, payload.as_bytes());
+                return Ok(());
+            }
+        }
 
         let dbsize = self.active_key_count()?;
         let blocked_clients = self.blocked_clients();
@@ -194,8 +202,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SELECT", "SELECT index")?;
-        let index = parse_i64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let index = parse_i64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if index != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
@@ -209,8 +216,7 @@ impl RequestProcessor {
         _response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
-        let target_db = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let target_db = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if target_db == 0 {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
         }
@@ -223,10 +229,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SWAPDB", "SWAPDB index1 index2")?;
-        let index1 = parse_i64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        let index2 = parse_i64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let index1 = parse_i64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let index2 = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if index1 != 0 || index2 != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
@@ -244,19 +248,18 @@ impl RequestProcessor {
         if host.is_empty() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let port = parse_u64_ascii(args[2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let port = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if port > u16::MAX as u64 {
             return Err(RequestExecutionError::ValueNotInteger);
         }
         let key_arg = args[3];
-        let destination_db = parse_i64_ascii(args[4])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let destination_db =
+            parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if destination_db != 0 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
-        let timeout_millis = parse_i64_ascii(args[5])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let timeout_millis =
+            parse_i64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if timeout_millis <= 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
@@ -356,8 +359,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"PAUSE") {
             ensure_one_of_arities(args, &[3, 4], "CLIENT", "CLIENT PAUSE timeout [WRITE|ALL]")?;
-            parse_u64_ascii(args[2])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if args.len() == 4 {
                 let mode = args[3];
                 if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
@@ -415,8 +417,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "WAITAOF", "WAITAOF numlocal numreplicas timeout")?;
-        let numlocal = parse_u64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let numlocal = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if numlocal > 1 {
@@ -508,8 +509,7 @@ impl RequestProcessor {
             let first_option = args[1];
             if ascii_eq_ignore_case(first_option, b"VERSION") {
                 require_exact_arity(args, 3, "LOLWUT", "LOLWUT [VERSION version]")?;
-                parse_u64_ascii(args[2])
-                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             }
         }
         append_bulk_string(response_out, b"Redis ver. garnet-rs\n");
@@ -729,8 +729,7 @@ impl RequestProcessor {
             "SCAN cursor [MATCH pattern] [COUNT count] [TYPE type]",
         )?;
 
-        let cursor = parse_u64_ascii(args[1])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
+        let cursor = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let mut pattern: Option<&[u8]> = None;
         let mut count = 10usize;
         let mut type_filter: Option<ScanTypeFilter> = None;
@@ -982,8 +981,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"GET") {
             ensure_ranged_arity(args, 2, 3, "SLOWLOG", "SLOWLOG GET [count]")?;
             if args.len() == 3 {
-                parse_i64_ascii(args[2])
-                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             }
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
@@ -1406,6 +1404,8 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"RESETSTAT") {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
+            self.reset_rdb_changes_since_last_save();
+            self.reset_commandstats();
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1612,8 +1612,7 @@ fn restore_from_dump_blob(
     )?;
 
     let key = args[1].to_vec();
-    let ttl_input =
-        parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    let ttl_input = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if ttl_input < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);
     }
@@ -1695,8 +1694,7 @@ fn parse_restore_options(
                 command_name,
                 "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
             )?;
-            parse_u64_ascii(args[index + 1])
-                .ok_or(RequestExecutionError::ValueNotInteger)?;
+            parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             index += 2;
             continue;
         }

@@ -19,9 +19,10 @@ This directory owns command execution semantics and RESP response construction.
   - `numkeys` must be integer > 0.
   - direction must be `LEFT|RIGHT`.
   - optional `COUNT` must be `COUNT <positive integer>`.
-- Blocking list commands currently behave as immediate-return operations:
-  - timeout is parsed and validated (float, non-negative).
-  - no sleeping/wait queue is used yet.
+- Blocking list commands use owner-thread polling with wait-queue fairness:
+  - timeout is parsed as float seconds and enforced (including non-turn queue waits).
+  - waiter order is tracked per key; queue cleanup runs on wake/timeout/disconnect.
+  - mutation paths may yield briefly when blocked clients exist to reduce wakeup ordering races.
 - For list pop operations, right-side multi-pop return order must follow pop order (`RIGHT` pops from tail first).
 
 ## Test Focus

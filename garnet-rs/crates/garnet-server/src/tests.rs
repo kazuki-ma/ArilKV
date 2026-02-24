@@ -918,6 +918,213 @@ async fn blocking_list_wakeups_increase_rdb_changes_since_last_save() {
 }
 
 #[tokio::test]
+async fn linked_blmove_chain_is_observable_without_intermediate_residue() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter1 = TcpStream::connect(addr).await.unwrap();
+    let mut waiter2 = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut inspector,
+        b"*4\r\n$3\r\nDEL\r\n$8\r\nlist1{t}\r\n$8\r\nlist2{t}\r\n$8\r\nlist3{t}\r\n",
+        b":0\r\n",
+    )
+    .await;
+
+    waiter1
+        .write_all(
+            b"*6\r\n$6\r\nBLMOVE\r\n$8\r\nlist1{t}\r\n$8\r\nlist2{t}\r\n$5\r\nRIGHT\r\n$4\r\nLEFT\r\n$1\r\n0\r\n",
+        )
+        .await
+        .unwrap();
+    waiter2
+        .write_all(
+            b"*6\r\n$6\r\nBLMOVE\r\n$8\r\nlist2{t}\r\n$8\r\nlist3{t}\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n$1\r\n0\r\n",
+        )
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut producer,
+        b"*3\r\n$5\r\nRPUSH\r\n$8\r\nlist1{t}\r\n$3\r\nfoo\r\n",
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut inspector,
+        b"*4\r\n$6\r\nLRANGE\r\n$8\r\nlist1{t}\r\n$1\r\n0\r\n$2\r\n-1\r\n",
+        b"*0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut inspector,
+        b"*4\r\n$6\r\nLRANGE\r\n$8\r\nlist2{t}\r\n$1\r\n0\r\n$2\r\n-1\r\n",
+        b"*0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut inspector,
+        b"*4\r\n$6\r\nLRANGE\r\n$8\r\nlist3{t}\r\n$1\r\n0\r\n$2\r\n-1\r\n",
+        b"*1\r\n$3\r\nfoo\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn brpoplpush_wakeup_invalidates_watch_before_exec() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut blocked_client = TcpStream::connect(addr).await.unwrap();
+    let mut watching_client = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut producer,
+        b"*4\r\n$3\r\nDEL\r\n$10\r\nsrclist{t}\r\n$10\r\ndstlist{t}\r\n$10\r\nsomekey{t}\r\n",
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut producer,
+        b"*3\r\n$3\r\nSET\r\n$10\r\nsomekey{t}\r\n$9\r\nsomevalue\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    blocked_client
+        .write_all(
+            b"*4\r\n$10\r\nBRPOPLPUSH\r\n$10\r\nsrclist{t}\r\n$10\r\ndstlist{t}\r\n$1\r\n0\r\n",
+        )
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut watching_client,
+        b"*2\r\n$5\r\nWATCH\r\n$10\r\ndstlist{t}\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut watching_client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut watching_client,
+        b"*2\r\n$3\r\nGET\r\n$10\r\nsomekey{t}\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut producer,
+        b"*3\r\n$5\r\nLPUSH\r\n$10\r\nsrclist{t}\r\n$7\r\nelement\r\n",
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(&mut watching_client, b"*1\r\n$4\r\nEXEC\r\n", b"*-1\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn info_commandstats_counts_blocking_command_once() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut inspector,
+        b"*2\r\n$6\r\nCONFIG\r\n$9\r\nRESETSTAT\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut inspector,
+        b"*2\r\n$3\r\nDEL\r\n$6\r\nmylist\r\n",
+        b":0\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$6\r\nmylist\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut producer,
+        b"*3\r\n$5\r\nLPUSH\r\n$6\r\nmylist\r\n$1\r\n1\r\n",
+        b":1\r\n",
+    )
+    .await;
+    let _ = read_exact_with_timeout(&mut waiter, 23, Duration::from_secs(1)).await;
+
+    let payload = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*2\r\n$4\r\nINFO\r\n$12\r\nCOMMANDSTATS\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let payload_text = String::from_utf8_lossy(&payload);
+    assert!(
+        payload_text.contains("cmdstat_blpop:calls=1"),
+        "unexpected INFO COMMANDSTATS payload: {payload_text}"
+    );
+    assert!(
+        payload_text.contains("rejected_calls=0,failed_calls=0"),
+        "unexpected INFO COMMANDSTATS payload: {payload_text}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let master_addr = master_listener.local_addr().unwrap();

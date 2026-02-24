@@ -149,6 +149,7 @@ pub struct RequestProcessor {
     resp_protocol_version: AtomicUsize,
     blocked_clients: AtomicU64,
     watching_clients: AtomicU64,
+    command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     zset_max_listpack_entries: AtomicUsize,
     list_max_listpack_size: AtomicI64,
     functions: KvSessionFunctions,
@@ -234,6 +235,7 @@ impl RequestProcessor {
             resp_protocol_version: AtomicUsize::new(2),
             blocked_clients: AtomicU64::new(0),
             watching_clients: AtomicU64::new(0),
+            command_calls: Mutex::new(HashMap::new()),
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
             functions: KvSessionFunctions,
@@ -260,12 +262,50 @@ impl RequestProcessor {
         self.resp_protocol_version.load(Ordering::Acquire)
     }
 
-    pub(super) fn blocked_clients(&self) -> u64 {
+    pub(crate) fn blocked_clients(&self) -> u64 {
         self.blocked_clients.load(Ordering::Acquire)
     }
 
     pub(super) fn watching_clients(&self) -> u64 {
         self.watching_clients.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn record_command_call(&self, command_name: &[u8]) {
+        if command_name.is_empty() {
+            return;
+        }
+        let normalized = command_name
+            .iter()
+            .map(|byte| byte.to_ascii_lowercase())
+            .collect::<Vec<u8>>();
+        if let Ok(mut calls) = self.command_calls.lock() {
+            *calls.entry(normalized).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn reset_commandstats(&self) {
+        if let Ok(mut calls) = self.command_calls.lock() {
+            calls.clear();
+        }
+    }
+
+    pub(crate) fn render_commandstats_info_payload(&self) -> String {
+        let mut payload = String::from("# Commandstats\r\n");
+        let Ok(calls) = self.command_calls.lock() else {
+            return payload;
+        };
+        let mut ordered = BTreeMap::new();
+        for (command, count) in calls.iter() {
+            ordered.insert(command.clone(), *count);
+        }
+        for (command, count) in ordered {
+            payload.push_str("cmdstat_");
+            payload.push_str(&String::from_utf8_lossy(&command));
+            payload.push_str(":calls=");
+            payload.push_str(&count.to_string());
+            payload.push_str(",usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0\r\n");
+        }
+        payload
     }
 
     pub(crate) fn increment_blocked_clients(&self) {
@@ -332,13 +372,14 @@ impl RequestProcessor {
         let Ok(queues) = self.blocking_wait_queues.lock() else {
             return true;
         };
-        keys.iter().any(|key| {
-            queues
-                .get(key)
-                .and_then(|queue| queue.front().copied())
-                .map(|front| front == client_id)
-                .unwrap_or(true)
-        })
+        for key in keys {
+            let front = queues.get(key).and_then(|queue| queue.front().copied());
+            match front {
+                Some(front_client) => return front_client == client_id,
+                None => continue,
+            }
+        }
+        true
     }
 
     pub(crate) fn request_client_unblock(&self, client_id: u64, mode: ClientUnblockMode) -> bool {

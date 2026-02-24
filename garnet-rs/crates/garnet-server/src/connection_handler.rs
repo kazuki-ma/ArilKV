@@ -33,6 +33,7 @@ const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const BLOCKING_PROGRESS_WAIT_BUDGET: Duration = Duration::from_millis(8);
 
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
@@ -150,6 +151,7 @@ pub(crate) async fn handle_connection(
             // SAFETY: `args` points to the current frame bytes.
             let command_name = arg_slice_bytes(&args[0]);
             metrics.set_client_last_command(client_id, command_name);
+            processor.record_command_call(command_name);
 
             if command == CommandId::Client {
                 handle_client_command(
@@ -364,6 +366,12 @@ pub(crate) async fn handle_connection(
                             responses.clear();
                         }
                         let mut replication_frame: Option<Vec<u8>> = None;
+                        let mut wait_for_blocking_progress = false;
+                        let blocked_before = if command_is_mutating(command) {
+                            processor.blocked_clients()
+                        } else {
+                            0
+                        };
                         match execute_blocking_frame_on_owner_thread(
                             &processor,
                             &metrics,
@@ -377,6 +385,8 @@ pub(crate) async fn handle_connection(
                         .await
                         {
                             Ok((frame_response, should_replicate)) => {
+                                wait_for_blocking_progress = blocked_before > 0
+                                    && command_may_wake_blocking_waiters(command);
                                 responses.extend_from_slice(&frame_response);
                                 if should_replicate {
                                     replication_frame = replication_frame_for_command(
@@ -401,6 +411,9 @@ pub(crate) async fn handle_connection(
                         if let Some(frame_to_replicate) = replication_frame.as_ref() {
                             processor.record_rdb_change(1);
                             replication.publish_write_frame(frame_to_replicate);
+                        }
+                        if wait_for_blocking_progress {
+                            yield_for_blocking_progress(&processor, blocked_before).await;
                         }
                         consumed += frame_bytes_consumed;
                         continue;
@@ -523,7 +536,21 @@ async fn execute_blocking_frame_on_owner_thread(
                 processor.register_blocking_wait(client_id, &blocking_keys);
                 metrics.set_client_blocked(client_id, true);
             }
-            sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
+            if let Some(deadline_time) = deadline {
+                let now = Instant::now();
+                if now >= deadline_time {
+                    clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                    return Ok((blocking_empty_response_for_command(command).to_vec(), false));
+                }
+                let remaining = deadline_time.duration_since(now);
+                sleep(std::cmp::min(
+                    remaining,
+                    BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL,
+                ))
+                .await;
+            } else {
+                sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
+            }
             continue;
         }
 
@@ -593,6 +620,46 @@ fn clear_blocking_client_state(
     processor.unregister_blocking_wait(client_id, blocking_keys);
     processor.clear_client_unblock_request(client_id);
     metrics.set_client_blocked(client_id, false);
+}
+
+async fn yield_for_blocking_progress(processor: &RequestProcessor, initial_blocked: u64) {
+    if initial_blocked == 0 {
+        return;
+    }
+    let deadline = Instant::now() + BLOCKING_PROGRESS_WAIT_BUDGET;
+    let mut observed = initial_blocked;
+    while Instant::now() < deadline {
+        let current = processor.blocked_clients();
+        if current == 0 {
+            return;
+        }
+        if current < observed {
+            observed = current;
+        }
+        sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
+        yield_now().await;
+    }
+}
+
+fn command_may_wake_blocking_waiters(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Lpush
+            | CommandId::Rpush
+            | CommandId::Lpushx
+            | CommandId::Rpushx
+            | CommandId::Linsert
+            | CommandId::Lmove
+            | CommandId::Rpoplpush
+            | CommandId::Zadd
+            | CommandId::Zincrby
+            | CommandId::Rename
+            | CommandId::Renamenx
+            | CommandId::Copy
+            | CommandId::Move
+            | CommandId::Restore
+            | CommandId::RestoreAsking
+    )
 }
 
 async fn blocking_client_disconnected(stream: &mut TcpStream) -> bool {
@@ -921,6 +988,34 @@ fn replication_frame_for_command(
     frame_response: &[u8],
     original_frame: &[u8],
 ) -> Option<Vec<u8>> {
+    if command == CommandId::Blmove {
+        if frame_response == b"$-1\r\n" {
+            return None;
+        }
+        return Some(encode_resp_frame(&[
+            b"LMOVE".to_vec(),
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(1)?).to_vec(),
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(2)?).to_vec(),
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(3)?).to_vec(),
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(4)?).to_vec(),
+        ]));
+    }
+    if command == CommandId::Brpoplpush {
+        if frame_response == b"$-1\r\n" {
+            return None;
+        }
+        return Some(encode_resp_frame(&[
+            b"RPOPLPUSH".to_vec(),
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(1)?).to_vec(),
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(2)?).to_vec(),
+        ]));
+    }
     if matches!(command, CommandId::Lmpop | CommandId::Blmpop) {
         let (key, popped_count) = parse_lmpop_replication_meta(frame_response)?;
         let pop_command = lmpop_pop_command(command, args)?;
