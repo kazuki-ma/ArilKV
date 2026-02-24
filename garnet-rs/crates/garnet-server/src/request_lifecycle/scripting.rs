@@ -21,6 +21,9 @@ const SCRIPT_FUNCTION_USAGE: &str = "FUNCTION <subcommand> [args]";
 const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
 const SCRIPT_FUNCTION_LIST_USAGE: &str = "FUNCTION LIST [WITHCODE]";
 const SCRIPT_FUNCTION_DELETE_USAGE: &str = "FUNCTION DELETE library-name";
+const SCRIPT_FUNCTION_DUMP_USAGE: &str = "FUNCTION DUMP";
+const SCRIPT_FUNCTION_RESTORE_USAGE: &str =
+    "FUNCTION RESTORE serialized-value [FLUSH|APPEND|REPLACE]";
 const SCRIPT_FUNCTION_FLUSH_USAGE: &str = "FUNCTION FLUSH [ASYNC|SYNC]";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
@@ -38,15 +41,19 @@ const SCRIPT_HELP_LINES: [&[u8]; 6] = [
     b"LOAD <script> -- Load a script into the scripts cache without executing it.",
 ];
 
-const FUNCTION_HELP_LINES: [&[u8]; 7] = [
+const FUNCTION_HELP_LINES: [&[u8]; 9] = [
     b"FUNCTION <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"DELETE <library-name> -- Delete an existing library and all its functions.",
+    b"DUMP -- Return a serialized payload representing all libraries.",
     b"FLUSH [ASYNC|SYNC] -- Delete all libraries and their functions.",
     b"HELP -- Return this help.",
     b"KILL -- Kill the currently executing Lua function.",
     b"LIST [WITHCODE] -- List libraries and their registered functions.",
+    b"RESTORE <serialized-value> [FLUSH|APPEND|REPLACE] -- Restore libraries from serialized payload.",
     b"STATS -- Return minimal function-engine stats.",
 ];
+
+const FUNCTION_DUMP_MAGIC: &[u8; 4] = b"GFD1";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ScriptMutability {
@@ -108,6 +115,24 @@ impl RequestProcessor {
                 }
             }
             self.clear_function_registry();
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"DUMP") {
+            require_exact_arity(args, 2, "FUNCTION", SCRIPT_FUNCTION_DUMP_USAGE)?;
+            let payload = self.dump_function_registry()?;
+            append_bulk_string(response_out, &payload);
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"RESTORE") {
+            if !self.scripting_enabled() {
+                return Err(RequestExecutionError::ScriptingDisabled);
+            }
+            ensure_ranged_arity(args, 3, 4, "FUNCTION", SCRIPT_FUNCTION_RESTORE_USAGE)?;
+            let mode = parse_function_restore_mode(args.get(3).copied())?;
+            self.restore_function_registry(args[2], mode)?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -476,6 +501,59 @@ impl RequestProcessor {
             registry.library_sources.clear();
             registry.library_function_names.clear();
         }
+    }
+
+    fn dump_function_registry(&self) -> Result<Vec<u8>, RequestExecutionError> {
+        let Ok(registry) = self.function_registry.lock() else {
+            return Err(storage_failure(
+                "function.registry",
+                "function registry lock poisoned",
+            ));
+        };
+        let mut library_names = registry
+            .library_sources
+            .keys()
+            .cloned()
+            .collect::<Vec<String>>();
+        library_names.sort_unstable();
+
+        let mut payload = Vec::new();
+        payload.extend_from_slice(FUNCTION_DUMP_MAGIC);
+        payload.extend_from_slice(&(library_names.len() as u32).to_le_bytes());
+        for library_name in library_names {
+            let Some(source) = registry.library_sources.get(&library_name) else {
+                return Err(storage_failure(
+                    "function.registry",
+                    "missing function library source during dump",
+                ));
+            };
+            append_len_prefixed_bytes(&mut payload, library_name.as_bytes())?;
+            append_len_prefixed_bytes(&mut payload, source)?;
+        }
+        Ok(payload)
+    }
+
+    fn restore_function_registry(
+        &self,
+        serialized_payload: &[u8],
+        mode: FunctionRestoreMode,
+    ) -> Result<(), RequestExecutionError> {
+        let libraries = parse_function_dump_payload(serialized_payload)?;
+        if matches!(mode, FunctionRestoreMode::Flush) {
+            self.clear_function_registry();
+        }
+
+        let replace = matches!(mode, FunctionRestoreMode::Replace);
+        for (library_name, library_source) in libraries {
+            self.validate_script_size_limit(&library_source)?;
+            let parsed_name = parse_function_library_name(&library_source)?;
+            if parsed_name != library_name {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            let registrations = self.collect_function_registrations(&library_source)?;
+            self.store_function_library(parsed_name, &library_source, &registrations, replace)?;
+        }
+        Ok(())
     }
 
     fn append_function_list_response(
@@ -1329,6 +1407,95 @@ fn parse_register_function_binding(values: MultiValue) -> mlua::Result<RegisterF
             "ERR redis.register_function received too many arguments".to_string(),
         ))
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FunctionRestoreMode {
+    Append,
+    Flush,
+    Replace,
+}
+
+fn parse_function_restore_mode(
+    mode: Option<&[u8]>,
+) -> Result<FunctionRestoreMode, RequestExecutionError> {
+    let Some(mode) = mode else {
+        return Ok(FunctionRestoreMode::Append);
+    };
+    if ascii_eq_ignore_case(mode, b"APPEND") {
+        return Ok(FunctionRestoreMode::Append);
+    }
+    if ascii_eq_ignore_case(mode, b"FLUSH") {
+        return Ok(FunctionRestoreMode::Flush);
+    }
+    if ascii_eq_ignore_case(mode, b"REPLACE") {
+        return Ok(FunctionRestoreMode::Replace);
+    }
+    Err(RequestExecutionError::SyntaxError)
+}
+
+fn append_len_prefixed_bytes(
+    output: &mut Vec<u8>,
+    data: &[u8],
+) -> Result<(), RequestExecutionError> {
+    let length = u32::try_from(data.len()).map_err(|_| RequestExecutionError::SyntaxError)?;
+    output.extend_from_slice(&length.to_le_bytes());
+    output.extend_from_slice(data);
+    Ok(())
+}
+
+fn parse_function_dump_payload(
+    payload: &[u8],
+) -> Result<Vec<(String, Vec<u8>)>, RequestExecutionError> {
+    if payload.len() < 8 {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    if &payload[0..4] != FUNCTION_DUMP_MAGIC {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+
+    let mut cursor = 4usize;
+    let library_count =
+        read_u32_le(payload, &mut cursor).ok_or(RequestExecutionError::SyntaxError)? as usize;
+    let mut libraries = Vec::with_capacity(library_count);
+    for _ in 0..library_count {
+        let library_name_bytes = read_len_prefixed_bytes(payload, &mut cursor)
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        let library_name = std::str::from_utf8(library_name_bytes)
+            .map_err(|_| RequestExecutionError::SyntaxError)?
+            .to_owned();
+        let source_bytes = read_len_prefixed_bytes(payload, &mut cursor)
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        libraries.push((library_name, source_bytes.to_vec()));
+    }
+    if cursor != payload.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(libraries)
+}
+
+fn read_u32_le(payload: &[u8], cursor: &mut usize) -> Option<u32> {
+    if *cursor + 4 > payload.len() {
+        return None;
+    }
+    let bytes = [
+        payload[*cursor],
+        payload[*cursor + 1],
+        payload[*cursor + 2],
+        payload[*cursor + 3],
+    ];
+    *cursor += 4;
+    Some(u32::from_le_bytes(bytes))
+}
+
+fn read_len_prefixed_bytes<'a>(payload: &'a [u8], cursor: &mut usize) -> Option<&'a [u8]> {
+    let length = read_u32_le(payload, cursor)? as usize;
+    if *cursor + length > payload.len() {
+        return None;
+    }
+    let bytes = &payload[*cursor..*cursor + length];
+    *cursor += length;
+    Some(bytes)
 }
 
 fn parse_register_function_binding_from_table(

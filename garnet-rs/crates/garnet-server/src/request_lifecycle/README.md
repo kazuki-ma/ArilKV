@@ -30,7 +30,7 @@ This directory owns command execution semantics and RESP response construction.
   - `SCRIPT LOAD/EXISTS` and `EVALSHA*` share SHA1 cache semantics (`NOSCRIPT` on miss).
   - `SCRIPT HELP/DEBUG/KILL` return minimal compatibility responses.
   - `EVAL_RO`/`EVALSHA_RO` must reject mutating commands via `redis.call`/`redis.pcall`.
-  - `FUNCTION HELP/LIST/DELETE/STATS/KILL/FLUSH [ASYNC|SYNC]` plus `FUNCTION LOAD [REPLACE]`, `FCALL`, and `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
+  - `FUNCTION HELP/LIST/DELETE/STATS/KILL/DUMP/RESTORE/FLUSH [ASYNC|SYNC]` plus `FUNCTION LOAD [REPLACE]`, `FCALL`, and `FCALL_RO` are minimally supported; `FCALL_RO` is restricted to functions registered with `no-writes`.
   - `INFO` exposes scripting observability (`scripting_cache_*`, `scripting_runtime_timeouts`, and configured limit values).
 - Blocking list commands use owner-thread polling with wait-queue fairness:
   - timeout is parsed as float seconds and enforced (including non-turn queue waits).

@@ -63,6 +63,17 @@ fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
     response
 }
 
+fn execute_frame_error(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
+    let mut args = [ArgSlice::EMPTY; 16];
+    let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+    let mut response = Vec::new();
+    let error = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    error.append_resp_error(&mut response);
+    response
+}
+
 fn arg_bytes_from_slices(args: &[ArgSlice]) -> Vec<&[u8]> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
@@ -7003,7 +7014,7 @@ fn function_help_list_kill_delete_flush_and_stats_cover_minimal_surface() {
     );
 
     let help_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"HELP"]));
-    assert!(help_response.starts_with(b"*7\r\n"));
+    assert!(help_response.starts_with(b"*9\r\n"));
     assert!(String::from_utf8_lossy(&help_response).contains("LIST [WITHCODE]"));
     assert!(String::from_utf8_lossy(&help_response).contains("KILL"));
 
@@ -7052,6 +7063,92 @@ fn function_help_list_kill_delete_flush_and_stats_cover_minimal_surface() {
 
     assert_command_response(&processor, "FUNCTION FLUSH ASYNC", b"+OK\r\n");
     assert_command_error(&processor, "FUNCTION FLUSH maybe", b"-ERR syntax error\r\n");
+}
+
+#[test]
+fn function_dump_and_restore_roundtrip_supports_append_and_replace_modes() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let lib_one = b"#!lua name=lib_dump_one\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}";
+    let lib_two = b"#!lua name=lib_dump_two\nredis.register_function{function_name='ro_get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}}";
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LOAD", lib_one])),
+        b"$12\r\nlib_dump_one\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LOAD", lib_two])),
+        b"$12\r\nlib_dump_two\r\n"
+    );
+
+    let dump_payload = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"DUMP"]),
+    ))
+    .expect("FUNCTION DUMP returns bulk payload");
+    assert!(dump_payload.len() >= 8);
+
+    assert_command_response(&processor, "FUNCTION FLUSH", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "FCALL rw_set 1 restore:key restore:value",
+        b"-ERR Function not found\r\n",
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"RESTORE", dump_payload.as_slice(), b"FLUSH"])
+        ),
+        b"+OK\r\n"
+    );
+    assert_command_response(
+        &processor,
+        "FCALL rw_set 1 restore:key restore:value",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "FCALL_RO ro_get 1 restore:key",
+        b"$13\r\nrestore:value\r\n",
+    );
+
+    assert_command_error(
+        &processor,
+        "FUNCTION RESTORE abc APPEND",
+        b"-ERR syntax error\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"RESTORE", dump_payload.as_slice(), b"APPEND"])
+        ),
+        b"-ERR Library already exists\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"RESTORE", dump_payload.as_slice(), b"REPLACE"])
+        ),
+        b"+OK\r\n"
+    );
+}
+
+#[test]
+fn function_restore_requires_scripting_enabled_and_valid_mode() {
+    let disabled_processor =
+        RequestProcessor::new_with_string_store_shards_and_scripting(1, false).unwrap();
+    assert_command_error(
+        &disabled_processor,
+        "FUNCTION RESTORE abc",
+        b"-ERR scripting is disabled in this server\r\n",
+    );
+
+    let enabled_processor =
+        RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    assert_command_error(
+        &enabled_processor,
+        "FUNCTION RESTORE abc BOGUS",
+        b"-ERR syntax error\r\n",
+    );
 }
 
 #[test]

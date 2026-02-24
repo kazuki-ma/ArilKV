@@ -80,7 +80,7 @@ It does not validate semantic completeness for each command.
 ## D. Scripting Admin Surface Is Partial
 
 - `SCRIPT` supports `FLUSH`, `LOAD`, `EXISTS`, and minimal `HELP`/`DEBUG`/`KILL` behavior (with cache-limit eviction and INFO observability fields for scripting runtime/cache counters).
-- `FUNCTION` supports `HELP`/`LIST`/`DELETE`/`STATS`/`KILL`/`FLUSH [ASYNC|SYNC]` and `LOAD [REPLACE]` with `redis.register_function`.
+- `FUNCTION` supports `HELP`/`LIST`/`DELETE`/`STATS`/`KILL`/`DUMP`/`RESTORE`/`FLUSH [ASYNC|SYNC]` and `LOAD [REPLACE]` with `redis.register_function`.
 - `FCALL` and `FCALL_RO` are available behind `GARNET_SCRIPTING_ENABLED` (`FCALL_RO` enforces `no-writes`).
 - remaining gaps: deeper Redis function-library semantics (RESP3 shape parity, persistence/replication edge-cases, and full admin behavior).
 - implementation path:
