@@ -6991,7 +6991,7 @@ fn function_flush_clears_loaded_functions() {
 }
 
 #[test]
-fn function_help_list_delete_and_stats_cover_minimal_surface() {
+fn function_help_list_kill_delete_flush_and_stats_cover_minimal_surface() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     let library_source = b"#!lua name=lib_admin\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}\nredis.register_function{function_name='ro_get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}}";
     assert_eq!(
@@ -7003,8 +7003,9 @@ fn function_help_list_delete_and_stats_cover_minimal_surface() {
     );
 
     let help_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"HELP"]));
-    assert!(help_response.starts_with(b"*6\r\n"));
+    assert!(help_response.starts_with(b"*7\r\n"));
     assert!(String::from_utf8_lossy(&help_response).contains("LIST [WITHCODE]"));
+    assert!(String::from_utf8_lossy(&help_response).contains("KILL"));
 
     let list_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LIST"]));
     let list_text = String::from_utf8_lossy(&list_response);
@@ -7031,6 +7032,12 @@ fn function_help_list_delete_and_stats_cover_minimal_surface() {
     assert!(stats_text.contains("libraries_count:1"));
     assert!(stats_text.contains("functions_count:2"));
 
+    assert_command_response(
+        &processor,
+        "FUNCTION KILL",
+        b"-NOTBUSY No scripts in execution right now.\r\n",
+    );
+
     assert_command_response(&processor, "FUNCTION DELETE lib_admin", b"+OK\r\n");
     assert_command_error(
         &processor,
@@ -7042,6 +7049,9 @@ fn function_help_list_delete_and_stats_cover_minimal_surface() {
         "FUNCTION DELETE lib_admin",
         b"-ERR Library not found\r\n",
     );
+
+    assert_command_response(&processor, "FUNCTION FLUSH ASYNC", b"+OK\r\n");
+    assert_command_error(&processor, "FUNCTION FLUSH maybe", b"-ERR syntax error\r\n");
 }
 
 #[test]

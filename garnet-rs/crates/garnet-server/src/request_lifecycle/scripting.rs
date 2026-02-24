@@ -21,6 +21,7 @@ const SCRIPT_FUNCTION_USAGE: &str = "FUNCTION <subcommand> [args]";
 const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
 const SCRIPT_FUNCTION_LIST_USAGE: &str = "FUNCTION LIST [WITHCODE]";
 const SCRIPT_FUNCTION_DELETE_USAGE: &str = "FUNCTION DELETE library-name";
+const SCRIPT_FUNCTION_FLUSH_USAGE: &str = "FUNCTION FLUSH [ASYNC|SYNC]";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
 const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
@@ -37,11 +38,12 @@ const SCRIPT_HELP_LINES: [&[u8]; 6] = [
     b"LOAD <script> -- Load a script into the scripts cache without executing it.",
 ];
 
-const FUNCTION_HELP_LINES: [&[u8]; 6] = [
+const FUNCTION_HELP_LINES: [&[u8]; 7] = [
     b"FUNCTION <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"DELETE <library-name> -- Delete an existing library and all its functions.",
-    b"FLUSH -- Delete all libraries and their functions.",
+    b"FLUSH [ASYNC|SYNC] -- Delete all libraries and their functions.",
     b"HELP -- Return this help.",
+    b"KILL -- Kill the currently executing Lua function.",
     b"LIST [WITHCODE] -- List libraries and their registered functions.",
     b"STATS -- Return minimal function-engine stats.",
 ];
@@ -96,9 +98,23 @@ impl RequestProcessor {
         }
 
         if ascii_eq_ignore_case(subcommand, b"FLUSH") {
-            require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
+            ensure_ranged_arity(args, 2, 3, "FUNCTION", SCRIPT_FUNCTION_FLUSH_USAGE)?;
+            if args.len() == 3 {
+                let flush_mode = args[2];
+                if !ascii_eq_ignore_case(flush_mode, b"ASYNC")
+                    && !ascii_eq_ignore_case(flush_mode, b"SYNC")
+                {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+            }
             self.clear_function_registry();
             append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"KILL") {
+            require_exact_arity(args, 2, "FUNCTION", "FUNCTION KILL")?;
+            append_error(response_out, b"NOTBUSY No scripts in execution right now.");
             return Ok(());
         }
 
