@@ -17,8 +17,10 @@ const SCRIPT_EVALSHA_USAGE: &str = "EVALSHA sha1 numkeys [key ...] [arg ...]";
 const SCRIPT_EVALSHA_RO_USAGE: &str = "EVALSHA_RO sha1 numkeys [key ...] [arg ...]";
 const SCRIPT_FCALL_USAGE: &str = "FCALL function numkeys [key ...] [arg ...]";
 const SCRIPT_FCALL_RO_USAGE: &str = "FCALL_RO function numkeys [key ...] [arg ...]";
-const SCRIPT_FUNCTION_USAGE: &str = "FUNCTION <FLUSH|LOAD> [args]";
+const SCRIPT_FUNCTION_USAGE: &str = "FUNCTION <subcommand> [args]";
 const SCRIPT_FUNCTION_LOAD_USAGE: &str = "FUNCTION LOAD [REPLACE] library-code";
+const SCRIPT_FUNCTION_LIST_USAGE: &str = "FUNCTION LIST [WITHCODE]";
+const SCRIPT_FUNCTION_DELETE_USAGE: &str = "FUNCTION DELETE library-name";
 const SCRIPT_FLUSH_USAGE: &str = "SCRIPT FLUSH [ASYNC|SYNC]";
 const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
 const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
@@ -33,6 +35,15 @@ const SCRIPT_HELP_LINES: [&[u8]; 6] = [
     b"FLUSH [ASYNC|SYNC] -- Flush the Lua scripts cache.",
     b"KILL -- Kill the currently executing Lua script.",
     b"LOAD <script> -- Load a script into the scripts cache without executing it.",
+];
+
+const FUNCTION_HELP_LINES: [&[u8]; 6] = [
+    b"FUNCTION <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"DELETE <library-name> -- Delete an existing library and all its functions.",
+    b"FLUSH -- Delete all libraries and their functions.",
+    b"HELP -- Return this help.",
+    b"LIST [WITHCODE] -- List libraries and their registered functions.",
+    b"STATS -- Return minimal function-engine stats.",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -78,10 +89,43 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "FUNCTION", SCRIPT_FUNCTION_USAGE)?;
         let subcommand = args[1];
 
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "FUNCTION", "FUNCTION HELP")?;
+            append_bulk_array(response_out, &FUNCTION_HELP_LINES);
+            return Ok(());
+        }
+
         if ascii_eq_ignore_case(subcommand, b"FLUSH") {
             require_exact_arity(args, 2, "FUNCTION", "FUNCTION FLUSH")?;
             self.clear_function_registry();
             append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"LIST") {
+            ensure_ranged_arity(args, 2, 3, "FUNCTION", SCRIPT_FUNCTION_LIST_USAGE)?;
+            let with_code = if args.len() == 3 {
+                if !ascii_eq_ignore_case(args[2], b"WITHCODE") {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                true
+            } else {
+                false
+            };
+            self.append_function_list_response(response_out, with_code)?;
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"DELETE") {
+            require_exact_arity(args, 3, "FUNCTION", SCRIPT_FUNCTION_DELETE_USAGE)?;
+            self.delete_function_library(args[2])?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"STATS") {
+            require_exact_arity(args, 2, "FUNCTION", "FUNCTION STATS")?;
+            self.append_function_stats_response(response_out)?;
             return Ok(());
         }
 
@@ -416,6 +460,102 @@ impl RequestProcessor {
             registry.library_sources.clear();
             registry.library_function_names.clear();
         }
+    }
+
+    fn append_function_list_response(
+        &self,
+        response_out: &mut Vec<u8>,
+        with_code: bool,
+    ) -> Result<(), RequestExecutionError> {
+        let Ok(registry) = self.function_registry.lock() else {
+            return Err(storage_failure(
+                "function.registry",
+                "function registry lock poisoned",
+            ));
+        };
+        let mut library_names = registry
+            .library_sources
+            .keys()
+            .cloned()
+            .collect::<Vec<String>>();
+        library_names.sort_unstable();
+
+        response_out.push(b'*');
+        response_out.extend_from_slice(library_names.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+
+        for library_name in library_names {
+            let mut function_names = registry
+                .library_function_names
+                .get(&library_name)
+                .cloned()
+                .unwrap_or_default();
+            function_names.sort_unstable();
+            let entry_pairs = if with_code { 4 } else { 3 };
+            response_out.push(b'*');
+            response_out.extend_from_slice((entry_pairs * 2).to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+
+            append_bulk_string(response_out, b"library_name");
+            append_bulk_string(response_out, library_name.as_bytes());
+            append_bulk_string(response_out, b"engine");
+            append_bulk_string(response_out, b"LUA");
+            append_bulk_string(response_out, b"functions");
+            response_out.push(b'*');
+            response_out.extend_from_slice(function_names.len().to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for function_name in function_names {
+                append_bulk_string(response_out, function_name.as_bytes());
+            }
+
+            if with_code {
+                append_bulk_string(response_out, b"library_code");
+                if let Some(source) = registry.library_sources.get(&library_name) {
+                    append_bulk_string(response_out, source);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn delete_function_library(&self, library_name: &[u8]) -> Result<(), RequestExecutionError> {
+        let library_name_text =
+            std::str::from_utf8(library_name).map_err(|_| RequestExecutionError::SyntaxError)?;
+        let Ok(mut registry) = self.function_registry.lock() else {
+            return Err(storage_failure(
+                "function.registry",
+                "function registry lock poisoned",
+            ));
+        };
+        let Some(function_names) = registry.library_function_names.remove(library_name_text) else {
+            return Err(RequestExecutionError::FunctionLibraryNotFound);
+        };
+        for function_name in function_names {
+            registry.functions.remove(&function_name);
+        }
+        registry.library_sources.remove(library_name_text);
+        Ok(())
+    }
+
+    fn append_function_stats_response(
+        &self,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let Ok(registry) = self.function_registry.lock() else {
+            return Err(storage_failure(
+                "function.registry",
+                "function registry lock poisoned",
+            ));
+        };
+        let payload = format!(
+            "running_script:0\r\nengines:1\r\nlibraries_count:{}\r\nfunctions_count:{}\r\n",
+            registry.library_sources.len(),
+            registry.functions.len(),
+        );
+        append_bulk_string(response_out, payload.as_bytes());
+        Ok(())
     }
 
     fn collect_function_registrations(

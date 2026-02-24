@@ -1,6 +1,6 @@
 # Redis Command Maturity Summary
 
-- Generated at: 2026-02-24T12:54:22Z
+- Generated at: 2026-02-24T12:59:36Z
 - Status source: `docs/compatibility/redis-command-status.csv`
 - Implementation source: `docs/compatibility/command-implementation-status.yaml`
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
@@ -27,7 +27,7 @@
 | `FAILOVER` | `DISABLED` | - |
 | `FCALL` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD. |
 | `FCALL_RO` | `PARTIAL_MINIMAL` | Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD with no-writes flag. |
-| `FUNCTION` | `PARTIAL_MINIMAL` | Supports FLUSH and LOAD [REPLACE] with redis.register_function parsing; full FUNCTION management surface is not implemented. |
+| `FUNCTION` | `PARTIAL_MINIMAL` | Supports HELP/LIST/DELETE/STATS/FLUSH plus LOAD [REPLACE] with redis.register_function parsing; full Redis FUNCTION management semantics are not implemented. |
 | `LATENCY` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `MIGRATE` | `DISABLED` | - |
 | `MODULE` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |

@@ -6991,6 +6991,60 @@ fn function_flush_clears_loaded_functions() {
 }
 
 #[test]
+fn function_help_list_delete_and_stats_cover_minimal_surface() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=lib_admin\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}\nredis.register_function{function_name='ro_get', callback=function(keys, args) return redis.call('GET', keys[1]) end, flags={'no-writes'}}";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", library_source])
+        ),
+        b"$9\r\nlib_admin\r\n"
+    );
+
+    let help_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"HELP"]));
+    assert!(help_response.starts_with(b"*6\r\n"));
+    assert!(String::from_utf8_lossy(&help_response).contains("LIST [WITHCODE]"));
+
+    let list_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LIST"]));
+    let list_text = String::from_utf8_lossy(&list_response);
+    assert!(list_text.contains("library_name"));
+    assert!(list_text.contains("lib_admin"));
+    assert!(list_text.contains("rw_set"));
+    assert!(list_text.contains("ro_get"));
+    assert!(!list_text.contains("library_code"));
+
+    let list_with_code = execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LIST", b"WITHCODE"]),
+    );
+    let list_with_code_text = String::from_utf8_lossy(&list_with_code);
+    assert!(list_with_code_text.contains("library_code"));
+    assert!(list_with_code_text.contains("#!lua name=lib_admin"));
+
+    let stats_payload = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"STATS"]),
+    ))
+    .expect("FUNCTION STATS returns bulk payload");
+    let stats_text = String::from_utf8_lossy(&stats_payload);
+    assert!(stats_text.contains("libraries_count:1"));
+    assert!(stats_text.contains("functions_count:2"));
+
+    assert_command_response(&processor, "FUNCTION DELETE lib_admin", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "FCALL rw_set 1 k v",
+        b"-ERR Function not found\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "FUNCTION DELETE lib_admin",
+        b"-ERR Library not found\r\n",
+    );
+}
+
+#[test]
 fn fcall_executes_write_function_when_scripting_is_enabled() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     let library_source = b"#!lua name=lib_mut\nredis.register_function{function_name='rw_set', callback=function(keys, args) return redis.call('SET', keys[1], args[1]) end}";

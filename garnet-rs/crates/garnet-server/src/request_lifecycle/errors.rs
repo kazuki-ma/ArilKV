@@ -49,6 +49,7 @@ pub enum RequestExecutionError {
     WaitAofAppendOnlyDisabled,
     ClusterSupportDisabled,
     FunctionLibraryAlreadyExists,
+    FunctionLibraryNotFound,
     FunctionNameAlreadyExists,
     FunctionNotFound,
     FunctionNotReadOnly,
@@ -145,6 +146,9 @@ impl RequestExecutionError {
             ),
             Self::FunctionLibraryAlreadyExists => {
                 append_error(response_out, "ERR Library already exists")
+            }
+            Self::FunctionLibraryNotFound => {
+                append_error(response_out, "ERR Library not found")
             }
             Self::FunctionNameAlreadyExists => {
                 append_error(response_out, "ERR Function already exists")

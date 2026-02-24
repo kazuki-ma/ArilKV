@@ -142,7 +142,7 @@ commands:
     comment: ""
   - command: FUNCTION
     status: PARTIAL_MINIMAL
-    comment: "Supports FLUSH and LOAD [REPLACE] with redis.register_function parsing; full FUNCTION management surface is not implemented."
+    comment: "Supports HELP/LIST/DELETE/STATS/FLUSH plus LOAD [REPLACE] with redis.register_function parsing; full Redis FUNCTION management semantics are not implemented."
   - command: GEOADD
     status: FULL
     comment: ""
