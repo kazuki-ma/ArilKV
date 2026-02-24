@@ -4,10 +4,10 @@
 
 - Command:
   - `cd garnet-rs/tests/interop`
-  - `REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis RUNTEXT_TIMEOUT_SECONDS=120 ./build_compatibility_report.sh`
+  - `REDIS_REPO_ROOT=<redis-repo-root> RUNTEXT_TIMEOUT_SECONDS=120 ./build_compatibility_report.sh`
 - Probe mode: `full` (no `--single` / `--only` / `--tags`)
 - Artifacts:
-  - `garnet-rs/tests/interop/results/compatibility-report-20260224-231056/redis-runtest-external-full`
+  - `garnet-rs/tests/interop/results/compatibility-report-*/redis-runtest-external-full`
 - Summary:
   - `ok=174`
   - `err=412`

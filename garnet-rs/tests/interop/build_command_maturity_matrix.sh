@@ -162,7 +162,6 @@ coverage_full_pct="$(awk -v full="${full_total}" -v total="${supported_total}" '
 {
     echo "# Redis Command Maturity Summary"
     echo
-    echo "- Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo "- Status source: \`docs/compatibility/redis-command-status.csv\`"
     echo "- Implementation source: \`docs/compatibility/command-implementation-status.yaml\`"
     echo "- Maturity matrix: \`docs/compatibility/redis-command-maturity.csv\`"

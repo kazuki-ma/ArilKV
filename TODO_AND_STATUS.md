@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-24
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 265
+> **Current Iteration**: 266
 
 ---
 
@@ -321,6 +321,7 @@
 | 11.150 | Close top `EXPIRE` parity gaps from full runtest (`NX/XX/GT/LT`, big-int overflow/negative, propagation/stat counters) | TODO | 11.149 | `tests/unit/expire.tcl` contributes 48 failures in latest full report; this is the largest non-scripting semantic block. |
 | 11.151 | Expand scripting/function parity from minimal surface to Redis test expectations (`tests/unit/functions.tcl`) | TODO | 11.149 | `tests/unit/functions.tcl` contributes 94 failures; current implementation is intentionally `PARTIAL_MINIMAL` and needs deeper semantics. |
 | 11.152 | Fix introspection + transaction edge semantics from full run (`COMMAND`/`CLIENT`/`INFO`/`LATENCY`, `MULTI`/`EXEC`/`WATCH`) | TODO | 11.149 | High-volume failures observed in `tests/unit/introspection*.tcl`, `tests/unit/multi.tcl`, and `tests/unit/latency-monitor.tcl`; prioritize argument arity and state-machine parity first. |
+| 11.153 | Make compatibility report outputs deterministic by removing volatile date/path fields | DONE | 11.148 | Removed generated timestamp and absolute artifact path fields from compatibility summaries and sanitized probe `details` to exclude per-run log paths. Re-ran report generation and confirmed no volatile date/path strings remain in generated markdown outputs. |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)
 
@@ -816,3 +817,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 263 | 2026-02-24 | 11.146 | DONE | Added AOF replay regression coverage for function paths via `replay_aof_applies_function_load_and_fcall_when_scripting_enabled`. Revalidated full suite (`cargo test -p garnet-server -- --nocapture`: `234 + 23 + 1` pass) and confirmed new replay test passes in isolation. |
 | 264 | 2026-02-24 | 11.147 | DONE | Extended external compatibility subset with `redis_cli_scripting_probe` and regenerated compatibility artifacts via `build_compatibility_report.sh`. Latest subset summary now includes scripting probe PASS (`disabled` mode in current default config) alongside count-verified Redis runtest cases (`6/4/2`), result dir `.../compatibility-report-20260224-221903/redis-runtest-external-subset`. |
 | 265 | 2026-02-24 | 11.148 | DONE | Switched compatibility probe default to full external runtest (no test filters). Updated `redis_runtest_external_subset.sh` with default `REDIS_RUNTEXT_MODE=full`, full-log pass/fail counting (`ok/err/ignore`), and `failed-tests.txt` extraction; updated `build_compatibility_report.sh` default to `COMPAT_PROBE_MODE=full`; regenerated report at `.../compatibility-report-20260224-231056/redis-runtest-external-full` with `redis_runtest_full_external: FAIL` (`ok=174`, `err=412`, `ignore=116`) and CLI probes PASS. |
+| 266 | 2026-02-24 | 11.153 | DONE | Removed volatile date/path values from generated compatibility outputs by updating report generators and probe details text (`build_compatibility_report.sh`, `build_command_status_matrix.sh`, `build_command_maturity_matrix.sh`, `redis_runtest_external_subset.sh`). Re-ran full report generation and verified no `Generated at` line and no absolute filesystem path remain in generated markdown reports. |

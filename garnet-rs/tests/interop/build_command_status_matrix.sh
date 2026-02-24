@@ -118,7 +118,6 @@ coverage_pct="$(awk -v s="${supported_declared}" -v r="${redis_total}" 'BEGIN { 
 cat > "${OUTPUT_SUMMARY}" <<EOF
 # Redis Command Status Summary
 
-- Generated at: $(date -u +%Y-%m-%dT%H:%M:%SZ)
 - Source Redis image: \`${REDIS_IMAGE}\`
 - Redis command count: \`${redis_total}\`
 - Garnet declared command count: \`${garnet_total}\`

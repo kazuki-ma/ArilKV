@@ -83,12 +83,12 @@ run_runtest_case() {
             ' "${log_file}"
         )"
         if [[ "${actual_ok}" -eq "${expected_ok}" ]]; then
-            record_result "${case_name}" "PASS" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=${actual_ok}; log=${log_file}"
+            record_result "${case_name}" "PASS" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=${actual_ok}"
         else
-            record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=${actual_ok}; mismatch; log=${log_file}"
+            record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=${actual_ok}; mismatch"
         fi
     else
-        record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=NA; runtest_exit_nonzero; log=${log_file}"
+        record_result "${case_name}" "FAIL" "unit=${unit}; expected_ok=${expected_ok}; actual_ok=NA; runtest_exit_nonzero"
     fi
 }
 
@@ -165,13 +165,16 @@ run_full_runtest_case() {
     }
     ' "${log_file}" > "${failed_tests_file}"
 
+    local failed_tests_count
+    failed_tests_count="$(awk 'END {print NR+0}' "${failed_tests_file}")"
+
     local status="FAIL"
     if [[ "${exit_code}" -eq 0 && "${err_count}" -eq 0 ]]; then
         status="PASS"
     fi
 
     local details
-    details="mode=full; exit_code=${exit_code}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; log=${log_file}; failed_tests=${failed_tests_file}"
+    details="mode=full; exit_code=${exit_code}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 
@@ -193,9 +196,9 @@ run_cli_probe_case() {
         [[ "${type_none}" == "none" ]]
     } >"${log_file}" 2>&1
     if [[ $? -eq 0 ]]; then
-        record_result "${case_name}" "PASS" "redis-cli TYPE probe passed; log=${log_file}"
+        record_result "${case_name}" "PASS" "redis-cli TYPE probe passed"
     else
-        record_result "${case_name}" "FAIL" "redis-cli TYPE probe failed; log=${log_file}"
+        record_result "${case_name}" "FAIL" "redis-cli TYPE probe failed"
     fi
 }
 
@@ -220,17 +223,17 @@ run_cli_scripting_probe_case() {
 
             if [[ "${load_output}" == "lib_probe" && "${fcall_output}" == "PONG" ]]; then
                 status="PASS"
-                details="scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok; log=${log_file}"
+                details="scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok"
             else
                 status="FAIL"
-                details="scripting_enabled_mode_unexpected_output; log=${log_file}"
+                details="scripting_enabled_mode_unexpected_output"
             fi
         elif [[ "${eval_output}" == *"scripting is disabled in this server"* ]]; then
             status="PASS"
-            details="scripting_disabled_mode; eval disabled as expected; log=${log_file}"
+            details="scripting_disabled_mode; eval disabled as expected"
         else
             status="FAIL"
-            details="unexpected_eval_output; log=${log_file}"
+            details="unexpected_eval_output"
         fi
     } >"${log_file}" 2>&1
 
