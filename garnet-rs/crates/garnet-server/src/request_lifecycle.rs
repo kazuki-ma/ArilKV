@@ -13,6 +13,7 @@ use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::sync::Mutex;
+use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
@@ -218,6 +219,9 @@ pub struct RequestProcessor {
     pending_client_unblocks: Mutex<HashMap<u64, ClientUnblockMode>>,
     forced_list_quicklist_keys: Mutex<HashSet<Vec<u8>>>,
     random_state: AtomicU64,
+    active_expire_enabled: AtomicBool,
+    expired_keys: AtomicU64,
+    expired_keys_active: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
     rdb_changes_since_last_save: AtomicU64,
     resp_protocol_version: AtomicUsize,
@@ -363,6 +367,9 @@ impl RequestProcessor {
             pending_client_unblocks: Mutex::new(HashMap::new()),
             forced_list_quicklist_keys: Mutex::new(HashSet::new()),
             random_state: AtomicU64::new(current_unix_time_millis().unwrap_or(0x9e3779b97f4a7c15)),
+            active_expire_enabled: AtomicBool::new(true),
+            expired_keys: AtomicU64::new(0),
+            expired_keys_active: AtomicU64::new(0),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
             rdb_changes_since_last_save: AtomicU64::new(0),
             resp_protocol_version: AtomicUsize::new(2),
@@ -651,6 +658,42 @@ impl RequestProcessor {
 
     pub(super) fn reset_rdb_changes_since_last_save(&self) {
         self.rdb_changes_since_last_save.store(0, Ordering::Relaxed);
+    }
+
+    pub(super) fn active_expire_enabled(&self) -> bool {
+        self.active_expire_enabled.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_active_expire_enabled(&self, enabled: bool) {
+        self.active_expire_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub(super) fn expired_keys(&self) -> u64 {
+        self.expired_keys.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn expired_keys_active(&self) -> u64 {
+        self.expired_keys_active.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn record_lazy_expired_keys(&self, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.expired_keys.fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub(super) fn record_active_expired_keys(&self, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.expired_keys.fetch_add(count, Ordering::Relaxed);
+        self.expired_keys_active.fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub(super) fn reset_expiration_stats(&self) {
+        self.expired_keys.store(0, Ordering::Relaxed);
+        self.expired_keys_active.store(0, Ordering::Relaxed);
     }
 
     pub(super) fn next_random_u64(&self) -> u64 {

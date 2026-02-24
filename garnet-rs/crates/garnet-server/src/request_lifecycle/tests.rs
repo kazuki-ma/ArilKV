@@ -4140,7 +4140,11 @@ fn dbsize_does_not_lazy_expire_until_key_access() {
     thread::sleep(Duration::from_millis(650));
     assert_command_integer(&processor, "DBSIZE", 3);
 
-    assert_command_response(&processor, "MGET key1 key2 key3", b"*3\r\n$-1\r\n$-1\r\n$-1\r\n");
+    assert_command_response(
+        &processor,
+        "MGET key1 key2 key3",
+        b"*3\r\n$-1\r\n$-1\r\n$-1\r\n",
+    );
     assert_command_integer(&processor, "DBSIZE", 0);
 }
 
@@ -4248,6 +4252,16 @@ fn info_dbsize_and_command_responses_are_generated() {
         .unwrap();
     assert!(response.starts_with(b"$"));
     assert!(response.windows("dbsize:1".len()).any(|w| w == b"dbsize:1"));
+    assert!(
+        response
+            .windows("expired_keys:0".len())
+            .any(|w| w == b"expired_keys:0")
+    );
+    assert!(
+        response
+            .windows("expired_keys_active:0".len())
+            .any(|w| w == b"expired_keys_active:0")
+    );
 
     response.clear();
     let command = b"*1\r\n$7\r\nCOMMAND\r\n";
@@ -6648,6 +6662,7 @@ fn debug_set_active_expire_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];
     let mut response = Vec::new();
+    assert!(processor.active_expire_enabled());
 
     let debug_disable = b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(debug_disable, &mut args).unwrap();
@@ -6655,6 +6670,7 @@ fn debug_set_active_expire_returns_ok() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
+    assert!(!processor.active_expire_enabled());
 
     response.clear();
     let debug_enable = b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n1\r\n";
@@ -6663,6 +6679,7 @@ fn debug_set_active_expire_returns_ok() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
+    assert!(processor.active_expire_enabled());
 }
 
 #[test]
@@ -7550,8 +7567,18 @@ fn scripting_runtime_times_out_long_running_script() {
 #[test]
 fn config_resetstat_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
-    let mut args = [ArgSlice::EMPTY; 4];
+    let mut args = [ArgSlice::EMPTY; 8];
     let mut response = Vec::new();
+
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n");
+    assert_command_response(&processor, "PSETEX reset:key 1 value", b"+OK\r\n");
+    thread::sleep(Duration::from_millis(10));
+    assert_command_response(&processor, "GET reset:key", b"$-1\r\n");
+
+    let info_before = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload before reset");
+    let info_before_text = String::from_utf8_lossy(&info_before);
+    assert!(info_before_text.contains("expired_keys:1"));
 
     let config_resetstat = b"*2\r\n$6\r\nCONFIG\r\n$9\r\nRESETSTAT\r\n";
     let meta = parse_resp_command_arg_slices(config_resetstat, &mut args).unwrap();
@@ -7559,6 +7586,12 @@ fn config_resetstat_returns_ok() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
+
+    let info_after = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload after reset");
+    let info_after_text = String::from_utf8_lossy(&info_after);
+    assert!(info_after_text.contains("expired_keys:0"));
+    assert!(info_after_text.contains("expired_keys_active:0"));
 }
 
 #[test]

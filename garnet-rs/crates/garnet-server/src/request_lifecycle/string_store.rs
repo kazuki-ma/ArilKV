@@ -75,6 +75,7 @@ impl RequestProcessor {
                 }
             }
         }
+        self.record_active_expired_keys(removed as u64);
         Ok(removed)
     }
 
@@ -283,14 +284,19 @@ impl RequestProcessor {
         let status = session
             .delete(&key.to_vec(), &mut info)
             .map_err(map_delete_error)?;
-        if matches!(
-            status,
-            DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone
-        ) {
-            self.bump_watch_version(key);
-        }
+        let object_deleted = self.object_delete(key)?;
+        let key_removed = match status {
+            DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+                self.bump_watch_version(key);
+                true
+            }
+            DeleteOperationStatus::NotFound => object_deleted,
+            DeleteOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
+        };
         self.untrack_string_key_in_shard(key, shard_index);
-        let _ = self.object_delete(key)?;
+        if key_removed {
+            self.record_lazy_expired_keys(1);
+        }
         Ok(())
     }
 

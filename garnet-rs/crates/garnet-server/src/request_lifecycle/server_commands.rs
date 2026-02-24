@@ -165,13 +165,17 @@ impl RequestProcessor {
         let blocked_clients = self.blocked_clients();
         let watching_clients = self.watching_clients();
         let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
+        let expired_keys = self.expired_keys();
+        let expired_keys_active = self.expired_keys_active();
         let scripting_runtime = self.scripting_runtime_config();
         let payload = format!(
-            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_changes_since_last_save:{}\r\n# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
+            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\n# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
             blocked_clients,
             watching_clients,
             dbsize,
             rdb_changes_since_last_save,
+            expired_keys,
+            expired_keys_active,
             if self.scripting_enabled() { 1 } else { 0 },
             self.script_cache_entry_count(),
             scripting_runtime.cache_max_entries,
@@ -583,6 +587,7 @@ impl RequestProcessor {
             if enabled != b"0" && enabled != b"1" {
                 return Err(RequestExecutionError::SyntaxError);
             }
+            self.set_active_expire_enabled(enabled == b"1");
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1321,6 +1326,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"RESETSTAT") {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
             self.reset_rdb_changes_since_last_save();
+            self.reset_expiration_stats();
             self.reset_commandstats();
             append_simple_string(response_out, b"OK");
             return Ok(());

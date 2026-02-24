@@ -128,6 +128,9 @@ where
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            if !expiration_processor.active_expire_enabled() {
+                continue;
+            }
             for shard_index in 0..expiration_shard_count {
                 let routed_processor = Arc::clone(&expiration_processor);
                 let _ = expiration_owner_thread_pool.execute_sync(shard_index, move || {
