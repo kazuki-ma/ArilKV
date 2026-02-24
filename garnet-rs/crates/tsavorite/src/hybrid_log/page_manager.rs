@@ -2,7 +2,8 @@
 //!
 //! See [Doc 02] for logical address and page lifecycle model.
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::collections::VecDeque;
 
 /// Logical hybrid-log address encoded as `[page][offset]`.
 #[repr(transparent)]

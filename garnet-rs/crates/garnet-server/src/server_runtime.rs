@@ -7,10 +7,12 @@ use garnet_cluster::ClusterConfigStore;
 use tokio::net::TcpListener;
 use tokio::task::JoinSet;
 
+use crate::RequestProcessor;
+use crate::ServerConfig;
+use crate::ServerMetrics;
+use crate::build_owner_thread_pool;
+use crate::handle_connection;
 use crate::redis_replication::RedisReplicationCoordinator;
-use crate::{
-    RequestProcessor, ServerConfig, ServerMetrics, build_owner_thread_pool, handle_connection,
-};
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
     run_with_shutdown(config, metrics, std::future::pending::<()>()).await

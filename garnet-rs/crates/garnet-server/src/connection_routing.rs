@@ -1,11 +1,16 @@
-use garnet_cluster::{ClusterConfigError, ClusterConfigStore, SlotRouteDecision, redis_hash_slot};
+use garnet_cluster::ClusterConfigError;
+use garnet_cluster::ClusterConfigStore;
+use garnet_cluster::SlotRouteDecision;
+use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::io;
 
+use crate::CommandId;
+use crate::RequestProcessor;
+use crate::command_spec::KeyAccessPattern;
 #[cfg(test)]
 use crate::command_spec::command_is_owner_routable;
-use crate::command_spec::{KeyAccessPattern, command_key_access_pattern};
-use crate::{CommandId, RequestProcessor};
+use crate::command_spec::command_key_access_pattern;
 
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {

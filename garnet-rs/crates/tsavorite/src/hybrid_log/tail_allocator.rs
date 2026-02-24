@@ -2,9 +2,13 @@
 //!
 //! See [Doc 02 Section 2.5] for fetch-add allocation and page-turn retry behavior.
 
-use crate::hybrid_log::{LogAddressPointers, LogicalAddress, PageManager, PageManagerError};
+use crate::hybrid_log::LogAddressPointers;
+use crate::hybrid_log::LogicalAddress;
+use crate::hybrid_log::PageManager;
+use crate::hybrid_log::PageManagerError;
 use std::collections::HashSet;
-use std::sync::{Mutex, TryLockError};
+use std::sync::Mutex;
+use std::sync::TryLockError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TailAllocationStatus {

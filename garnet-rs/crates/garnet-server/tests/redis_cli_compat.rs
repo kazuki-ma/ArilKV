@@ -1,9 +1,12 @@
-use garnet_server::{ServerMetrics, run_listener_with_shutdown};
+use garnet_server::ServerMetrics;
+use garnet_server::run_listener_with_shutdown;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::process::Command;
 use tokio::sync::oneshot;
-use tokio::time::{Duration, sleep, timeout};
+use tokio::time::Duration;
+use tokio::time::sleep;
+use tokio::time::timeout;
 
 #[tokio::test]
 async fn redis_cli_basic_command_compatibility() {

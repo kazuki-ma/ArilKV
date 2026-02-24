@@ -7,17 +7,33 @@ pub mod page_residency;
 pub mod record_format;
 pub mod tail_allocator;
 
-pub use address_pointers::{LogAddressPointers, LogAddressPointersSnapshot};
-pub use page_io::{
-    InMemoryPageDevice, PageDevice, PageIoError, flush_page_to_device, load_page_from_device,
-};
-pub use page_manager::{LogicalAddress, Page, PageAddressSpace, PageManager, PageManagerError};
-pub use page_residency::{
-    PageResidencyError, ReadPathStatus, read_with_callback, shift_head_address_and_evict,
-};
-pub use record_format::{
-    RECORD_ALIGNMENT, RECORD_INFO_SIZE, RecordFormatError, RecordLayout, RecordParsedLayout,
-    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, round_up,
-    write_record,
-};
-pub use tail_allocator::{TailAllocationStatus, TailAllocator, TailAllocatorError};
+pub use address_pointers::LogAddressPointers;
+pub use address_pointers::LogAddressPointersSnapshot;
+pub use page_io::InMemoryPageDevice;
+pub use page_io::PageDevice;
+pub use page_io::PageIoError;
+pub use page_io::flush_page_to_device;
+pub use page_io::load_page_from_device;
+pub use page_manager::LogicalAddress;
+pub use page_manager::Page;
+pub use page_manager::PageAddressSpace;
+pub use page_manager::PageManager;
+pub use page_manager::PageManagerError;
+pub use page_residency::PageResidencyError;
+pub use page_residency::ReadPathStatus;
+pub use page_residency::read_with_callback;
+pub use page_residency::shift_head_address_and_evict;
+pub use record_format::RECORD_ALIGNMENT;
+pub use record_format::RECORD_INFO_SIZE;
+pub use record_format::RecordFormatError;
+pub use record_format::RecordLayout;
+pub use record_format::RecordParsedLayout;
+pub use record_format::parse_key_span;
+pub use record_format::parse_record_info;
+pub use record_format::parse_record_layout;
+pub use record_format::parse_value_span;
+pub use record_format::round_up;
+pub use record_format::write_record;
+pub use tail_allocator::TailAllocationStatus;
+pub use tail_allocator::TailAllocator;
+pub use tail_allocator::TailAllocatorError;

@@ -1,7 +1,11 @@
 //! Debug/test-only concurrency diagnostics and deterministic sync points.
 
-use std::ops::{Deref, DerefMut};
-use std::sync::{LockResult, Mutex, MutexGuard, PoisonError};
+use std::ops::Deref;
+use std::ops::DerefMut;
+use std::sync::LockResult;
+use std::sync::Mutex;
+use std::sync::MutexGuard;
+use std::sync::PoisonError;
 use std::time::Duration;
 
 #[cfg(test)]

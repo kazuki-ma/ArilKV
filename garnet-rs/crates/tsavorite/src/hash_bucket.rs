@@ -2,9 +2,13 @@
 //!
 //! See [Doc 03 Section 2.3] for bucket layout.
 
-use crate::hash_bucket_entry::{ADDRESS_BITS, ADDRESS_MASK, HashBucketEntry, HashBucketEntryError};
+use crate::hash_bucket_entry::ADDRESS_BITS;
+use crate::hash_bucket_entry::ADDRESS_MASK;
+use crate::hash_bucket_entry::HashBucketEntry;
+use crate::hash_bucket_entry::HashBucketEntryError;
 use core::array;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 use std::thread;
 
 pub const HASH_BUCKET_ENTRY_COUNT: usize = 8;
@@ -273,7 +277,8 @@ impl Default for HashBucket {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::mem::{align_of, size_of};
+    use core::mem::align_of;
+    use core::mem::size_of;
 
     #[test]
     fn hash_bucket_is_one_cache_line() {

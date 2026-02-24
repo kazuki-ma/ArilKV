@@ -22,58 +22,81 @@ pub mod shard_owner_threads;
 #[cfg(test)]
 pub(crate) mod testkit;
 
-pub use aof_replay::{replay_aof_file, replay_aof_operations};
-pub use cluster_control_plane::{
-    ClusterManagerFailoverMigrationError, ClusterManagerFailoverMigrationRunReport,
-    ClusteredServerRunError, LiveSlotMigrationError, LiveSlotMigrationRunReport,
-    LiveSlotMigrationSlotReport, LiveSlotMigrationStepOutcome, LiveSlotMigrationsRunReport,
-    detect_live_slot_migration_slots, execute_live_slot_migration,
-    execute_live_slot_migration_step,
-    run_cluster_manager_with_config_updates_failover_and_detected_migrations,
-    run_detected_live_slot_migrations_until_complete,
-    run_detected_live_slot_migrations_until_shutdown, run_listener_with_cluster_control_plane,
-    run_live_slot_migration_until_complete, run_live_slot_migrations_until_complete,
-    run_with_cluster_control_plane,
-};
-pub use command_dispatch::{
-    dispatch_command_name, dispatch_from_arg_slices, dispatch_from_resp_args,
-};
+pub use aof_replay::replay_aof_file;
+pub use aof_replay::replay_aof_operations;
+pub use cluster_control_plane::ClusterManagerFailoverMigrationError;
+pub use cluster_control_plane::ClusterManagerFailoverMigrationRunReport;
+pub use cluster_control_plane::ClusteredServerRunError;
+pub use cluster_control_plane::LiveSlotMigrationError;
+pub use cluster_control_plane::LiveSlotMigrationRunReport;
+pub use cluster_control_plane::LiveSlotMigrationSlotReport;
+pub use cluster_control_plane::LiveSlotMigrationStepOutcome;
+pub use cluster_control_plane::LiveSlotMigrationsRunReport;
+pub use cluster_control_plane::detect_live_slot_migration_slots;
+pub use cluster_control_plane::execute_live_slot_migration;
+pub use cluster_control_plane::execute_live_slot_migration_step;
+pub use cluster_control_plane::run_cluster_manager_with_config_updates_failover_and_detected_migrations;
+pub use cluster_control_plane::run_detected_live_slot_migrations_until_complete;
+pub use cluster_control_plane::run_detected_live_slot_migrations_until_shutdown;
+pub use cluster_control_plane::run_listener_with_cluster_control_plane;
+pub use cluster_control_plane::run_live_slot_migration_until_complete;
+pub use cluster_control_plane::run_live_slot_migrations_until_complete;
+pub use cluster_control_plane::run_with_cluster_control_plane;
+pub use command_dispatch::dispatch_command_name;
+pub use command_dispatch::dispatch_from_arg_slices;
+pub use command_dispatch::dispatch_from_resp_args;
 pub use command_spec::CommandId;
+pub(crate) use connection_handler::build_owner_thread_pool;
+pub(crate) use connection_handler::handle_connection;
 pub use connection_handler::set_owner_execution_inline_default;
-pub(crate) use connection_handler::{build_owner_thread_pool, handle_connection};
 #[cfg(test)]
-pub(crate) use connection_owner_routing::{
-    RoutedExecutionError, capture_owned_frame_args, execute_frame_via_processor,
-    execute_owned_args_via_processor, execute_owned_frame_args_via_processor,
-};
-pub use limited_fixed_buffer_pool::{
-    LimitedFixedBufferPool, LimitedFixedBufferPoolConfig, LimitedFixedBufferPoolError, PoolEntry,
-    ReturnStatus,
-};
-pub use request_lifecycle::{
-    MigrationEntry, MigrationValue, RequestExecutionError, RequestProcessor,
-    RequestProcessorInitError,
-};
-pub use server_runtime::{
-    run, run_listener_with_shutdown, run_listener_with_shutdown_and_cluster,
-    run_listener_with_shutdown_and_cluster_with_processor, run_with_cluster, run_with_shutdown,
-    run_with_shutdown_and_cluster_config,
-};
-pub use shard_owner_threads::{ShardOwnerThreadPool, ShardOwnerThreadPoolError};
+pub(crate) use connection_owner_routing::RoutedExecutionError;
+#[cfg(test)]
+pub(crate) use connection_owner_routing::capture_owned_frame_args;
+#[cfg(test)]
+pub(crate) use connection_owner_routing::execute_frame_via_processor;
+#[cfg(test)]
+pub(crate) use connection_owner_routing::execute_owned_args_via_processor;
+#[cfg(test)]
+pub(crate) use connection_owner_routing::execute_owned_frame_args_via_processor;
+pub use limited_fixed_buffer_pool::LimitedFixedBufferPool;
+pub use limited_fixed_buffer_pool::LimitedFixedBufferPoolConfig;
+pub use limited_fixed_buffer_pool::LimitedFixedBufferPoolError;
+pub use limited_fixed_buffer_pool::PoolEntry;
+pub use limited_fixed_buffer_pool::ReturnStatus;
+pub use request_lifecycle::MigrationEntry;
+pub use request_lifecycle::MigrationValue;
+pub use request_lifecycle::RequestExecutionError;
+pub use request_lifecycle::RequestProcessor;
+pub use request_lifecycle::RequestProcessorInitError;
+pub use server_runtime::run;
+pub use server_runtime::run_listener_with_shutdown;
+pub use server_runtime::run_listener_with_shutdown_and_cluster;
+pub use server_runtime::run_listener_with_shutdown_and_cluster_with_processor;
+pub use server_runtime::run_with_cluster;
+pub use server_runtime::run_with_shutdown;
+pub use server_runtime::run_with_shutdown_and_cluster_config;
+pub use shard_owner_threads::ShardOwnerThreadPool;
+pub use shard_owner_threads::ShardOwnerThreadPoolError;
 
 use std::collections::BTreeMap;
 use std::net::SocketAddr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering;
 
 #[cfg(test)]
-use garnet_common::{ArgSlice, parse_resp_command_arg_slices};
+use garnet_common::ArgSlice;
+#[cfg(test)]
+use garnet_common::parse_resp_command_arg_slices;
 #[cfg(test)]
 use std::collections::HashSet;
 #[cfg(test)]
 use std::sync::Arc;
 #[cfg(test)]
-use tokio::net::{TcpListener, TcpStream};
+use tokio::net::TcpListener;
+#[cfg(test)]
+use tokio::net::TcpStream;
 
 #[cfg(test)]
 use crate::connection_routing::owner_routed_shard_for_command;

@@ -2,9 +2,11 @@
 //!
 //! See [Doc 04] for the epoch-table and drain model.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::sync::Mutex;
 
 const DEFAULT_MIN_TABLE_SIZE: usize = 128;

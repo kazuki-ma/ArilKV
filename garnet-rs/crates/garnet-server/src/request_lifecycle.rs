@@ -1,17 +1,34 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
-use crate::debug_concurrency::{LockClass, OrderedMutex, OrderedMutexGuard};
-use crate::{CommandId, dispatch_command_name};
+use crate::CommandId;
+use crate::debug_concurrency::LockClass;
+use crate::debug_concurrency::OrderedMutex;
+use crate::debug_concurrency::OrderedMutexGuard;
+use crate::dispatch_command_name;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
+use std::collections::HashMap;
+use std::collections::HashSet;
+use std::collections::VecDeque;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use tsavorite::{
-    DeleteInfo, DeleteOperationStatus, ReadInfo, ReadOperationStatus, RmwOperationStatus,
-    TsavoriteKV, TsavoriteKvInitError, UpsertInfo,
-};
+use std::sync::atomic::AtomicI64;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
+use std::time::Duration;
+use std::time::Instant;
+use std::time::SystemTime;
+use std::time::UNIX_EPOCH;
+use tsavorite::DeleteInfo;
+use tsavorite::DeleteOperationStatus;
+use tsavorite::ReadInfo;
+use tsavorite::ReadOperationStatus;
+use tsavorite::RmwOperationStatus;
+use tsavorite::TsavoriteKV;
+use tsavorite::TsavoriteKvInitError;
+use tsavorite::UpsertInfo;
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
 const HASH_OBJECT_TYPE_TAG: u8 = 3;
@@ -67,37 +84,62 @@ mod value_codec;
 mod zset_commands;
 
 #[allow(unused_imports)]
-use self::command_helpers::{
-    ensure_min_arity, ensure_one_of_arities, ensure_paired_arity_after, ensure_ranged_arity,
-    parse_scan_match_count_options, require_exact_arity,
-};
-use self::config::{
-    scale_hash_index_bits_for_shards, scripting_enabled_from_env,
-    scripting_runtime_config_from_env, string_store_shard_count_from_env,
-    tsavorite_config_from_env,
-};
+use self::command_helpers::ensure_min_arity;
+#[allow(unused_imports)]
+use self::command_helpers::ensure_one_of_arities;
+#[allow(unused_imports)]
+use self::command_helpers::ensure_paired_arity_after;
+#[allow(unused_imports)]
+use self::command_helpers::ensure_ranged_arity;
+#[allow(unused_imports)]
+use self::command_helpers::parse_scan_match_count_options;
+#[allow(unused_imports)]
+use self::command_helpers::require_exact_arity;
+use self::config::scale_hash_index_bits_for_shards;
+use self::config::scripting_enabled_from_env;
+use self::config::scripting_runtime_config_from_env;
 #[cfg(test)]
-use self::config::{
-    scripting_runtime_config_from_values, string_store_shard_count_from_values,
-    tsavorite_config_from_values,
-};
+use self::config::scripting_runtime_config_from_values;
+use self::config::string_store_shard_count_from_env;
+#[cfg(test)]
+use self::config::string_store_shard_count_from_values;
+use self::config::tsavorite_config_from_env;
+#[cfg(test)]
+use self::config::tsavorite_config_from_values;
 pub use self::errors::RequestExecutionError;
-use self::errors::{
-    map_delete_error, map_read_error, map_rmw_error, map_upsert_error, storage_failure,
-};
-use self::resp::{
-    append_bulk_array, append_bulk_string, append_error, append_integer, append_null,
-    append_null_array, append_null_bulk_string, append_simple_string, ascii_eq_ignore_case,
-};
-use self::session_functions::{KvSessionFunctions, ObjectSessionFunctions};
-use self::value_codec::{
-    decode_object_value, decode_stored_value, deserialize_hash_object_payload,
-    deserialize_list_object_payload, deserialize_set_object_payload,
-    deserialize_stream_object_payload, deserialize_zset_object_payload, encode_object_value,
-    encode_stored_value, parse_f64_ascii, parse_i64_ascii, parse_u64_ascii,
-    serialize_hash_object_payload, serialize_list_object_payload, serialize_set_object_payload,
-    serialize_stream_object_payload, serialize_zset_object_payload,
-};
+use self::errors::map_delete_error;
+use self::errors::map_read_error;
+use self::errors::map_rmw_error;
+use self::errors::map_upsert_error;
+use self::errors::storage_failure;
+use self::resp::append_bulk_array;
+use self::resp::append_bulk_string;
+use self::resp::append_error;
+use self::resp::append_integer;
+use self::resp::append_null;
+use self::resp::append_null_array;
+use self::resp::append_null_bulk_string;
+use self::resp::append_simple_string;
+use self::resp::ascii_eq_ignore_case;
+use self::session_functions::KvSessionFunctions;
+use self::session_functions::ObjectSessionFunctions;
+use self::value_codec::decode_object_value;
+use self::value_codec::decode_stored_value;
+use self::value_codec::deserialize_hash_object_payload;
+use self::value_codec::deserialize_list_object_payload;
+use self::value_codec::deserialize_set_object_payload;
+use self::value_codec::deserialize_stream_object_payload;
+use self::value_codec::deserialize_zset_object_payload;
+use self::value_codec::encode_object_value;
+use self::value_codec::encode_stored_value;
+use self::value_codec::parse_f64_ascii;
+use self::value_codec::parse_i64_ascii;
+use self::value_codec::parse_u64_ascii;
+use self::value_codec::serialize_hash_object_payload;
+use self::value_codec::serialize_list_object_payload;
+use self::value_codec::serialize_set_object_payload;
+use self::value_codec::serialize_stream_object_payload;
+use self::value_codec::serialize_zset_object_payload;
 
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {

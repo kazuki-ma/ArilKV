@@ -1,7 +1,8 @@
 //! AOF replay helpers for rebuilding in-memory state from command logs.
 
 use crate::request_lifecycle::RequestProcessor;
-use garnet_common::{ArgSlice, parse_resp_command_arg_slices_dynamic};
+use garnet_common::ArgSlice;
+use garnet_common::parse_resp_command_arg_slices_dynamic;
 use std::io;
 use std::path::Path;
 use tsavorite::AofReader;
@@ -57,8 +58,12 @@ pub fn replay_aof_operations(
 mod tests {
     use super::*;
     use garnet_common::parse_resp_command_arg_slices;
-    use sha1::{Digest, Sha1};
-    use tsavorite::{AofWriter, AofWriterConfig, CheckpointAofCoordinator, compact_aof_file};
+    use sha1::Digest;
+    use sha1::Sha1;
+    use tsavorite::AofWriter;
+    use tsavorite::AofWriterConfig;
+    use tsavorite::CheckpointAofCoordinator;
+    use tsavorite::compact_aof_file;
 
     fn temp_path(suffix: &str) -> std::path::PathBuf {
         let nanos = std::time::SystemTime::now()

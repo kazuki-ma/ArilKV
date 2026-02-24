@@ -1,6 +1,8 @@
-use garnet_server::{
-    ServerConfig, ServerMetrics, run, run_with_cluster, set_owner_execution_inline_default,
-};
+use garnet_server::ServerConfig;
+use garnet_server::ServerMetrics;
+use garnet_server::run;
+use garnet_server::run_with_cluster;
+use garnet_server::set_owner_execution_inline_default;
 #[cfg(test)]
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -8,14 +10,19 @@ use std::sync::Arc;
 mod multi_port_runtime;
 mod server_launch_config;
 
-use crate::multi_port_runtime::{build_multi_port_cluster_stores, run_multi_bind_addrs};
+use crate::multi_port_runtime::build_multi_port_cluster_stores;
 #[cfg(test)]
-use crate::multi_port_runtime::{resolve_core_assignments_from_available, slot_owner_index};
+use crate::multi_port_runtime::resolve_core_assignments_from_available;
+use crate::multi_port_runtime::run_multi_bind_addrs;
+#[cfg(test)]
+use crate::multi_port_runtime::slot_owner_index;
+#[cfg(test)]
+use crate::server_launch_config::SlotOwnershipPolicy;
+#[cfg(test)]
+use crate::server_launch_config::ThreadPinningConfig;
 use crate::server_launch_config::parse_server_launch_config_from_env;
 #[cfg(test)]
-use crate::server_launch_config::{
-    SlotOwnershipPolicy, ThreadPinningConfig, parse_server_launch_config_from_values,
-};
+use crate::server_launch_config::parse_server_launch_config_from_values;
 
 #[cfg(test)]
 fn parse_server_config_from_values(

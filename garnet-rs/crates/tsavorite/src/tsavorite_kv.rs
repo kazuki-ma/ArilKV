@@ -2,28 +2,45 @@
 //!
 //! This wraps hash-index + hybrid-log operation modules into a single store/session API.
 
-use crate::checkpoint_state_machine::{
-    CheckpointMode, CheckpointState, CheckpointStateMachine, CheckpointTransitionError,
-};
-use crate::delete_operation::{
-    DeleteOperationContext, DeleteOperationError, DeleteOperationStatus,
-};
-use crate::hybrid_log::{
-    InMemoryPageDevice, LogAddressPointers, LogAddressPointersSnapshot, PageDevice, PageManager,
-    PageManagerError, PageResidencyError, shift_head_address_and_evict,
-};
-use crate::read_operation::{ReadOperationContext, ReadOperationError, ReadOperationStatus};
-use crate::rmw_operation::{RmwOperationContext, RmwOperationError, RmwOperationStatus};
-use crate::upsert_operation::{
-    UpsertOperationContext, UpsertOperationError, UpsertOperationStatus,
-};
-use crate::{
-    DeleteInfo, HashIndex, HashIndexError, HybridLogDeleteAdapter, HybridLogReadAdapter,
-    HybridLogRmwAdapter, HybridLogUpsertAdapter, LightEpoch, ReadInfo, RmwInfo, UpsertInfo,
-};
+use crate::DeleteInfo;
+use crate::HashIndex;
+use crate::HashIndexError;
+use crate::HybridLogDeleteAdapter;
+use crate::HybridLogReadAdapter;
+use crate::HybridLogRmwAdapter;
+use crate::HybridLogUpsertAdapter;
+use crate::LightEpoch;
+use crate::ReadInfo;
+use crate::RmwInfo;
+use crate::UpsertInfo;
+use crate::checkpoint_state_machine::CheckpointMode;
+use crate::checkpoint_state_machine::CheckpointState;
+use crate::checkpoint_state_machine::CheckpointStateMachine;
+use crate::checkpoint_state_machine::CheckpointTransitionError;
+use crate::delete_operation::DeleteOperationContext;
+use crate::delete_operation::DeleteOperationError;
+use crate::delete_operation::DeleteOperationStatus;
+use crate::hybrid_log::InMemoryPageDevice;
+use crate::hybrid_log::LogAddressPointers;
+use crate::hybrid_log::LogAddressPointersSnapshot;
+use crate::hybrid_log::PageDevice;
+use crate::hybrid_log::PageManager;
+use crate::hybrid_log::PageManagerError;
+use crate::hybrid_log::PageResidencyError;
+use crate::hybrid_log::shift_head_address_and_evict;
+use crate::read_operation::ReadOperationContext;
+use crate::read_operation::ReadOperationError;
+use crate::read_operation::ReadOperationStatus;
+use crate::rmw_operation::RmwOperationContext;
+use crate::rmw_operation::RmwOperationError;
+use crate::rmw_operation::RmwOperationStatus;
+use crate::upsert_operation::UpsertOperationContext;
+use crate::upsert_operation::UpsertOperationError;
+use crate::upsert_operation::UpsertOperationStatus;
 use core::marker::PhantomData;
 use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
+use std::hash::Hash;
+use std::hash::Hasher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TsavoriteKvConfig {
@@ -408,8 +425,11 @@ fn hash_key<K: Hash>(key: &K) -> u64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ISessionFunctions, RecordInfo, WriteReason};
-    use std::sync::{Arc, Mutex};
+    use crate::ISessionFunctions;
+    use crate::RecordInfo;
+    use crate::WriteReason;
+    use std::sync::Arc;
+    use std::sync::Mutex;
     use std::thread;
 
     struct ByteSessionFunctions;

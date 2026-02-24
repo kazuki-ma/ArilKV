@@ -3,8 +3,11 @@
 //! This is an incremental building block toward lock-free shard ownership:
 //! callers map a shard id to a stable owner thread and submit closures.
 
-use std::sync::mpsc::{self, Receiver, Sender};
-use std::thread::{self, JoinHandle};
+use std::sync::mpsc::Receiver;
+use std::sync::mpsc::Sender;
+use std::sync::mpsc::{self};
+use std::thread::JoinHandle;
+use std::thread::{self};
 
 type Job = Box<dyn FnOnce() + Send + 'static>;
 
@@ -204,7 +207,8 @@ fn worker_loop(receiver: Receiver<WorkerMessage>) {
 mod tests {
     use super::*;
     use std::sync::Arc;
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
+    use std::time::Instant;
 
     #[test]
     fn owner_thread_mapping_is_stable_and_modulo_based() {

@@ -1,7 +1,12 @@
 //! Append-only file (AOF) primitives for durable operation logging.
 
-use std::fs::{File, OpenOptions};
-use std::io::{self, Read, Seek, SeekFrom, Write};
+use std::fs::File;
+use std::fs::OpenOptions;
+use std::io::Read;
+use std::io::Seek;
+use std::io::SeekFrom;
+use std::io::Write;
+use std::io::{self};
 use std::path::Path;
 
 const AOF_LENGTH_PREFIX_SIZE: usize = core::mem::size_of::<u32>();

@@ -3,16 +3,19 @@
 //! This module provides immutable-style copy-on-write cluster configuration
 //! structures with Redis-compatible 16,384 hash slots.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::fmt;
 use std::future::Future;
 use std::io::Write;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::pin::Pin;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::RwLock;
 use std::time::Duration;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
 pub const RESERVED_WORKER_ID: u16 = 0;
@@ -2586,7 +2589,8 @@ fn next_rng(state: &mut u64) -> u64 {
 mod tests {
     use super::*;
     use std::mem::size_of;
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::SystemTime;
+    use std::time::UNIX_EPOCH;
     use tokio::io::AsyncReadExt;
 
     fn base_config() -> ClusterConfig {

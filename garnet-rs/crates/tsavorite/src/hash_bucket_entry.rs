@@ -2,7 +2,8 @@
 //!
 //! See [Doc 03 Section 2.2] for field layout.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 
 pub const ADDRESS_BITS: u32 = 48;
 pub const ADDRESS_MASK: u64 = (1u64 << ADDRESS_BITS) - 1;

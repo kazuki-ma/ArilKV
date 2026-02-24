@@ -2,7 +2,8 @@
 //!
 //! See [Doc 02 Section 2.6] for page flush/read pipeline context.
 
-use crate::hybrid_log::{PageManager, PageManagerError};
+use crate::hybrid_log::PageManager;
+use crate::hybrid_log::PageManagerError;
 use std::collections::HashMap;
 use std::sync::Mutex;
 

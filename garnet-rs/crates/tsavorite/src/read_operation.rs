@@ -2,12 +2,23 @@
 //!
 //! See [Doc 06 Section 2.12] for read flow and region-dependent reader callback selection.
 
-use crate::hybrid_log::{
-    LogAddressPointers, LogicalAddress, PageDevice, PageManager, PageManagerError,
-    PageResidencyError, RecordFormatError, parse_key_span, parse_record_info, parse_record_layout,
-    parse_value_span, read_with_callback,
-};
-use crate::{HashIndex, HashIndexError, ISessionFunctions, ReadInfo, RecordInfo};
+use crate::HashIndex;
+use crate::HashIndexError;
+use crate::ISessionFunctions;
+use crate::ReadInfo;
+use crate::RecordInfo;
+use crate::hybrid_log::LogAddressPointers;
+use crate::hybrid_log::LogicalAddress;
+use crate::hybrid_log::PageDevice;
+use crate::hybrid_log::PageManager;
+use crate::hybrid_log::PageManagerError;
+use crate::hybrid_log::PageResidencyError;
+use crate::hybrid_log::RecordFormatError;
+use crate::hybrid_log::parse_key_span;
+use crate::hybrid_log::parse_record_info;
+use crate::hybrid_log::parse_record_layout;
+use crate::hybrid_log::parse_value_span;
+use crate::hybrid_log::read_with_callback;
 
 pub trait HybridLogReadAdapter: ISessionFunctions {
     fn record_key_equals(&self, requested_key: &Self::Key, record_key: &[u8]) -> bool;
@@ -186,9 +197,16 @@ fn materialize_record_at<D: PageDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hybrid_log::{InMemoryPageDevice, flush_page_to_device, write_record};
-    use crate::{FindOrCreateTagResult, HashBucketEntry, RmwInfo, UpsertInfo, WriteReason};
-    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use crate::FindOrCreateTagResult;
+    use crate::HashBucketEntry;
+    use crate::RmwInfo;
+    use crate::UpsertInfo;
+    use crate::WriteReason;
+    use crate::hybrid_log::InMemoryPageDevice;
+    use crate::hybrid_log::flush_page_to_device;
+    use crate::hybrid_log::write_record;
+    use std::sync::atomic::AtomicUsize;
+    use std::sync::atomic::Ordering as AtomicOrdering;
 
     #[derive(Default)]
     struct ByteSessionFunctions {

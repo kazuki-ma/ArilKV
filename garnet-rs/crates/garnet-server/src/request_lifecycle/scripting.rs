@@ -1,15 +1,22 @@
 use super::*;
+use crate::CommandId;
 use crate::command_spec::command_is_mutating;
-use crate::{CommandId, dispatch_command_name};
-use mlua::{
-    Error as LuaError, Function as LuaFunction, HookTriggers, Lua, MultiValue, Table as LuaTable,
-    Value as LuaValue, VmState,
-};
-use sha1::{Digest, Sha1};
+use crate::dispatch_command_name;
+use mlua::Error as LuaError;
+use mlua::Function as LuaFunction;
+use mlua::HookTriggers;
+use mlua::Lua;
+use mlua::MultiValue;
+use mlua::Table as LuaTable;
+use mlua::Value as LuaValue;
+use mlua::VmState;
+use sha1::Digest;
+use sha1::Sha1;
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
-use std::time::{Duration, Instant};
+use std::time::Duration;
+use std::time::Instant;
 
 const SCRIPT_EVAL_USAGE: &str = "EVAL script numkeys [key ...] [arg ...]";
 const SCRIPT_EVAL_RO_USAGE: &str = "EVAL_RO script numkeys [key ...] [arg ...]";

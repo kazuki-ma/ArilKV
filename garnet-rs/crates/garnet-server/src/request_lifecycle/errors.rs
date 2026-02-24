@@ -1,10 +1,13 @@
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::AtomicUsize;
+use std::sync::atomic::Ordering;
 
-use tsavorite::{
-    DeleteOperationError, PageManagerError, PageResidencyError, ReadOperationError,
-    RmwOperationError, UpsertOperationError,
-};
+use tsavorite::DeleteOperationError;
+use tsavorite::PageManagerError;
+use tsavorite::PageResidencyError;
+use tsavorite::ReadOperationError;
+use tsavorite::RmwOperationError;
+use tsavorite::UpsertOperationError;
 
 const GARNET_LOG_STORAGE_FAILURES_ENV: &str = "GARNET_LOG_STORAGE_FAILURES";
 const STORAGE_FAILURE_LOG_LIMIT: usize = 64;

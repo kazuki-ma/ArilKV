@@ -1,6 +1,11 @@
 use core::sync::atomic::Ordering;
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
-use tsavorite::{HashBucketEntry, LightEpoch, RecordInfo};
+use criterion::Criterion;
+use criterion::black_box;
+use criterion::criterion_group;
+use criterion::criterion_main;
+use tsavorite::HashBucketEntry;
+use tsavorite::LightEpoch;
+use tsavorite::RecordInfo;
 
 fn bench_record_info(c: &mut Criterion) {
     c.bench_function("record_info_set_dirty_and_modified", |b| {

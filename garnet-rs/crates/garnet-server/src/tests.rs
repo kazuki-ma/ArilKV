@@ -1,13 +1,28 @@
 use super::*;
-use garnet_cluster::{
-    AsyncGossipEngine, ChannelReplicationTransport, ClusterConfig, ClusterConfigStore,
-    ClusterFailoverController, ClusterManager, FailoverCoordinator, FailureDetector,
-    GossipCoordinator, GossipNode, InMemoryGossipTransport, LOCAL_WORKER_ID, ReplicationEvent,
-    ReplicationManager, SlotState, Worker, WorkerRole, redis_hash_slot,
-};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use garnet_cluster::AsyncGossipEngine;
+use garnet_cluster::ChannelReplicationTransport;
+use garnet_cluster::ClusterConfig;
+use garnet_cluster::ClusterConfigStore;
+use garnet_cluster::ClusterFailoverController;
+use garnet_cluster::ClusterManager;
+use garnet_cluster::FailoverCoordinator;
+use garnet_cluster::FailureDetector;
+use garnet_cluster::GossipCoordinator;
+use garnet_cluster::GossipNode;
+use garnet_cluster::InMemoryGossipTransport;
+use garnet_cluster::LOCAL_WORKER_ID;
+use garnet_cluster::ReplicationEvent;
+use garnet_cluster::ReplicationManager;
+use garnet_cluster::SlotState;
+use garnet_cluster::Worker;
+use garnet_cluster::WorkerRole;
+use garnet_cluster::redis_hash_slot;
+use tokio::io::AsyncReadExt;
+use tokio::io::AsyncWriteExt;
 use tokio::sync::oneshot;
-use tokio::time::{Duration, Instant, sleep};
+use tokio::time::Duration;
+use tokio::time::Instant;
+use tokio::time::sleep;
 
 #[tokio::test]
 async fn accept_loop_spawns_connection_handlers() {

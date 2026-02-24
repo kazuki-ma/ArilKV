@@ -1,5 +1,6 @@
 use super::*;
-use tsavorite::{RmwInfo, RmwOperationError};
+use tsavorite::RmwInfo;
+use tsavorite::RmwOperationError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BitopOperation {

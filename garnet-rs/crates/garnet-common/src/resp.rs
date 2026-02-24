@@ -3,7 +3,8 @@
 //! This parser focuses on command frames of shape:
 //! `*<n>\r\n$<len>\r\n<arg>\r\n...`, and returns zero-copy argument slices.
 
-use crate::{ArgSlice, ArgSliceError};
+use crate::ArgSlice;
+use crate::ArgSliceError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RespCommandMeta {

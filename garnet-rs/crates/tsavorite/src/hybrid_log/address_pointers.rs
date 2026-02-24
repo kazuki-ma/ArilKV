@@ -2,7 +2,8 @@
 //!
 //! See [Doc 02 Section 2.3] for pointer semantics.
 
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 
 /// Immutable snapshot of hybrid-log region pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

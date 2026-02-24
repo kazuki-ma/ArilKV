@@ -2782,7 +2782,8 @@ pub fn command_names_for_command_response() -> &'static [&'static [u8]] {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CommandId, dispatch_command_name};
+    use crate::CommandId;
+    use crate::dispatch_command_name;
 
     #[test]
     fn command_response_names_include_replication_protocol_commands() {

@@ -3,9 +3,11 @@
 //! See [Doc 03 Section 2.7] for overflow bucket allocation semantics.
 
 use crate::hash_bucket::HashBucket;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::AtomicU64;
+use core::sync::atomic::Ordering;
 use crossbeam_queue::SegQueue;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use std::sync::RwLock;
 
 pub const OVERFLOW_PAGE_SIZE_BITS: u8 = 16;
 pub const OVERFLOW_PAGE_SIZE: usize = 1 << OVERFLOW_PAGE_SIZE_BITS;

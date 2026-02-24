@@ -2,12 +2,22 @@
 //!
 //! See [Doc 06 Section 2.12] for mutable in-place delete vs. tombstone append behavior.
 
-use crate::hybrid_log::{
-    LogAddressPointers, LogicalAddress, PageManager, PageManagerError, RecordFormatError,
-    RecordLayout, parse_key_span, parse_record_info, parse_record_layout, parse_value_span,
-    write_record,
-};
-use crate::{DeleteInfo, HashIndex, HashIndexError, ISessionFunctions, RecordInfo};
+use crate::DeleteInfo;
+use crate::HashIndex;
+use crate::HashIndexError;
+use crate::ISessionFunctions;
+use crate::RecordInfo;
+use crate::hybrid_log::LogAddressPointers;
+use crate::hybrid_log::LogicalAddress;
+use crate::hybrid_log::PageManager;
+use crate::hybrid_log::PageManagerError;
+use crate::hybrid_log::RecordFormatError;
+use crate::hybrid_log::RecordLayout;
+use crate::hybrid_log::parse_key_span;
+use crate::hybrid_log::parse_record_info;
+use crate::hybrid_log::parse_record_layout;
+use crate::hybrid_log::parse_value_span;
+use crate::hybrid_log::write_record;
 use garnet_common::SpanByteError;
 
 pub trait HybridLogDeleteAdapter: ISessionFunctions {
@@ -307,13 +317,19 @@ fn reserve_tail_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read_operation::{
-        HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus, read,
-    };
-    use crate::{
-        DeleteInfo, HybridLogUpsertAdapter, ReadInfo, RmwInfo, UpsertInfo, UpsertOperationContext,
-        UpsertOperationStatus, WriteReason, upsert,
-    };
+    use crate::DeleteInfo;
+    use crate::HybridLogUpsertAdapter;
+    use crate::ReadInfo;
+    use crate::RmwInfo;
+    use crate::UpsertInfo;
+    use crate::UpsertOperationContext;
+    use crate::UpsertOperationStatus;
+    use crate::WriteReason;
+    use crate::read_operation::HybridLogReadAdapter;
+    use crate::read_operation::ReadOperationContext;
+    use crate::read_operation::ReadOperationStatus;
+    use crate::read_operation::read;
+    use crate::upsert;
 
     struct ByteDeleteFunctions;
 

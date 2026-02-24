@@ -6,7 +6,10 @@
 //! See [Doc 06 Section 2.5].
 
 use crate::RecordInfo;
-use garnet_common::{SPAN_BYTE_LENGTH_PREFIX_SIZE, SpanByteError, SpanByteRef, SpanByteRefMut};
+use garnet_common::SPAN_BYTE_LENGTH_PREFIX_SIZE;
+use garnet_common::SpanByteError;
+use garnet_common::SpanByteRef;
+use garnet_common::SpanByteRefMut;
 
 pub const RECORD_ALIGNMENT: usize = 8;
 pub const RECORD_INFO_SIZE: usize = 8;
