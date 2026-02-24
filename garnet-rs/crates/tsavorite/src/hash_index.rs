@@ -2,8 +2,8 @@
 //!
 //! See [Doc 03 Sections 2.1-2.7] for bucket-index, tag extraction, and overflow-chain behavior.
 
-use crate::hash_bucket::{HashBucket, HASH_BUCKET_DATA_ENTRY_COUNT};
-use crate::hash_bucket_entry::{HashBucketEntry, HashBucketEntryError, ADDRESS_MASK};
+use crate::hash_bucket::{HASH_BUCKET_DATA_ENTRY_COUNT, HashBucket};
+use crate::hash_bucket_entry::{ADDRESS_MASK, HashBucketEntry, HashBucketEntryError};
 use crate::overflow_bucket_allocator::{
     OverflowBucketAllocator, OverflowBucketAllocatorError, OverflowBucketHandle,
 };

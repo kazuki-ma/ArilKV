@@ -9,8 +9,8 @@ use crate::delete_operation::{
     DeleteOperationContext, DeleteOperationError, DeleteOperationStatus,
 };
 use crate::hybrid_log::{
-    shift_head_address_and_evict, InMemoryPageDevice, LogAddressPointers,
-    LogAddressPointersSnapshot, PageDevice, PageManager, PageManagerError, PageResidencyError,
+    InMemoryPageDevice, LogAddressPointers, LogAddressPointersSnapshot, PageDevice, PageManager,
+    PageManagerError, PageResidencyError, shift_head_address_and_evict,
 };
 use crate::read_operation::{ReadOperationContext, ReadOperationError, ReadOperationStatus};
 use crate::rmw_operation::{RmwOperationContext, RmwOperationError, RmwOperationStatus};

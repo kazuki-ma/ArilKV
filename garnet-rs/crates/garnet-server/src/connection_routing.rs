@@ -1,10 +1,10 @@
-use garnet_cluster::{redis_hash_slot, ClusterConfigError, ClusterConfigStore, SlotRouteDecision};
+use garnet_cluster::{ClusterConfigError, ClusterConfigStore, SlotRouteDecision, redis_hash_slot};
 use garnet_common::ArgSlice;
 use std::io;
 
 #[cfg(test)]
 use crate::command_spec::command_is_owner_routable;
-use crate::command_spec::{command_key_access_pattern, KeyAccessPattern};
+use crate::command_spec::{KeyAccessPattern, command_key_access_pattern};
 use crate::{CommandId, RequestProcessor};
 
 #[inline]

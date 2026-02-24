@@ -516,7 +516,12 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 3, "XSETID", "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]")?;
+        ensure_min_arity(
+            args,
+            3,
+            "XSETID",
+            "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]",
+        )?;
         let key = args[1].to_vec();
         let last_id = args[2];
         if parse_stream_id(last_id).is_none() {

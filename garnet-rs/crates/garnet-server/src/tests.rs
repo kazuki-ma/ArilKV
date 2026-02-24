@@ -1,13 +1,13 @@
 use super::*;
 use garnet_cluster::{
-    redis_hash_slot, AsyncGossipEngine, ChannelReplicationTransport, ClusterConfig,
-    ClusterConfigStore, ClusterFailoverController, ClusterManager, FailoverCoordinator,
-    FailureDetector, GossipCoordinator, GossipNode, InMemoryGossipTransport, ReplicationEvent,
-    ReplicationManager, SlotState, Worker, WorkerRole, LOCAL_WORKER_ID,
+    AsyncGossipEngine, ChannelReplicationTransport, ClusterConfig, ClusterConfigStore,
+    ClusterFailoverController, ClusterManager, FailoverCoordinator, FailureDetector,
+    GossipCoordinator, GossipNode, InMemoryGossipTransport, LOCAL_WORKER_ID, ReplicationEvent,
+    ReplicationManager, SlotState, Worker, WorkerRole, redis_hash_slot,
 };
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::oneshot;
-use tokio::time::{sleep, Duration, Instant};
+use tokio::time::{Duration, Instant, sleep};
 
 #[tokio::test]
 async fn accept_loop_spawns_connection_handlers() {
@@ -2153,12 +2153,16 @@ async fn cluster_manager_failover_loop_updates_server_redirections() {
         )
         .await
         .unwrap();
-    assert!(reports1
-        .iter()
-        .any(|report| report.failed_worker_ids.contains(&node2_id_in_1)));
-    assert!(reports3
-        .iter()
-        .any(|report| report.failed_worker_ids.contains(&node2_id_in_3)));
+    assert!(
+        reports1
+            .iter()
+            .any(|report| report.failed_worker_ids.contains(&node2_id_in_1))
+    );
+    assert!(
+        reports3
+            .iter()
+            .any(|report| report.failed_worker_ids.contains(&node2_id_in_3))
+    );
     assert_eq!(
         repl1_rx.recv().await,
         Some(ReplicationEvent::Checkpoint {

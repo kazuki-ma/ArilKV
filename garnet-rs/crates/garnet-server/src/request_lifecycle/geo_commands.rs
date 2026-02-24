@@ -6,18 +6,12 @@ const GEOADD_USAGE: &str =
 const GEOPOS_USAGE: &str = "GEOPOS key member [member ...]";
 const GEODIST_USAGE: &str = "GEODIST key member1 member2 [M|KM|FT|MI]";
 const GEOHASH_USAGE: &str = "GEOHASH key member [member ...]";
-const GEORADIUS_USAGE: &str =
-    "GEORADIUS key longitude latitude radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC] [STORE key] [STOREDIST key]";
-const GEORADIUSBYMEMBER_USAGE: &str =
-    "GEORADIUSBYMEMBER key member radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC] [STORE key] [STOREDIST key]";
-const GEORADIUS_RO_USAGE: &str =
-    "GEORADIUS_RO key longitude latitude radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]";
-const GEORADIUSBYMEMBER_RO_USAGE: &str =
-    "GEORADIUSBYMEMBER_RO key member radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]";
-const GEOSEARCH_USAGE: &str =
-    "GEOSEARCH key FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius unit|BYBOX width height unit [options]";
-const GEOSEARCHSTORE_USAGE: &str =
-    "GEOSEARCHSTORE destination source FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius unit|BYBOX width height unit [options]";
+const GEORADIUS_USAGE: &str = "GEORADIUS key longitude latitude radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC] [STORE key] [STOREDIST key]";
+const GEORADIUSBYMEMBER_USAGE: &str = "GEORADIUSBYMEMBER key member radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC] [STORE key] [STOREDIST key]";
+const GEORADIUS_RO_USAGE: &str = "GEORADIUS_RO key longitude latitude radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]";
+const GEORADIUSBYMEMBER_RO_USAGE: &str = "GEORADIUSBYMEMBER_RO key member radius M|KM|FT|MI [WITHCOORD] [WITHDIST] [WITHHASH] [COUNT count [ANY]] [ASC|DESC]";
+const GEOSEARCH_USAGE: &str = "GEOSEARCH key FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius unit|BYBOX width height unit [options]";
+const GEOSEARCHSTORE_USAGE: &str = "GEOSEARCHSTORE destination source FROMMEMBER member|FROMLONLAT lon lat BYRADIUS radius unit|BYBOX width height unit [options]";
 const GEO_LONGITUDE_MIN: f64 = -180.0;
 const GEO_LONGITUDE_MAX: f64 = 180.0;
 const GEO_LATITUDE_MIN: f64 = -85.051_128_78;

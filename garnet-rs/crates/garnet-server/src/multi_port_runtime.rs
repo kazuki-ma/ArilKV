@@ -1,10 +1,10 @@
 use garnet_cluster::{
-    ClusterConfig, ClusterConfigStore, SlotState, Worker, WorkerRole, HASH_SLOT_COUNT,
+    ClusterConfig, ClusterConfigStore, HASH_SLOT_COUNT, SlotState, Worker, WorkerRole,
 };
-use garnet_server::{run_with_shutdown_and_cluster_config, ServerConfig, ServerMetrics};
+use garnet_server::{ServerConfig, ServerMetrics, run_with_shutdown_and_cluster_config};
 use std::net::SocketAddr;
-use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::mpsc;
 
 use crate::server_launch_config::{ServerLaunchConfig, SlotOwnershipPolicy, ThreadPinningConfig};
 

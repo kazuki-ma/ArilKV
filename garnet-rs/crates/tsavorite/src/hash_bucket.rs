@@ -2,7 +2,7 @@
 //!
 //! See [Doc 03 Section 2.3] for bucket layout.
 
-use crate::hash_bucket_entry::{HashBucketEntry, HashBucketEntryError, ADDRESS_BITS, ADDRESS_MASK};
+use crate::hash_bucket_entry::{ADDRESS_BITS, ADDRESS_MASK, HashBucketEntry, HashBucketEntryError};
 use core::array;
 use core::sync::atomic::{AtomicU64, Ordering};
 use std::thread;

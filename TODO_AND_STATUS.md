@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-24
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 266
+> **Current Iteration**: 267
 
 ---
 
@@ -317,10 +317,10 @@
 | 11.146 | Add AOF replay regression coverage for function-library command paths (`FUNCTION LOAD` + `FCALL`) | DONE | 11.145 | Added `aof_replay::tests::replay_aof_applies_function_load_and_fcall_when_scripting_enabled` to verify that AOF replay rehydrates loaded function libraries and subsequent `FCALL` mutations correctly restore key state after replay. |
 | 11.147 | Extend external compatibility subset with scripting CLI probe case | DONE | 11.146 | Added `redis_cli_scripting_probe` to `redis_runtest_external_subset.sh`. The probe now records PASS for either deterministic disabled-mode behavior (`ERR scripting is disabled in this server`) or enabled-mode `FUNCTION LOAD` + `FCALL_RO` success, preventing silent scripting-surface regressions in compatibility-report runs. |
 | 11.148 | Make external Redis compatibility probe default to full runtest (no `--single`/`--only`/`--tags`) and regenerate report | DONE | 11.147 | Updated `redis_runtest_external_subset.sh` to `REDIS_RUNTEXT_MODE=full` default, added full-run parser (`ok/err/ignore`) and `failed-tests.txt` extraction, and switched `build_compatibility_report.sh` default to `COMPAT_PROBE_MODE=full`. Generated full report (`ok=174`, `err=412`, `ignore=116`, artifacts at `.../compatibility-report-20260224-231056/redis-runtest-external-full`). |
-| 11.149 | Rebaseline full compatibility under compatibility profile (`GARNET_SCRIPTING_ENABLED=1` + higher `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES`) to remove infra-noise failures | TODO | 11.148 | Current full run includes `ERR storage capacity exceeded` and scripting-disabled failures that obscure semantic gaps; first next step is to establish a cleaner full baseline. |
-| 11.150 | Close top `EXPIRE` parity gaps from full runtest (`NX/XX/GT/LT`, big-int overflow/negative, propagation/stat counters) | TODO | 11.149 | `tests/unit/expire.tcl` contributes 48 failures in latest full report; this is the largest non-scripting semantic block. |
-| 11.151 | Expand scripting/function parity from minimal surface to Redis test expectations (`tests/unit/functions.tcl`) | TODO | 11.149 | `tests/unit/functions.tcl` contributes 94 failures; current implementation is intentionally `PARTIAL_MINIMAL` and needs deeper semantics. |
-| 11.152 | Fix introspection + transaction edge semantics from full run (`COMMAND`/`CLIENT`/`INFO`/`LATENCY`, `MULTI`/`EXEC`/`WATCH`) | TODO | 11.149 | High-volume failures observed in `tests/unit/introspection*.tcl`, `tests/unit/multi.tcl`, and `tests/unit/latency-monitor.tcl`; prioritize argument arity and state-machine parity first. |
+| 11.149 | Rebaseline full compatibility under compatibility profile (`GARNET_SCRIPTING_ENABLED=1` + higher `GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES`) to remove infra-noise failures | DONE | 11.148 | Re-ran full profile with compatibility env and established cleaner baseline artifacts (`ok=98 err=97 ignore=36`, then `ok=119 err=76 ignore=36`) at `garnet-rs/tests/interop/results/compatibility-report-20260224-233319` and `...-235249`. |
+| 11.150 | Close top `EXPIRE` parity gaps from full runtest (`NX/XX/GT/LT`, big-int overflow/negative, propagation/stat counters) | IN_PROGRESS | 11.149 | Implemented `NX/XX/GT/LT` option parity for `EXPIRE/PEXPIRE/EXPIREAT/PEXPIREAT` with unit coverage and Redis-compatible conflict/unsupported-option messages. Latest full run reduced `tests/unit/expire.tcl` failures from `48` to `26`; remaining gaps are overflow/propagation/stats semantics. |
+| 11.151 | Expand scripting/function parity from minimal surface to Redis test expectations (`tests/unit/functions.tcl`) | TODO | 11.149 | Latest full run still shows `tests/unit/functions.tcl` as a major block (`26` failed tests in current artifact), requiring deeper semantic parity beyond minimal admin/call surface. |
+| 11.152 | Fix introspection + transaction edge semantics from full run (`COMMAND`/`CLIENT`/`INFO`/`LATENCY`, `MULTI`/`EXEC`/`WATCH`) | TODO | 11.149 | Continue from full-run failed list after 11.150; prioritize argument/shape parity (`BIT*`, `COMMAND`, transaction/lazy-expire propagation behaviors) before broader admin completeness. |
 | 11.153 | Make compatibility report outputs deterministic by removing volatile date/path fields | DONE | 11.148 | Removed generated timestamp and absolute artifact path fields from compatibility summaries and sanitized probe `details` to exclude per-run log paths. Re-ran report generation and confirmed no volatile date/path strings remain in generated markdown outputs. |
 
 ### Phase 11 Command Backlog (Remaining From Matrix)

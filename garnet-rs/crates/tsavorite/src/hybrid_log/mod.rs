@@ -9,15 +9,15 @@ pub mod tail_allocator;
 
 pub use address_pointers::{LogAddressPointers, LogAddressPointersSnapshot};
 pub use page_io::{
-    flush_page_to_device, load_page_from_device, InMemoryPageDevice, PageDevice, PageIoError,
+    InMemoryPageDevice, PageDevice, PageIoError, flush_page_to_device, load_page_from_device,
 };
 pub use page_manager::{LogicalAddress, Page, PageAddressSpace, PageManager, PageManagerError};
 pub use page_residency::{
-    read_with_callback, shift_head_address_and_evict, PageResidencyError, ReadPathStatus,
+    PageResidencyError, ReadPathStatus, read_with_callback, shift_head_address_and_evict,
 };
 pub use record_format::{
+    RECORD_ALIGNMENT, RECORD_INFO_SIZE, RecordFormatError, RecordLayout, RecordParsedLayout,
     parse_key_span, parse_record_info, parse_record_layout, parse_value_span, round_up,
-    write_record, RecordFormatError, RecordLayout, RecordParsedLayout, RECORD_ALIGNMENT,
-    RECORD_INFO_SIZE,
+    write_record,
 };
 pub use tail_allocator::{TailAllocationStatus, TailAllocator, TailAllocatorError};

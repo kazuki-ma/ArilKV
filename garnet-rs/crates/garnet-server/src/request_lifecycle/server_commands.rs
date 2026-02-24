@@ -74,8 +74,7 @@ const ACL_CATEGORIES: [&[u8]; 8] = [
     b"stream",
 ];
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
-const MIGRATE_USAGE: &str =
-    "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
+const MIGRATE_USAGE: &str = "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
 
 impl RequestProcessor {
     pub(super) fn handle_quit(

@@ -1,4 +1,4 @@
-use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
+use garnet_common::{ArgSlice, RespParseError, parse_resp_command_arg_slices_dynamic};
 use std::sync::Arc;
 
 use crate::connection_routing::owner_shard_for_command;

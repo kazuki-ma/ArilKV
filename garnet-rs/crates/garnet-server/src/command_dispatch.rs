@@ -2,7 +2,7 @@
 //!
 //! Fast path uses fixed byte-pattern checks for hot commands.
 
-use crate::command_spec::{command_id_from_name, CommandId};
+use crate::command_spec::{CommandId, command_id_from_name};
 use garnet_common::ArgSlice;
 
 #[inline]

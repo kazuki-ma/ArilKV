@@ -1,12 +1,12 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
 use crate::debug_concurrency::{LockClass, OrderedMutex, OrderedMutexGuard};
-use crate::{dispatch_command_name, CommandId};
+use crate::{CommandId, dispatch_command_name};
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque};
-use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicI64, AtomicU64, AtomicUsize, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tsavorite::{
     DeleteInfo, DeleteOperationStatus, ReadInfo, ReadOperationStatus, RmwOperationStatus,

@@ -1,5 +1,5 @@
 use core::sync::atomic::Ordering;
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
 use tsavorite::{HashBucketEntry, LightEpoch, RecordInfo};
 
 fn bench_record_info(c: &mut Criterion) {

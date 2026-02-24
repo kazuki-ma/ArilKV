@@ -3,9 +3,9 @@
 //! See [Doc 06 Section 2.12] for read flow and region-dependent reader callback selection.
 
 use crate::hybrid_log::{
-    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, read_with_callback,
     LogAddressPointers, LogicalAddress, PageDevice, PageManager, PageManagerError,
-    PageResidencyError, RecordFormatError,
+    PageResidencyError, RecordFormatError, parse_key_span, parse_record_info, parse_record_layout,
+    parse_value_span, read_with_callback,
 };
 use crate::{HashIndex, HashIndexError, ISessionFunctions, ReadInfo, RecordInfo};
 
@@ -186,7 +186,7 @@ fn materialize_record_at<D: PageDevice>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hybrid_log::{flush_page_to_device, write_record, InMemoryPageDevice};
+    use crate::hybrid_log::{InMemoryPageDevice, flush_page_to_device, write_record};
     use crate::{FindOrCreateTagResult, HashBucketEntry, RmwInfo, UpsertInfo, WriteReason};
     use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 

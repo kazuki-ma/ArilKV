@@ -3670,9 +3670,11 @@ mod tests {
             .await
             .expect("follow-up incremental sync should succeed");
         assert_eq!(second.len(), 2);
-        assert!(second
-            .iter()
-            .all(|(_, outcome)| outcome.plan.mode == ReplicationSyncMode::Incremental));
+        assert!(
+            second
+                .iter()
+                .all(|(_, outcome)| outcome.plan.mode == ReplicationSyncMode::Incremental)
+        );
         assert!(transport.checkpoints.is_empty());
         assert_eq!(transport.streams, vec![(replica_a, 900), (replica_b, 900)]);
         assert_eq!(manager.replica_offset(replica_a), Some(960));
@@ -3894,9 +3896,11 @@ mod tests {
             .expect("first execution should apply failover");
         assert_eq!(plan.promoted_worker_id, replica_b);
         assert_eq!(store.load().slot_assigned_owner(451).unwrap(), replica_b);
-        assert!(coordinator
-            .handled_failed_primaries()
-            .contains("local-node"));
+        assert!(
+            coordinator
+                .handled_failed_primaries()
+                .contains("local-node")
+        );
 
         let second = coordinator
             .execute_for_failed_primary(&store, &manager, "local-node")
@@ -4762,9 +4766,11 @@ mod tests {
             .unwrap();
 
         assert!(!reports.is_empty());
-        assert!(reports
-            .iter()
-            .any(|report| report.failed_worker_ids.contains(&failed_primary_id)));
+        assert!(
+            reports
+                .iter()
+                .any(|report| report.failed_worker_ids.contains(&failed_primary_id))
+        );
         assert_eq!(
             store.load().slot_assigned_owner(460).unwrap(),
             LOCAL_WORKER_ID

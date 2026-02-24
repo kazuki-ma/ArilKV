@@ -3,9 +3,9 @@
 //! See [Doc 06 Section 2.12] for mutable/immutable/fuzzy-region behavior.
 
 use crate::hybrid_log::{
-    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, write_record,
     LogAddressPointers, LogicalAddress, PageManager, PageManagerError, RecordFormatError,
-    RecordLayout,
+    RecordLayout, parse_key_span, parse_record_info, parse_record_layout, parse_value_span,
+    write_record,
 };
 use crate::{HashIndex, HashIndexError, ISessionFunctions, RecordInfo, RmwInfo};
 use garnet_common::SpanByteError;
@@ -373,7 +373,7 @@ fn reserve_tail_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{upsert, HybridLogUpsertAdapter, UpsertOperationContext, UpsertOperationStatus};
+    use crate::{HybridLogUpsertAdapter, UpsertOperationContext, UpsertOperationStatus, upsert};
     use crate::{UpsertInfo, WriteReason};
 
     struct ByteRmwFunctions;

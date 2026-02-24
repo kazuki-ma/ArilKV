@@ -3,9 +3,9 @@
 //! See [Doc 06 Section 2.12] for mutable in-place write vs. copy-update flow.
 
 use crate::hybrid_log::{
-    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, write_record,
     LogAddressPointers, LogicalAddress, PageManager, PageManagerError, RecordFormatError,
-    RecordLayout,
+    RecordLayout, parse_key_span, parse_record_info, parse_record_layout, parse_value_span,
+    write_record,
 };
 use crate::{
     FindOrCreateTagStatus, HashIndex, HashIndexError, ISessionFunctions, RecordInfo, UpsertInfo,
@@ -375,9 +375,9 @@ fn reserve_tail_space(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::delete_operation::{delete, DeleteOperationContext, DeleteOperationStatus};
+    use crate::delete_operation::{DeleteOperationContext, DeleteOperationStatus, delete};
     use crate::read_operation::{
-        read, HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus,
+        HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus, read,
     };
     use crate::{DeleteInfo, ReadInfo, RmwInfo};
 

@@ -1,5 +1,5 @@
-use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use tsavorite::{
     DeleteOperationError, PageManagerError, PageResidencyError, ReadOperationError,
@@ -129,9 +129,7 @@ impl RequestExecutionError {
                 response_out,
                 "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?",
             ),
-            Self::DbIndexOutOfRange => {
-                append_error(response_out, "ERR DB index is out of range")
-            }
+            Self::DbIndexOutOfRange => append_error(response_out, "ERR DB index is out of range"),
             Self::SourceDestinationObjectsSame => append_error(
                 response_out,
                 "ERR source and destination objects are the same",
@@ -147,9 +145,7 @@ impl RequestExecutionError {
             Self::FunctionLibraryAlreadyExists => {
                 append_error(response_out, "ERR Library already exists")
             }
-            Self::FunctionLibraryNotFound => {
-                append_error(response_out, "ERR Library not found")
-            }
+            Self::FunctionLibraryNotFound => append_error(response_out, "ERR Library not found"),
             Self::FunctionNameAlreadyExists => {
                 append_error(response_out, "ERR Function already exists")
             }
@@ -165,9 +161,10 @@ impl RequestExecutionError {
             Self::ScriptExecutionTimedOut => {
                 append_error(response_out, "ERR script execution timed out")
             }
-            Self::NoScript => {
-                append_error(response_out, "NOSCRIPT No matching script. Please use EVAL.")
-            }
+            Self::NoScript => append_error(
+                response_out,
+                "NOSCRIPT No matching script. Please use EVAL.",
+            ),
             Self::ScriptingDisabled => {
                 append_error(response_out, "ERR scripting is disabled in this server")
             }

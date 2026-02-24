@@ -1,5 +1,5 @@
-use crate::command_spec::command_name_upper;
 use crate::CommandId;
+use crate::command_spec::command_name_upper;
 
 pub(crate) fn append_simple_string(output: &mut Vec<u8>, value: &[u8]) {
     output.push(b'+');

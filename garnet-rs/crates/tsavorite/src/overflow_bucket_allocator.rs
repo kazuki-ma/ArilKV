@@ -225,11 +225,13 @@ mod tests {
         assert_eq!(addr, reused);
 
         let reused_handle = allocator.get(reused).unwrap();
-        assert!(reused_handle
-            .bucket()
-            .entry(0)
-            .unwrap()
-            .is_empty(Ordering::Acquire));
+        assert!(
+            reused_handle
+                .bucket()
+                .entry(0)
+                .unwrap()
+                .is_empty(Ordering::Acquire)
+        );
         assert_eq!(
             reused_handle.bucket().overflow_address(Ordering::Acquire),
             0

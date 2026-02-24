@@ -170,8 +170,8 @@ impl Default for SyncPoint {
 }
 
 #[cfg(any(debug_assertions, test))]
-fn all_sync_points(
-) -> &'static Mutex<std::collections::HashMap<&'static str, std::sync::Arc<SyncPoint>>> {
+fn all_sync_points()
+-> &'static Mutex<std::collections::HashMap<&'static str, std::sync::Arc<SyncPoint>>> {
     static POINTS: std::sync::OnceLock<
         Mutex<std::collections::HashMap<&'static str, std::sync::Arc<SyncPoint>>>,
     > = std::sync::OnceLock::new();

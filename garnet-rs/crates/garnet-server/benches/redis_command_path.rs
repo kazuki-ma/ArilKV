@@ -1,5 +1,5 @@
-use criterion::{black_box, criterion_group, criterion_main, Criterion};
-use garnet_common::{parse_resp_command_arg_slices, ArgSlice};
+use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use garnet_common::{ArgSlice, parse_resp_command_arg_slices};
 use garnet_server::RequestProcessor;
 
 fn benchmark_set_and_get(c: &mut Criterion) {

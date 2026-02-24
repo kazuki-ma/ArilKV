@@ -74,6 +74,14 @@ struct SortElement {
     rank: usize,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct ExpireConditionOptions {
+    nx: bool,
+    xx: bool,
+    gt: bool,
+    lt: bool,
+}
+
 const PF_STRING_PREFIX: &[u8] = b"\x00garnet-pf-v1\x00";
 const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
     b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -1980,11 +1988,11 @@ impl RequestProcessor {
         milliseconds: bool,
     ) -> Result<(), RequestExecutionError> {
         let (command, expected) = if milliseconds {
-            ("PEXPIRE", "PEXPIRE key milliseconds")
+            ("PEXPIRE", "PEXPIRE key milliseconds [NX|XX|GT|LT]")
         } else {
-            ("EXPIRE", "EXPIRE key seconds")
+            ("EXPIRE", "EXPIRE key seconds [NX|XX|GT|LT]")
         };
-        require_exact_arity(args, 3, command, expected)?;
+        ensure_min_arity(args, 3, command, expected)?;
 
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
@@ -1997,7 +2005,25 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if amount <= 0 {
+        let Some(options) = parse_expire_condition_options(args, 3, response_out) else {
+            return Ok(());
+        };
+
+        let now_unix_millis =
+            i128::from(current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?);
+        let target_unix_millis =
+            compute_relative_expire_target_unix_millis(amount, milliseconds, now_unix_millis)?;
+        let current_expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        if !should_apply_expire_condition(
+            options,
+            current_expiration_unix_millis,
+            target_unix_millis,
+        ) {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        if target_unix_millis <= now_unix_millis {
             return self.expire_existing_key_immediately(
                 &key,
                 string_exists,
@@ -2006,17 +2032,12 @@ impl RequestProcessor {
             );
         }
 
-        let duration = if milliseconds {
-            Duration::from_millis(amount as u64)
-        } else {
-            Duration::from_secs(amount as u64)
-        };
-        let expiration = expiration_metadata_from_duration(duration)
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        self.set_string_expiration_deadline(&key, Some(expiration.deadline));
-        if string_exists
-            && !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))?
-        {
+        let unix_millis = u64::try_from(target_unix_millis)
+            .map_err(|_| RequestExecutionError::ValueNotInteger)?;
+        let deadline =
+            instant_from_unix_millis(unix_millis).ok_or(RequestExecutionError::ValueNotInteger)?;
+        self.set_string_expiration_deadline(&key, Some(deadline));
+        if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
             self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
             return Ok(());
@@ -2033,11 +2054,14 @@ impl RequestProcessor {
         milliseconds: bool,
     ) -> Result<(), RequestExecutionError> {
         let (command, expected) = if milliseconds {
-            ("PEXPIREAT", "PEXPIREAT key milliseconds-unix-time")
+            (
+                "PEXPIREAT",
+                "PEXPIREAT key milliseconds-unix-time [NX|XX|GT|LT]",
+            )
         } else {
-            ("EXPIREAT", "EXPIREAT key seconds-unix-time")
+            ("EXPIREAT", "EXPIREAT key seconds-unix-time [NX|XX|GT|LT]")
         };
-        require_exact_arity(args, 3, command, expected)?;
+        ensure_min_arity(args, 3, command, expected)?;
 
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = args[1].to_vec();
@@ -2050,15 +2074,21 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let target_unix_millis = if milliseconds {
-            i128::from(amount)
-        } else {
-            i128::from(amount)
-                .checked_mul(1000)
-                .ok_or(RequestExecutionError::ValueNotInteger)?
+        let Some(options) = parse_expire_condition_options(args, 3, response_out) else {
+            return Ok(());
         };
+        let target_unix_millis = compute_absolute_expire_target_unix_millis(amount, milliseconds)?;
         let now_unix_millis =
             i128::from(current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?);
+        let current_expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        if !should_apply_expire_condition(
+            options,
+            current_expiration_unix_millis,
+            target_unix_millis,
+        ) {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
 
         if target_unix_millis <= now_unix_millis {
             return self.expire_existing_key_immediately(
@@ -2305,7 +2335,12 @@ enum GetExAction {
 }
 
 fn parse_getex_action(args: &[&[u8]]) -> Result<GetExAction, RequestExecutionError> {
-    ensure_min_arity(args, 2, "GETEX", "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]")?;
+    ensure_min_arity(
+        args,
+        2,
+        "GETEX",
+        "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]",
+    )?;
     if args.len() == 2 {
         return Ok(GetExAction::KeepTtl);
     }
@@ -2316,7 +2351,12 @@ fn parse_getex_action(args: &[&[u8]]) -> Result<GetExAction, RequestExecutionErr
         }
         return Err(RequestExecutionError::SyntaxError);
     }
-    require_exact_arity(args, 4, "GETEX", "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]")?;
+    require_exact_arity(
+        args,
+        4,
+        "GETEX",
+        "GETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT unix-time-milliseconds|PERSIST]",
+    )?;
 
     let option = args[2];
     let value = args[3];
@@ -2359,6 +2399,102 @@ fn parse_getex_action(args: &[&[u8]]) -> Result<GetExAction, RequestExecutionErr
     }
 
     Err(RequestExecutionError::SyntaxError)
+}
+
+fn parse_expire_condition_options(
+    args: &[&[u8]],
+    option_start: usize,
+    response_out: &mut Vec<u8>,
+) -> Option<ExpireConditionOptions> {
+    let mut options = ExpireConditionOptions::default();
+    for option in args.iter().skip(option_start) {
+        if ascii_eq_ignore_case(option, b"NX") {
+            options.nx = true;
+        } else if ascii_eq_ignore_case(option, b"XX") {
+            options.xx = true;
+        } else if ascii_eq_ignore_case(option, b"GT") {
+            options.gt = true;
+        } else if ascii_eq_ignore_case(option, b"LT") {
+            options.lt = true;
+        } else {
+            let option_text = String::from_utf8_lossy(option);
+            let message = format!("ERR Unsupported option {option_text}");
+            append_error(response_out, message.as_bytes());
+            return None;
+        }
+    }
+
+    if options.nx && (options.xx || options.gt || options.lt) {
+        append_error(
+            response_out,
+            b"ERR NX and XX, GT or LT options at the same time are not compatible",
+        );
+        return None;
+    }
+    if options.gt && options.lt {
+        append_error(
+            response_out,
+            b"ERR GT and LT options at the same time are not compatible",
+        );
+        return None;
+    }
+    Some(options)
+}
+
+fn should_apply_expire_condition(
+    options: ExpireConditionOptions,
+    current_expiration_unix_millis: Option<u64>,
+    target_unix_millis: i128,
+) -> bool {
+    if options.nx && current_expiration_unix_millis.is_some() {
+        return false;
+    }
+    if options.xx && current_expiration_unix_millis.is_none() {
+        return false;
+    }
+    if options.gt {
+        let Some(current) = current_expiration_unix_millis else {
+            return false;
+        };
+        if target_unix_millis <= i128::from(current) {
+            return false;
+        }
+    }
+    if options.lt {
+        if let Some(current) = current_expiration_unix_millis {
+            if target_unix_millis >= i128::from(current) {
+                return false;
+            }
+        }
+    }
+    true
+}
+
+fn compute_relative_expire_target_unix_millis(
+    amount: i64,
+    milliseconds: bool,
+    now_unix_millis: i128,
+) -> Result<i128, RequestExecutionError> {
+    let multiplier = if milliseconds { 1i128 } else { 1000i128 };
+    let delta = i128::from(amount)
+        .checked_mul(multiplier)
+        .ok_or(RequestExecutionError::ValueNotInteger)?;
+    now_unix_millis
+        .checked_add(delta)
+        .ok_or(RequestExecutionError::ValueNotInteger)
+}
+
+fn compute_absolute_expire_target_unix_millis(
+    amount: i64,
+    milliseconds: bool,
+) -> Result<i128, RequestExecutionError> {
+    if milliseconds {
+        Ok(i128::from(amount))
+    } else {
+        i128::from(amount)
+            .checked_mul(1000)
+            .ok_or(RequestExecutionError::ValueNotInteger)
+    }
 }
 
 fn parse_bitop_operation(token: &[u8]) -> Option<BitopOperation> {

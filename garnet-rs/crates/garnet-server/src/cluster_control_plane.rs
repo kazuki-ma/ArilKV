@@ -1,4 +1,4 @@
-use garnet_cluster::{ClusterConfigError, ClusterConfigStore, SlotState, LOCAL_WORKER_ID};
+use garnet_cluster::{ClusterConfigError, ClusterConfigStore, LOCAL_WORKER_ID, SlotState};
 use std::collections::{HashSet, VecDeque};
 use std::future::Future;
 use std::io;
@@ -6,8 +6,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 
 use crate::{
-    run_listener_with_shutdown_and_cluster_with_processor, RequestExecutionError, RequestProcessor,
-    ServerConfig, ServerMetrics,
+    RequestExecutionError, RequestProcessor, ServerConfig, ServerMetrics,
+    run_listener_with_shutdown_and_cluster_with_processor,
 };
 
 #[derive(Debug)]

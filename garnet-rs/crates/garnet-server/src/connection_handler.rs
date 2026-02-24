@@ -1,10 +1,10 @@
 use std::io;
-use std::sync::atomic::Ordering;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::time::{Duration, Instant};
 
 use garnet_cluster::ClusterConfigStore;
-use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
+use garnet_common::{ArgSlice, RespParseError, parse_resp_command_arg_slices_dynamic};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 use tokio::task::yield_now;
@@ -12,16 +12,16 @@ use tokio::time::sleep;
 
 use crate::command_dispatch::dispatch_from_arg_slices;
 use crate::command_spec::{
-    command_has_valid_arity, command_is_effectively_mutating, command_transaction_control,
-    CommandId, TransactionControlCommand,
+    CommandId, TransactionControlCommand, command_has_valid_arity, command_is_effectively_mutating,
+    command_transaction_control,
 };
-use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
+use crate::connection_owner_routing::{OwnerThreadExecutionError, execute_frame_on_owner_thread};
 use crate::connection_protocol::{
     append_error_line, append_simple_string, append_wrong_arity_error_for_command,
     ascii_eq_ignore_case, parse_u16_ascii,
 };
 use crate::connection_routing::{cluster_error_for_command, command_hash_slot_for_transaction};
-use crate::connection_transaction::{execute_transaction_queue, ConnectionTransactionState};
+use crate::connection_transaction::{ConnectionTransactionState, execute_transaction_queue};
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
 use crate::{RequestExecutionError, RequestProcessor, ServerMetrics, ShardOwnerThreadPool};
@@ -34,6 +34,28 @@ const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const BLOCKING_PROGRESS_WAIT_BUDGET: Duration = Duration::from_millis(8);
+const OWNER_EXECUTION_INLINE_DEFAULT_UNSET: u8 = 0;
+const OWNER_EXECUTION_INLINE_DEFAULT_FALSE: u8 = 1;
+const OWNER_EXECUTION_INLINE_DEFAULT_TRUE: u8 = 2;
+static OWNER_EXECUTION_INLINE_DEFAULT: AtomicU8 =
+    AtomicU8::new(OWNER_EXECUTION_INLINE_DEFAULT_UNSET);
+
+pub fn set_owner_execution_inline_default(enabled: bool) {
+    let encoded = if enabled {
+        OWNER_EXECUTION_INLINE_DEFAULT_TRUE
+    } else {
+        OWNER_EXECUTION_INLINE_DEFAULT_FALSE
+    };
+    OWNER_EXECUTION_INLINE_DEFAULT.store(encoded, Ordering::Relaxed);
+}
+
+fn owner_execution_inline_default() -> Option<bool> {
+    match OWNER_EXECUTION_INLINE_DEFAULT.load(Ordering::Relaxed) {
+        OWNER_EXECUTION_INLINE_DEFAULT_FALSE => Some(false),
+        OWNER_EXECUTION_INLINE_DEFAULT_TRUE => Some(true),
+        _ => None,
+    }
+}
 
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
@@ -1142,12 +1164,11 @@ fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<(usize, usize)> {
 pub(crate) fn build_owner_thread_pool(
     processor: &Arc<RequestProcessor>,
 ) -> io::Result<Arc<ShardOwnerThreadPool>> {
-    let inline_owner_execution = parse_bool_env_flag(
-        std::env::var(GARNET_OWNER_EXECUTION_INLINE_ENV)
-            .ok()
-            .as_deref(),
-        GARNET_OWNER_EXECUTION_INLINE_ENV,
-    )?;
+    let inline_owner_execution = if let Ok(raw) = std::env::var(GARNET_OWNER_EXECUTION_INLINE_ENV) {
+        parse_bool_env_flag(Some(raw.as_str()), GARNET_OWNER_EXECUTION_INLINE_ENV)?
+    } else {
+        owner_execution_inline_default().unwrap_or(false)
+    };
     let owner_threads = parse_positive_env_usize(GARNET_STRING_OWNER_THREADS_ENV)
         .unwrap_or(DEFAULT_OWNER_THREAD_COUNT);
     let shard_count = processor.string_store_shard_count();

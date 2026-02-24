@@ -3,9 +3,9 @@
 //! See [Doc 06 Section 2.12] for mutable in-place delete vs. tombstone append behavior.
 
 use crate::hybrid_log::{
-    parse_key_span, parse_record_info, parse_record_layout, parse_value_span, write_record,
     LogAddressPointers, LogicalAddress, PageManager, PageManagerError, RecordFormatError,
-    RecordLayout,
+    RecordLayout, parse_key_span, parse_record_info, parse_record_layout, parse_value_span,
+    write_record,
 };
 use crate::{DeleteInfo, HashIndex, HashIndexError, ISessionFunctions, RecordInfo};
 use garnet_common::SpanByteError;
@@ -308,11 +308,11 @@ fn reserve_tail_space(
 mod tests {
     use super::*;
     use crate::read_operation::{
-        read, HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus,
+        HybridLogReadAdapter, ReadOperationContext, ReadOperationStatus, read,
     };
     use crate::{
-        upsert, DeleteInfo, HybridLogUpsertAdapter, ReadInfo, RmwInfo, UpsertInfo,
-        UpsertOperationContext, UpsertOperationStatus, WriteReason,
+        DeleteInfo, HybridLogUpsertAdapter, ReadInfo, RmwInfo, UpsertInfo, UpsertOperationContext,
+        UpsertOperationStatus, WriteReason, upsert,
     };
 
     struct ByteDeleteFunctions;

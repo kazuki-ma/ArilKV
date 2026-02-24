@@ -1,6 +1,8 @@
 use super::*;
 use crate::debug_concurrency;
-use crate::testkit::{assert_command_error, assert_command_integer, assert_command_response};
+use crate::testkit::{
+    assert_command_error, assert_command_integer, assert_command_response, execute_command_line,
+};
 use garnet_common::parse_resp_command_arg_slices;
 use std::sync::Arc;
 use std::thread;
@@ -341,22 +343,30 @@ fn sharded_string_metadata_tracks_keys_and_expiration_per_shard() {
     assert_eq!(processor.string_expiration_count_for_shard(shard_a), 1);
     assert_eq!(processor.string_expiration_count_for_shard(shard_b), 0);
 
-    assert!(processor.string_key_registries[shard_a]
-        .lock()
-        .expect("key registry mutex poisoned")
-        .contains(&key_a));
-    assert!(processor.string_key_registries[shard_b]
-        .lock()
-        .expect("key registry mutex poisoned")
-        .contains(&key_b));
-    assert!(!processor.string_key_registries[shard_a]
-        .lock()
-        .expect("key registry mutex poisoned")
-        .contains(&key_b));
-    assert!(!processor.string_key_registries[shard_b]
-        .lock()
-        .expect("key registry mutex poisoned")
-        .contains(&key_a));
+    assert!(
+        processor.string_key_registries[shard_a]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_a)
+    );
+    assert!(
+        processor.string_key_registries[shard_b]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_b)
+    );
+    assert!(
+        !processor.string_key_registries[shard_a]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_b)
+    );
+    assert!(
+        !processor.string_key_registries[shard_b]
+            .lock()
+            .expect("key registry mutex poisoned")
+            .contains(&key_a)
+    );
 }
 
 #[test]
@@ -2379,7 +2389,9 @@ fn zset_commands_roundtrip_over_object_store() {
     assert_eq!(
         execute_frame(
             &processor,
-            &encode_resp(&[b"ZADD", b"zrsrc", b"1", b"a", b"2", b"b", b"3", b"c", b"4", b"d"])
+            &encode_resp(&[
+                b"ZADD", b"zrsrc", b"1", b"a", b"2", b"b", b"3", b"c", b"4", b"d"
+            ])
         ),
         b":4\r\n"
     );
@@ -3600,6 +3612,147 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":-2\r\n");
+}
+
+#[test]
+fn expire_condition_options_follow_redis_matrix() {
+    let processor = RequestProcessor::new().unwrap();
+    let exec = |line: &str| execute_command_line(&processor, line).unwrap();
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with NX option on a key with ttl
+    // - EXPIRE with NX option on a key without ttl
+    assert_eq!(exec("SET foo bar EX 100"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 NX"), b":0\r\n");
+    let ttl_after_nx_on_volatile = parse_integer_response(&exec("TTL foo"));
+    assert!((50..=100).contains(&ttl_after_nx_on_volatile));
+
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 NX"), b":1\r\n");
+    let ttl_after_nx_on_persistent = parse_integer_response(&exec("TTL foo"));
+    assert!((100..=200).contains(&ttl_after_nx_on_persistent));
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with XX option on a key with ttl
+    // - EXPIRE with XX option on a key without ttl
+    assert_eq!(exec("SET foo bar EX 100"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 XX"), b":1\r\n");
+    let ttl_after_xx_on_volatile = parse_integer_response(&exec("TTL foo"));
+    assert!((100..=200).contains(&ttl_after_xx_on_volatile));
+
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 XX"), b":0\r\n");
+    assert_eq!(exec("TTL foo"), b":-1\r\n");
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with GT option on a key with lower ttl
+    // - EXPIRE with GT option on a key with higher ttl
+    // - EXPIRE with GT option on a key without ttl
+    assert_eq!(exec("SET foo bar EX 100"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 GT"), b":1\r\n");
+    let ttl_after_gt_raise = parse_integer_response(&exec("TTL foo"));
+    assert!((100..=200).contains(&ttl_after_gt_raise));
+
+    assert_eq!(exec("SET foo bar EX 200"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 100 GT"), b":0\r\n");
+    let ttl_after_gt_reject = parse_integer_response(&exec("TTL foo"));
+    assert!((100..=200).contains(&ttl_after_gt_reject));
+
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 GT"), b":0\r\n");
+    assert_eq!(exec("TTL foo"), b":-1\r\n");
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with LT option on a key with higher ttl
+    // - EXPIRE with LT option on a key with lower ttl
+    // - EXPIRE with LT option on a key without ttl
+    assert_eq!(exec("SET foo bar EX 100"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 LT"), b":0\r\n");
+    let ttl_after_lt_reject = parse_integer_response(&exec("TTL foo"));
+    assert!((50..=100).contains(&ttl_after_lt_reject));
+
+    assert_eq!(exec("SET foo bar EX 200"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 100 LT"), b":1\r\n");
+    let ttl_after_lt_shrink = parse_integer_response(&exec("TTL foo"));
+    assert!((50..=100).contains(&ttl_after_lt_shrink));
+
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 100 LT"), b":1\r\n");
+    let ttl_after_lt_on_persistent = parse_integer_response(&exec("TTL foo"));
+    assert!((50..=100).contains(&ttl_after_lt_on_persistent));
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with LT and XX option on a key with ttl
+    // - EXPIRE with LT and XX option on a key without ttl
+    assert_eq!(exec("SET foo bar EX 200"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 100 LT XX"), b":1\r\n");
+    let ttl_after_lt_xx = parse_integer_response(&exec("TTL foo"));
+    assert!((50..=100).contains(&ttl_after_lt_xx));
+
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo 200 LT XX"), b":0\r\n");
+    assert_eq!(exec("TTL foo"), b":-1\r\n");
+}
+
+#[test]
+fn expire_condition_option_errors_follow_redis_messages() {
+    let processor = RequestProcessor::new().unwrap();
+    let exec = |line: &str| execute_command_line(&processor, line).unwrap();
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with conflicting options: LT GT
+    assert_eq!(
+        exec("EXPIRE foo 200 LT GT"),
+        b"-ERR GT and LT options at the same time are not compatible\r\n"
+    );
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with conflicting options: NX GT / NX LT / NX XX
+    assert_eq!(
+        exec("EXPIRE foo 200 NX GT"),
+        b"-ERR NX and XX, GT or LT options at the same time are not compatible\r\n"
+    );
+    assert_eq!(
+        exec("EXPIRE foo 200 NX LT"),
+        b"-ERR NX and XX, GT or LT options at the same time are not compatible\r\n"
+    );
+    assert_eq!(
+        exec("EXPIRE foo 200 NX XX"),
+        b"-ERR NX and XX, GT or LT options at the same time are not compatible\r\n"
+    );
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with unsupported options
+    assert_eq!(exec("EXPIRE foo 200 AB"), b"-ERR Unsupported option AB\r\n");
+    assert_eq!(
+        exec("EXPIRE foo 200 XX AB"),
+        b"-ERR Unsupported option AB\r\n"
+    );
+}
+
+#[test]
+fn expire_condition_options_on_missing_and_negative_follow_redis_behavior() {
+    let processor = RequestProcessor::new().unwrap();
+    let exec = |line: &str| execute_command_line(&processor, line).unwrap();
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with non-existed key
+    assert_eq!(exec("EXPIRE none 100 NX"), b":0\r\n");
+    assert_eq!(exec("EXPIRE none 100 XX"), b":0\r\n");
+    assert_eq!(exec("EXPIRE none 100 GT"), b":0\r\n");
+    assert_eq!(exec("EXPIRE none 100 LT"), b":0\r\n");
+
+    // Redis upstream: tests/unit/expire.tcl
+    // - EXPIRE with negative expiry
+    // - EXPIRE with negative expiry on a non-valitale key
+    assert_eq!(exec("SET foo bar EX 100"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo -10 LT"), b":1\r\n");
+    assert_eq!(exec("TTL foo"), b":-2\r\n");
+
+    assert_eq!(exec("SET foo bar"), b"+OK\r\n");
+    assert_eq!(exec("EXPIRE foo -10 LT"), b":1\r\n");
+    assert_eq!(exec("TTL foo"), b":-2\r\n");
 }
 
 #[test]
@@ -6625,9 +6778,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert!(response.starts_with(b"*1\r\n"));
-    assert!(response
-        .windows(13)
-        .any(|window| window == b"$7\r\nstreamx\r\n"));
+    assert!(
+        response
+            .windows(13)
+            .any(|window| window == b"$7\r\nstreamx\r\n")
+    );
     assert!(response.windows(9).any(|window| window == b"$3\r\n1-0\r\n"));
 
     response.clear();

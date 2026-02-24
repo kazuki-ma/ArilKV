@@ -1,6 +1,6 @@
 use super::*;
 use crate::command_spec::command_is_mutating;
-use crate::{dispatch_command_name, CommandId};
+use crate::{CommandId, dispatch_command_name};
 use mlua::{
     Error as LuaError, Function as LuaFunction, HookTriggers, Lua, MultiValue, Table as LuaTable,
     Value as LuaValue, VmState,
@@ -187,7 +187,7 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::WrongArity {
                         command: "FUNCTION",
                         expected: SCRIPT_FUNCTION_LOAD_USAGE,
-                    })
+                    });
                 }
             };
 

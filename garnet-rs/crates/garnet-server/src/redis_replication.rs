@@ -2,27 +2,26 @@
 
 mod protocol;
 
+use crate::ShardOwnerThreadPool;
 use crate::command_spec::command_is_effectively_mutating;
-use crate::connection_owner_routing::{execute_frame_on_owner_thread, OwnerThreadExecutionError};
+use crate::connection_owner_routing::{OwnerThreadExecutionError, execute_frame_on_owner_thread};
 use crate::redis_replication::protocol::{
     decode_hex_bytes, discard_bulk_payload, generate_repl_id, parse_bulk_length, read_line,
     starts_with_ascii_no_case, write_resp_command,
 };
-use crate::ShardOwnerThreadPool;
-use crate::{dispatch_from_arg_slices, RequestProcessor};
-use garnet_common::{parse_resp_command_arg_slices_dynamic, ArgSlice, RespParseError};
+use crate::{RequestProcessor, dispatch_from_arg_slices};
+use garnet_common::{ArgSlice, RespParseError, parse_resp_command_arg_slices_dynamic};
 use std::io;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tokio::sync::{broadcast, Mutex, RwLock};
+use tokio::sync::{Mutex, RwLock, broadcast};
 use tokio::task::JoinHandle;
 
 // Empty Redis 7.x RDB payload (binary-safe) for FULLRESYNC responses.
-const EMPTY_RDB_HEX: &str =
-    "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
+const EMPTY_RDB_HEX: &str = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
 const DOWNSTREAM_BROADCAST_CAPACITY: usize = 4096;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;

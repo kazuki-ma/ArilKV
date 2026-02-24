@@ -1,4 +1,6 @@
-use garnet_server::{run, run_with_cluster, ServerConfig, ServerMetrics};
+use garnet_server::{
+    ServerConfig, ServerMetrics, run, run_with_cluster, set_owner_execution_inline_default,
+};
 #[cfg(test)]
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -12,10 +14,8 @@ use crate::multi_port_runtime::{resolve_core_assignments_from_available, slot_ow
 use crate::server_launch_config::parse_server_launch_config_from_env;
 #[cfg(test)]
 use crate::server_launch_config::{
-    parse_server_launch_config_from_values, SlotOwnershipPolicy, ThreadPinningConfig,
+    SlotOwnershipPolicy, ThreadPinningConfig, parse_server_launch_config_from_values,
 };
-
-const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 
 #[cfg(test)]
 fn parse_server_config_from_values(
@@ -66,9 +66,7 @@ async fn main() -> std::io::Result<()> {
         }
         return run(config, metrics).await;
     }
-    if std::env::var_os(GARNET_OWNER_EXECUTION_INLINE_ENV).is_none() {
-        std::env::set_var(GARNET_OWNER_EXECUTION_INLINE_ENV, "1");
-    }
+    set_owner_execution_inline_default(true);
     run_multi_bind_addrs(launch)
 }
 

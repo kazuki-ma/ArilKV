@@ -1,5 +1,5 @@
 use crate::{RequestExecutionError, RequestProcessor};
-use garnet_common::{parse_resp_command_arg_slices, ArgSlice, RespParseError};
+use garnet_common::{ArgSlice, RespParseError, parse_resp_command_arg_slices};
 
 #[derive(Debug)]
 pub(crate) enum CommandLineParseError {

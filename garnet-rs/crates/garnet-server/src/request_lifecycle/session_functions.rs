@@ -5,8 +5,8 @@ use tsavorite::{
 };
 
 use super::{
-    current_unix_time_millis, decode_stored_value, encode_stored_value, parse_i64_ascii,
-    UPSERT_USER_DATA_HAS_EXPIRATION,
+    UPSERT_USER_DATA_HAS_EXPIRATION, current_unix_time_millis, decode_stored_value,
+    encode_stored_value, parse_i64_ascii,
 };
 
 pub(super) struct KvSessionFunctions;

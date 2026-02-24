@@ -3,8 +3,8 @@
 //! See [Doc 02 Sections 2.6-2.7] for flush/eviction and on-disk read path semantics.
 
 use crate::hybrid_log::{
-    flush_page_to_device, load_page_from_device, LogAddressPointers, LogicalAddress, PageDevice,
-    PageIoError, PageManager, PageManagerError,
+    LogAddressPointers, LogicalAddress, PageDevice, PageIoError, PageManager, PageManagerError,
+    flush_page_to_device, load_page_from_device,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

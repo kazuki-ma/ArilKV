@@ -1,6 +1,6 @@
+use garnet_common::ArgSlice;
 #[cfg(test)]
 use garnet_common::parse_resp_command_arg_slices_dynamic;
-use garnet_common::ArgSlice;
 use std::sync::Arc;
 
 use crate::connection_routing::owner_shard_for_command;
