@@ -30,6 +30,43 @@ pub(crate) struct OwnedFrameArgs {
     arg_offsets_and_lengths: Vec<(usize, usize)>,
 }
 
+#[inline]
+fn map_routed_owner_error(error: RoutedExecutionError) -> OwnerThreadExecutionError {
+    match error {
+        RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,
+        RoutedExecutionError::Request(request_error) => {
+            OwnerThreadExecutionError::Request(request_error)
+        }
+    }
+}
+
+fn parse_owned_frame_args(
+    owned_args: &OwnedFrameArgs,
+) -> Result<Vec<ArgSlice>, RoutedExecutionError> {
+    if owned_args.arg_offsets_and_lengths.is_empty() {
+        return Err(RoutedExecutionError::Protocol);
+    }
+
+    let mut args = vec![ArgSlice::EMPTY; owned_args.arg_offsets_and_lengths.len()];
+    for (index, (offset, len)) in owned_args
+        .arg_offsets_and_lengths
+        .iter()
+        .copied()
+        .enumerate()
+    {
+        let end = offset
+            .checked_add(len)
+            .ok_or(RoutedExecutionError::Protocol)?;
+        let slice = owned_args
+            .frame
+            .get(offset..end)
+            .ok_or(RoutedExecutionError::Protocol)?;
+        args[index] = ArgSlice::from_slice(slice).map_err(|_| RoutedExecutionError::Protocol)?;
+    }
+
+    Ok(args)
+}
+
 pub(crate) fn capture_owned_frame_args(
     frame: &[u8],
     args: &[ArgSlice],
@@ -63,26 +100,7 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &OwnedFrameArgs,
 ) -> Result<Vec<u8>, RoutedExecutionError> {
-    if owned_args.arg_offsets_and_lengths.is_empty() {
-        return Err(RoutedExecutionError::Protocol);
-    }
-
-    let mut args = vec![ArgSlice::EMPTY; owned_args.arg_offsets_and_lengths.len()];
-    for (index, (offset, len)) in owned_args
-        .arg_offsets_and_lengths
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        let end = offset
-            .checked_add(len)
-            .ok_or(RoutedExecutionError::Protocol)?;
-        let slice = owned_args
-            .frame
-            .get(offset..end)
-            .ok_or(RoutedExecutionError::Protocol)?;
-        args[index] = ArgSlice::from_slice(slice).map_err(|_| RoutedExecutionError::Protocol)?;
-    }
+    let args = parse_owned_frame_args(owned_args)?;
 
     let mut response = Vec::new();
     processor
@@ -107,24 +125,14 @@ pub(crate) fn execute_frame_on_owner_thread(
     }
 
     let shard_index = owner_shard_for_command(processor, args, command);
-    let owned_args = capture_owned_frame_args(frame, args).map_err(|error| match error {
-        RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,
-        RoutedExecutionError::Request(request_error) => {
-            OwnerThreadExecutionError::Request(request_error)
-        }
-    })?;
+    let owned_args = capture_owned_frame_args(frame, args).map_err(map_routed_owner_error)?;
     let routed_processor = Arc::clone(processor);
     owner_thread_pool
         .execute_sync(shard_index, move || {
             execute_owned_frame_args_via_processor(&routed_processor, &owned_args)
         })
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?
-        .map_err(|error| match error {
-            RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,
-            RoutedExecutionError::Request(request_error) => {
-                OwnerThreadExecutionError::Request(request_error)
-            }
-        })
+        .map_err(map_routed_owner_error)
 }
 
 #[cfg(test)]

@@ -71,6 +71,26 @@ Stress config (broader key/client space, expected to pass):
 ./tools/tla/run_tlc.sh formal/tla/specs/BlockingDisconnectLeak.tla formal/tla/specs/BlockingDisconnectLeak_stress.cfg
 ```
 
+## Reproduce scripting accept starvation vs fixed offload
+
+This model captures a specific starvation pattern:
+
+- one connection enters long-running scripting execution
+- connection handler synchronously waits on completion
+- a second connection cannot be accepted, so `KILL` never arrives
+
+Bug config (expected to fail):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/ScriptExecutorAcceptProgress.tla formal/tla/specs/ScriptExecutorAcceptProgress_bug.cfg
+```
+
+Fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/ScriptExecutorAcceptProgress.tla formal/tla/specs/ScriptExecutorAcceptProgress_fixed.cfg
+```
+
 ## Add new model
 
 1. Add `<Name>.tla` and `<Name>.cfg` under `formal/tla/specs/`.

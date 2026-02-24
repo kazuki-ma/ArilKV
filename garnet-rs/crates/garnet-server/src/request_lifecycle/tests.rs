@@ -1,5 +1,6 @@
 use super::*;
 use crate::debug_concurrency;
+use crate::testkit::CommandHarnessError;
 use crate::testkit::assert_command_error;
 use crate::testkit::assert_command_integer;
 use crate::testkit::assert_command_response;
@@ -7334,14 +7335,14 @@ fn function_help_list_kill_delete_flush_and_stats_cover_minimal_surface() {
     assert!(list_with_code_text.contains("library_code"));
     assert!(list_with_code_text.contains("#!lua name=lib_admin"));
 
-    let stats_payload = parse_bulk_payload(&execute_frame(
-        &processor,
-        &encode_resp(&[b"FUNCTION", b"STATS"]),
-    ))
-    .expect("FUNCTION STATS returns bulk payload");
-    let stats_text = String::from_utf8_lossy(&stats_payload);
-    assert!(stats_text.contains("libraries_count:1"));
-    assert!(stats_text.contains("functions_count:2"));
+    let stats_response = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"STATS"]));
+    let stats_text = String::from_utf8_lossy(&stats_response);
+    assert!(stats_text.contains("running_script"));
+    assert!(stats_text.contains("engines"));
+    assert!(stats_text.contains("libraries_count"));
+    assert!(stats_text.contains("functions_count"));
+    assert!(stats_text.contains(":1\r\n"));
+    assert!(stats_text.contains(":2\r\n"));
 
     assert_command_response(
         &processor,
@@ -7500,6 +7501,129 @@ fn command_getkeys_supports_fcall_and_fcall_ro() {
         "COMMAND GETKEYS FCALL_RO fn 1 keyA arg1",
         b"*1\r\n$4\r\nkeyA\r\n",
     );
+}
+
+#[test]
+fn scripting_kill_and_busy_semantics_cover_function_and_eval_paths() {
+    let processor = Arc::new(
+        RequestProcessor::new_with_string_store_shards_and_scripting(1, true)
+            .expect("processor should initialize"),
+    );
+    let function_library = "FUNCTION LOAD REPLACE \"#!lua name=spinlib\nredis.register_function{function_name='spin', callback=function(keys, args) local a = 1 while true do a = a + 1 end end}\"";
+    assert_command_response(processor.as_ref(), function_library, b"$7\r\nspinlib\r\n");
+
+    let (function_tx, function_rx) = std::sync::mpsc::channel();
+    let function_worker = Arc::clone(&processor);
+    thread::spawn(move || {
+        let response = match execute_command_line(function_worker.as_ref(), "FCALL spin 0") {
+            Ok(response) => response,
+            Err(CommandHarnessError::Request(error)) => {
+                let mut encoded = Vec::new();
+                error.append_resp_error(&mut encoded);
+                encoded
+            }
+            Err(error) => panic!("FCALL failed with non-request error: {error}"),
+        };
+        function_tx
+            .send(response)
+            .expect("function response receiver should remain alive");
+    });
+
+    let mut saw_busy_ping = false;
+    for _ in 0..200 {
+        match execute_command_line(processor.as_ref(), "PING") {
+            Err(CommandHarnessError::Request(RequestExecutionError::BusyScript)) => {
+                saw_busy_ping = true;
+                break;
+            }
+            Ok(response) => {
+                assert_eq!(response, b"+PONG\r\n");
+            }
+            Err(error) => panic!("PING failed with non-request error: {error}"),
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        saw_busy_ping,
+        "PING should return BUSY while a function is running"
+    );
+    let stats_response = execute_command_line(processor.as_ref(), "FUNCTION STATS")
+        .expect("FUNCTION STATS should execute");
+    let stats_text = String::from_utf8_lossy(&stats_response);
+    assert!(stats_text.contains("running_script"));
+    assert!(stats_text.contains("spin"));
+    assert!(stats_text.contains("fcall spin 0"));
+
+    assert_command_response(
+        processor.as_ref(),
+        "SCRIPT KILL",
+        b"-BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n",
+    );
+    assert_command_response(processor.as_ref(), "FUNCTION KILL", b"+OK\r\n");
+    let function_result = function_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("function call should terminate after FUNCTION KILL");
+    assert!(
+        function_result.starts_with(b"-ERR"),
+        "killed function should return an error frame: {}",
+        String::from_utf8_lossy(&function_result)
+    );
+    assert_command_response(processor.as_ref(), "PING", b"+PONG\r\n");
+
+    let (script_tx, script_rx) = std::sync::mpsc::channel();
+    let script_worker = Arc::clone(&processor);
+    thread::spawn(move || {
+        let response = match execute_command_line(
+            script_worker.as_ref(),
+            "EVAL \"local a = 1 while true do a = a + 1 end\" 0",
+        ) {
+            Ok(response) => response,
+            Err(CommandHarnessError::Request(error)) => {
+                let mut encoded = Vec::new();
+                error.append_resp_error(&mut encoded);
+                encoded
+            }
+            Err(error) => panic!("EVAL failed with non-request error: {error}"),
+        };
+        script_tx
+            .send(response)
+            .expect("script response receiver should remain alive");
+    });
+
+    let mut saw_busy_ping_again = false;
+    for _ in 0..200 {
+        match execute_command_line(processor.as_ref(), "PING") {
+            Err(CommandHarnessError::Request(RequestExecutionError::BusyScript)) => {
+                saw_busy_ping_again = true;
+                break;
+            }
+            Ok(response) => {
+                assert_eq!(response, b"+PONG\r\n");
+            }
+            Err(error) => panic!("PING failed with non-request error: {error}"),
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    assert!(
+        saw_busy_ping_again,
+        "PING should return BUSY while an eval script is running"
+    );
+
+    assert_command_response(
+        processor.as_ref(),
+        "FUNCTION KILL",
+        b"-BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n",
+    );
+    assert_command_response(processor.as_ref(), "SCRIPT KILL", b"+OK\r\n");
+    let script_result = script_rx
+        .recv_timeout(Duration::from_secs(2))
+        .expect("eval should terminate after SCRIPT KILL");
+    assert!(
+        script_result.starts_with(b"-ERR"),
+        "killed eval should return an error frame: {}",
+        String::from_utf8_lossy(&script_result)
+    );
+    assert_command_response(processor.as_ref(), "PING", b"+PONG\r\n");
 }
 
 #[test]

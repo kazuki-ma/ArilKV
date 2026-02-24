@@ -1,6 +1,7 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
 use crate::CommandId;
+use crate::command_spec::command_allowed_while_script_busy;
 use crate::debug_concurrency::LockClass;
 use crate::debug_concurrency::OrderedMutex;
 use crate::debug_concurrency::OrderedMutexGuard;
@@ -12,6 +13,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
@@ -195,6 +197,21 @@ struct LoadedFunctionDescriptor {
     read_only: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RunningScriptKind {
+    Script,
+    Function,
+}
+
+#[derive(Debug, Clone)]
+struct RunningScriptState {
+    kind: RunningScriptKind,
+    name: String,
+    command: String,
+    started_at: Instant,
+    thread_id: std::thread::ThreadId,
+}
+
 #[derive(Debug, Default)]
 struct FunctionRegistry {
     functions: HashMap<String, LoadedFunctionDescriptor>,
@@ -236,6 +253,10 @@ pub struct RequestProcessor {
     script_cache_misses: AtomicU64,
     script_cache_evictions: AtomicU64,
     script_runtime_timeouts: AtomicU64,
+    script_running: AtomicBool,
+    running_script: Mutex<Option<RunningScriptState>>,
+    script_kill_requested: Arc<AtomicBool>,
+    function_kill_requested: Arc<AtomicBool>,
     scripting_runtime_config: ScriptingRuntimeConfig,
     function_registry: Mutex<FunctionRegistry>,
     scripting_enabled: bool,
@@ -385,6 +406,10 @@ impl RequestProcessor {
             script_cache_misses: AtomicU64::new(0),
             script_cache_evictions: AtomicU64::new(0),
             script_runtime_timeouts: AtomicU64::new(0),
+            script_running: AtomicBool::new(false),
+            running_script: Mutex::new(None),
+            script_kill_requested: Arc::new(AtomicBool::new(false)),
+            function_kill_requested: Arc::new(AtomicBool::new(false)),
             scripting_runtime_config,
             function_registry: Mutex::new(FunctionRegistry::default()),
             scripting_enabled,
@@ -765,6 +790,22 @@ impl RequestProcessor {
         }
 
         let command = dispatch_command_name(args[0]);
+        let subcommand = args.get(1).copied();
+        if self.script_running.load(Ordering::Acquire)
+            && !command_allowed_while_script_busy(command, subcommand)
+        {
+            let Ok(running_script) = self.running_script.lock() else {
+                return Err(storage_failure(
+                    "script.running_state",
+                    "running script state lock poisoned",
+                ));
+            };
+            if let Some(state) = running_script.as_ref() {
+                if state.thread_id != std::thread::current().id() {
+                    return Err(RequestExecutionError::BusyScript);
+                }
+            }
+        }
         match command {
             CommandId::Get => self.handle_get(args, response_out),
             CommandId::Set => self.handle_set(args, response_out),

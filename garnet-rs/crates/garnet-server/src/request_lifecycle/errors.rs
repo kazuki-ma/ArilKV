@@ -24,6 +24,7 @@ pub enum RequestExecutionError {
     NoSuchKey,
     NoGroup,
     BusyKey,
+    BusyScript,
     InvalidDumpPayload,
     SyntaxError,
     InvalidExpireTime,
@@ -78,6 +79,10 @@ impl RequestExecutionError {
             Self::NoSuchKey => append_error(response_out, "ERR no such key"),
             Self::NoGroup => append_error(response_out, "NOGROUP No such key or consumer group"),
             Self::BusyKey => append_error(response_out, "BUSYKEY Target key name already exists."),
+            Self::BusyScript => append_error(
+                response_out,
+                "BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.",
+            ),
             Self::InvalidDumpPayload => append_error(
                 response_out,
                 "ERR DUMP payload version or checksum are wrong",

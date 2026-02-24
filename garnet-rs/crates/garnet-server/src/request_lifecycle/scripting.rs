@@ -15,6 +15,7 @@ use sha1::Sha1;
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
+use std::sync::Arc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -35,6 +36,7 @@ const SCRIPT_LOAD_USAGE: &str = "SCRIPT LOAD script";
 const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
 const SCRIPT_DEBUG_USAGE: &str = "SCRIPT DEBUG YES|SYNC|NO";
 const SCRIPT_TIMEOUT_ERROR_TEXT: &str = "ERR script execution timed out";
+const SCRIPT_KILLED_ERROR_TEXT: &str = "ERR script killed by user";
 const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
 
 const SCRIPT_HELP_LINES: [&[u8]; 6] = [
@@ -94,6 +96,33 @@ struct RegisterFunctionBinding {
     description: String,
     read_only: bool,
     callback: LuaFunction,
+}
+
+enum ScriptKillOutcome {
+    NotBusy,
+    Killed,
+    BusyOtherKind,
+}
+
+struct RunningScriptGuard<'a> {
+    processor: &'a RequestProcessor,
+}
+
+impl Drop for RunningScriptGuard<'_> {
+    fn drop(&mut self) {
+        self.processor
+            .script_running
+            .store(false, Ordering::Release);
+        self.processor
+            .script_kill_requested
+            .store(false, Ordering::Release);
+        self.processor
+            .function_kill_requested
+            .store(false, Ordering::Release);
+        if let Ok(mut running_script) = self.processor.running_script.lock() {
+            *running_script = None;
+        }
+    }
 }
 
 impl RequestProcessor {
@@ -159,7 +188,17 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"KILL") {
             require_exact_arity(args, 2, "FUNCTION", "FUNCTION KILL")?;
-            append_error(response_out, b"NOTBUSY No scripts in execution right now.");
+            match self.request_script_kill(RunningScriptKind::Function)? {
+                ScriptKillOutcome::NotBusy => {
+                    append_error(response_out, b"NOTBUSY No scripts in execution right now.");
+                }
+                ScriptKillOutcome::Killed => {
+                    append_simple_string(response_out, b"OK");
+                }
+                ScriptKillOutcome::BusyOtherKind => {
+                    RequestExecutionError::BusyScript.append_resp_error(response_out);
+                }
+            }
             return Ok(());
         }
 
@@ -262,7 +301,17 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"KILL") {
             require_exact_arity(args, 2, "SCRIPT", "SCRIPT KILL")?;
-            append_error(response_out, b"NOTBUSY No scripts in execution right now.");
+            match self.request_script_kill(RunningScriptKind::Script)? {
+                ScriptKillOutcome::NotBusy => {
+                    append_error(response_out, b"NOTBUSY No scripts in execution right now.");
+                }
+                ScriptKillOutcome::Killed => {
+                    append_simple_string(response_out, b"OK");
+                }
+                ScriptKillOutcome::BusyOtherKind => {
+                    RequestExecutionError::BusyScript.append_resp_error(response_out);
+                }
+            }
             return Ok(());
         }
 
@@ -444,6 +493,7 @@ impl RequestProcessor {
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadWrite,
+            "fcall",
             response_out,
         );
         Ok(())
@@ -475,6 +525,7 @@ impl RequestProcessor {
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadOnly,
+            "fcall_ro",
             response_out,
         );
         Ok(())
@@ -547,6 +598,61 @@ impl RequestProcessor {
             registry.library_sources.clear();
             registry.library_function_names.clear();
         }
+    }
+
+    fn enter_running_script(
+        &self,
+        kind: RunningScriptKind,
+        name: &str,
+        command: String,
+    ) -> Result<RunningScriptGuard<'_>, RequestExecutionError> {
+        let Ok(mut running_script) = self.running_script.lock() else {
+            return Err(storage_failure(
+                "script.running_state",
+                "running script state lock poisoned",
+            ));
+        };
+        if running_script.is_some() {
+            return Err(RequestExecutionError::BusyScript);
+        }
+        self.script_kill_requested.store(false, Ordering::Release);
+        self.function_kill_requested.store(false, Ordering::Release);
+        *running_script = Some(RunningScriptState {
+            kind,
+            name: name.to_string(),
+            command,
+            started_at: Instant::now(),
+            thread_id: std::thread::current().id(),
+        });
+        self.script_running.store(true, Ordering::Release);
+        Ok(RunningScriptGuard { processor: self })
+    }
+
+    fn request_script_kill(
+        &self,
+        target: RunningScriptKind,
+    ) -> Result<ScriptKillOutcome, RequestExecutionError> {
+        let Ok(running_script) = self.running_script.lock() else {
+            return Err(storage_failure(
+                "script.running_state",
+                "running script state lock poisoned",
+            ));
+        };
+        let Some(state) = running_script.as_ref() else {
+            return Ok(ScriptKillOutcome::NotBusy);
+        };
+        if state.kind != target {
+            return Ok(ScriptKillOutcome::BusyOtherKind);
+        }
+        match target {
+            RunningScriptKind::Script => {
+                self.script_kill_requested.store(true, Ordering::Release);
+            }
+            RunningScriptKind::Function => {
+                self.function_kill_requested.store(true, Ordering::Release);
+            }
+        }
+        Ok(ScriptKillOutcome::Killed)
     }
 
     fn dump_function_registry(&self) -> Result<Vec<u8>, RequestExecutionError> {
@@ -706,12 +812,39 @@ impl RequestProcessor {
                 "function registry lock poisoned",
             ));
         };
-        let payload = format!(
-            "running_script:0\r\nengines:1\r\nlibraries_count:{}\r\nfunctions_count:{}\r\n",
-            registry.library_sources.len(),
-            registry.functions.len(),
-        );
-        append_bulk_string(response_out, payload.as_bytes());
+        let Ok(running_script_state) = self.running_script.lock() else {
+            return Err(storage_failure(
+                "script.running_state",
+                "running script state lock poisoned",
+            ));
+        };
+        let running_script_state = running_script_state.clone();
+
+        response_out.extend_from_slice(b"*4\r\n");
+        append_bulk_string(response_out, b"running_script");
+        if let Some(state) = running_script_state {
+            let duration_millis = state.started_at.elapsed().as_millis();
+            let duration_millis = i64::try_from(duration_millis).unwrap_or(i64::MAX);
+            response_out.extend_from_slice(b"*6\r\n");
+            append_bulk_string(response_out, b"name");
+            append_bulk_string(response_out, state.name.as_bytes());
+            append_bulk_string(response_out, b"command");
+            append_bulk_string(response_out, state.command.as_bytes());
+            append_bulk_string(response_out, b"duration_ms");
+            append_integer(response_out, duration_millis);
+        } else {
+            response_out.extend_from_slice(b"*0\r\n");
+        }
+
+        append_bulk_string(response_out, b"engines");
+        response_out.extend_from_slice(b"*1\r\n");
+        response_out.extend_from_slice(b"*2\r\n");
+        append_bulk_string(response_out, b"LUA");
+        response_out.extend_from_slice(b"*4\r\n");
+        append_bulk_string(response_out, b"libraries_count");
+        append_integer(response_out, registry.library_sources.len() as i64);
+        append_bulk_string(response_out, b"functions_count");
+        append_integer(response_out, registry.functions.len() as i64);
         Ok(())
     }
 
@@ -720,7 +853,7 @@ impl RequestProcessor {
         library_source: &[u8],
     ) -> Result<Vec<PendingFunctionRegistration>, RequestExecutionError> {
         let lua = Lua::new();
-        self.configure_lua_runtime_limits(&lua)
+        self.configure_lua_runtime_limits(&lua, None)
             .map_err(|_| RequestExecutionError::SyntaxError)?;
         let registrations: Rc<RefCell<Vec<PendingFunctionRegistration>>> =
             Rc::new(RefCell::new(Vec::new()));
@@ -893,8 +1026,17 @@ impl RequestProcessor {
         mutability: ScriptMutability,
         response_out: &mut Vec<u8>,
     ) {
+        let _running_script_guard =
+            match self.enter_running_script(RunningScriptKind::Script, "", "eval".to_string()) {
+                Ok(guard) => guard,
+                Err(error) => {
+                    error.append_resp_error(response_out);
+                    return;
+                }
+            };
         let lua = Lua::new();
-        if let Err(error) = self.configure_lua_runtime_limits(&lua) {
+        if let Err(error) = self.configure_lua_runtime_limits(&lua, Some(RunningScriptKind::Script))
+        {
             let message = format!(
                 "ERR Error running script: {}",
                 sanitize_error_text(&error.to_string())
@@ -987,6 +1129,7 @@ impl RequestProcessor {
         keys: &[&[u8]],
         argv: &[&[u8]],
         mutability: ScriptMutability,
+        command_name: &str,
         response_out: &mut Vec<u8>,
     ) {
         let function_name_text = match std::str::from_utf8(function_name) {
@@ -999,9 +1142,23 @@ impl RequestProcessor {
                 return;
             }
         };
+        let command = format!("{} {} {}", command_name, function_name_text, keys.len());
+        let _running_script_guard = match self.enter_running_script(
+            RunningScriptKind::Function,
+            function_name_text.as_str(),
+            command,
+        ) {
+            Ok(guard) => guard,
+            Err(error) => {
+                error.append_resp_error(response_out);
+                return;
+            }
+        };
 
         let lua = Lua::new();
-        if let Err(error) = self.configure_lua_runtime_limits(&lua) {
+        if let Err(error) =
+            self.configure_lua_runtime_limits(&lua, Some(RunningScriptKind::Function))
+        {
             let message = format!(
                 "ERR Error running function: {}",
                 sanitize_error_text(&error.to_string())
@@ -1156,21 +1313,43 @@ impl RequestProcessor {
         }
     }
 
-    fn configure_lua_runtime_limits(&self, lua: &Lua) -> mlua::Result<()> {
+    fn configure_lua_runtime_limits(
+        &self,
+        lua: &Lua,
+        running_kind: Option<RunningScriptKind>,
+    ) -> mlua::Result<()> {
         let config = self.scripting_runtime_config();
         if config.max_memory_bytes > 0 {
             let _ = lua.set_memory_limit(config.max_memory_bytes)?;
         }
-        if config.max_execution_millis > 0 {
-            let timeout = Duration::from_millis(config.max_execution_millis);
+        let timeout = if config.max_execution_millis > 0 {
+            Some(Duration::from_millis(config.max_execution_millis))
+        } else {
+            None
+        };
+        let kill_flag = match running_kind {
+            Some(RunningScriptKind::Script) => Some(Arc::clone(&self.script_kill_requested)),
+            Some(RunningScriptKind::Function) => Some(Arc::clone(&self.function_kill_requested)),
+            None => None,
+        };
+        if timeout.is_some() || kill_flag.is_some() {
             let started = Instant::now();
             lua.set_hook(
                 HookTriggers::new().every_nth_instruction(LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE),
                 move |_lua, _debug| {
-                    if started.elapsed() > timeout {
-                        return Err(LuaError::RuntimeError(
-                            SCRIPT_TIMEOUT_ERROR_TEXT.to_string(),
-                        ));
+                    if let Some(flag) = &kill_flag {
+                        if flag.load(Ordering::Acquire) {
+                            return Err(LuaError::RuntimeError(
+                                SCRIPT_KILLED_ERROR_TEXT.to_string(),
+                            ));
+                        }
+                    }
+                    if let Some(timeout) = timeout {
+                        if started.elapsed() > timeout {
+                            return Err(LuaError::RuntimeError(
+                                SCRIPT_TIMEOUT_ERROR_TEXT.to_string(),
+                            ));
+                        }
                     }
                     Ok(VmState::Continue)
                 },

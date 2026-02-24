@@ -24,9 +24,13 @@ use crate::command_spec::CommandId;
 use crate::command_spec::TransactionControlCommand;
 use crate::command_spec::command_has_valid_arity;
 use crate::command_spec::command_is_effectively_mutating;
+use crate::command_spec::command_is_scripting_family;
 use crate::command_spec::command_transaction_control;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
+use crate::connection_owner_routing::RoutedExecutionError;
+use crate::connection_owner_routing::capture_owned_frame_args;
 use crate::connection_owner_routing::execute_frame_on_owner_thread;
+use crate::connection_owner_routing::execute_owned_frame_args_via_processor;
 use crate::connection_protocol::append_error_line;
 use crate::connection_protocol::append_simple_string;
 use crate::connection_protocol::append_wrong_arity_error_for_command;
@@ -543,6 +547,38 @@ async fn read_and_drain_available(
     Ok(total)
 }
 
+#[inline]
+fn map_routed_error_to_owner(error: RoutedExecutionError) -> OwnerThreadExecutionError {
+    match error {
+        RoutedExecutionError::Protocol => OwnerThreadExecutionError::Protocol,
+        RoutedExecutionError::Request(request_error) => {
+            OwnerThreadExecutionError::Request(request_error)
+        }
+    }
+}
+
+async fn execute_frame_on_owner_thread_async(
+    processor: &Arc<RequestProcessor>,
+    owner_thread_pool: &Arc<ShardOwnerThreadPool>,
+    args: &[ArgSlice],
+    command: CommandId,
+    frame: &[u8],
+) -> Result<Vec<u8>, OwnerThreadExecutionError> {
+    if command_is_scripting_family(command) {
+        let owned_args =
+            capture_owned_frame_args(frame, args).map_err(map_routed_error_to_owner)?;
+        let task_processor = Arc::clone(processor);
+        let result = tokio::task::spawn_blocking(move || {
+            execute_owned_frame_args_via_processor(&task_processor, &owned_args)
+        })
+        .await
+        .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?;
+        return result.map_err(map_routed_error_to_owner);
+    }
+
+    execute_frame_on_owner_thread(processor, owner_thread_pool, args, command, frame)
+}
+
 async fn execute_blocking_frame_on_owner_thread(
     processor: &Arc<RequestProcessor>,
     metrics: &Arc<ServerMetrics>,
@@ -616,22 +652,28 @@ async fn execute_blocking_frame_on_owner_thread(
             continue;
         }
 
-        let frame_response =
-            match execute_frame_on_owner_thread(processor, owner_thread_pool, args, command, frame)
+        let frame_response = match execute_frame_on_owner_thread_async(
+            processor,
+            owner_thread_pool,
+            args,
+            command,
+            frame,
+        )
+        .await
+        {
+            Ok(response) => response,
+            Err(OwnerThreadExecutionError::Request(RequestExecutionError::WrongType))
+                if blocked && ignore_wrongtype_while_blocked(command) =>
             {
-                Ok(response) => response,
-                Err(OwnerThreadExecutionError::Request(RequestExecutionError::WrongType))
-                    if blocked && ignore_wrongtype_while_blocked(command) =>
-                {
-                    blocking_empty_response_for_command(command).to_vec()
+                blocking_empty_response_for_command(command).to_vec()
+            }
+            Err(error) => {
+                if blocked {
+                    clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
                 }
-                Err(error) => {
-                    if blocked {
-                        clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
-                    }
-                    return Err(error);
-                }
-            };
+                return Err(error);
+            }
+        };
 
         let should_replicate = if is_blocking_command(command) {
             command_mutating && !is_blocking_empty_response(&frame_response)

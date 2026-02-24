@@ -2759,6 +2759,30 @@ pub fn command_is_effectively_mutating(command: CommandId, subcommand: Option<&[
     }
 }
 
+pub fn command_allowed_while_script_busy(command: CommandId, subcommand: Option<&[u8]>) -> bool {
+    match command {
+        CommandId::Function => {
+            subcommand_matches(subcommand, b"KILL") || subcommand_matches(subcommand, b"STATS")
+        }
+        CommandId::Script => subcommand_matches(subcommand, b"KILL"),
+        _ => false,
+    }
+}
+
+pub fn command_is_scripting_family(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Function
+            | CommandId::Script
+            | CommandId::Eval
+            | CommandId::EvalRo
+            | CommandId::Evalsha
+            | CommandId::EvalshaRo
+            | CommandId::Fcall
+            | CommandId::FcallRo
+    )
+}
+
 fn subcommand_matches(subcommand: Option<&[u8]>, expected_upper: &[u8]) -> bool {
     subcommand.is_some_and(|value| ascii_eq_ignore_case(value, expected_upper))
 }
@@ -2832,6 +2856,43 @@ mod tests {
         ));
 
         assert!(command_is_effectively_mutating(CommandId::Set, None));
+    }
+
+    #[test]
+    fn script_busy_allowed_subcommands_match_expected_behavior() {
+        assert!(command_allowed_while_script_busy(
+            CommandId::Function,
+            Some(b"KILL")
+        ));
+        assert!(command_allowed_while_script_busy(
+            CommandId::Function,
+            Some(b"STATS")
+        ));
+        assert!(command_allowed_while_script_busy(
+            CommandId::Script,
+            Some(b"KILL")
+        ));
+        assert!(!command_allowed_while_script_busy(
+            CommandId::Function,
+            Some(b"LIST")
+        ));
+        assert!(!command_allowed_while_script_busy(CommandId::Ping, None));
+
+        assert!(!command_allowed_while_script_busy(
+            CommandId::Script,
+            Some(b"LOAD")
+        ));
+    }
+
+    #[test]
+    fn scripting_family_classification_matches_expected_commands() {
+        assert!(command_is_scripting_family(CommandId::Function));
+        assert!(command_is_scripting_family(CommandId::Script));
+        assert!(command_is_scripting_family(CommandId::Eval));
+        assert!(command_is_scripting_family(CommandId::Evalsha));
+        assert!(command_is_scripting_family(CommandId::Fcall));
+        assert!(!command_is_scripting_family(CommandId::Ping));
+        assert!(!command_is_scripting_family(CommandId::Set));
     }
 
     #[test]
