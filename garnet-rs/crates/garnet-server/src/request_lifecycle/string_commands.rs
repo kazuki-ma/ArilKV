@@ -1814,15 +1814,25 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 3, "PFADD", "PFADD key element [element ...]")?;
+        ensure_min_arity(args, 2, "PFADD", "PFADD key element [element ...]")?;
         let key = args[1].to_vec();
-        let mut set = load_pf_set_for_key(self, &key)?.unwrap_or_default();
+        let existing = load_pf_set_for_key(self, &key)?;
+        let was_missing = existing.is_none();
+        let mut set = existing.unwrap_or_default();
         let original_len = set.len();
         for element in &args[2..] {
             set.insert(element.to_vec());
         }
-        let changed = if set.len() != original_len { 1 } else { 0 };
-        self.upsert_string_value_for_migration(&key, &encode_pf_set(&set), None)?;
+        let changed = if args.len() == 2 {
+            if was_missing { 1 } else { 0 }
+        } else if set.len() != original_len {
+            1
+        } else {
+            0
+        };
+        if changed == 1 {
+            self.upsert_string_value_for_migration(&key, &encode_pf_set(&set), None)?;
+        }
         append_integer(response_out, changed);
         Ok(())
     }
@@ -1851,14 +1861,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
-            3,
+            2,
             "PFMERGE",
             "PFMERGE destkey sourcekey [sourcekey ...]",
         )?;
         let destination = args[1].to_vec();
-        let _ = load_pf_set_for_key(self, &destination)?;
-
-        let mut merged = BTreeSet::new();
+        let mut merged = load_pf_set_for_key(self, &destination)?.unwrap_or_default();
         for source_arg in &args[2..] {
             let source = source_arg.to_vec();
             if let Some(set) = load_pf_set_for_key(self, &source)? {

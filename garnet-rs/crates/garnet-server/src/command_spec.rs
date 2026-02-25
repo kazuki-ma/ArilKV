@@ -2529,7 +2529,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: Some(ArityPolicy::Min(3)),
+        arity_policy: Some(ArityPolicy::Min(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2549,7 +2549,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: Some(ArityPolicy::Min(3)),
+        arity_policy: Some(ArityPolicy::Min(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -3218,15 +3218,17 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Msetnx, 3));
         assert!(command_has_valid_arity(CommandId::Msetnx, 5));
         assert!(!command_has_valid_arity(CommandId::Msetnx, 2));
+        assert!(command_has_valid_arity(CommandId::Pfadd, 2));
         assert!(command_has_valid_arity(CommandId::Pfadd, 3));
         assert!(command_has_valid_arity(CommandId::Pfadd, 6));
-        assert!(!command_has_valid_arity(CommandId::Pfadd, 2));
+        assert!(!command_has_valid_arity(CommandId::Pfadd, 1));
         assert!(command_has_valid_arity(CommandId::Pfcount, 2));
         assert!(command_has_valid_arity(CommandId::Pfcount, 4));
         assert!(!command_has_valid_arity(CommandId::Pfcount, 1));
+        assert!(command_has_valid_arity(CommandId::Pfmerge, 2));
         assert!(command_has_valid_arity(CommandId::Pfmerge, 3));
         assert!(command_has_valid_arity(CommandId::Pfmerge, 6));
-        assert!(!command_has_valid_arity(CommandId::Pfmerge, 2));
+        assert!(!command_has_valid_arity(CommandId::Pfmerge, 1));
         assert!(command_has_valid_arity(CommandId::Pfdebug, 2));
         assert!(command_has_valid_arity(CommandId::Pfdebug, 4));
         assert!(!command_has_valid_arity(CommandId::Pfdebug, 1));

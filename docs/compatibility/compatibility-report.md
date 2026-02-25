@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=428; err=160; ignore=123; failed_tests=160  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=431; err=157; ignore=123; failed_tests=157  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `160`
+- Failed tests extracted from runtest log: `157`
 
 | Test |
 |---|
@@ -92,7 +92,6 @@
 | `GEOSEARCH fuzzy test - byradius in tests/unit/geo.tcl` |
 | `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
 | `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
-| `PFADD without arguments creates an HLL value in tests/unit/hyperloglog.tcl` |
 | `HyperLogLogs are promote from sparse to dense in tests/unit/hyperloglog.tcl` |
 | `Change hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
 | `Hyperloglog promote to dense well in different hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
@@ -100,8 +99,6 @@
 | `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
-| `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
-| `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
 | `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
 | `PFCOUNT multiple-keys merge returns cardinality of union #2 in tests/unit/hyperloglog.tcl` |

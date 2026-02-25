@@ -5851,6 +5851,30 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let mut args = [ArgSlice::EMPTY; 16];
     let mut response = Vec::new();
 
+    let pfadd_empty_create = b"*2\r\n$5\r\nPFADD\r\n$8\r\nemptyhll\r\n";
+    let meta = parse_resp_command_arg_slices(pfadd_empty_create, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let pfadd_empty_noop = b"*2\r\n$5\r\nPFADD\r\n$8\r\nemptyhll\r\n";
+    let meta = parse_resp_command_arg_slices(pfadd_empty_noop, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let pfcount_empty = b"*2\r\n$7\r\nPFCOUNT\r\n$8\r\nemptyhll\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_empty, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
     let pfadd_first = b"*5\r\n$5\r\nPFADD\r\n$2\r\nh1\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(pfadd_first, &mut args).unwrap();
     processor
@@ -5897,6 +5921,47 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":4\r\n");
+
+    response.clear();
+    let pfmerge_empty_dest = b"*2\r\n$7\r\nPFMERGE\r\n$6\r\ndest11\r\n";
+    let meta = parse_resp_command_arg_slices(pfmerge_empty_dest, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pfcount_empty_dest = b"*2\r\n$7\r\nPFCOUNT\r\n$6\r\ndest11\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_empty_dest, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let pfmerge_dest_source_seed =
+        b"*5\r\n$5\r\nPFADD\r\n$6\r\ndest22\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
+    let meta = parse_resp_command_arg_slices(pfmerge_dest_source_seed, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let pfmerge_dest_source_only = b"*2\r\n$7\r\nPFMERGE\r\n$6\r\ndest22\r\n";
+    let meta = parse_resp_command_arg_slices(pfmerge_dest_source_only, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pfcount_dest_source_only = b"*2\r\n$7\r\nPFCOUNT\r\n$6\r\ndest22\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_dest_source_only, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":3\r\n");
 
     response.clear();
     let pfdebug_encoding = b"*3\r\n$7\r\nPFDEBUG\r\n$8\r\nENCODING\r\n$2\r\nhm\r\n";
