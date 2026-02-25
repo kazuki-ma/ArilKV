@@ -465,6 +465,19 @@ impl RequestProcessor {
         self.watch_versions[slot].load(Ordering::SeqCst)
     }
 
+    pub(crate) fn expire_watch_key_if_needed(
+        &self,
+        key: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        self.expire_key_if_needed(key)
+    }
+
+    pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[(Vec<u8>, u64)]) {
+        for (key, _) in watched_keys {
+            let _ = self.expire_key_if_needed(key);
+        }
+    }
+
     pub fn watch_versions_match(&self, watched_keys: &[(Vec<u8>, u64)]) -> bool {
         watched_keys
             .iter()

@@ -609,7 +609,10 @@ pub(crate) async fn handle_connection(
                     TransactionControlCommand::Exec => {
                         if !command_has_valid_arity(command, argument_count) {
                             append_wrong_arity_error_for_command(&mut responses, command);
-                        } else if !processor.watch_versions_match(&transaction.watched_keys) {
+                        } else if watched_keys_dirty_or_expired(
+                            &processor,
+                            &transaction.watched_keys,
+                        ) {
                             transaction.reset();
                             responses.extend_from_slice(b"*-1\r\n");
                         } else if transaction.aborted {
@@ -809,13 +812,23 @@ pub(crate) async fn handle_connection(
                         if !command_has_valid_arity(command, argument_count) {
                             append_wrong_arity_error_for_command(&mut responses, command);
                         } else {
+                            let mut watch_error: Option<RequestExecutionError> = None;
                             for key_arg in &args[1..argument_count] {
                                 // SAFETY: `args` points to the live command frame.
                                 let key = arg_slice_bytes(&key_arg);
+                                if let Err(error) = processor.expire_watch_key_if_needed(key) {
+                                    watch_error = Some(error);
+                                    break;
+                                }
                                 let version = processor.watch_key_version(key);
                                 transaction.watch_key(key, version);
                             }
-                            append_simple_string(&mut responses, b"OK");
+                            if let Some(error) = watch_error {
+                                transaction.clear_watches();
+                                error.append_resp_error(&mut responses);
+                            } else {
+                                append_simple_string(&mut responses, b"OK");
+                            }
                         }
                     }
                     TransactionControlCommand::Unwatch => {
@@ -1319,6 +1332,14 @@ async fn apply_queued_replication_transition(
             replication.become_replica(host, port).await;
         }
     }
+}
+
+fn watched_keys_dirty_or_expired(
+    processor: &RequestProcessor,
+    watched_keys: &[(Vec<u8>, u64)],
+) -> bool {
+    processor.refresh_watched_keys_before_exec(watched_keys);
+    !processor.watch_versions_match(watched_keys)
 }
 
 fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {

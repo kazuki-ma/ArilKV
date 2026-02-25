@@ -781,6 +781,98 @@ async fn multi_queues_replicaof_until_exec_then_applies_readonly_mode() {
 }
 
 #[tokio::test]
+async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n0\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*5\r\n$3\r\nSET\r\n$1\r\nx\r\n$3\r\nfoo\r\n$2\r\nPX\r\n$1\r\n1\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    sleep(Duration::from_millis(5)).await;
+    send_and_expect(&mut client, b"*2\r\n$5\r\nWATCH\r\n$1\r\nx\r\n", b"+OK\r\n").await;
+    send_and_expect(&mut client, b"*2\r\n$6\r\nEXISTS\r\n$1\r\nx\r\n", b":0\r\n").await;
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+QUEUED\r\n").await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*1\r\n+PONG\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n1\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn watch_key_expiring_after_watch_aborts_exec() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n0\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*5\r\n$3\r\nSET\r\n$1\r\nx\r\n$3\r\nfoo\r\n$2\r\nPX\r\n$2\r\n20\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*2\r\n$5\r\nWATCH\r\n$1\r\nx\r\n", b"+OK\r\n").await;
+    sleep(Duration::from_millis(30)).await;
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+QUEUED\r\n").await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*-1\r\n").await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n1\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_inline_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
