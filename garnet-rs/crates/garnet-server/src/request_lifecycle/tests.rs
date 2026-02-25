@@ -5690,6 +5690,43 @@ fn touch_and_unlink_count_existing_keys() {
 }
 
 #[test]
+fn execute_with_client_no_touch_is_scoped_per_request() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    let lru_before = processor.key_lru_millis(b"key").unwrap();
+
+    thread::sleep(Duration::from_millis(5));
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute_with_client_no_touch(&args[..meta.argument_count], &mut response, true)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+    let lru_after_no_touch = processor.key_lru_millis(b"key").unwrap();
+    assert_eq!(lru_after_no_touch, lru_before);
+
+    thread::sleep(Duration::from_millis(5));
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+    let lru_after_touch = processor.key_lru_millis(b"key").unwrap();
+    assert!(lru_after_touch > lru_after_no_touch);
+}
+
+#[test]
 fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
     let processor = RequestProcessor::new().unwrap();
 

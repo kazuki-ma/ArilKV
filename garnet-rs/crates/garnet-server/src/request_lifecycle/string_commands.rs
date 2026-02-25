@@ -148,6 +148,7 @@ impl RequestProcessor {
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                self.record_key_access(&key, false);
                 append_bulk_string(response_out, &output);
                 Ok(())
             }
@@ -1365,6 +1366,7 @@ impl RequestProcessor {
         self.set_string_expiration_metadata_in_shard(&key, shard_index, effective_expiration);
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
+        self.record_key_access(&key, true);
 
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -1506,6 +1508,7 @@ impl RequestProcessor {
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 touched += 1;
+                self.record_key_access(&key, true);
             }
         }
         append_integer(response_out, touched);

@@ -83,6 +83,7 @@ pub(crate) fn execute_transaction_queue(
     transaction: &mut ConnectionTransactionState,
     responses: &mut Vec<u8>,
     max_resp_arguments: usize,
+    client_no_touch: bool,
 ) -> TransactionExecutionOutcome {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
@@ -95,7 +96,12 @@ pub(crate) fn execute_transaction_queue(
     let routed_processor = Arc::clone(processor);
     let (items, pending_replication_transition) = owner_thread_pool
         .execute_sync(owner_shard, move || {
-            execute_transaction_queue_on_owner_thread(&routed_processor, queued, max_resp_arguments)
+            execute_transaction_queue_on_owner_thread(
+                &routed_processor,
+                queued,
+                max_resp_arguments,
+                client_no_touch,
+            )
         })
         .unwrap_or_else(|_| {
             (
@@ -148,6 +154,7 @@ fn execute_transaction_queue_on_owner_thread(
     processor: &RequestProcessor,
     queued: Vec<Vec<u8>>,
     max_resp_arguments: usize,
+    client_no_touch: bool,
 ) -> (
     Vec<ExecutedTransactionItem>,
     Option<QueuedReplicationTransition>,
@@ -186,7 +193,11 @@ fn execute_transaction_queue_on_owner_thread(
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let _command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                match processor.execute(&args[..meta.argument_count], &mut item_response) {
+                match processor.execute_with_client_no_touch(
+                    &args[..meta.argument_count],
+                    &mut item_response,
+                    client_no_touch,
+                ) {
                     Ok(()) => {}
                     Err(error) => error.append_resp_error(&mut item_response),
                 }

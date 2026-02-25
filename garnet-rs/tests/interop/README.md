@@ -111,8 +111,8 @@ REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis \
 ./build_compatibility_report.sh
 
 # recommended for cleaner full-baseline compatibility signal
+# (interop runner enables scripting by default; override with GARNET_SCRIPTING_ENABLED=0 if needed)
 REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis \
-GARNET_SCRIPTING_ENABLED=1 \
 GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=4096 \
 ./build_compatibility_report.sh
 ```

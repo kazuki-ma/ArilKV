@@ -1594,10 +1594,12 @@ impl RequestProcessor {
             );
         }
 
+        self.record_command_call(arg_refs[0]);
         let mut response = Vec::new();
         match self.execute_bytes(&arg_refs, &mut response) {
             Ok(()) => {}
             Err(error) => {
+                self.record_command_failure(arg_refs[0]);
                 let message = request_error_message(error);
                 return lua_call_error_or_pcall_error(lua, call_mode, &message);
             }
@@ -1610,7 +1612,10 @@ impl RequestProcessor {
             ))
         })?;
         match frame {
-            RespFrame::Error(message) => lua_call_error_or_pcall_error(lua, call_mode, &message),
+            RespFrame::Error(message) => {
+                self.record_command_failure(arg_refs[0]);
+                lua_call_error_or_pcall_error(lua, call_mode, &message)
+            }
             other => resp_frame_to_lua_value(lua, other),
         }
     }

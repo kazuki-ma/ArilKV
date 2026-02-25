@@ -99,12 +99,13 @@ pub(crate) fn capture_owned_frame_args(
 pub(crate) fn execute_owned_frame_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &OwnedFrameArgs,
+    client_no_touch: bool,
 ) -> Result<Vec<u8>, RoutedExecutionError> {
     let args = parse_owned_frame_args(owned_args)?;
 
     let mut response = Vec::new();
     processor
-        .execute(&args, &mut response)
+        .execute_with_client_no_touch(&args, &mut response, client_no_touch)
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -115,11 +116,12 @@ pub(crate) fn execute_frame_on_owner_thread(
     args: &[ArgSlice],
     command: CommandId,
     frame: &[u8],
+    client_no_touch: bool,
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
     if owner_thread_pool.is_inline_execution() {
         let mut response = Vec::new();
         processor
-            .execute(args, &mut response)
+            .execute_with_client_no_touch(args, &mut response, client_no_touch)
             .map_err(OwnerThreadExecutionError::Request)?;
         return Ok(response);
     }
@@ -129,7 +131,7 @@ pub(crate) fn execute_frame_on_owner_thread(
     let routed_processor = Arc::clone(processor);
     owner_thread_pool
         .execute_sync(shard_index, move || {
-            execute_owned_frame_args_via_processor(&routed_processor, &owned_args)
+            execute_owned_frame_args_via_processor(&routed_processor, &owned_args, client_no_touch)
         })
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?
         .map_err(map_routed_owner_error)
@@ -151,7 +153,7 @@ pub(crate) fn execute_owned_args_via_processor(
 
     let mut response = Vec::new();
     processor
-        .execute(&args, &mut response)
+        .execute_with_client_no_touch(&args, &mut response, false)
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -169,7 +171,7 @@ pub(crate) fn execute_frame_via_processor(
     }
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_with_client_no_touch(&args[..meta.argument_count], &mut response, false)
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }

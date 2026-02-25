@@ -147,6 +147,7 @@ struct ClientConnectionState {
     reply_mode: ClientReplyMode,
     tracking_mode: ClientTrackingMode,
     no_evict: bool,
+    no_touch: bool,
 }
 
 impl Default for ClientConnectionState {
@@ -155,6 +156,7 @@ impl Default for ClientConnectionState {
             reply_mode: ClientReplyMode::On,
             tracking_mode: ClientTrackingMode::Off,
             no_evict: false,
+            no_touch: false,
         }
     }
 }
@@ -670,6 +672,7 @@ pub(crate) async fn handle_connection(
                                 &mut transaction,
                                 &mut responses,
                                 max_resp_arguments,
+                                client_state.no_touch,
                             );
                             publish_transaction_replication_frames(
                                 &processor,
@@ -930,6 +933,7 @@ pub(crate) async fn handle_connection(
                             command,
                             command_mutating,
                             frame,
+                            client_state.no_touch,
                             client_id,
                             &mut stream,
                         )
@@ -950,6 +954,7 @@ pub(crate) async fn handle_connection(
                                 }
                             }
                             Err(OwnerThreadExecutionError::Request(error)) => {
+                                processor.record_command_failure(&command_call_name);
                                 error.append_resp_error(&mut responses);
                             }
                             Err(OwnerThreadExecutionError::Protocol) => {
@@ -1096,20 +1101,28 @@ async fn execute_frame_on_owner_thread_async(
     args: &[ArgSlice],
     command: CommandId,
     frame: &[u8],
+    client_no_touch: bool,
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
     if command_is_scripting_family(command) {
         let owned_args =
             capture_owned_frame_args(frame, args).map_err(map_routed_error_to_owner)?;
         let task_processor = Arc::clone(processor);
         let result = tokio::task::spawn_blocking(move || {
-            execute_owned_frame_args_via_processor(&task_processor, &owned_args)
+            execute_owned_frame_args_via_processor(&task_processor, &owned_args, client_no_touch)
         })
         .await
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?;
         return result.map_err(map_routed_error_to_owner);
     }
 
-    execute_frame_on_owner_thread(processor, owner_thread_pool, args, command, frame)
+    execute_frame_on_owner_thread(
+        processor,
+        owner_thread_pool,
+        args,
+        command,
+        frame,
+        client_no_touch,
+    )
 }
 
 async fn execute_blocking_frame_on_owner_thread(
@@ -1120,6 +1133,7 @@ async fn execute_blocking_frame_on_owner_thread(
     command: CommandId,
     command_mutating: bool,
     frame: &[u8],
+    client_no_touch: bool,
     client_id: u64,
     stream: &mut TcpStream,
 ) -> Result<(Vec<u8>, bool), OwnerThreadExecutionError> {
@@ -1197,6 +1211,7 @@ async fn execute_blocking_frame_on_owner_thread(
             args,
             command,
             frame,
+            client_no_touch,
         )
         .await
         {
@@ -2018,11 +2033,17 @@ fn handle_client_command(
             return outcome;
         }
         let mode = arg_slice_bytes(&args[2]);
-        if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
-            response_out.extend_from_slice(b"-ERR syntax error\r\n");
+        if ascii_eq_ignore_case(mode, b"ON") {
+            client_state.no_touch = true;
+            append_simple_string(response_out, b"OK");
             return outcome;
         }
-        append_simple_string(response_out, b"OK");
+        if ascii_eq_ignore_case(mode, b"OFF") {
+            client_state.no_touch = false;
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        response_out.extend_from_slice(b"-ERR syntax error\r\n");
         return outcome;
     }
 

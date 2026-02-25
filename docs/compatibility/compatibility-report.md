@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=509; err=79; ignore=123; failed_tests=79  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=517; err=71; ignore=123; failed_tests=71  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `79`
+- Failed tests extracted from runtest log: `71`
 
 | Test |
 |---|
@@ -57,7 +57,6 @@
 | `BITPOS will illegal arguments in tests/unit/bitops.tcl` |
 | `BITPOS against non-integer value in tests/unit/bitops.tcl` |
 | `SETBIT/BITFIELD only increase dirty when the value changed in tests/unit/bitops.tcl` |
-| `RESTORE with ABSTTL in the past in tests/unit/dump.tcl` |
 | `RESTORE can set LRU in tests/unit/dump.tcl` |
 | `RESTORE can set LFU in tests/unit/dump.tcl` |
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
@@ -83,13 +82,6 @@
 | `KEYSIZES - Test RENAME  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - DEBUG RELOAD reset keysizes  in tests/unit/info-keysizes.tcl` |
-| `TTL, TYPE and EXISTS do not alter the last access time of a key in tests/unit/introspection-2.tcl` |
-| `TOUCH alters the last access time of a key in tests/unit/introspection-2.tcl` |
-| `Operations in no-touch mode do not alter the last access time of a key in tests/unit/introspection-2.tcl` |
-| `Operations in no-touch mode TOUCH alters the last access time of a key in tests/unit/introspection-2.tcl` |
-| `Operations in no-touch mode TOUCH from script alters the last access time of a key in tests/unit/introspection-2.tcl` |
-| `errors stats for GEOADD in tests/unit/introspection-2.tcl` |
-| `command stats for scripts in tests/unit/introspection-2.tcl` |
 | `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
 | `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
 | `FLUSHDB ASYNC can reclaim memory in background in tests/unit/lazyfree.tcl` |

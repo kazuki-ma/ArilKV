@@ -5012,13 +5012,15 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
 
     let set_frame = encode_resp_command(&[b"SET", b"k", b"v"]);
     let set_owned_args = owned_frame_args_from_frame(&set_frame);
-    let routed_set = execute_owned_frame_args_via_processor(&processor, &set_owned_args).unwrap();
+    let routed_set =
+        execute_owned_frame_args_via_processor(&processor, &set_owned_args, false).unwrap();
     let direct_set = execute_processor_frame(&processor, &set_frame);
     assert_eq!(routed_set, direct_set);
 
     let get_frame = encode_resp_command(&[b"GET", b"k"]);
     let get_owned_args = owned_frame_args_from_frame(&get_frame);
-    let routed_get = execute_owned_frame_args_via_processor(&processor, &get_owned_args).unwrap();
+    let routed_get =
+        execute_owned_frame_args_via_processor(&processor, &get_owned_args, false).unwrap();
     let direct_get = execute_processor_frame(&processor, &get_frame);
     assert_eq!(routed_get, direct_get);
 }

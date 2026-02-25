@@ -424,6 +424,7 @@ impl RequestProcessor {
     pub(super) fn untrack_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
         self.lock_string_key_registry_for_shard(shard_index)
             .remove(key);
+        self.clear_key_access(key);
     }
 
     pub(super) fn untrack_string_key(&self, key: &[u8]) {
@@ -439,6 +440,7 @@ impl RequestProcessor {
     pub(super) fn untrack_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
         self.lock_object_key_registry_for_shard(shard_index)
             .remove(key);
+        self.clear_key_access(key);
     }
 
     pub(super) fn untrack_object_key(&self, key: &[u8]) {

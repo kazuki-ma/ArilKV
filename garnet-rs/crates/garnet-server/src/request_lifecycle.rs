@@ -8,6 +8,7 @@ use crate::debug_concurrency::OrderedMutexGuard;
 use crate::dispatch_command_name;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
+use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
@@ -60,6 +61,37 @@ const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
+
+thread_local! {
+    static REQUEST_CLIENT_NO_TOUCH_MODE: Cell<bool> = const { Cell::new(false) };
+}
+
+struct ClientNoTouchScope {
+    previous: bool,
+}
+
+impl ClientNoTouchScope {
+    #[inline]
+    fn enter(enabled: bool) -> Self {
+        let previous = REQUEST_CLIENT_NO_TOUCH_MODE.with(|state| {
+            let previous = state.get();
+            state.set(enabled);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for ClientNoTouchScope {
+    fn drop(&mut self) {
+        REQUEST_CLIENT_NO_TOUCH_MODE.with(|state| state.set(self.previous));
+    }
+}
+
+#[inline]
+fn current_client_no_touch_mode() -> bool {
+    REQUEST_CLIENT_NO_TOUCH_MODE.with(Cell::get)
+}
 
 fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     let mut values = HashMap::new();
@@ -290,7 +322,9 @@ pub struct RequestProcessor {
     rdb_key_save_delay_micros: AtomicU64,
     rdb_bgsave_deadline_unix_millis: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
+    key_lru_access_millis: Mutex<HashMap<Vec<u8>, u64>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<Vec<u8>>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
@@ -453,7 +487,9 @@ impl RequestProcessor {
             rdb_key_save_delay_micros: AtomicU64::new(0),
             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
+            command_failed_calls: Mutex::new(HashMap::new()),
             latency_events: Mutex::new(HashMap::new()),
+            key_lru_access_millis: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
@@ -612,6 +648,27 @@ impl RequestProcessor {
         ordered.into_iter().collect()
     }
 
+    pub(crate) fn record_command_failure(&self, command_name: &[u8]) {
+        if command_name.is_empty() {
+            return;
+        }
+        let normalized = normalize_ascii_lower(command_name);
+        if let Ok(mut failed_calls) = self.command_failed_calls.lock() {
+            *failed_calls.entry(normalized).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn command_failed_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
+        let Ok(failed_calls) = self.command_failed_calls.lock() else {
+            return Vec::new();
+        };
+        let mut ordered = BTreeMap::new();
+        for (command, count) in failed_calls.iter() {
+            ordered.insert(command.clone(), *count);
+        }
+        ordered.into_iter().collect()
+    }
+
     pub(crate) fn record_latency_event(&self, event_name: &[u8], latency_millis: u64) {
         if event_name.is_empty() || latency_millis == 0 {
             return;
@@ -714,18 +771,71 @@ impl RequestProcessor {
         if let Ok(mut calls) = self.command_calls.lock() {
             calls.clear();
         }
+        if let Ok(mut failed_calls) = self.command_failed_calls.lock() {
+            failed_calls.clear();
+        }
     }
 
     pub(crate) fn render_commandstats_info_payload(&self) -> String {
         let mut payload = String::from("# Commandstats\r\n");
+        let mut ordered = BTreeMap::<Vec<u8>, u64>::new();
         for (command, count) in self.command_call_counts_snapshot() {
+            ordered.insert(command, count);
+        }
+        let failed_calls_by_command = self
+            .command_failed_call_counts_snapshot()
+            .into_iter()
+            .collect::<HashMap<Vec<u8>, u64>>();
+        for command in failed_calls_by_command.keys() {
+            ordered.entry(command.clone()).or_insert(0);
+        }
+        for (command, count) in ordered {
+            let failed_calls = failed_calls_by_command.get(&command).copied().unwrap_or(0);
             payload.push_str("cmdstat_");
             payload.push_str(&String::from_utf8_lossy(&command));
             payload.push_str(":calls=");
             payload.push_str(&count.to_string());
-            payload.push_str(",usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0\r\n");
+            payload.push_str(",usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=");
+            payload.push_str(&failed_calls.to_string());
+            payload.push_str("\r\n");
         }
         payload
+    }
+
+    pub(super) fn record_key_access(&self, key: &[u8], force_touch: bool) {
+        if key.is_empty() {
+            return;
+        }
+        if !force_touch && current_client_no_touch_mode() {
+            return;
+        }
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
+            lru_state.insert(key.to_vec(), now_millis);
+        }
+    }
+
+    pub(super) fn clear_key_access(&self, key: &[u8]) {
+        if key.is_empty() {
+            return;
+        }
+        if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
+            let _ = lru_state.remove(key);
+        }
+    }
+
+    pub(super) fn key_lru_millis(&self, key: &[u8]) -> Option<u64> {
+        let Ok(lru_state) = self.key_lru_access_millis.lock() else {
+            return None;
+        };
+        lru_state.get(key).copied()
+    }
+
+    pub(super) fn key_idle_seconds(&self, key: &[u8]) -> Option<i64> {
+        let last_access_millis = self.key_lru_millis(key)?;
+        let now_millis = current_unix_time_millis().unwrap_or(last_access_millis);
+        let idle_millis = now_millis.saturating_sub(last_access_millis);
+        i64::try_from(idle_millis / 1000).ok()
     }
 
     pub(super) fn scripting_enabled(&self) -> bool {
@@ -1042,6 +1152,16 @@ impl RequestProcessor {
         let mut arg_bytes = Vec::with_capacity(args.len());
         extend_arg_bytes_from_slices(args, &mut arg_bytes);
         self.execute_bytes(&arg_bytes, response_out)
+    }
+
+    pub(crate) fn execute_with_client_no_touch(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+    ) -> Result<(), RequestExecutionError> {
+        let _scope = ClientNoTouchScope::enter(client_no_touch);
+        self.execute(args, response_out)
     }
 
     pub(crate) fn execute_bytes(

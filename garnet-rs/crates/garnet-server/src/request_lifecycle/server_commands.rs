@@ -541,11 +541,15 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT NO-TOUCH on|off")?;
             let mode = args[2];
-            if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
-                return Err(RequestExecutionError::SyntaxError);
+            if ascii_eq_ignore_case(mode, b"ON") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
             }
-            append_simple_string(response_out, b"OK");
-            return Ok(());
+            if ascii_eq_ignore_case(mode, b"OFF") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
         }
         Err(RequestExecutionError::UnknownCommand)
     }
@@ -801,6 +805,23 @@ impl RequestProcessor {
             append_bulk_string(response_out, &digest);
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"OBJECT") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
+            let key = args[2].to_vec();
+            self.expire_key_if_needed(&key)?;
+            if !self.key_exists_any(&key)? {
+                append_error(response_out, b"ERR no such key");
+                return Ok(());
+            }
+            let lru = self.key_lru_millis(&key).unwrap_or(0);
+            let idle = self.key_idle_seconds(&key).unwrap_or(0);
+            let payload = format!(
+                "Value at:0x0 refcount:1 encoding:raw serializedlength:0 lru:{} lru_seconds_idle:{}",
+                lru, idle
+            );
+            append_bulk_string(response_out, payload.as_bytes());
+            return Ok(());
+        }
         Err(RequestExecutionError::UnknownCommand)
     }
 
@@ -809,7 +830,7 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 2, "OBJECT", "OBJECT <ENCODING|REFCOUNT> key")?;
+        ensure_min_arity(args, 2, "OBJECT", "OBJECT <ENCODING|REFCOUNT|IDLETIME> key")?;
         let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
@@ -849,6 +870,18 @@ impl RequestProcessor {
             } else {
                 append_null_bulk_string(response_out);
             }
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"IDLETIME") {
+            require_exact_arity(args, 3, "OBJECT", "OBJECT IDLETIME key")?;
+            let key = args[2].to_vec();
+            self.expire_key_if_needed(&key)?;
+            if !self.key_exists_any(&key)? {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            append_integer(response_out, self.key_idle_seconds(&key).unwrap_or(0));
             return Ok(());
         }
 
