@@ -114,6 +114,11 @@ pub async fn run_listener_with_shutdown_and_cluster_with_processor<F>(
 where
     F: Future<Output = ()> + Send,
 {
+    if let Ok(local_addr) = listener.local_addr() {
+        processor.set_config_value(b"bind", local_addr.ip().to_string().into_bytes());
+        processor.set_config_value(b"port", local_addr.port().to_string().into_bytes());
+    }
+
     let mut tasks = JoinSet::new();
     let owner_thread_pool = build_owner_thread_pool(&processor)?;
     let replication = Arc::new(RedisReplicationCoordinator::new(

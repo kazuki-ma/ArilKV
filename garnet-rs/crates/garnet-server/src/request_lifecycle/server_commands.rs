@@ -163,19 +163,26 @@ impl RequestProcessor {
 
         let dbsize = self.active_key_count()?;
         let blocked_clients = self.blocked_clients();
+        let connected_clients = self.connected_clients();
         let watching_clients = self.watching_clients();
+        let rdb_bgsave_in_progress = if self.rdb_bgsave_in_progress() { 1 } else { 0 };
         let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
         let expired_keys = self.expired_keys();
         let expired_keys_active = self.expired_keys_active();
+        let lazyfreed_objects = self.lazyfreed_objects();
         let scripting_runtime = self.scripting_runtime_config();
+        let used_memory_vm_functions = self.used_memory_vm_functions();
         let payload = format!(
-            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\n# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
+            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nconnected_clients:{}\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfreed_objects:{}\r\n# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nused_memory_vm_functions:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
+            connected_clients,
             blocked_clients,
             watching_clients,
             dbsize,
+            rdb_bgsave_in_progress,
             rdb_changes_since_last_save,
             expired_keys,
             expired_keys_active,
+            lazyfreed_objects,
             if self.scripting_enabled() { 1 } else { 0 },
             self.script_cache_entry_count(),
             scripting_runtime.cache_max_entries,
@@ -183,6 +190,7 @@ impl RequestProcessor {
             self.script_cache_misses(),
             self.script_cache_evictions(),
             self.script_runtime_timeouts(),
+            used_memory_vm_functions,
             scripting_runtime.max_script_bytes,
             scripting_runtime.max_memory_bytes,
             scripting_runtime.max_execution_millis,
@@ -267,11 +275,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::ValueNotInteger);
         }
         let key_arg = args[3];
-        let destination_db =
-            parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        if destination_db != 0 {
-            return Err(RequestExecutionError::DbIndexOutOfRange);
-        }
+        parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let timeout_millis =
             parse_i64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if timeout_millis <= 0 {
@@ -467,6 +471,7 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
+        self.start_bgsave();
         self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"Background saving started");
         Ok(())
@@ -596,6 +601,16 @@ impl RequestProcessor {
             // Compatibility path: in-memory test mode has no persisted AOF replay boundary.
             // Redis tests use DEBUG LOADAOF as a synchronization hook; returning OK keeps
             // semantics for current appendonly-disabled/runtime-local execution.
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SLEEP") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG SLEEP <seconds>")?;
+            let seconds = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+            if !seconds.is_finite() || seconds < 0.0 {
+                return Err(RequestExecutionError::ValueNotFloat);
+            }
+            std::thread::sleep(Duration::from_secs_f64(seconds));
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1390,82 +1405,194 @@ impl RequestProcessor {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
             self.reset_rdb_changes_since_last_save();
             self.reset_expiration_stats();
+            self.reset_lazyfreed_objects();
             self.reset_commandstats();
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
 
         if ascii_eq_ignore_case(subcommand, b"SET") {
-            require_exact_arity(args, 4, "CONFIG", "CONFIG SET parameter value")?;
-            let parameter = args[2];
-            let value = args[3];
+            ensure_paired_arity_after(
+                args,
+                4,
+                2,
+                "CONFIG",
+                "CONFIG SET parameter value [parameter value ...]",
+            )?;
 
-            if ascii_eq_ignore_case(parameter, b"ZSET-MAX-ZIPLIST-ENTRIES")
-                || ascii_eq_ignore_case(parameter, b"ZSET-MAX-LISTPACK-ENTRIES")
-            {
-                let parsed =
-                    parse_u64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
-                self.zset_max_listpack_entries
-                    .store(parsed as usize, Ordering::Release);
-            } else if ascii_eq_ignore_case(parameter, b"LIST-MAX-ZIPLIST-SIZE")
-                || ascii_eq_ignore_case(parameter, b"LIST-MAX-LISTPACK-SIZE")
-            {
-                let parsed =
-                    parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
-                self.list_max_listpack_size.store(parsed, Ordering::Release);
-                self.clear_all_forced_list_quicklist_encodings();
+            let mut pending: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
+            let mut seen = HashSet::<Vec<u8>>::new();
+            let current_config_port =
+                self.config_items_snapshot()
+                    .into_iter()
+                    .find_map(|(key, value)| {
+                        if key == b"port" {
+                            parse_u64_ascii(&value)
+                        } else {
+                            None
+                        }
+                    });
+            let mut index = 2usize;
+            while index + 1 < args.len() {
+                let parameter = args[index]
+                    .iter()
+                    .map(|byte| byte.to_ascii_lowercase())
+                    .collect::<Vec<u8>>();
+                let value = args[index + 1].to_vec();
+
+                if !seen.insert(parameter.clone()) {
+                    append_error(
+                        response_out,
+                        format!(
+                            "ERR CONFIG SET failed (possibly related to argument '{}') - duplicate parameter",
+                            String::from_utf8_lossy(&parameter)
+                        )
+                        .as_bytes(),
+                    );
+                    return Ok(());
+                }
+                if parameter == b"daemonize" {
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'daemonize') - immutable config",
+                    );
+                    return Ok(());
+                }
+                if parameter == b"maxmemory-clients" {
+                    if let Some(percent_text) = value.strip_suffix(b"%") {
+                        let Some(percent) = parse_u64_ascii(percent_text) else {
+                            append_error(
+                                response_out,
+                                b"ERR CONFIG SET failed (possibly related to argument 'maxmemory-clients') - percentage argument must be less or equal to 100",
+                            );
+                            return Ok(());
+                        };
+                        if percent > 100 {
+                            append_error(
+                                response_out,
+                                b"ERR CONFIG SET failed (possibly related to argument 'maxmemory-clients') - percentage argument must be less or equal to 100",
+                            );
+                            return Ok(());
+                        }
+                    } else if parse_u64_ascii(&value).is_none() {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'maxmemory-clients') - percentage argument must be less or equal to 100",
+                        );
+                        return Ok(());
+                    }
+                }
+                if parameter == b"port" {
+                    let parsed_port =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    if parsed_port > u16::MAX as u64 {
+                        return Err(RequestExecutionError::ValueNotInteger);
+                    }
+                    if current_config_port != Some(parsed_port) {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'port') - Unable to listen on this port",
+                        );
+                        return Ok(());
+                    }
+                }
+                pending.push((parameter, value));
+                index += 2;
+            }
+
+            for (parameter, value) in pending {
+                if parameter == b"zset-max-ziplist-entries"
+                    || parameter == b"zset-max-listpack-entries"
+                {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.zset_max_listpack_entries
+                        .store(parsed as usize, Ordering::Release);
+                } else if parameter == b"list-max-ziplist-size"
+                    || parameter == b"list-max-listpack-size"
+                {
+                    let parsed =
+                        parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.list_max_listpack_size.store(parsed, Ordering::Release);
+                    self.clear_all_forced_list_quicklist_encodings();
+                } else if parameter == b"maxmemory" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.set_maxmemory_limit_bytes(parsed);
+                } else if parameter == b"rdb-key-save-delay" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.set_rdb_key_save_delay_micros(parsed);
+                } else {
+                    self.set_config_value(&parameter, value);
+                    continue;
+                }
+                self.set_config_value(&parameter, value);
             }
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
 
         if ascii_eq_ignore_case(subcommand, b"GET") {
-            require_exact_arity(args, 3, "CONFIG", "CONFIG GET parameter")?;
-            let pattern = args[2];
+            ensure_min_arity(args, 3, "CONFIG", "CONFIG GET parameter [parameter ...]")?;
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let zset_max_listpack_entries_value = zset_max_listpack_entries.to_string();
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let list_max_listpack_size_value = list_max_listpack_size.to_string();
+            let maxmemory_value = self.maxmemory_limit_bytes().to_string();
+            let rdb_key_save_delay_value = self.rdb_key_save_delay_micros().to_string();
+            let mut config_map = BTreeMap::<Vec<u8>, Vec<u8>>::new();
+            for (key, value) in self.config_items_snapshot() {
+                config_map.insert(key, value);
+            }
+            config_map.insert(b"maxmemory".to_vec(), maxmemory_value.into_bytes());
+            config_map.insert(
+                b"rdb-key-save-delay".to_vec(),
+                rdb_key_save_delay_value.into_bytes(),
+            );
+            config_map.insert(
+                b"list-max-ziplist-size".to_vec(),
+                list_max_listpack_size_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"list-max-listpack-size".to_vec(),
+                list_max_listpack_size_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"zset-max-ziplist-entries".to_vec(),
+                zset_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"zset-max-listpack-entries".to_vec(),
+                zset_max_listpack_entries_value.as_bytes().to_vec(),
+            );
 
-            let config_items: [(&[u8], &[u8]); 9] = [
-                (b"appendonly", b"no"),
-                (b"save", b""),
-                (b"dbfilename", b"dump.rdb"),
-                (b"dir", b"."),
-                (b"maxmemory", b"0"),
-                (
-                    b"list-max-ziplist-size",
-                    list_max_listpack_size_value.as_bytes(),
-                ),
-                (
-                    b"list-max-listpack-size",
-                    list_max_listpack_size_value.as_bytes(),
-                ),
-                (
-                    b"zset-max-ziplist-entries",
-                    zset_max_listpack_entries_value.as_bytes(),
-                ),
-                (
-                    b"zset-max-listpack-entries",
-                    zset_max_listpack_entries_value.as_bytes(),
-                ),
-            ];
-
-            let matched_items: Vec<(&[u8], &[u8])> = if ascii_eq_ignore_case(pattern, b"*") {
-                config_items.into_iter().collect()
-            } else {
-                config_items
-                    .into_iter()
-                    .filter(|(key, _)| pattern.eq_ignore_ascii_case(key))
-                    .collect()
-            };
+            let mut matched_items = Vec::<(Vec<u8>, Vec<u8>)>::new();
+            let mut emitted = HashSet::<Vec<u8>>::new();
+            for pattern in &args[2..] {
+                let has_glob =
+                    pattern.contains(&b'*') || pattern.contains(&b'?') || pattern.contains(&b'[');
+                for (key, value) in config_map.iter() {
+                    if key.as_slice() == b"key-load-delay" && has_glob {
+                        continue;
+                    }
+                    let is_match = if has_glob {
+                        redis_glob_match(pattern, key, true, 0)
+                    } else {
+                        pattern.eq_ignore_ascii_case(key)
+                    };
+                    if is_match && emitted.insert(key.clone()) {
+                        matched_items.push((key.clone(), value.clone()));
+                    }
+                }
+            }
 
             response_out.push(b'*');
             response_out.extend_from_slice((matched_items.len() * 2).to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
             for (key, value) in matched_items {
-                append_bulk_string(response_out, key);
-                append_bulk_string(response_out, value);
+                append_bulk_string(response_out, &key);
+                append_bulk_string(response_out, &value);
             }
             return Ok(());
         }

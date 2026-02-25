@@ -72,17 +72,6 @@ fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
     response
 }
 
-fn execute_frame_error(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
-    let mut args = [ArgSlice::EMPTY; 16];
-    let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
-    let mut response = Vec::new();
-    let error = processor
-        .execute(&args[..meta.argument_count], &mut response)
-        .unwrap_err();
-    error.append_resp_error(&mut response);
-    response
-}
-
 fn arg_bytes_from_slices(args: &[ArgSlice]) -> Vec<&[u8]> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
@@ -6611,7 +6600,7 @@ fn migrate_command_validates_arguments_before_disabled_response() {
     assert_command_error(
         &processor,
         "MIGRATE 127.0.0.1 6379 key 1 1000",
-        b"-ERR DB index is out of range\r\n",
+        b"-ERR MIGRATE is disabled in this server\r\n",
     );
     assert_command_error(
         &processor,
@@ -7278,7 +7267,7 @@ fn fcall_ro_rejects_non_readonly_registered_function() {
     assert_command_error(
         &processor,
         "FCALL_RO rw_set 1 k v",
-        b"-ERR Can not execute a non read-only function with FCALL_RO\r\n",
+        b"-ERR Can not execute a script with write flag using *_ro command\r\n",
     );
 }
 
@@ -7363,7 +7352,16 @@ fn function_help_list_kill_delete_flush_and_stats_cover_minimal_surface() {
     );
 
     assert_command_response(&processor, "FUNCTION FLUSH ASYNC", b"+OK\r\n");
-    assert_command_error(&processor, "FUNCTION FLUSH maybe", b"-ERR syntax error\r\n");
+    assert_command_response(
+        &processor,
+        "FUNCTION FLUSH maybe",
+        b"-ERR FUNCTION FLUSH only supports SYNC|ASYNC\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "FUNCTION FLUSH SYNC extra",
+        b"-ERR unknown subcommand or wrong number of arguments for 'flush'. Try FUNCTION HELP.\r\n",
+    );
 }
 
 #[test]
@@ -7418,11 +7416,11 @@ fn function_dump_and_restore_roundtrip_supports_append_and_replace_modes() {
         b"-ERR DUMP payload version or checksum are wrong\r\n",
     );
     assert_eq!(
-        execute_frame_error(
+        execute_frame(
             &processor,
             &encode_resp(&[b"FUNCTION", b"RESTORE", dump_payload.as_slice(), b"APPEND"])
         ),
-        b"-ERR Library already exists\r\n"
+        b"-ERR Library lib_dump_one already exists\r\n"
     );
     assert_eq!(
         execute_frame(
@@ -7486,6 +7484,279 @@ fn function_list_includes_description_field_from_named_descriptor() {
     let list_text = String::from_utf8_lossy(&list_response);
     assert!(list_text.contains("description"));
     assert!(list_text.contains("some desc"));
+}
+
+#[test]
+fn function_list_supports_libraryname_filter_and_argument_errors() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let lib_one =
+        b"#!lua name=library1\nredis.register_function('f6', function(keys, args) return 7 end)";
+    let lib_two =
+        b"#!lua name=lib1\nredis.register_function('f7', function(keys, args) return 8 end)";
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LOAD", lib_one])),
+        b"$8\r\nlibrary1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LOAD", lib_two])),
+        b"$4\r\nlib1\r\n"
+    );
+
+    let filtered = execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LIST", b"LIBRARYNAME", b"library*"]),
+    );
+    let filtered_text = String::from_utf8_lossy(&filtered);
+    assert!(filtered_text.contains("library1"));
+    assert!(!filtered_text.contains("lib1"));
+
+    assert_command_response(
+        &processor,
+        "FUNCTION LIST bad_argument",
+        b"-ERR Unknown argument bad_argument\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "FUNCTION LIST libraryname",
+        b"-ERR library name argument was not given\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "FUNCTION LIST withcode withcode",
+        b"-ERR Unknown argument withcode\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "FUNCTION LIST withcode libraryname foo libraryname foo",
+        b"-ERR Unknown argument libraryname\r\n",
+    );
+}
+
+#[test]
+fn function_load_metadata_validation_matches_redis_messages() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let body = b"redis.register_function('foo', function() return 1 end)";
+
+    let empty_engine = [b"#! name=test\n".as_slice(), body].concat();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", empty_engine.as_slice()])
+        ),
+        b"-ERR Engine '' not found\r\n"
+    );
+
+    let unknown_metadata = [b"#!lua name=test foo=bar\n".as_slice(), body].concat();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"FUNCTION",
+                b"LOAD",
+                b"REPLACE",
+                unknown_metadata.as_slice()
+            ])
+        ),
+        b"-ERR Invalid metadata value given: foo=bar\r\n"
+    );
+
+    let no_name = [b"#!lua\n".as_slice(), body].concat();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", no_name.as_slice()])
+        ),
+        b"-ERR Library name was not given\r\n"
+    );
+
+    let duplicate_name = [b"#!lua name=foo name=bar\n".as_slice(), body].concat();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", duplicate_name.as_slice()])
+        ),
+        b"-ERR Invalid metadata value, name argument was given multiple times\r\n"
+    );
+
+    let quoted_name = [b"#!lua name=\"foo\"\n".as_slice(), body].concat();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", quoted_name.as_slice()])
+        ),
+        b"$3\r\nfoo\r\n"
+    );
+}
+
+#[test]
+fn function_load_compile_error_prefix_and_replace_keeps_previous_library() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let valid_source =
+        b"#!lua name=test\nredis.register_function('test', function(keys, args) return 'hello1' end)";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", valid_source])
+        ),
+        b"$4\r\ntest\r\n"
+    );
+    assert_command_response(&processor, "FCALL test 0", b"$6\r\nhello1\r\n");
+
+    let invalid_source =
+        b"#!lua name=test\nredis.register_function('test', function(keys, args) bad script end)";
+    let error_response = execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", invalid_source]),
+    );
+    let error_text = String::from_utf8_lossy(&error_response);
+    assert!(error_text.starts_with("-ERR Error compiling function:"));
+
+    assert_command_response(&processor, "FCALL test 0", b"$6\r\nhello1\r\n");
+}
+
+#[test]
+fn function_runtime_version_api_and_global_protection_match_expected_behavior() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    let version_library = b"#!lua name=test\nlocal version = redis.REDIS_VERSION_NUM\nredis.register_function{function_name='get_version_v1', callback=function() return string.format('%s.%s.%s', bit.band(bit.rshift(version, 16), 0x000000ff), bit.band(bit.rshift(version, 8), 0x000000ff), bit.band(version, 0x000000ff)) end}\nredis.register_function{function_name='get_version_v2', callback=function() return redis.REDIS_VERSION end}";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", version_library])
+        ),
+        b"$4\r\ntest\r\n"
+    );
+    let version_v1 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FCALL", b"get_version_v1", b"0"]),
+    ))
+    .expect("get_version_v1 should return bulk string");
+    let version_v2 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FCALL", b"get_version_v2", b"0"]),
+    ))
+    .expect("get_version_v2 should return bulk string");
+    assert_eq!(version_v1, version_v2);
+
+    let protected_library = b"#!lua name=test1\nredis.register_function('f1', function() mt = getmetatable(_G) original_globals = mt.__index original_globals['redis'] = function() return 1 end end)";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", protected_library])
+        ),
+        b"$5\r\ntest1\r\n"
+    );
+    let protected_error = execute_frame(&processor, &encode_resp(&[b"FCALL", b"f1", b"0"]));
+    let protected_error_text = String::from_utf8_lossy(&protected_error);
+    assert!(protected_error_text.contains("Attempt to modify a readonly table"));
+}
+
+#[test]
+fn function_oom_behavior_respects_allow_oom_and_blocks_load_restore() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    let base_library =
+        b"#!lua name=test\nredis.register_function('f1', function() return redis.call('SET', 'x', '1') end)";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", base_library])
+        ),
+        b"$4\r\ntest\r\n"
+    );
+    let payload = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"DUMP"]),
+    ))
+    .expect("FUNCTION DUMP should return payload");
+
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+    assert_command_response(&processor, "FUNCTION FLUSH", b"+OK\r\n");
+    let blocked_load = b"#!lua name=test\nredis.register_function('f1', function() return 1 end)";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", blocked_load])
+        ),
+        b"-OOM command not allowed when used memory > 'maxmemory'.\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"RESTORE", payload.as_slice()])
+        ),
+        b"-OOM command not allowed when used memory > 'maxmemory'.\r\n"
+    );
+
+    let deny_oom_library =
+        b"#!lua name=test\nredis.register_function('f1', function() return redis.call('SET', 'x', '1') end)";
+    assert_command_response(&processor, "CONFIG SET maxmemory 0", b"+OK\r\n");
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", deny_oom_library])
+        ),
+        b"$4\r\ntest\r\n"
+    );
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+    let deny_oom_response = execute_frame(&processor, &encode_resp(&[b"FCALL", b"f1", b"1", b"x"]));
+    let deny_oom_text = String::from_utf8_lossy(&deny_oom_response);
+    assert!(deny_oom_text.contains("OOM command not allowed when used memory > 'maxmemory'."));
+
+    assert_command_response(&processor, "CONFIG SET maxmemory 0", b"+OK\r\n");
+    assert_command_response(&processor, "FUNCTION FLUSH", b"+OK\r\n");
+    let allow_oom_library = b"#!lua name=f1\nredis.register_function{function_name='f1', callback=function() return redis.call('SET', 'x', '1') end, flags={'allow-oom'}}";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", allow_oom_library])
+        ),
+        b"$2\r\nf1\r\n"
+    );
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+    assert_command_response(&processor, "FCALL f1 1 x", b"+OK\r\n");
+    assert_command_response(&processor, "GET x", b"$1\r\n1\r\n");
+    assert_command_response(&processor, "CONFIG SET maxmemory 0", b"+OK\r\n");
+}
+
+#[test]
+fn function_flush_async_updates_vm_memory_and_lazyfree_info_metrics() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let lib1 = b"#!lua name=lib_lf1\nredis.register_function{function_name='f1', callback=function(keys, args) return 1 end}";
+    let lib2 = b"#!lua name=lib_lf2\nredis.register_function{function_name='f2', callback=function(keys, args) return 2 end}";
+
+    let loaded_1 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LOAD", lib1]),
+    ))
+    .expect("FUNCTION LOAD should return library name");
+    assert_eq!(loaded_1, b"lib_lf1");
+    let loaded_2 = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LOAD", lib2]),
+    ))
+    .expect("FUNCTION LOAD should return library name");
+    assert_eq!(loaded_2, b"lib_lf2");
+
+    let info_before = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload");
+    let info_before_text = String::from_utf8_lossy(&info_before);
+    assert!(info_before_text.contains("used_memory_vm_functions:"));
+    assert!(
+        !info_before_text.contains("used_memory_vm_functions:0\r\n"),
+        "used_memory_vm_functions should be non-zero after loading libraries: {}",
+        info_before_text
+    );
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    assert_command_response(&processor, "FUNCTION FLUSH ASYNC", b"+OK\r\n");
+
+    let info_after = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload");
+    let info_after_text = String::from_utf8_lossy(&info_after);
+    assert!(info_after_text.contains("used_memory_vm_functions:0"));
+    assert!(info_after_text.contains("lazyfreed_objects:3"));
 }
 
 #[test]
@@ -7790,6 +8061,24 @@ fn config_get_known_and_unknown_keys() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"*0\r\n");
+}
+
+#[test]
+fn config_set_port_accepts_current_value_and_rejects_port_changes() {
+    let processor = RequestProcessor::new().unwrap();
+    processor.set_config_value(b"port", b"6380".to_vec());
+
+    assert_command_response(&processor, "CONFIG SET port 6380", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG SET port 6381",
+        b"-ERR CONFIG SET failed (possibly related to argument 'port') - Unable to listen on this port\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "CONFIG SET port not-a-port",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
 }
 
 #[test]

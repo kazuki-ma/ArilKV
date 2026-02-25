@@ -59,6 +59,28 @@ const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 
+fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
+    let mut values = HashMap::new();
+    values.insert(b"appendonly".to_vec(), b"no".to_vec());
+    values.insert(b"save".to_vec(), b"".to_vec());
+    values.insert(b"dbfilename".to_vec(), b"dump.rdb".to_vec());
+    values.insert(b"dir".to_vec(), b".".to_vec());
+    values.insert(b"repl-backlog-size".to_vec(), b"1048576".to_vec());
+    values.insert(b"maxmemory-samples".to_vec(), b"5".to_vec());
+    values.insert(b"maxmemory-clients".to_vec(), b"0".to_vec());
+    values.insert(
+        b"client-query-buffer-limit".to_vec(),
+        b"1073741824".to_vec(),
+    );
+    values.insert(b"bind".to_vec(), b"127.0.0.1".to_vec());
+    values.insert(b"replicaof".to_vec(), b"".to_vec());
+    values.insert(b"slaveof".to_vec(), b"".to_vec());
+    values.insert(b"daemonize".to_vec(), b"no".to_vec());
+    values.insert(b"key-load-delay".to_vec(), b"0".to_vec());
+    values.insert(b"port".to_vec(), b"6379".to_vec());
+    values
+}
+
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) struct ScriptingRuntimeConfig {
     max_script_bytes: usize,
@@ -195,6 +217,8 @@ struct LoadedFunctionDescriptor {
     library_name: String,
     description: String,
     read_only: bool,
+    allow_oom: bool,
+    allow_stale: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -244,8 +268,13 @@ pub struct RequestProcessor {
     rdb_changes_since_last_save: AtomicU64,
     resp_protocol_version: AtomicUsize,
     blocked_clients: AtomicU64,
+    connected_clients: AtomicU64,
     watching_clients: AtomicU64,
+    executed_command_count: AtomicU64,
+    rdb_key_save_delay_micros: AtomicU64,
+    rdb_bgsave_deadline_unix_millis: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<Vec<u8>>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
     script_cache_insertion_order: Mutex<VecDeque<String>>,
@@ -253,6 +282,9 @@ pub struct RequestProcessor {
     script_cache_misses: AtomicU64,
     script_cache_evictions: AtomicU64,
     script_runtime_timeouts: AtomicU64,
+    used_memory_vm_functions: AtomicU64,
+    lazyfreed_objects: AtomicU64,
+    maxmemory_limit_bytes: AtomicU64,
     script_running: AtomicBool,
     running_script: Mutex<Option<RunningScriptState>>,
     script_kill_requested: Arc<AtomicBool>,
@@ -397,8 +429,13 @@ impl RequestProcessor {
             rdb_changes_since_last_save: AtomicU64::new(0),
             resp_protocol_version: AtomicUsize::new(2),
             blocked_clients: AtomicU64::new(0),
+            connected_clients: AtomicU64::new(0),
             watching_clients: AtomicU64::new(0),
+            executed_command_count: AtomicU64::new(0),
+            rdb_key_save_delay_micros: AtomicU64::new(0),
+            rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
+            config_overrides: Mutex::new(default_config_overrides()),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
             script_cache_insertion_order: Mutex::new(VecDeque::new()),
@@ -406,6 +443,9 @@ impl RequestProcessor {
             script_cache_misses: AtomicU64::new(0),
             script_cache_evictions: AtomicU64::new(0),
             script_runtime_timeouts: AtomicU64::new(0),
+            used_memory_vm_functions: AtomicU64::new(0),
+            lazyfreed_objects: AtomicU64::new(0),
+            maxmemory_limit_bytes: AtomicU64::new(0),
             script_running: AtomicBool::new(false),
             running_script: Mutex::new(None),
             script_kill_requested: Arc::new(AtomicBool::new(false)),
@@ -443,8 +483,76 @@ impl RequestProcessor {
         self.blocked_clients.load(Ordering::Acquire)
     }
 
+    pub(crate) fn set_connected_clients(&self, count: u64) {
+        self.connected_clients.store(count, Ordering::Release);
+    }
+
+    pub(super) fn connected_clients(&self) -> u64 {
+        self.connected_clients.load(Ordering::Acquire)
+    }
+
     pub(super) fn watching_clients(&self) -> u64 {
         self.watching_clients.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn executed_command_count(&self) -> u64 {
+        self.executed_command_count.load(Ordering::Acquire)
+    }
+
+    pub(super) fn rdb_key_save_delay_micros(&self) -> u64 {
+        self.rdb_key_save_delay_micros.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_rdb_key_save_delay_micros(&self, value: u64) {
+        self.rdb_key_save_delay_micros
+            .store(value, Ordering::Release);
+    }
+
+    pub(super) fn start_bgsave(&self) {
+        let now = current_unix_time_millis().unwrap_or(0);
+        let delay_micros = self.rdb_key_save_delay_micros();
+        let delay_millis = if delay_micros == 0 {
+            0
+        } else {
+            (delay_micros / 1_000).max(1)
+        };
+        self.rdb_bgsave_deadline_unix_millis
+            .store(now.saturating_add(delay_millis), Ordering::Release);
+    }
+
+    pub(super) fn rdb_bgsave_in_progress(&self) -> bool {
+        let deadline = self.rdb_bgsave_deadline_unix_millis.load(Ordering::Acquire);
+        if deadline == 0 {
+            return false;
+        }
+        let now = current_unix_time_millis().unwrap_or(0);
+        if now < deadline {
+            return true;
+        }
+        let _ = self.rdb_bgsave_deadline_unix_millis.compare_exchange(
+            deadline,
+            0,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
+        false
+    }
+
+    pub(super) fn set_config_value(&self, key: &[u8], value: Vec<u8>) {
+        let normalized = key
+            .iter()
+            .map(|byte| byte.to_ascii_lowercase())
+            .collect::<Vec<u8>>();
+        if let Ok(mut values) = self.config_overrides.lock() {
+            values.insert(normalized, value);
+        }
+    }
+
+    pub(super) fn config_items_snapshot(&self) -> Vec<(Vec<u8>, Vec<u8>)> {
+        self.config_overrides
+            .lock()
+            .map(|values| values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
     }
 
     pub(crate) fn record_command_call(&self, command_name: &[u8]) {
@@ -535,6 +643,38 @@ impl RequestProcessor {
 
     pub(super) fn script_runtime_timeouts(&self) -> u64 {
         self.script_runtime_timeouts.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn used_memory_vm_functions(&self) -> u64 {
+        self.used_memory_vm_functions.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_used_memory_vm_functions(&self, bytes: u64) {
+        self.used_memory_vm_functions
+            .store(bytes, Ordering::Relaxed);
+    }
+
+    pub(super) fn lazyfreed_objects(&self) -> u64 {
+        self.lazyfreed_objects.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn record_lazyfreed_objects(&self, count: u64) {
+        if count == 0 {
+            return;
+        }
+        self.lazyfreed_objects.fetch_add(count, Ordering::Relaxed);
+    }
+
+    pub(super) fn reset_lazyfreed_objects(&self) {
+        self.lazyfreed_objects.store(0, Ordering::Relaxed);
+    }
+
+    pub(super) fn maxmemory_limit_bytes(&self) -> u64 {
+        self.maxmemory_limit_bytes.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_maxmemory_limit_bytes(&self, value: u64) {
+        self.maxmemory_limit_bytes.store(value, Ordering::Release);
     }
 
     pub(super) fn record_script_cache_hit(&self) {
@@ -788,6 +928,7 @@ impl RequestProcessor {
         if args.is_empty() {
             return Err(RequestExecutionError::UnknownCommand);
         }
+        self.executed_command_count.fetch_add(1, Ordering::Relaxed);
 
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();

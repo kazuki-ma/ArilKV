@@ -168,7 +168,7 @@ impl RequestExecutionError {
             Self::FunctionNotFound => append_error(response_out, "ERR Function not found"),
             Self::FunctionNotReadOnly => append_error(
                 response_out,
-                "ERR Can not execute a non read-only function with FCALL_RO",
+                "ERR Can not execute a script with write flag using *_ro command",
             ),
             Self::ScriptTooBig => append_error(
                 response_out,

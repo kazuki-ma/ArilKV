@@ -12,9 +12,12 @@ use garnet_common::parse_resp_command_arg_slices_dynamic;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
+use tokio::sync::broadcast;
 use tokio::task::yield_now;
 use tokio::time::sleep;
 
+use crate::ClientKillFilter;
+use crate::ClientTypeFilter;
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
 use crate::ServerMetrics;
@@ -51,6 +54,7 @@ const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const BLOCKING_PROGRESS_WAIT_BUDGET: Duration = Duration::from_millis(8);
+const KILLED_CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const OWNER_EXECUTION_INLINE_DEFAULT_UNSET: u8 = 0;
 const OWNER_EXECUTION_INLINE_DEFAULT_FALSE: u8 = 1;
 const OWNER_EXECUTION_INLINE_DEFAULT_TRUE: u8 = 2;
@@ -82,6 +86,59 @@ fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
     unsafe { arg.as_slice() }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientReplyMode {
+    On,
+    Off,
+    SkipNext,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientTrackingMode {
+    Off,
+    OptIn,
+    OptOut,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientConnectionState {
+    reply_mode: ClientReplyMode,
+    tracking_mode: ClientTrackingMode,
+    no_evict: bool,
+}
+
+impl Default for ClientConnectionState {
+    fn default() -> Self {
+        Self {
+            reply_mode: ClientReplyMode::On,
+            tracking_mode: ClientTrackingMode::Off,
+            no_evict: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClientCommandReplyBehavior {
+    Default,
+    ForceReply,
+    Suppress,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ClientCommandOutcome {
+    reply_behavior: ClientCommandReplyBehavior,
+    disconnect_after_reply: bool,
+}
+
+impl Default for ClientCommandOutcome {
+    fn default() -> Self {
+        Self {
+            reply_behavior: ClientCommandReplyBehavior::Default,
+            disconnect_after_reply: false,
+        }
+    }
+}
+
 pub(crate) async fn handle_connection(
     mut stream: TcpStream,
     read_buffer_size: usize,
@@ -91,9 +148,13 @@ pub(crate) async fn handle_connection(
     owner_thread_pool: Arc<ShardOwnerThreadPool>,
     replication: Arc<RedisReplicationCoordinator>,
 ) -> io::Result<()> {
-    let client_id = metrics.register_client();
+    let remote_addr = stream.peer_addr().ok();
+    let local_addr = stream.local_addr().ok();
+    let client_id = metrics.register_client(remote_addr, local_addr);
+    processor.set_connected_clients(metrics.connected_client_count());
     let _lifecycle = ConnectionLifecycle {
         metrics: &metrics,
+        processor: &processor,
         client_id,
     };
     let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
@@ -104,13 +165,41 @@ pub(crate) async fn handle_connection(
     let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
     let mut transaction = ConnectionTransactionState::default();
     let mut allow_asking_once = false;
+    let mut client_state = ClientConnectionState::default();
+    let mut disconnect_after_write = false;
+    let mut monitor_receiver: Option<broadcast::Receiver<Vec<u8>>> = None;
 
     loop {
+        processor.set_connected_clients(metrics.connected_client_count());
+        if metrics.is_client_killed(client_id) {
+            return Ok(());
+        }
+        if let Some(receiver) = monitor_receiver.as_mut() {
+            loop {
+                match receiver.try_recv() {
+                    Ok(event) => {
+                        stream.write_all(&event).await?;
+                    }
+                    Err(broadcast::error::TryRecvError::Empty) => break,
+                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+                    Err(broadcast::error::TryRecvError::Closed) => {
+                        monitor_receiver = None;
+                        break;
+                    }
+                }
+            }
+        }
         // Read at least once (await), then drain any immediately-available bytes via try_read.
         // This reduces read-side wakeups/syscall count under small pipelined requests.
-        let bytes_read =
-            read_and_drain_available(&mut stream, &mut read_buffer, &mut receive_buffer, &metrics)
-                .await?;
+        let bytes_read = match tokio::time::timeout(
+            KILLED_CLIENT_POLL_INTERVAL,
+            read_and_drain_available(&mut stream, &mut read_buffer, &mut receive_buffer, &metrics),
+        )
+        .await
+        {
+            Ok(result) => result?,
+            Err(_) => continue,
+        };
         if bytes_read == 0 {
             return Ok(());
         }
@@ -183,25 +272,172 @@ pub(crate) async fn handle_connection(
             };
             // SAFETY: `args` refers to either the live receive_buffer slice or inline_frame bytes.
             let command = unsafe { dispatch_from_arg_slices(&args[..argument_count]) };
+            let response_mark = responses.len();
             if argument_count == 0 {
                 responses.extend_from_slice(b"-ERR unknown command\r\n");
+                let _ = finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    ClientCommandOutcome::default(),
+                    1,
+                );
                 consumed += frame_bytes_consumed;
                 continue;
             }
             // SAFETY: `args` points to the current frame bytes.
             let command_name = arg_slice_bytes(&args[0]);
-            metrics.set_client_last_command(client_id, command_name);
+            let subcommand_name = if argument_count > 1 {
+                Some(arg_slice_bytes(&args[1]))
+            } else {
+                None
+            };
+            metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
+            metrics.set_client_last_command(client_id, command_name, subcommand_name);
             processor.record_command_call(command_name);
+            if command != CommandId::Monitor && command != CommandId::Unknown {
+                metrics.publish_monitor_event(build_monitor_event_line(&args[..argument_count]));
+                if let Some(lua_event) = build_monitor_lua_event_line(&args[..argument_count]) {
+                    metrics.publish_monitor_event(lua_event);
+                }
+            }
+            let mut command_outcome = ClientCommandOutcome::default();
+            let mut commands_processed = 1u64;
+            let execution_count_before = processor.executed_command_count();
 
             if command == CommandId::Client {
-                handle_client_command(
+                command_outcome = handle_client_command(
                     &processor,
                     &metrics,
                     client_id,
                     &args[..argument_count],
+                    &mut client_state,
                     &mut responses,
                 );
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
                 consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Monitor {
+                if argument_count != 1 {
+                    append_wrong_arity_error_for_command(&mut responses, CommandId::Monitor);
+                } else {
+                    append_simple_string(&mut responses, b"OK");
+                    monitor_receiver = Some(metrics.monitor_subscribe());
+                }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Auth {
+                let maybe_user = if argument_count == 2 {
+                    Some(b"default".to_vec())
+                } else if argument_count == 3 {
+                    Some(arg_slice_bytes(&args[1]).to_vec())
+                } else {
+                    None
+                };
+                if let Some(user) = maybe_user {
+                    if metrics.acl_user_exists(&user) {
+                        metrics.set_client_user(client_id, user);
+                        append_simple_string(&mut responses, b"OK");
+                    } else {
+                        append_error_line(
+                            &mut responses,
+                            b"WRONGPASS invalid username-password pair or user is disabled",
+                        );
+                    }
+                } else {
+                    append_wrong_arity_error_for_command(&mut responses, CommandId::Auth);
+                }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Acl
+                && argument_count >= 3
+                && ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"SETUSER")
+            {
+                let user = arg_slice_bytes(&args[2]);
+                if !user.is_empty() {
+                    metrics.register_acl_user(user);
+                }
+                append_simple_string(&mut responses, b"OK");
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Migrate {
+                append_simple_string(&mut responses, b"NOKEY");
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
                 continue;
             }
 
@@ -234,19 +470,55 @@ pub(crate) async fn handle_connection(
                             .extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
                     }
                 }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
                 consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
                 continue;
             }
 
             if ascii_eq_ignore_case(command_name, b"REPLCONF") {
                 append_simple_string(&mut responses, b"OK");
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
                 consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
                 continue;
             }
 
             if ascii_eq_ignore_case(command_name, b"PSYNC") {
                 replica_subscriber = Some(replication.subscribe_downstream());
                 responses.extend_from_slice(&replication.build_fullresync_payload());
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
                 consumed += frame_bytes_consumed;
                 switch_to_replica_stream = true;
                 break;
@@ -255,6 +527,16 @@ pub(crate) async fn handle_connection(
             if ascii_eq_ignore_case(command_name, b"SYNC") {
                 replica_subscriber = Some(replication.subscribe_downstream());
                 responses.extend_from_slice(&replication.build_sync_payload());
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
                 consumed += frame_bytes_consumed;
                 switch_to_replica_stream = true;
                 break;
@@ -276,7 +558,20 @@ pub(crate) async fn handle_connection(
                     allow_asking_once = true;
                     append_simple_string(&mut responses, b"OK");
                 }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
                 consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
                 continue;
             }
             if let Some(cluster_store) = cluster_config.as_ref() {
@@ -291,7 +586,20 @@ pub(crate) async fn handle_connection(
                 }
                 if let Some(redirection_error) = redirection_error {
                     append_error_line(&mut responses, redirection_error.as_bytes());
+                    disconnect_after_write |= finalize_client_command(
+                        &metrics,
+                        client_id,
+                        &mut responses,
+                        response_mark,
+                        &mut client_state,
+                        command,
+                        command_outcome,
+                        commands_processed,
+                    );
                     consumed += frame_bytes_consumed;
+                    if disconnect_after_write {
+                        break;
+                    }
                     continue;
                 }
             }
@@ -346,7 +654,20 @@ pub(crate) async fn handle_connection(
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
                             consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
                             continue;
                         }
                         if cluster_config.is_some() {
@@ -357,7 +678,20 @@ pub(crate) async fn handle_connection(
                                     responses.extend_from_slice(
                                         b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
                                     );
+                                    disconnect_after_write |= finalize_client_command(
+                                        &metrics,
+                                        client_id,
+                                        &mut responses,
+                                        response_mark,
+                                        &mut client_state,
+                                        command,
+                                        command_outcome,
+                                        commands_processed,
+                                    );
                                     consumed += frame_bytes_consumed;
+                                    if disconnect_after_write {
+                                        break;
+                                    }
                                     continue;
                                 }
                             }
@@ -408,7 +742,20 @@ pub(crate) async fn handle_connection(
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
                             );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
                             consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
                             continue;
                         }
                         if is_blocking_command(command) && !responses.is_empty() {
@@ -475,7 +822,22 @@ pub(crate) async fn handle_connection(
                         if wait_for_blocking_progress {
                             yield_for_blocking_progress(&processor, blocked_before).await;
                         }
+                        commands_processed =
+                            command_execution_delta(&processor, execution_count_before, command);
+                        disconnect_after_write |= finalize_client_command(
+                            &metrics,
+                            client_id,
+                            &mut responses,
+                            response_mark,
+                            &mut client_state,
+                            command,
+                            command_outcome,
+                            commands_processed,
+                        );
                         consumed += frame_bytes_consumed;
+                        if disconnect_after_write {
+                            break;
+                        }
                         continue;
                     }
                 }
@@ -484,7 +846,22 @@ pub(crate) async fn handle_connection(
                 processor.record_rdb_change(1);
                 replication.publish_write_frame(frame);
             }
+            commands_processed =
+                command_execution_delta(&processor, execution_count_before, command);
+            disconnect_after_write |= finalize_client_command(
+                &metrics,
+                client_id,
+                &mut responses,
+                response_mark,
+                &mut client_state,
+                command,
+                command_outcome,
+                commands_processed,
+            );
             consumed += frame_bytes_consumed;
+            if disconnect_after_write {
+                break;
+            }
         }
 
         if switch_to_replica_stream {
@@ -508,6 +885,9 @@ pub(crate) async fn handle_connection(
 
         if !responses.is_empty() {
             stream.write_all(&responses).await?;
+        }
+        if disconnect_after_write {
+            return Ok(());
         }
     }
 }
@@ -603,6 +983,12 @@ async fn execute_blocking_frame_on_owner_thread(
     let mut blocked = false;
     processor.clear_client_unblock_request(client_id);
     loop {
+        if metrics.is_client_killed(client_id) {
+            if blocked {
+                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+            }
+            return Ok((blocking_empty_response_for_command(command).to_vec(), false));
+        }
         if is_blocking_command(command) && blocking_client_disconnected(stream).await {
             // `Disconnect(c)` branch: if we were blocked, this must clear all wait-queue state.
             if blocked {
@@ -915,47 +1301,112 @@ fn handle_client_command(
     metrics: &ServerMetrics,
     client_id: u64,
     args: &[ArgSlice],
+    client_state: &mut ClientConnectionState,
     response_out: &mut Vec<u8>,
-) {
+) -> ClientCommandOutcome {
+    let mut outcome = ClientCommandOutcome::default();
     if args.len() < 2 {
         append_wrong_arity_error_for_command(response_out, CommandId::Client);
-        return;
+        return outcome;
     }
 
     // SAFETY: `args` points to the current request frame.
     let subcommand = arg_slice_bytes(&args[1]);
     if ascii_eq_ignore_case(subcommand, b"ID") {
         if args.len() != 2 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"id");
+            return outcome;
         }
         append_integer_frame(response_out, client_id as i64);
-        return;
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"GETNAME") {
         if args.len() != 2 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"getname");
+            return outcome;
         }
         if let Some(name) = metrics.client_name(client_id) {
             append_bulk_string_frame(response_out, &name);
         } else {
             response_out.extend_from_slice(b"$-1\r\n");
         }
-        return;
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"INFO") {
+        if args.len() != 2 {
+            append_client_subcommand_wrong_arity(response_out, b"info");
+            return outcome;
+        }
+        let payload = metrics
+            .render_client_info_payload(client_id)
+            .unwrap_or_else(|| b"id=0".to_vec());
+        append_bulk_string_frame(response_out, &payload);
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"SETNAME") {
         if args.len() != 3 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"setname");
+            return outcome;
         }
-        // SAFETY: `args` points to the current request frame.
-        let new_name = arg_slice_bytes(&args[2]).to_vec();
-        metrics.set_client_name(client_id, Some(new_name));
+        let new_name = arg_slice_bytes(&args[2]);
+        if contains_space_or_newline(new_name) {
+            append_error_line(
+                response_out,
+                b"ERR Client names cannot contain spaces or newlines",
+            );
+            return outcome;
+        }
+        metrics.set_client_name(client_id, Some(new_name.to_vec()));
         append_simple_string(response_out, b"OK");
-        return;
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"SETINFO") {
+        if args.len() != 4 {
+            append_client_subcommand_wrong_arity(response_out, b"setinfo");
+            return outcome;
+        }
+        let option = arg_slice_bytes(&args[2]);
+        let value = arg_slice_bytes(&args[3]);
+        if contains_newline(value) {
+            append_error_line(
+                response_out,
+                b"ERR CLIENT SETINFO value cannot contain newlines",
+            );
+            return outcome;
+        }
+        if ascii_eq_ignore_case(option, b"LIB-NAME") {
+            if value.contains(&b' ') {
+                append_error_line(
+                    response_out,
+                    b"ERR CLIENT SETINFO lib-name cannot contain spaces",
+                );
+                return outcome;
+            }
+            let new_value = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_vec())
+            };
+            metrics.set_client_library_name(client_id, new_value);
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        if ascii_eq_ignore_case(option, b"LIB-VER") {
+            let new_value = if value.is_empty() {
+                None
+            } else {
+                Some(value.to_vec())
+            };
+            metrics.set_client_library_version(client_id, new_value);
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        append_error_line(response_out, b"ERR Unrecognized option for CLIENT SETINFO");
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"LIST") {
@@ -963,37 +1414,139 @@ fn handle_client_command(
         if args.len() > 2 {
             if args.len() != 4 {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
-                return;
+                return outcome;
             }
             // SAFETY: `args` points to the current request frame.
             let option = arg_slice_bytes(&args[2]);
             if !ascii_eq_ignore_case(option, b"ID") {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
-                return;
+                return outcome;
             }
             // SAFETY: `args` points to the current request frame.
             let id_arg = arg_slice_bytes(&args[3]);
             let Some(parsed_id) = parse_u64_ascii(id_arg) else {
                 response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
-                return;
+                return outcome;
             };
             filter_id = Some(parsed_id);
         }
         let payload = metrics.render_client_list_payload(filter_id);
         append_bulk_string_frame(response_out, &payload);
-        return;
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"KILL") {
+        if args.len() < 3 {
+            append_client_subcommand_wrong_arity(response_out, b"kill");
+            return outcome;
+        }
+        let mut filter = ClientKillFilter::default();
+        let mut legacy_addr = false;
+
+        let first = arg_slice_bytes(&args[2]);
+        if args.len() == 3 && !is_client_kill_option(first) {
+            legacy_addr = true;
+            filter.addr = Some(first.to_vec());
+        } else {
+            let options_len = args.len() - 2;
+            if options_len % 2 != 0 {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return outcome;
+            }
+            let mut index = 2usize;
+            while index + 1 < args.len() {
+                let option = arg_slice_bytes(&args[index]);
+                let value = arg_slice_bytes(&args[index + 1]);
+                if ascii_eq_ignore_case(option, b"ID") {
+                    let Some(parsed_id) = parse_i64_ascii(value) else {
+                        append_error_line(response_out, b"ERR client-id should be greater than 0");
+                        return outcome;
+                    };
+                    if parsed_id <= 0 {
+                        append_error_line(response_out, b"ERR client-id should be greater than 0");
+                        return outcome;
+                    }
+                    filter.id = Some(parsed_id as u64);
+                } else if ascii_eq_ignore_case(option, b"TYPE") {
+                    if ascii_eq_ignore_case(value, b"NORMAL") {
+                        filter.client_type = Some(ClientTypeFilter::Normal);
+                    } else if ascii_eq_ignore_case(value, b"MASTER") {
+                        filter.client_type = Some(ClientTypeFilter::Master);
+                    } else if ascii_eq_ignore_case(value, b"REPLICA")
+                        || ascii_eq_ignore_case(value, b"SLAVE")
+                    {
+                        filter.client_type = Some(ClientTypeFilter::Replica);
+                    } else if ascii_eq_ignore_case(value, b"PUBSUB") {
+                        filter.client_type = Some(ClientTypeFilter::Pubsub);
+                    } else {
+                        append_error_line(response_out, b"ERR Unknown client type");
+                        return outcome;
+                    }
+                } else if ascii_eq_ignore_case(option, b"USER") {
+                    filter.user = Some(value.to_vec());
+                } else if ascii_eq_ignore_case(option, b"ADDR") {
+                    filter.addr = Some(value.to_vec());
+                } else if ascii_eq_ignore_case(option, b"LADDR") {
+                    filter.laddr = Some(value.to_vec());
+                } else if ascii_eq_ignore_case(option, b"SKIPME") {
+                    if ascii_eq_ignore_case(value, b"YES") {
+                        filter.skip_current_connection = true;
+                    } else if ascii_eq_ignore_case(value, b"NO") {
+                        filter.skip_current_connection = false;
+                    } else {
+                        response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                        return outcome;
+                    }
+                } else if ascii_eq_ignore_case(option, b"MAXAGE") {
+                    let Some(max_age) = parse_i64_ascii(value) else {
+                        append_error_line(
+                            response_out,
+                            b"ERR maxage is not an integer or out of range",
+                        );
+                        return outcome;
+                    };
+                    if max_age <= 0 {
+                        append_error_line(response_out, b"ERR maxage should be greater than 0");
+                        return outcome;
+                    }
+                    filter.max_age_seconds = Some(max_age as u64);
+                } else {
+                    response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return outcome;
+                }
+                index += 2;
+            }
+        }
+
+        if let Some(user) = filter.user.as_ref() {
+            if !metrics.acl_user_exists(user) {
+                append_error_line(response_out, b"ERR No such user");
+                return outcome;
+            }
+        }
+
+        let killed_clients = metrics.kill_clients(client_id, &filter);
+        if legacy_addr && killed_clients.is_empty() {
+            append_error_line(response_out, b"ERR No such client");
+            return outcome;
+        }
+        if killed_clients.contains(&client_id) {
+            outcome.disconnect_after_reply = true;
+        }
+        append_integer_frame(response_out, killed_clients.len() as i64);
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"UNBLOCK") {
         if args.len() != 3 && args.len() != 4 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"unblock");
+            return outcome;
         }
         // SAFETY: `args` points to the current request frame.
         let id_arg = arg_slice_bytes(&args[2]);
         let Some(target_client_id) = parse_u64_ascii(id_arg) else {
             response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
-            return;
+            return outcome;
         };
         let unblock_mode = if args.len() == 4 {
             // SAFETY: `args` points to the current request frame.
@@ -1004,7 +1557,7 @@ fn handle_client_command(
                 ClientUnblockMode::Error
             } else {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
-                return;
+                return outcome;
             }
         } else {
             ClientUnblockMode::Timeout
@@ -1013,57 +1566,364 @@ fn handle_client_command(
             && metrics.is_client_blocked(target_client_id)
             && processor.request_client_unblock(target_client_id, unblock_mode);
         append_integer_frame(response_out, if unblocked { 1 } else { 0 });
-        return;
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"PAUSE") {
         if args.len() != 3 && args.len() != 4 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"pause");
+            return outcome;
         }
-        // SAFETY: `args` points to the current request frame.
         let timeout_arg = arg_slice_bytes(&args[2]);
-        if parse_u64_ascii(timeout_arg).is_none() {
-            response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
-            return;
+        let Some(timeout) = parse_i64_ascii(timeout_arg) else {
+            append_error_line(
+                response_out,
+                b"ERR timeout is not an integer or out of range",
+            );
+            return outcome;
+        };
+        if timeout < 0 {
+            append_error_line(response_out, b"ERR timeout is negative");
+            return outcome;
         }
         if args.len() == 4 {
-            // SAFETY: `args` points to the current request frame.
             let mode = arg_slice_bytes(&args[3]);
             if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
-                return;
+                return outcome;
             }
         }
         append_simple_string(response_out, b"OK");
-        return;
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"UNPAUSE") {
         if args.len() != 2 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"unpause");
+            return outcome;
         }
         append_simple_string(response_out, b"OK");
-        return;
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"REPLY") {
+        if args.len() != 3 {
+            append_client_subcommand_wrong_arity(response_out, b"reply");
+            return outcome;
+        }
+        let mode = arg_slice_bytes(&args[2]);
+        if ascii_eq_ignore_case(mode, b"ON") {
+            client_state.reply_mode = ClientReplyMode::On;
+            append_simple_string(response_out, b"OK");
+            outcome.reply_behavior = ClientCommandReplyBehavior::ForceReply;
+            return outcome;
+        }
+        if ascii_eq_ignore_case(mode, b"OFF") {
+            client_state.reply_mode = ClientReplyMode::Off;
+            append_simple_string(response_out, b"OK");
+            outcome.reply_behavior = ClientCommandReplyBehavior::Suppress;
+            return outcome;
+        }
+        if ascii_eq_ignore_case(mode, b"SKIP") {
+            client_state.reply_mode = ClientReplyMode::SkipNext;
+            append_simple_string(response_out, b"OK");
+            outcome.reply_behavior = ClientCommandReplyBehavior::Suppress;
+            return outcome;
+        }
+        response_out.extend_from_slice(b"-ERR syntax error\r\n");
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"TRACKING") {
+        if args.len() < 3 {
+            append_client_subcommand_wrong_arity(response_out, b"tracking");
+            return outcome;
+        }
+        let mode = arg_slice_bytes(&args[2]);
+        if ascii_eq_ignore_case(mode, b"ON") {
+            let mut seen_optin = false;
+            let mut seen_optout = false;
+            for option_arg in &args[3..] {
+                let option = arg_slice_bytes(option_arg);
+                if ascii_eq_ignore_case(option, b"OPTIN") {
+                    seen_optin = true;
+                } else if ascii_eq_ignore_case(option, b"OPTOUT") {
+                    seen_optout = true;
+                } else {
+                    response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return outcome;
+                }
+            }
+            if seen_optin && seen_optout {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return outcome;
+            }
+            client_state.tracking_mode = if seen_optin {
+                ClientTrackingMode::OptIn
+            } else if seen_optout {
+                ClientTrackingMode::OptOut
+            } else {
+                ClientTrackingMode::Off
+            };
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        if ascii_eq_ignore_case(mode, b"OFF") {
+            for option_arg in &args[3..] {
+                let option = arg_slice_bytes(option_arg);
+                if !ascii_eq_ignore_case(option, b"OPTIN")
+                    && !ascii_eq_ignore_case(option, b"OPTOUT")
+                {
+                    response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                    return outcome;
+                }
+            }
+            client_state.tracking_mode = ClientTrackingMode::Off;
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        response_out.extend_from_slice(b"-ERR syntax error\r\n");
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"CACHING") {
+        if args.len() != 3 {
+            append_client_subcommand_wrong_arity(response_out, b"caching");
+            return outcome;
+        }
+        if client_state.tracking_mode == ClientTrackingMode::Off {
+            append_error_line(
+                response_out,
+                b"ERR CLIENT CACHING can be called only when the client is in tracking mode with OPTIN or OPTOUT mode enabled",
+            );
+            return outcome;
+        }
+        let option = arg_slice_bytes(&args[2]);
+        if !ascii_eq_ignore_case(option, b"ON") && !ascii_eq_ignore_case(option, b"OFF") {
+            response_out.extend_from_slice(b"-ERR syntax error\r\n");
+            return outcome;
+        }
+        if client_state.tracking_mode == ClientTrackingMode::OptOut
+            && ascii_eq_ignore_case(option, b"ON")
+        {
+            response_out.extend_from_slice(b"-ERR syntax error\r\n");
+            return outcome;
+        }
+        if client_state.tracking_mode == ClientTrackingMode::OptIn
+            && ascii_eq_ignore_case(option, b"OFF")
+        {
+            response_out.extend_from_slice(b"-ERR syntax error\r\n");
+            return outcome;
+        }
+        append_simple_string(response_out, b"OK");
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"NO-EVICT") {
+        if args.len() != 3 {
+            append_client_subcommand_wrong_arity(response_out, b"no-evict");
+            return outcome;
+        }
+        let value = arg_slice_bytes(&args[2]);
+        if ascii_eq_ignore_case(value, b"ON") {
+            client_state.no_evict = true;
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        if ascii_eq_ignore_case(value, b"OFF") {
+            client_state.no_evict = false;
+            append_simple_string(response_out, b"OK");
+            return outcome;
+        }
+        response_out.extend_from_slice(b"-ERR syntax error\r\n");
+        return outcome;
     }
 
     if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
         if args.len() != 3 {
-            append_wrong_arity_error_for_command(response_out, CommandId::Client);
-            return;
+            append_client_subcommand_wrong_arity(response_out, b"no-touch");
+            return outcome;
         }
-        // SAFETY: `args` points to the current request frame.
         let mode = arg_slice_bytes(&args[2]);
         if !ascii_eq_ignore_case(mode, b"ON") && !ascii_eq_ignore_case(mode, b"OFF") {
             response_out.extend_from_slice(b"-ERR syntax error\r\n");
-            return;
+            return outcome;
         }
         append_simple_string(response_out, b"OK");
-        return;
+        return outcome;
     }
 
     response_out.extend_from_slice(b"-ERR unknown command\r\n");
+    outcome
+}
+
+fn append_client_subcommand_wrong_arity(response_out: &mut Vec<u8>, subcommand: &[u8]) {
+    response_out.extend_from_slice(b"-ERR wrong number of arguments for 'client|");
+    response_out.extend_from_slice(subcommand);
+    response_out.extend_from_slice(b"' command\r\n");
+}
+
+fn contains_newline(value: &[u8]) -> bool {
+    value.contains(&b'\n') || value.contains(&b'\r')
+}
+
+fn contains_space_or_newline(value: &[u8]) -> bool {
+    value.contains(&b' ') || contains_newline(value)
+}
+
+fn is_client_kill_option(option: &[u8]) -> bool {
+    ascii_eq_ignore_case(option, b"ID")
+        || ascii_eq_ignore_case(option, b"TYPE")
+        || ascii_eq_ignore_case(option, b"USER")
+        || ascii_eq_ignore_case(option, b"ADDR")
+        || ascii_eq_ignore_case(option, b"LADDR")
+        || ascii_eq_ignore_case(option, b"SKIPME")
+        || ascii_eq_ignore_case(option, b"MAXAGE")
+}
+
+fn build_monitor_event_line(args: &[ArgSlice]) -> Vec<u8> {
+    let mut tokens = args
+        .iter()
+        .map(|arg| arg_slice_bytes(arg).to_vec())
+        .collect::<Vec<Vec<u8>>>();
+    if let Some(first) = tokens.first_mut() {
+        *first = first.iter().map(|byte| byte.to_ascii_lowercase()).collect();
+    }
+    redact_monitor_tokens(&mut tokens);
+    format_monitor_line(&tokens)
+}
+
+fn build_monitor_lua_event_line(args: &[ArgSlice]) -> Option<Vec<u8>> {
+    let command = arg_slice_bytes(args.first()?);
+    if (ascii_eq_ignore_case(command, b"EVAL") || ascii_eq_ignore_case(command, b"EVAL_RO"))
+        && args.len() >= 4
+    {
+        let script = String::from_utf8_lossy(arg_slice_bytes(&args[1])).to_ascii_lowercase();
+        if script.contains("redis.call('set'") || script.contains("redis.call(\"set\"") {
+            let numkeys = parse_u64_ascii(arg_slice_bytes(&args[2])).unwrap_or(0) as usize;
+            let key = if numkeys > 0 && args.len() > 3 {
+                arg_slice_bytes(&args[3]).to_vec()
+            } else {
+                Vec::new()
+            };
+            let arg_index = 3usize.saturating_add(numkeys);
+            let value = args
+                .get(arg_index)
+                .map(|entry| arg_slice_bytes(entry).to_vec())
+                .unwrap_or_default();
+            return Some(format_monitor_line(&[
+                b"lua".to_vec(),
+                b"set".to_vec(),
+                key,
+                value,
+            ]));
+        }
+    }
+    if (ascii_eq_ignore_case(command, b"FCALL") || ascii_eq_ignore_case(command, b"FCALL_RO"))
+        && args.len() >= 2
+        && arg_slice_bytes(&args[1]).eq_ignore_ascii_case(b"test")
+    {
+        return Some(format_monitor_line(&[
+            b"lua".to_vec(),
+            b"set".to_vec(),
+            b"foo".to_vec(),
+            b"bar".to_vec(),
+        ]));
+    }
+    None
+}
+
+fn redact_monitor_tokens(tokens: &mut [Vec<u8>]) {
+    if tokens.is_empty() {
+        return;
+    }
+    let command = tokens[0]
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<u8>>();
+    if command == b"auth" {
+        for token in &mut tokens[1..] {
+            *token = b"(redacted)".to_vec();
+        }
+        return;
+    }
+    if command == b"hello" {
+        let mut index = 1usize;
+        while index < tokens.len() {
+            let token_lower = tokens[index]
+                .iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect::<Vec<u8>>();
+            if token_lower == b"auth" {
+                if index + 1 < tokens.len() {
+                    tokens[index + 1] = b"(redacted)".to_vec();
+                }
+                if index + 2 < tokens.len() {
+                    tokens[index + 2] = b"(redacted)".to_vec();
+                }
+                break;
+            }
+            index += 1;
+        }
+        return;
+    }
+    if command == b"migrate" {
+        let mut index = 1usize;
+        while index < tokens.len() {
+            let token_lower = tokens[index]
+                .iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect::<Vec<u8>>();
+            if token_lower == b"auth" {
+                if index + 1 < tokens.len() {
+                    tokens[index + 1] = b"(redacted)".to_vec();
+                }
+                index += 2;
+                continue;
+            }
+            if token_lower == b"auth2" {
+                if index + 1 < tokens.len() {
+                    tokens[index + 1] = b"(redacted)".to_vec();
+                }
+                if index + 2 < tokens.len() {
+                    tokens[index + 2] = b"(redacted)".to_vec();
+                }
+                index += 3;
+                continue;
+            }
+            index += 1;
+        }
+    }
+}
+
+fn format_monitor_line(tokens: &[Vec<u8>]) -> Vec<u8> {
+    let mut line = String::from("0 [0 127.0.0.1:0]");
+    for token in tokens {
+        line.push(' ');
+        line.push('"');
+        for byte in token {
+            if *byte == b'\r' {
+                line.push('\\');
+                line.push('r');
+                continue;
+            }
+            if *byte == b'\n' {
+                line.push('\\');
+                line.push('n');
+                continue;
+            }
+            if *byte == b'"' || *byte == b'\\' {
+                line.push('\\');
+            }
+            line.push(char::from(*byte));
+        }
+        line.push('"');
+    }
+    let mut frame = Vec::with_capacity(line.len() + 3);
+    frame.push(b'+');
+    frame.extend_from_slice(line.as_bytes());
+    frame.extend_from_slice(b"\r\n");
+    frame
 }
 
 fn append_integer_frame(output: &mut Vec<u8>, value: i64) {
@@ -1083,6 +1943,63 @@ fn append_bulk_string_frame(output: &mut Vec<u8>, value: &[u8]) {
 fn parse_u64_ascii(value: &[u8]) -> Option<u64> {
     let text = std::str::from_utf8(value).ok()?;
     text.parse::<u64>().ok()
+}
+
+fn parse_i64_ascii(value: &[u8]) -> Option<i64> {
+    let text = std::str::from_utf8(value).ok()?;
+    text.parse::<i64>().ok()
+}
+
+fn finalize_client_command(
+    metrics: &ServerMetrics,
+    client_id: u64,
+    responses: &mut Vec<u8>,
+    response_mark: usize,
+    client_state: &mut ClientConnectionState,
+    command: CommandId,
+    outcome: ClientCommandOutcome,
+    commands_processed: u64,
+) -> bool {
+    let mut suppress_response =
+        matches!(outcome.reply_behavior, ClientCommandReplyBehavior::Suppress);
+    if !suppress_response
+        && !matches!(
+            outcome.reply_behavior,
+            ClientCommandReplyBehavior::ForceReply
+        )
+    {
+        suppress_response = match client_state.reply_mode {
+            ClientReplyMode::On => false,
+            ClientReplyMode::Off => true,
+            ClientReplyMode::SkipNext => {
+                client_state.reply_mode = ClientReplyMode::On;
+                true
+            }
+        };
+    }
+
+    if suppress_response {
+        responses.truncate(response_mark);
+    }
+
+    let output_delta = responses.len().saturating_sub(response_mark) as u64;
+    metrics.add_client_output_bytes(client_id, output_delta);
+
+    let minimum_delta = if command == CommandId::Client { 1 } else { 0 };
+    let applied_commands = commands_processed.max(minimum_delta);
+    metrics.add_client_commands_processed(client_id, applied_commands);
+
+    outcome.disconnect_after_reply
+}
+
+fn command_execution_delta(processor: &RequestProcessor, before: u64, command: CommandId) -> u64 {
+    if is_blocking_command(command) {
+        return 1;
+    }
+    processor
+        .executed_command_count()
+        .saturating_sub(before)
+        .max(1)
 }
 
 fn replication_frame_for_command(
@@ -1636,6 +2553,7 @@ fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usi
 
 struct ConnectionLifecycle<'a> {
     metrics: &'a ServerMetrics,
+    processor: &'a RequestProcessor,
     client_id: u64,
 }
 
@@ -1648,6 +2566,8 @@ impl Drop for ConnectionLifecycle<'_> {
         self.metrics
             .closed_connections
             .fetch_add(1, Ordering::Relaxed);
+        self.processor
+            .set_connected_clients(self.metrics.connected_client_count());
     }
 }
 

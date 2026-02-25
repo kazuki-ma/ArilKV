@@ -85,6 +85,65 @@ async fn shutdown_signal_stops_accept_loop() {
 }
 
 #[tokio::test]
+async fn config_port_reflects_listener_port_and_accepts_noop_set() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let port_text = addr.port().to_string();
+    let get_expected = format!(
+        "*2\r\n$4\r\nport\r\n${}\r\n{}\r\n",
+        port_text.len(),
+        port_text
+    );
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$4\r\nport\r\n",
+        get_expected.as_bytes(),
+    )
+    .await;
+
+    let set_current = format!(
+        "*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$4\r\nport\r\n${}\r\n{}\r\n",
+        port_text.len(),
+        port_text
+    );
+    send_and_expect(&mut client, set_current.as_bytes(), b"+OK\r\n").await;
+
+    let other_port = if addr.port() == u16::MAX {
+        u16::MAX - 1
+    } else {
+        addr.port() + 1
+    };
+    let other_port_text = other_port.to_string();
+    let set_other = format!(
+        "*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$4\r\nport\r\n${}\r\n{}\r\n",
+        other_port_text.len(),
+        other_port_text
+    );
+    send_and_expect(
+        &mut client,
+        set_other.as_bytes(),
+        b"-ERR CONFIG SET failed (possibly related to argument 'port') - Unable to listen on this port\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
