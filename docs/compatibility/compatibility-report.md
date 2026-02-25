@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=422; err=166; ignore=123; failed_tests=166  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=423; err=165; ignore=123; failed_tests=165  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `166`
+- Failed tests extracted from runtest log: `165`
 
 | Test |
 |---|
@@ -186,7 +186,6 @@
 | `MULTI / EXEC is not propagated (single write command) in tests/unit/multi.tcl` |
 | `MULTI / EXEC is propagated correctly (multiple commands) in tests/unit/multi.tcl` |
 | `MULTI / EXEC with REPLICAOF in tests/unit/multi.tcl` |
-| `DISCARD should not fail during OOM in tests/unit/multi.tcl` |
 | `MULTI and script timeout in tests/unit/multi.tcl` |
 | `EXEC and script timeout in tests/unit/multi.tcl` |
 | `MULTI-EXEC body and script timeout in tests/unit/multi.tcl` |

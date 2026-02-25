@@ -42,6 +42,7 @@ use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::cluster_error_for_command;
 use crate::connection_routing::command_hash_slot_for_transaction;
 use crate::connection_transaction::ConnectionTransactionState;
+use crate::connection_transaction::QueuedReplicationTransition;
 use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
@@ -441,9 +442,8 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
-            if ascii_eq_ignore_case(command_name, b"REPLICAOF")
-                || ascii_eq_ignore_case(command_name, b"SLAVEOF")
-            {
+            let replication_passthrough_command = command_is_replication_passthrough(command_name);
+            if replication_passthrough_command && !transaction.in_multi {
                 if argument_count != 3 {
                     responses.extend_from_slice(b"-ERR wrong number of arguments for '");
                     if ascii_eq_ignore_case(command_name, b"SLAVEOF") {
@@ -618,13 +618,20 @@ pub(crate) async fn handle_connection(
                                 b"-EXECABORT Transaction discarded because of previous errors.\r\n",
                             );
                         } else {
-                            execute_transaction_queue(
+                            let replication_transition = execute_transaction_queue(
                                 &processor,
                                 &owner_thread_pool,
                                 &mut transaction,
                                 &mut responses,
                                 max_resp_arguments,
                             );
+                            if let Some(replication_transition) = replication_transition {
+                                apply_queued_replication_transition(
+                                    &replication,
+                                    replication_transition,
+                                )
+                                .await;
+                            }
                         }
                     }
                     TransactionControlCommand::Discard => {
@@ -650,7 +657,7 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     _ => {
-                        if command == CommandId::Unknown {
+                        if command == CommandId::Unknown && !replication_passthrough_command {
                             transaction.aborted = true;
                             responses.extend_from_slice(b"-ERR unknown command\r\n");
                             disconnect_after_write |= finalize_client_command(
@@ -1295,6 +1302,23 @@ fn is_blocking_command(command: CommandId) -> bool {
 
 fn command_disallowed_inside_multi(command: CommandId) -> bool {
     matches!(command, CommandId::Save | CommandId::Shutdown)
+}
+
+fn command_is_replication_passthrough(command_name: &[u8]) -> bool {
+    ascii_eq_ignore_case(command_name, b"REPLICAOF")
+        || ascii_eq_ignore_case(command_name, b"SLAVEOF")
+}
+
+async fn apply_queued_replication_transition(
+    replication: &Arc<RedisReplicationCoordinator>,
+    transition: QueuedReplicationTransition,
+) {
+    match transition {
+        QueuedReplicationTransition::BecomeMaster => replication.become_master().await,
+        QueuedReplicationTransition::BecomeReplica { host, port } => {
+            replication.become_replica(host, port).await;
+        }
+    }
 }
 
 fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {

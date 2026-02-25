@@ -709,6 +709,78 @@ async fn multi_queue_errors_abort_exec_and_reset_connection_state() {
 }
 
 #[tokio::test]
+async fn multi_queues_replicaof_until_exec_then_applies_readonly_mode() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$2\r\nk2\r\n$2\r\nv2\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$9\r\nREPLICAOF\r\n$9\r\nlocalhost\r\n$4\r\n9999\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$2\r\nk3\r\n$2\r\nv3\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"*3\r\n+OK\r\n+OK\r\n+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$2\r\nk4\r\n$2\r\nv4\r\n",
+        b"-READONLY You can't write against a read only replica.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$9\r\nREPLICAOF\r\n$2\r\nNO\r\n$3\r\nONE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$2\r\nk4\r\n$2\r\nv4\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_inline_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

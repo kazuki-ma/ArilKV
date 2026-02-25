@@ -5,6 +5,8 @@ use std::sync::Arc;
 
 use crate::RequestProcessor;
 use crate::ShardOwnerThreadPool;
+use crate::connection_protocol::ascii_eq_ignore_case;
+use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
 
@@ -57,13 +59,19 @@ impl ConnectionTransactionState {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum QueuedReplicationTransition {
+    BecomeMaster,
+    BecomeReplica { host: String, port: u16 },
+}
+
 pub(crate) fn execute_transaction_queue(
     processor: &Arc<RequestProcessor>,
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     transaction: &mut ConnectionTransactionState,
     responses: &mut Vec<u8>,
     max_resp_arguments: usize,
-) {
+) -> Option<QueuedReplicationTransition> {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
     transaction.watched_keys.clear();
@@ -73,11 +81,16 @@ pub(crate) fn execute_transaction_queue(
     let owner_shard = transaction_owner_shard(processor, &queued, max_resp_arguments).unwrap_or(0);
     let queued_len = queued.len();
     let routed_processor = Arc::clone(processor);
-    let item_responses = owner_thread_pool
+    let (item_responses, pending_replication_transition) = owner_thread_pool
         .execute_sync(owner_shard, move || {
             execute_transaction_queue_on_owner_thread(&routed_processor, queued, max_resp_arguments)
         })
-        .unwrap_or_else(|_| vec![b"-ERR owner routing execution failed\r\n".to_vec(); queued_len]);
+        .unwrap_or_else(|_| {
+            (
+                vec![b"-ERR owner routing execution failed\r\n".to_vec(); queued_len],
+                None,
+            )
+        });
 
     responses.push(b'*');
     responses.extend_from_slice(item_responses.len().to_string().as_bytes());
@@ -85,6 +98,8 @@ pub(crate) fn execute_transaction_queue(
     for item_response in item_responses {
         responses.extend_from_slice(&item_response);
     }
+
+    pending_replication_transition
 }
 
 fn transaction_owner_shard(
@@ -112,13 +127,36 @@ fn execute_transaction_queue_on_owner_thread(
     processor: &RequestProcessor,
     queued: Vec<Vec<u8>>,
     max_resp_arguments: usize,
-) -> Vec<Vec<u8>> {
+) -> (Vec<Vec<u8>>, Option<QueuedReplicationTransition>) {
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     let mut responses = Vec::with_capacity(queued.len());
+    let mut pending_replication_transition = None;
     for frame in queued {
         let mut item_response = Vec::new();
         match parse_resp_command_arg_slices_dynamic(&frame, &mut args, max_resp_arguments) {
             Ok(meta) if meta.bytes_consumed == frame.len() => {
+                let command_name = arg_slice_bytes(&args[0]);
+                if command_is_replication_passthrough(command_name) {
+                    match parse_replication_transition(&args[..meta.argument_count]) {
+                        Ok(transition) => {
+                            pending_replication_transition = Some(transition);
+                            item_response.extend_from_slice(b"+OK\r\n");
+                        }
+                        Err(ReplicationTransitionParseError::WrongArity { command_name_upper }) => {
+                            item_response
+                                .extend_from_slice(b"-ERR wrong number of arguments for '");
+                            item_response.extend_from_slice(command_name_upper);
+                            item_response.extend_from_slice(b"' command\r\n");
+                        }
+                        Err(ReplicationTransitionParseError::InvalidPort) => {
+                            item_response.extend_from_slice(
+                                b"-ERR value is not an integer or out of range\r\n",
+                            );
+                        }
+                    }
+                    responses.push(item_response);
+                    continue;
+                }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let _command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
                 match processor.execute(&args[..meta.argument_count], &mut item_response) {
@@ -133,5 +171,58 @@ fn execute_transaction_queue_on_owner_thread(
         }
         responses.push(item_response);
     }
-    responses
+    (responses, pending_replication_transition)
+}
+
+#[inline]
+fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
+    // SAFETY: transaction queue parser stores `ArgSlice` values pointing into
+    // the currently processed queued frame, which is alive for this scope.
+    unsafe { arg.as_slice() }
+}
+
+fn command_is_replication_passthrough(command_name: &[u8]) -> bool {
+    ascii_eq_ignore_case(command_name, b"REPLICAOF")
+        || ascii_eq_ignore_case(command_name, b"SLAVEOF")
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReplicationTransitionParseError {
+    WrongArity { command_name_upper: &'static [u8] },
+    InvalidPort,
+}
+
+fn parse_replication_transition(
+    args: &[ArgSlice],
+) -> Result<QueuedReplicationTransition, ReplicationTransitionParseError> {
+    if args.is_empty() {
+        return Err(ReplicationTransitionParseError::WrongArity {
+            command_name_upper: b"REPLICAOF",
+        });
+    }
+    let command_name = arg_slice_bytes(&args[0]);
+    if args.len() != 3 {
+        return Err(ReplicationTransitionParseError::WrongArity {
+            command_name_upper: if ascii_eq_ignore_case(command_name, b"SLAVEOF") {
+                b"SLAVEOF"
+            } else {
+                b"REPLICAOF"
+            },
+        });
+    }
+
+    let host_or_no = arg_slice_bytes(&args[1]);
+    let port_or_one = arg_slice_bytes(&args[2]);
+    if ascii_eq_ignore_case(host_or_no, b"NO") && ascii_eq_ignore_case(port_or_one, b"ONE") {
+        return Ok(QueuedReplicationTransition::BecomeMaster);
+    }
+
+    let Some(port) = parse_u16_ascii(port_or_one) else {
+        return Err(ReplicationTransitionParseError::InvalidPort);
+    };
+
+    Ok(QueuedReplicationTransition::BecomeReplica {
+        host: String::from_utf8_lossy(host_or_no).to_string(),
+        port,
+    })
 }
