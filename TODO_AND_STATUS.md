@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-26
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 286
+> **Current Iteration**: 287
 
 ---
 
@@ -856,3 +856,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 284 | 2026-02-26 | 11.165 | IN_PROGRESS | Fixed `EXEC` transaction replication propagation path: owner-thread transaction execution now returns per-item frame/response metadata, and `connection_handler` now publishes transactional replication frames after `EXEC` (single mutating command as plain command, multiple mutating commands as `MULTI ... EXEC`, and no propagation when a queued replica-role transition is present). Added sync-stream regressions `sync_replication_stream_propagates_single_write_multi_exec_without_wrappers` and `sync_replication_stream_wraps_multi_exec_with_multiple_writes`. Validation: `make fmt`; `make test-server` (`264 + 23 + 1` pass); `REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis GARNET_SERVER_CMD='GARNET_SCRIPTING_ENABLED=1 GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES=4096 cargo run -p garnet-server --release' ./build_compatibility_report.sh` completed to step `4/4` with `ok=428 err=160 ignore=123`; `tests/unit/multi.tcl` failures reduced from `22` to `21` (`MULTI / EXEC is not propagated (single write command)` now passes). |
 | 285 | 2026-02-26 | 11.170 / DR-006 | DONE | Imported returned HLL DeepResearch report from Downloads into `docs/performance/hyperloglog-compatibility-strategy-deepresearch-2026-02-26.md`, added actionable digest `docs/performance/hyperloglog-compatibility-strategy-notes-2026-02-26.md`, and updated Phase 11B tracker `DR-006` status to `RECEIVED` (`pending=0`). |
 | 286 | 2026-02-26 | Process | DONE | Updated `AGENTS.md` quality baseline to explicitly require production-quality, practical/maintainable code, avoid diff-size-driven compromises, and require explicit rationale plus follow-up TODO for temporary steps. |
+| 287 | 2026-02-26 | Process | DONE | Refined `AGENTS.md` quality baseline wording to explicitly prohibit diff-appearance-driven scope reduction and to require concrete technical rationale for any "for now/first" staged delivery language. |

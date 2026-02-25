@@ -40,7 +40,9 @@ This file defines default collaboration and execution rules for repository work,
 - Always target production-quality code.
 - "High quality" means practical, maintainable, and readable implementation quality, not clever or flashy code.
 - Do not intentionally keep known-correctness or known-design gaps just to make the diff look small.
+- Do not keep required structural changes out of scope only to preserve a "minimal diff" appearance.
 - Use temporary/partial steps only when they are technically necessary, and record explicit rationale plus follow-up TODO.
+- Avoid casual "for now" / "first" staging language unless there is a concrete technical dependency that enforces staged delivery.
 - Spending more time to reach a robust implementation is preferred over fast-but-fragile patches.
 
 ## Required Validation (Default)
