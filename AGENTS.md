@@ -35,6 +35,14 @@ This file defines default collaboration and execution rules for repository work,
 6. Do not rely on command exit status alone for tests; verify reported test counts and failed-case absence in output.
 7. Keep compatibility-sensitive behavior changes backed by explicit tests.
 
+## Code Quality Baseline
+
+- Always target production-quality code.
+- "High quality" means practical, maintainable, and readable implementation quality, not clever or flashy code.
+- Do not intentionally keep known-correctness or known-design gaps just to make the diff look small.
+- Use temporary/partial steps only when they are technically necessary, and record explicit rationale plus follow-up TODO.
+- Spending more time to reach a robust implementation is preferred over fast-but-fragile patches.
+
 ## Required Validation (Default)
 
 - Core test gate:
