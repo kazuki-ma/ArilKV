@@ -100,6 +100,9 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"dbfilename".to_vec(), b"dump.rdb".to_vec());
     values.insert(b"dir".to_vec(), b".".to_vec());
     values.insert(b"repl-backlog-size".to_vec(), b"1048576".to_vec());
+    values.insert(b"min-replicas-to-write".to_vec(), b"0".to_vec());
+    values.insert(b"min-slaves-to-write".to_vec(), b"0".to_vec());
+    values.insert(b"replica-serve-stale-data".to_vec(), b"yes".to_vec());
     values.insert(b"maxmemory-samples".to_vec(), b"5".to_vec());
     values.insert(b"maxmemory-clients".to_vec(), b"0".to_vec());
     values.insert(
@@ -336,6 +339,8 @@ pub struct RequestProcessor {
     used_memory_vm_functions: AtomicU64,
     lazyfreed_objects: AtomicU64,
     maxmemory_limit_bytes: AtomicU64,
+    min_replicas_to_write: AtomicU64,
+    replica_serve_stale_data: AtomicBool,
     script_running: AtomicBool,
     running_script: Mutex<Option<RunningScriptState>>,
     script_kill_requested: Arc<AtomicBool>,
@@ -501,6 +506,8 @@ impl RequestProcessor {
             used_memory_vm_functions: AtomicU64::new(0),
             lazyfreed_objects: AtomicU64::new(0),
             maxmemory_limit_bytes: AtomicU64::new(0),
+            min_replicas_to_write: AtomicU64::new(0),
+            replica_serve_stale_data: AtomicBool::new(true),
             script_running: AtomicBool::new(false),
             running_script: Mutex::new(None),
             script_kill_requested: Arc::new(AtomicBool::new(false)),
@@ -909,6 +916,23 @@ impl RequestProcessor {
         self.maxmemory_limit_bytes.store(value, Ordering::Release);
     }
 
+    pub(super) fn min_replicas_to_write(&self) -> u64 {
+        self.min_replicas_to_write.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_min_replicas_to_write(&self, value: u64) {
+        self.min_replicas_to_write.store(value, Ordering::Release);
+    }
+
+    pub(super) fn replica_serve_stale_data(&self) -> bool {
+        self.replica_serve_stale_data.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_replica_serve_stale_data(&self, value: bool) {
+        self.replica_serve_stale_data
+            .store(value, Ordering::Release);
+    }
+
     pub(super) fn record_script_cache_hit(&self) {
         self.script_cache_hits.fetch_add(1, Ordering::Relaxed);
     }
@@ -1164,6 +1188,28 @@ impl RequestProcessor {
         self.execute(args, response_out)
     }
 
+    pub(crate) fn command_rejected_while_script_busy(
+        &self,
+        command: CommandId,
+        subcommand: Option<&[u8]>,
+    ) -> Result<bool, RequestExecutionError> {
+        if !self.script_running.load(Ordering::Acquire)
+            || command_allowed_while_script_busy(command, subcommand)
+        {
+            return Ok(false);
+        }
+        let Ok(running_script) = self.running_script.lock() else {
+            return Err(storage_failure(
+                "script.running_state",
+                "running script state lock poisoned",
+            ));
+        };
+        let Some(state) = running_script.as_ref() else {
+            return Ok(false);
+        };
+        Ok(state.thread_id != std::thread::current().id())
+    }
+
     pub(crate) fn execute_bytes(
         &self,
         args: &[&[u8]],
@@ -1176,20 +1222,8 @@ impl RequestProcessor {
 
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();
-        if self.script_running.load(Ordering::Acquire)
-            && !command_allowed_while_script_busy(command, subcommand)
-        {
-            let Ok(running_script) = self.running_script.lock() else {
-                return Err(storage_failure(
-                    "script.running_state",
-                    "running script state lock poisoned",
-                ));
-            };
-            if let Some(state) = running_script.as_ref() {
-                if state.thread_id != std::thread::current().id() {
-                    return Err(RequestExecutionError::BusyScript);
-                }
-            }
+        if self.command_rejected_while_script_busy(command, subcommand)? {
+            return Err(RequestExecutionError::BusyScript);
         }
         match command {
             CommandId::Get => self.handle_get(args, response_out),

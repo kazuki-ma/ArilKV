@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=517; err=71; ignore=123; failed_tests=71  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=542; err=59; ignore=124; failed_tests=59  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `71`
+- Failed tests extracted from runtest log: `59`
 
 | Test |
 |---|
@@ -62,6 +62,7 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
+| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
@@ -92,24 +93,11 @@
 | `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `MULTI / EXEC is propagated correctly (multiple commands) in tests/unit/multi.tcl` |
-| `MULTI and script timeout in tests/unit/multi.tcl` |
-| `EXEC and script timeout in tests/unit/multi.tcl` |
-| `MULTI-EXEC body and script timeout in tests/unit/multi.tcl` |
-| `just EXEC and script timeout in tests/unit/multi.tcl` |
-| `exec with write commands and state change in tests/unit/multi.tcl` |
-| `exec with read commands and stale replica state change in tests/unit/multi.tcl` |
-| `EXEC with only read commands should not be rejected when OOM in tests/unit/multi.tcl` |
-| `EXEC with at least one use-memory command should fail in tests/unit/multi.tcl` |
 | `Blocking commands ignores the timeout in tests/unit/multi.tcl` |
-| `MULTI propagation of PUBLISH in tests/unit/multi.tcl` |
-| `MULTI propagation of SCRIPT LOAD in tests/unit/multi.tcl` |
-| `MULTI propagation of EVAL in tests/unit/multi.tcl` |
-| `MULTI propagation of SCRIPT FLUSH in tests/unit/multi.tcl` |
-| `MULTI propagation of XREADGROUP in tests/unit/multi.tcl` |
-| `MULTI with SAVE in tests/unit/multi.tcl` |
-| `MULTI with SHUTDOWN in tests/unit/multi.tcl` |
-| `MULTI with config error in tests/unit/multi.tcl` |
+| `Coverage: HELP commands in tests/unit/other.tcl` |
+| `SAVE - make sure there are all the types as values in tests/unit/other.tcl` |
+| `Check consistency of different data types after a reload in tests/unit/other.tcl` |
+| `Same dataset digest if saving/reloading as AOF? in tests/unit/other.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

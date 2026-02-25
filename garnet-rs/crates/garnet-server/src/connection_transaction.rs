@@ -17,6 +17,7 @@ pub(crate) struct ConnectionTransactionState {
     pub(crate) watched_keys: Vec<(Vec<u8>, u64)>,
     pub(crate) transaction_slot: Option<u16>,
     pub(crate) aborted: bool,
+    pub(crate) aborted_due_to_busy_script: bool,
 }
 
 impl ConnectionTransactionState {
@@ -26,6 +27,7 @@ impl ConnectionTransactionState {
         self.watched_keys.clear();
         self.transaction_slot = None;
         self.aborted = false;
+        self.aborted_due_to_busy_script = false;
     }
 
     pub(crate) fn clear_watches(&mut self) {
@@ -90,6 +92,7 @@ pub(crate) fn execute_transaction_queue(
     transaction.watched_keys.clear();
     transaction.transaction_slot = None;
     transaction.aborted = false;
+    transaction.aborted_due_to_busy_script = false;
 
     let owner_shard = transaction_owner_shard(processor, &queued, max_resp_arguments).unwrap_or(0);
     let queued_len = queued.len();

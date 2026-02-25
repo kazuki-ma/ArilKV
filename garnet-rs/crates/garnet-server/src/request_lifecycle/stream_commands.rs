@@ -80,7 +80,15 @@ impl RequestProcessor {
         let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
-            require_exact_arity(args, 5, "XGROUP", "XGROUP CREATE key group id")?;
+            ensure_one_of_arities(
+                args,
+                &[5, 6],
+                "XGROUP",
+                "XGROUP CREATE key group id [MKSTREAM]",
+            )?;
+            if args.len() == 6 && !ascii_eq_ignore_case(args[5], b"MKSTREAM") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
             let key = args[2].to_vec();
             let group = args[3].to_vec();
             let id = args[4].to_vec();
@@ -113,7 +121,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
-            8,
+            7,
             "XREADGROUP",
             "XREADGROUP GROUP group consumer [NOACK] [COUNT count] STREAMS key >",
         )?;
@@ -139,6 +147,14 @@ impl RequestProcessor {
                 let parsed = parse_u64_ascii(args[index + 1])
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 count = usize::try_from(parsed).unwrap_or(usize::MAX);
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"BLOCK") {
+                if index + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
                 index += 2;
                 continue;
             }

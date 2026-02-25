@@ -1927,14 +1927,20 @@ async fn sync_replication_stream_starts_with_select_db_zero() {
     let _payload =
         read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
 
-    let expected_select = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
-    let select_frame = read_exact_with_timeout(
-        &mut replica_stream,
-        expected_select.len(),
-        Duration::from_secs(1),
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$11\r\nsync:select\r\n$2\r\nv1\r\n",
+        b"+OK\r\n",
     )
     .await;
-    assert_eq!(select_frame, expected_select);
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"sync:select", b"v1"]));
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -1971,12 +1977,6 @@ async fn sync_replication_stream_propagates_single_write_multi_exec_without_wrap
         .unwrap();
     let _payload =
         read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
-    let _select = read_exact_with_timeout(
-        &mut replica_stream,
-        b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n".len(),
-        Duration::from_secs(1),
-    )
-    .await;
 
     let mut client = TcpStream::connect(addr).await.unwrap();
     send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
@@ -1988,7 +1988,9 @@ async fn sync_replication_stream_propagates_single_write_multi_exec_without_wrap
     .await;
     send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*1\r\n+OK\r\n").await;
 
-    let expected_set = encode_resp_command(&[b"SET", b"tx:single", b"v1"]);
+    let mut expected_set = Vec::new();
+    expected_set.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected_set.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:single", b"v1"]));
     let replicated = read_exact_with_timeout(
         &mut replica_stream,
         expected_set.len(),
@@ -2044,12 +2046,6 @@ async fn sync_replication_stream_wraps_multi_exec_with_multiple_writes() {
         .unwrap();
     let _payload =
         read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
-    let _select = read_exact_with_timeout(
-        &mut replica_stream,
-        b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n".len(),
-        Duration::from_secs(1),
-    )
-    .await;
 
     let mut client = TcpStream::connect(addr).await.unwrap();
     send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
@@ -2080,6 +2076,7 @@ async fn sync_replication_stream_wraps_multi_exec_with_multiple_writes() {
 
     let mut expected = Vec::new();
     expected.extend_from_slice(&encode_resp_command(&[b"MULTI"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
     expected.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:multi", b"v1"]));
     expected.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:multi2", b"v2"]));
     expected.extend_from_slice(&encode_resp_command(&[b"EXEC"]));

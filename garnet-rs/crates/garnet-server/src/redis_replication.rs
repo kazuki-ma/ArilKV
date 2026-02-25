@@ -22,6 +22,7 @@ use std::io;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicU64;
+use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 use tokio::io::AsyncReadExt;
@@ -60,6 +61,8 @@ struct ReplicationInner {
     upstream_endpoint: RwLock<Option<MasterEndpoint>>,
     is_replica_mode: AtomicBool,
     upstream_link_up: AtomicBool,
+    downstream_replica_count: AtomicUsize,
+    replication_select_needed: AtomicBool,
     master_repl_offset: AtomicU64,
     repl_id: String,
     empty_rdb_payload: Vec<u8>,
@@ -84,6 +87,8 @@ impl RedisReplicationCoordinator {
             upstream_endpoint: RwLock::new(None),
             is_replica_mode: AtomicBool::new(false),
             upstream_link_up: AtomicBool::new(false),
+            downstream_replica_count: AtomicUsize::new(0),
+            replication_select_needed: AtomicBool::new(true),
             master_repl_offset: AtomicU64::new(0),
             repl_id: generate_repl_id(),
             empty_rdb_payload: decode_hex_bytes(EMPTY_RDB_HEX),
@@ -97,9 +102,26 @@ impl RedisReplicationCoordinator {
         self.inner.is_replica_mode.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn is_upstream_link_up(&self) -> bool {
+        self.inner.upstream_link_up.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn downstream_replica_count(&self) -> u64 {
+        self.inner.downstream_replica_count.load(Ordering::Relaxed) as u64
+    }
+
+    pub(crate) fn consume_replication_select_needed(&self) -> bool {
+        self.inner
+            .replication_select_needed
+            .swap(false, Ordering::AcqRel)
+    }
+
     pub(crate) async fn become_master(&self) {
         self.inner.is_replica_mode.store(false, Ordering::Relaxed);
         self.inner.upstream_link_up.store(false, Ordering::Relaxed);
+        self.inner
+            .replication_select_needed
+            .store(true, Ordering::Release);
         {
             let mut endpoint_guard = self.inner.upstream_endpoint.write().await;
             *endpoint_guard = None;
@@ -113,6 +135,9 @@ impl RedisReplicationCoordinator {
     pub(crate) async fn become_replica(&self, host: String, port: u16) {
         self.inner.is_replica_mode.store(true, Ordering::Relaxed);
         self.inner.upstream_link_up.store(false, Ordering::Relaxed);
+        self.inner
+            .replication_select_needed
+            .store(true, Ordering::Release);
         {
             let mut endpoint_guard = self.inner.upstream_endpoint.write().await;
             *endpoint_guard = Some(MasterEndpoint {
@@ -173,31 +198,54 @@ impl RedisReplicationCoordinator {
         mut stream: TcpStream,
         mut subscriber: broadcast::Receiver<Arc<[u8]>>,
     ) -> io::Result<()> {
+        self.inner
+            .replication_select_needed
+            .store(true, Ordering::Release);
+        self.inner
+            .downstream_replica_count
+            .fetch_add(1, Ordering::Relaxed);
         let mut inbound_buf = [0u8; 1024];
-        write_resp_command(&mut stream, &[b"SELECT", b"0"]).await?;
 
         loop {
             tokio::select! {
                 result = subscriber.recv() => {
                     match result {
                         Ok(frame) => {
-                            stream.write_all(&frame).await?;
+                            if let Err(error) = stream.write_all(&frame).await {
+                                self.inner
+                                    .downstream_replica_count
+                                    .fetch_sub(1, Ordering::Relaxed);
+                                return Err(error);
+                            }
                         }
                         Err(broadcast::error::RecvError::Lagged(_)) => {
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
+                            self.inner
+                                .downstream_replica_count
+                                .fetch_sub(1, Ordering::Relaxed);
                             return Ok(());
                         }
                     }
                 }
                 read_result = stream.read(&mut inbound_buf) => {
                     match read_result {
-                        Ok(0) => return Ok(()),
+                        Ok(0) => {
+                            self.inner
+                                .downstream_replica_count
+                                .fetch_sub(1, Ordering::Relaxed);
+                            return Ok(());
+                        }
                         Ok(_) => {
                             // Ignore REPLCONF ACK chatter from downstream replicas.
                         }
-                        Err(error) => return Err(error),
+                        Err(error) => {
+                            self.inner
+                                .downstream_replica_count
+                                .fetch_sub(1, Ordering::Relaxed);
+                            return Err(error);
+                        }
                     }
                 }
             }

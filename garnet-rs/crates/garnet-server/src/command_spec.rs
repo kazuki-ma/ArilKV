@@ -1799,7 +1799,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: false,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: Some(ArityPolicy::Min(8)),
+        arity_policy: Some(ArityPolicy::Min(7)),
         include_in_command_response: true,
     },
     CommandSpecEntry {

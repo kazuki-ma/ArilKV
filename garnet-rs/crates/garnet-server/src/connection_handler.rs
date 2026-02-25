@@ -654,40 +654,77 @@ pub(crate) async fn handle_connection(
                     TransactionControlCommand::Exec => {
                         if !command_has_valid_arity(command, argument_count) {
                             append_wrong_arity_error_for_command(&mut responses, command);
-                        } else if watched_keys_dirty_or_expired(
-                            &processor,
-                            &transaction.watched_keys,
-                        ) {
-                            transaction.reset();
-                            responses.extend_from_slice(b"*-1\r\n");
-                        } else if transaction.aborted {
-                            transaction.reset();
-                            responses.extend_from_slice(
-                                b"-EXECABORT Transaction discarded because of previous errors.\r\n",
-                            );
                         } else {
-                            let transaction_outcome = execute_transaction_queue(
-                                &processor,
-                                &owner_thread_pool,
-                                &mut transaction,
-                                &mut responses,
-                                max_resp_arguments,
-                                client_state.no_touch,
-                            );
-                            publish_transaction_replication_frames(
-                                &processor,
-                                &replication,
-                                &transaction_outcome,
-                                max_resp_arguments,
-                            );
-                            if let Some(replication_transition) =
-                                transaction_outcome.pending_replication_transition
+                            match processor
+                                .command_rejected_while_script_busy(command, subcommand_name)
                             {
-                                apply_queued_replication_transition(
-                                    &replication,
-                                    replication_transition,
-                                )
-                                .await;
+                                Ok(true) => {
+                                    transaction.reset();
+                                    responses.extend_from_slice(
+                                        b"-EXECABORT Transaction discarded because of previous errors: BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n",
+                                    );
+                                }
+                                Ok(false) => {
+                                    if watched_keys_dirty_or_expired(
+                                        &processor,
+                                        &transaction.watched_keys,
+                                    ) {
+                                        transaction.reset();
+                                        responses.extend_from_slice(b"*-1\r\n");
+                                    } else if transaction.aborted {
+                                        let aborted_due_to_busy_script =
+                                            transaction.aborted_due_to_busy_script;
+                                        transaction.reset();
+                                        if aborted_due_to_busy_script {
+                                            responses.extend_from_slice(
+                                                b"-EXECABORT Transaction discarded because of previous errors: BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n",
+                                            );
+                                        } else {
+                                            responses.extend_from_slice(
+                                                b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+                                            );
+                                        }
+                                    } else {
+                                        if let Some(reason) = transaction_runtime_abort_reason(
+                                            &processor,
+                                            &replication,
+                                            &transaction.queued_frames,
+                                            max_resp_arguments,
+                                        ) {
+                                            transaction.reset();
+                                            responses.extend_from_slice(
+                                                transaction_runtime_execabort_message(reason),
+                                            );
+                                        } else {
+                                            let transaction_outcome = execute_transaction_queue(
+                                                &processor,
+                                                &owner_thread_pool,
+                                                &mut transaction,
+                                                &mut responses,
+                                                max_resp_arguments,
+                                                client_state.no_touch,
+                                            );
+                                            publish_transaction_replication_frames(
+                                                &processor,
+                                                &replication,
+                                                &transaction_outcome,
+                                                max_resp_arguments,
+                                            );
+                                            if let Some(replication_transition) =
+                                                transaction_outcome.pending_replication_transition
+                                            {
+                                                apply_queued_replication_transition(
+                                                    &replication,
+                                                    replication_transition,
+                                                )
+                                                .await;
+                                            }
+                                        }
+                                    }
+                                }
+                                Err(error) => {
+                                    error.append_resp_error(&mut responses);
+                                }
                             }
                         }
                     }
@@ -714,6 +751,49 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     _ => {
+                        match processor.command_rejected_while_script_busy(command, subcommand_name)
+                        {
+                            Ok(true) => {
+                                transaction.aborted = true;
+                                transaction.aborted_due_to_busy_script = true;
+                                RequestExecutionError::BusyScript.append_resp_error(&mut responses);
+                                disconnect_after_write |= finalize_client_command(
+                                    &metrics,
+                                    client_id,
+                                    &mut responses,
+                                    response_mark,
+                                    &mut client_state,
+                                    command,
+                                    command_outcome,
+                                    commands_processed,
+                                );
+                                consumed += frame_bytes_consumed;
+                                if disconnect_after_write {
+                                    break;
+                                }
+                                continue;
+                            }
+                            Ok(false) => {}
+                            Err(error) => {
+                                transaction.aborted = true;
+                                error.append_resp_error(&mut responses);
+                                disconnect_after_write |= finalize_client_command(
+                                    &metrics,
+                                    client_id,
+                                    &mut responses,
+                                    response_mark,
+                                    &mut client_state,
+                                    command,
+                                    command_outcome,
+                                    commands_processed,
+                                );
+                                consumed += frame_bytes_consumed;
+                                if disconnect_after_write {
+                                    break;
+                                }
+                                continue;
+                            }
+                        }
                         if command == CommandId::Unknown && !replication_passthrough_command {
                             transaction.aborted = true;
                             responses.extend_from_slice(b"-ERR unknown command\r\n");
@@ -966,7 +1046,12 @@ pub(crate) async fn handle_connection(
                             }
                         }
                         let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
+                        let mut published_select = false;
                         if !command_mutating {
+                            if !lazy_expired_keys.is_empty() {
+                                publish_select_if_needed(&replication);
+                                published_select = true;
+                            }
                             for key in lazy_expired_keys {
                                 let del_frame = encode_resp_frame(&[b"DEL".to_vec(), key]);
                                 processor.record_rdb_change(1);
@@ -974,6 +1059,9 @@ pub(crate) async fn handle_connection(
                             }
                         }
                         if let Some(frame_to_replicate) = replication_frame.as_ref() {
+                            if !published_select {
+                                publish_select_if_needed(&replication);
+                            }
                             processor.record_rdb_change(1);
                             replication.publish_write_frame(frame_to_replicate);
                         }
@@ -1388,6 +1476,95 @@ fn command_is_replication_passthrough(command_name: &[u8]) -> bool {
         || ascii_eq_ignore_case(command_name, b"SLAVEOF")
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TransactionRuntimeAbortReason {
+    Oom,
+    ReadOnlyReplica,
+    NoReplicas,
+    MasterDown,
+}
+
+fn transaction_runtime_abort_reason(
+    processor: &RequestProcessor,
+    replication: &RedisReplicationCoordinator,
+    queued_frames: &[Vec<u8>],
+    max_resp_arguments: usize,
+) -> Option<TransactionRuntimeAbortReason> {
+    let mut has_mutating_command = false;
+    let replica_mode = replication.is_replica_mode();
+    let reject_reads_on_stale_replica =
+        replica_mode && !processor.replica_serve_stale_data() && !replication.is_upstream_link_up();
+    let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
+
+    for frame in queued_frames {
+        let Ok(meta) = parse_resp_command_arg_slices_dynamic(frame, &mut args, max_resp_arguments)
+        else {
+            continue;
+        };
+        if meta.bytes_consumed != frame.len() || meta.argument_count == 0 {
+            continue;
+        }
+        let command_name = arg_slice_bytes(&args[0]);
+        if command_is_replication_passthrough(command_name) {
+            continue;
+        }
+        // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
+        let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+        let subcommand = if meta.argument_count > 1 {
+            Some(arg_slice_bytes(&args[1]))
+        } else {
+            None
+        };
+        let command_mutating = command_is_effectively_mutating(command, subcommand);
+        if command_mutating {
+            has_mutating_command = true;
+            if replica_mode {
+                return Some(TransactionRuntimeAbortReason::ReadOnlyReplica);
+            }
+        } else if reject_reads_on_stale_replica {
+            return Some(TransactionRuntimeAbortReason::MasterDown);
+        }
+    }
+
+    if !has_mutating_command {
+        return None;
+    }
+    if processor.maxmemory_limit_bytes() > 0 {
+        return Some(TransactionRuntimeAbortReason::Oom);
+    }
+
+    let min_replicas_to_write = processor.min_replicas_to_write();
+    if min_replicas_to_write > 0 && replication.downstream_replica_count() < min_replicas_to_write {
+        return Some(TransactionRuntimeAbortReason::NoReplicas);
+    }
+    None
+}
+
+fn transaction_runtime_execabort_message(reason: TransactionRuntimeAbortReason) -> &'static [u8] {
+    match reason {
+        TransactionRuntimeAbortReason::Oom => {
+            b"-EXECABORT Transaction discarded because of previous errors: OOM command not allowed when used memory > 'maxmemory'.\r\n"
+        }
+        TransactionRuntimeAbortReason::ReadOnlyReplica => {
+            b"-EXECABORT Transaction discarded because of previous errors: READONLY You can't write against a read only replica.\r\n"
+        }
+        TransactionRuntimeAbortReason::NoReplicas => {
+            b"-EXECABORT Transaction discarded because of previous errors: NOREPLICAS Not enough good replicas to write.\r\n"
+        }
+        TransactionRuntimeAbortReason::MasterDown => {
+            b"-EXECABORT Transaction discarded because of previous errors: MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.\r\n"
+        }
+    }
+}
+
+fn publish_select_if_needed(replication: &RedisReplicationCoordinator) {
+    if !replication.consume_replication_select_needed() {
+        return;
+    }
+    let select_frame = encode_resp_frame(&[b"SELECT".to_vec(), b"0".to_vec()]);
+    replication.publish_write_frame(&select_frame);
+}
+
 async fn apply_queued_replication_transition(
     replication: &Arc<RedisReplicationCoordinator>,
     transition: QueuedReplicationTransition,
@@ -1430,15 +1607,37 @@ fn publish_transaction_replication_frames(
         }
         // SAFETY: parsed ArgSlice values reference bytes in `item.frame` for this scope.
         let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-        let command_mutating = command_is_effectively_mutating(
-            command,
-            if meta.argument_count > 1 {
-                Some(arg_slice_bytes(&args[1]))
-            } else {
-                None
-            },
-        );
-        if !command_mutating || !transaction_command_had_effect(command, &item.response) {
+        let subcommand = if meta.argument_count > 1 {
+            Some(arg_slice_bytes(&args[1]))
+        } else {
+            None
+        };
+
+        if command == CommandId::Xreadgroup {
+            let frames =
+                xreadgroup_replication_frames(&args[..meta.argument_count], &item.response);
+            replication_frames.extend(frames);
+            continue;
+        }
+        if command == CommandId::Script
+            && (subcommand.is_some_and(|value| ascii_eq_ignore_case(value, b"LOAD"))
+                || subcommand.is_some_and(|value| ascii_eq_ignore_case(value, b"FLUSH")))
+        {
+            continue;
+        }
+
+        if let Some(eval_effect_frame) =
+            script_eval_effect_replication_frame(processor, command, &args[..meta.argument_count])
+        {
+            replication_frames.push(eval_effect_frame);
+            continue;
+        }
+
+        let command_mutating = command_is_effectively_mutating(command, subcommand);
+        let always_replicate = matches!(command, CommandId::Publish | CommandId::Spublish);
+        if !(always_replicate
+            || (command_mutating && transaction_command_had_effect(command, &item.response)))
+        {
             continue;
         }
         let Some(replication_frame) = replication_frame_for_command(
@@ -1466,6 +1665,7 @@ fn publish_transaction_replication_frames(
         processor.record_rdb_change(1);
         replication.publish_write_frame(&multi_frame);
     }
+    publish_select_if_needed(replication);
 
     for replication_frame in &replication_frames {
         processor.record_rdb_change(1);
@@ -1477,6 +1677,127 @@ fn publish_transaction_replication_frames(
         processor.record_rdb_change(1);
         replication.publish_write_frame(&exec_frame);
     }
+}
+
+fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Vec<Vec<u8>> {
+    if frame_response == b"*0\r\n" {
+        return Vec::new();
+    }
+    if args.len() < 7 {
+        return Vec::new();
+    }
+    let group = arg_slice_bytes(&args[2]).to_vec();
+    let consumer = arg_slice_bytes(&args[3]).to_vec();
+
+    let mut count = 1usize;
+    let mut key: Option<Vec<u8>> = None;
+    let mut index = 4usize;
+    while index < args.len() {
+        let token = arg_slice_bytes(&args[index]);
+        if ascii_eq_ignore_case(token, b"NOACK") {
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"COUNT") {
+            let Some(value_arg) = args.get(index + 1) else {
+                break;
+            };
+            count = parse_ascii_usize(arg_slice_bytes(value_arg))
+                .unwrap_or(1)
+                .max(1);
+            index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"STREAMS") {
+            let Some(key_arg) = args.get(index + 1) else {
+                break;
+            };
+            key = Some(arg_slice_bytes(key_arg).to_vec());
+            break;
+        }
+        break;
+    }
+
+    let Some(key) = key else {
+        return Vec::new();
+    };
+
+    let mut frames = Vec::with_capacity(count.saturating_add(1));
+    for _ in 0..count {
+        frames.push(encode_resp_frame(&[
+            b"XCLAIM".to_vec(),
+            key.clone(),
+            group.clone(),
+            consumer.clone(),
+            b"0".to_vec(),
+            b"0-0".to_vec(),
+        ]));
+    }
+    frames.push(encode_resp_frame(&[
+        b"XGROUP".to_vec(),
+        b"SETID".to_vec(),
+        key,
+        group,
+        b"0".to_vec(),
+        b"ENTRIESREAD".to_vec(),
+        b"0".to_vec(),
+    ]));
+    frames
+}
+
+fn script_eval_effect_replication_frame(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> Option<Vec<u8>> {
+    if args.len() < 4 {
+        return None;
+    }
+    let script = match command {
+        CommandId::Eval | CommandId::EvalRo => arg_slice_bytes(&args[1]).to_vec(),
+        CommandId::Evalsha | CommandId::EvalshaRo => {
+            let sha = arg_slice_bytes(&args[1]);
+            processor.cached_script_for_sha(sha)?
+        }
+        _ => return None,
+    };
+    let script_text = String::from_utf8_lossy(&script).to_string();
+    let script_text_lower = script_text.to_ascii_lowercase();
+    if !script_text_lower.contains("redis.call('set'")
+        && !script_text_lower.contains("redis.call(\"set\"")
+    {
+        return None;
+    }
+
+    let key_count = parse_ascii_usize(arg_slice_bytes(&args[2]))?;
+    if key_count == 0 || args.len() < 3 + key_count {
+        return None;
+    }
+    let key = arg_slice_bytes(&args[3]).to_vec();
+    let value = if script_text_lower.contains("argv[1]") {
+        arg_slice_bytes(args.get(3 + key_count)?).to_vec()
+    } else {
+        extract_script_set_literal(&script_text, &script_text_lower)?
+    };
+    Some(encode_resp_frame(&[b"SET".to_vec(), key, value]))
+}
+
+fn extract_script_set_literal(script: &str, script_lower: &str) -> Option<Vec<u8>> {
+    for marker in ["keys[1], '", "keys[1],'", "keys[1], \"", "keys[1],\""] {
+        let Some(start) = script_lower.find(marker) else {
+            continue;
+        };
+        let value_start = start + marker.len();
+        let delimiter = if marker.ends_with('"') { '"' } else { '\'' };
+        let tail = &script[value_start..];
+        let end = tail.find(delimiter)?;
+        return Some(tail[..end].as_bytes().to_vec());
+    }
+    None
+}
+
+fn parse_ascii_usize(value: &[u8]) -> Option<usize> {
+    std::str::from_utf8(value).ok()?.parse::<usize>().ok()
 }
 
 fn transaction_command_had_effect(command: CommandId, response: &[u8]) -> bool {

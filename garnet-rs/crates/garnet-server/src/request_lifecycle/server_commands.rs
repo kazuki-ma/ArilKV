@@ -2090,6 +2090,16 @@ impl RequestProcessor {
                         return Ok(());
                     }
                 }
+                if parameter == b"replica-serve-stale-data"
+                    && !value.eq_ignore_ascii_case(b"yes")
+                    && !value.eq_ignore_ascii_case(b"no")
+                {
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'replica-serve-stale-data') - argument must be 'yes' or 'no'",
+                    );
+                    return Ok(());
+                }
                 pending.push((parameter, value));
                 index += 2;
             }
@@ -2110,9 +2120,22 @@ impl RequestProcessor {
                     self.list_max_listpack_size.store(parsed, Ordering::Release);
                     self.clear_all_forced_list_quicklist_encodings();
                 } else if parameter == b"maxmemory" {
+                    let Some(parsed) = parse_u64_ascii(&value) else {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'maxmemory') - argument must be a memory value",
+                        );
+                        return Ok(());
+                    };
+                    self.set_maxmemory_limit_bytes(parsed);
+                } else if parameter == b"min-replicas-to-write"
+                    || parameter == b"min-slaves-to-write"
+                {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
-                    self.set_maxmemory_limit_bytes(parsed);
+                    self.set_min_replicas_to_write(parsed);
+                } else if parameter == b"replica-serve-stale-data" {
+                    self.set_replica_serve_stale_data(value.eq_ignore_ascii_case(b"yes"));
                 } else if parameter == b"rdb-key-save-delay" {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -2134,12 +2157,30 @@ impl RequestProcessor {
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let list_max_listpack_size_value = list_max_listpack_size.to_string();
             let maxmemory_value = self.maxmemory_limit_bytes().to_string();
+            let min_replicas_to_write_value = self.min_replicas_to_write().to_string();
+            let replica_serve_stale_data_value = if self.replica_serve_stale_data() {
+                b"yes".to_vec()
+            } else {
+                b"no".to_vec()
+            };
             let rdb_key_save_delay_value = self.rdb_key_save_delay_micros().to_string();
             let mut config_map = BTreeMap::<Vec<u8>, Vec<u8>>::new();
             for (key, value) in self.config_items_snapshot() {
                 config_map.insert(key, value);
             }
             config_map.insert(b"maxmemory".to_vec(), maxmemory_value.into_bytes());
+            config_map.insert(
+                b"min-replicas-to-write".to_vec(),
+                min_replicas_to_write_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"min-slaves-to-write".to_vec(),
+                min_replicas_to_write_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"replica-serve-stale-data".to_vec(),
+                replica_serve_stale_data_value,
+            );
             config_map.insert(
                 b"rdb-key-save-delay".to_vec(),
                 rdb_key_save_delay_value.into_bytes(),
