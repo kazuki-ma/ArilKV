@@ -47,6 +47,9 @@ pub enum RequestExecutionError {
     UnsupportedUnit,
     ValueOutOfRange,
     ValueOutOfRangePositive,
+    GeoSearchRequiresOrigin,
+    GeoSearchRequiresShape,
+    GeoAnyRequiresCount,
     LposRankZero,
     TimeoutIsNegative,
     IndexOutOfRange,
@@ -139,6 +142,17 @@ impl RequestExecutionError {
             Self::ValueOutOfRange => append_error(response_out, "ERR value is out of range"),
             Self::ValueOutOfRangePositive => {
                 append_error(response_out, "ERR value is out of range, must be positive")
+            }
+            Self::GeoSearchRequiresOrigin => append_error(
+                response_out,
+                "ERR exactly one of FROMMEMBER or FROMLONLAT must be specified",
+            ),
+            Self::GeoSearchRequiresShape => append_error(
+                response_out,
+                "ERR exactly one of BYRADIUS and BYBOX must be specified",
+            ),
+            Self::GeoAnyRequiresCount => {
+                append_error(response_out, "ERR ANY option requires COUNT option")
             }
             Self::LposRankZero => append_error(
                 response_out,

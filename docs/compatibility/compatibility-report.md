@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=469; err=119; ignore=123; failed_tests=119  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=475; err=113; ignore=123; failed_tests=113  |
 | `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `119`
+- Failed tests extracted from runtest log: `113`
 
 | Test |
 |---|
@@ -67,23 +67,17 @@
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
-| `GEOADD update with invalid option in tests/unit/geo.tcl` |
 | `Check geoset values in tests/unit/geo.tcl` |
-| `GEOSEARCH FROMLONLAT and FROMMEMBER one must exist in tests/unit/geo.tcl` |
-| `GEOSEARCH BYRADIUS and BYBOX one must exist in tests/unit/geo.tcl` |
 | `GEORADIUS withdist (sorted) in tests/unit/geo.tcl` |
 | `GEOSEARCH withdist (sorted) in tests/unit/geo.tcl` |
 | `GEORADIUS with multiple WITH* tokens in tests/unit/geo.tcl` |
 | `GEORADIUS with ANY not sorted by default in tests/unit/geo.tcl` |
 | `GEORADIUS with ANY sorted by ASC in tests/unit/geo.tcl` |
-| `GEORADIUS with ANY but no COUNT in tests/unit/geo.tcl` |
 | `GEORADIUSBYMEMBER simple (sorted) in tests/unit/geo.tcl` |
 | `GEORADIUSBYMEMBER_RO simple (sorted) in tests/unit/geo.tcl` |
 | `GEOSEARCH FROMMEMBER simple (sorted) in tests/unit/geo.tcl` |
 | `GEOSEARCH corner point test in tests/unit/geo.tcl` |
 | `GEORADIUSBYMEMBER withdist (sorted) in tests/unit/geo.tcl` |
-| `GEOHASH with only key as argument in tests/unit/geo.tcl` |
-| `GEOPOS with only key as argument in tests/unit/geo.tcl` |
 | `GEODIST simple & unit in tests/unit/geo.tcl` |
 | `GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage in tests/unit/geo.tcl` |
 | `GEORANGE STOREDIST option: plain usage in tests/unit/geo.tcl` |

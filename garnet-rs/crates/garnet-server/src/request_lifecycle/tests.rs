@@ -6789,11 +6789,7 @@ fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
         "GEOPOS plain member",
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
     );
-    assert_command_error(
-        &processor,
-        "GEOPOS sicily",
-        b"-ERR wrong number of arguments for 'geopos' command\r\n",
-    );
+    assert_command_response(&processor, "GEOPOS sicily", b"*0\r\n");
 }
 
 #[test]
@@ -6871,11 +6867,7 @@ fn geohash_returns_expected_shape_and_null_for_missing_members() {
         "GEOHASH plain member",
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
     );
-    assert_command_error(
-        &processor,
-        "GEOHASH sicily",
-        b"-ERR wrong number of arguments for 'geohash' command\r\n",
-    );
+    assert_command_response(&processor, "GEOHASH sicily", b"*0\r\n");
 }
 
 #[test]
@@ -7090,7 +7082,7 @@ fn georadius_family_supports_query_and_store_paths() {
     assert_command_error(
         &processor,
         "GEORADIUSBYMEMBER sicily palermo 200 km ANY",
-        b"-ERR syntax error\r\n",
+        b"-ERR ANY option requires COUNT option\r\n",
     );
 
     assert_command_response(&processor, "SET plain value", b"+OK\r\n");

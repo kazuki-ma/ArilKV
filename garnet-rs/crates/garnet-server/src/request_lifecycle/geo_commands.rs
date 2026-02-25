@@ -129,7 +129,16 @@ impl RequestProcessor {
         let (options, mut index) = parse_geoadd_options(args, 2)?;
 
         let remaining = args.len().saturating_sub(index);
-        if remaining == 0 || remaining % 3 != 0 {
+        if remaining == 0 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "GEOADD",
+                expected: GEOADD_USAGE,
+            });
+        }
+        if remaining % 3 != 0 {
+            if parse_f64_ascii(args[index]).is_none() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
             return Err(RequestExecutionError::WrongArity {
                 command: "GEOADD",
                 expected: GEOADD_USAGE,
@@ -196,7 +205,7 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 3, "GEOPOS", GEOPOS_USAGE)?;
+        ensure_min_arity(args, 2, "GEOPOS", GEOPOS_USAGE)?;
 
         let key = args[1];
         let zset = self.load_zset_object(key)?;
@@ -276,7 +285,7 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 3, "GEOHASH", GEOHASH_USAGE)?;
+        ensure_min_arity(args, 2, "GEOHASH", GEOHASH_USAGE)?;
 
         let key = args[1];
         let zset = self.load_zset_object(key)?;
@@ -657,10 +666,10 @@ fn parse_geosearch_options(
         return Err(RequestExecutionError::SyntaxError);
     }
 
-    let origin = origin.ok_or(RequestExecutionError::SyntaxError)?;
-    let shape = shape.ok_or(RequestExecutionError::SyntaxError)?;
+    let origin = origin.ok_or(RequestExecutionError::GeoSearchRequiresOrigin)?;
+    let shape = shape.ok_or(RequestExecutionError::GeoSearchRequiresShape)?;
     if any && count.is_none() {
-        return Err(RequestExecutionError::SyntaxError);
+        return Err(RequestExecutionError::GeoAnyRequiresCount);
     }
     Ok(GeoSearchOptions {
         origin,
@@ -748,7 +757,7 @@ fn parse_georadius_options(
     }
 
     if options.any && options.count.is_none() {
-        return Err(RequestExecutionError::SyntaxError);
+        return Err(RequestExecutionError::GeoAnyRequiresCount);
     }
     if options.store_key.is_some() && (options.with_dist || options.with_hash || options.with_coord)
     {
