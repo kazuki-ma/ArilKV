@@ -43,6 +43,7 @@ use crate::connection_routing::cluster_error_for_command;
 use crate::connection_routing::command_hash_slot_for_transaction;
 use crate::connection_transaction::ConnectionTransactionState;
 use crate::connection_transaction::QueuedReplicationTransition;
+use crate::connection_transaction::TransactionExecutionOutcome;
 use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
@@ -621,14 +622,22 @@ pub(crate) async fn handle_connection(
                                 b"-EXECABORT Transaction discarded because of previous errors.\r\n",
                             );
                         } else {
-                            let replication_transition = execute_transaction_queue(
+                            let transaction_outcome = execute_transaction_queue(
                                 &processor,
                                 &owner_thread_pool,
                                 &mut transaction,
                                 &mut responses,
                                 max_resp_arguments,
                             );
-                            if let Some(replication_transition) = replication_transition {
+                            publish_transaction_replication_frames(
+                                &processor,
+                                &replication,
+                                &transaction_outcome,
+                                max_resp_arguments,
+                            );
+                            if let Some(replication_transition) =
+                                transaction_outcome.pending_replication_transition
+                            {
                                 apply_queued_replication_transition(
                                     &replication,
                                     replication_transition,
@@ -1332,6 +1341,97 @@ async fn apply_queued_replication_transition(
             replication.become_replica(host, port).await;
         }
     }
+}
+
+fn publish_transaction_replication_frames(
+    processor: &RequestProcessor,
+    replication: &RedisReplicationCoordinator,
+    transaction_outcome: &TransactionExecutionOutcome,
+    max_resp_arguments: usize,
+) {
+    if transaction_outcome.pending_replication_transition.is_some() {
+        return;
+    }
+
+    let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
+    let mut replication_frames = Vec::new();
+    for item in &transaction_outcome.items {
+        if item.frame.is_empty() || resp_is_error(&item.response) {
+            continue;
+        }
+        let Ok(meta) =
+            parse_resp_command_arg_slices_dynamic(&item.frame, &mut args, max_resp_arguments)
+        else {
+            continue;
+        };
+        if meta.bytes_consumed != item.frame.len() || meta.argument_count == 0 {
+            continue;
+        }
+        let command_name = arg_slice_bytes(&args[0]);
+        if command_is_replication_passthrough(command_name) {
+            continue;
+        }
+        // SAFETY: parsed ArgSlice values reference bytes in `item.frame` for this scope.
+        let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+        let command_mutating = command_is_effectively_mutating(
+            command,
+            if meta.argument_count > 1 {
+                Some(arg_slice_bytes(&args[1]))
+            } else {
+                None
+            },
+        );
+        if !command_mutating || !transaction_command_had_effect(command, &item.response) {
+            continue;
+        }
+        let Some(replication_frame) = replication_frame_for_command(
+            processor,
+            command,
+            &args[..meta.argument_count],
+            &item.response,
+            &item.frame,
+        ) else {
+            continue;
+        };
+        replication_frames.push(replication_frame);
+    }
+
+    for key in processor.take_lazy_expired_keys_for_replication() {
+        replication_frames.push(encode_resp_frame(&[b"DEL".to_vec(), key]));
+    }
+
+    if replication_frames.is_empty() {
+        return;
+    }
+
+    if replication_frames.len() > 1 {
+        let multi_frame = encode_resp_frame(&[b"MULTI".to_vec()]);
+        processor.record_rdb_change(1);
+        replication.publish_write_frame(&multi_frame);
+    }
+
+    for replication_frame in &replication_frames {
+        processor.record_rdb_change(1);
+        replication.publish_write_frame(replication_frame);
+    }
+
+    if replication_frames.len() > 1 {
+        let exec_frame = encode_resp_frame(&[b"EXEC".to_vec()]);
+        processor.record_rdb_change(1);
+        replication.publish_write_frame(&exec_frame);
+    }
+}
+
+fn transaction_command_had_effect(command: CommandId, response: &[u8]) -> bool {
+    match command {
+        CommandId::Del | CommandId::Unlink => parse_resp_integer(response).unwrap_or(0) > 0,
+        _ => true,
+    }
+}
+
+#[inline]
+fn resp_is_error(response: &[u8]) -> bool {
+    response.first().copied() == Some(b'-')
 }
 
 fn watched_keys_dirty_or_expired(

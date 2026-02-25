@@ -65,13 +65,25 @@ pub(crate) enum QueuedReplicationTransition {
     BecomeReplica { host: String, port: u16 },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ExecutedTransactionItem {
+    pub(crate) frame: Vec<u8>,
+    pub(crate) response: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct TransactionExecutionOutcome {
+    pub(crate) items: Vec<ExecutedTransactionItem>,
+    pub(crate) pending_replication_transition: Option<QueuedReplicationTransition>,
+}
+
 pub(crate) fn execute_transaction_queue(
     processor: &Arc<RequestProcessor>,
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
     transaction: &mut ConnectionTransactionState,
     responses: &mut Vec<u8>,
     max_resp_arguments: usize,
-) -> Option<QueuedReplicationTransition> {
+) -> TransactionExecutionOutcome {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
     transaction.watched_keys.clear();
@@ -81,25 +93,34 @@ pub(crate) fn execute_transaction_queue(
     let owner_shard = transaction_owner_shard(processor, &queued, max_resp_arguments).unwrap_or(0);
     let queued_len = queued.len();
     let routed_processor = Arc::clone(processor);
-    let (item_responses, pending_replication_transition) = owner_thread_pool
+    let (items, pending_replication_transition) = owner_thread_pool
         .execute_sync(owner_shard, move || {
             execute_transaction_queue_on_owner_thread(&routed_processor, queued, max_resp_arguments)
         })
         .unwrap_or_else(|_| {
             (
-                vec![b"-ERR owner routing execution failed\r\n".to_vec(); queued_len],
+                vec![
+                    ExecutedTransactionItem {
+                        frame: Vec::new(),
+                        response: b"-ERR owner routing execution failed\r\n".to_vec(),
+                    };
+                    queued_len
+                ],
                 None,
             )
         });
 
     responses.push(b'*');
-    responses.extend_from_slice(item_responses.len().to_string().as_bytes());
+    responses.extend_from_slice(items.len().to_string().as_bytes());
     responses.extend_from_slice(b"\r\n");
-    for item_response in item_responses {
-        responses.extend_from_slice(&item_response);
+    for item in &items {
+        responses.extend_from_slice(&item.response);
     }
 
-    pending_replication_transition
+    TransactionExecutionOutcome {
+        items,
+        pending_replication_transition,
+    }
 }
 
 fn transaction_owner_shard(
@@ -127,9 +148,12 @@ fn execute_transaction_queue_on_owner_thread(
     processor: &RequestProcessor,
     queued: Vec<Vec<u8>>,
     max_resp_arguments: usize,
-) -> (Vec<Vec<u8>>, Option<QueuedReplicationTransition>) {
+) -> (
+    Vec<ExecutedTransactionItem>,
+    Option<QueuedReplicationTransition>,
+) {
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
-    let mut responses = Vec::with_capacity(queued.len());
+    let mut items = Vec::with_capacity(queued.len());
     let mut pending_replication_transition = None;
     for frame in queued {
         let mut item_response = Vec::new();
@@ -154,7 +178,10 @@ fn execute_transaction_queue_on_owner_thread(
                             );
                         }
                     }
-                    responses.push(item_response);
+                    items.push(ExecutedTransactionItem {
+                        frame,
+                        response: item_response,
+                    });
                     continue;
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
@@ -169,9 +196,12 @@ fn execute_transaction_queue_on_owner_thread(
             }
             _ => item_response.extend_from_slice(b"-ERR protocol error\r\n"),
         }
-        responses.push(item_response);
+        items.push(ExecutedTransactionItem {
+            frame,
+            response: item_response,
+        });
     }
-    (responses, pending_replication_transition)
+    (items, pending_replication_transition)
 }
 
 #[inline]

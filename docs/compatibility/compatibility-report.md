@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=425; err=163; ignore=123; failed_tests=163  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=428; err=160; ignore=123; failed_tests=160  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `163`
+- Failed tests extracted from runtest log: `160`
 
 | Test |
 |---|
@@ -63,9 +63,8 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
-| `Config lazyexpire-nested-arbitrary-keys (yes, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
+| `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
 | `GEOADD update with invalid option in tests/unit/geo.tcl` |
 | `Check geoset values in tests/unit/geo.tcl` |
@@ -101,7 +100,6 @@
 | `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
-| `Fuzzing dense/sparse encoding: Redis should always detect errors in tests/unit/hyperloglog.tcl` |
 | `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
 | `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
@@ -181,7 +179,6 @@
 | `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `EXEC fail on lazy expired WATCHed key in tests/unit/multi.tcl` |
-| `MULTI / EXEC is not propagated (single write command) in tests/unit/multi.tcl` |
 | `MULTI / EXEC is propagated correctly (multiple commands) in tests/unit/multi.tcl` |
 | `MULTI / EXEC with REPLICAOF in tests/unit/multi.tcl` |
 | `MULTI and script timeout in tests/unit/multi.tcl` |

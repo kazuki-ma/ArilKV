@@ -1941,6 +1941,158 @@ async fn sync_replication_stream_starts_with_select_db_zero() {
 }
 
 #[tokio::test]
+async fn sync_replication_stream_propagates_single_write_multi_exec_without_wrappers() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+    let _select = read_exact_with_timeout(
+        &mut replica_stream,
+        b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n".len(),
+        Duration::from_secs(1),
+    )
+    .await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$9\r\ntx:single\r\n$2\r\nv1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nEXEC\r\n", b"*1\r\n+OK\r\n").await;
+
+    let expected_set = encode_resp_command(&[b"SET", b"tx:single", b"v1"]);
+    let replicated = read_exact_with_timeout(
+        &mut replica_stream,
+        expected_set.len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(replicated, expected_set);
+
+    let mut trailing = [0u8; 1];
+    let trailing_read = tokio::time::timeout(
+        Duration::from_millis(200),
+        replica_stream.read_exact(&mut trailing),
+    )
+    .await;
+    assert!(
+        trailing_read.is_err(),
+        "unexpected extra replication frames after single-write EXEC: {:?}",
+        trailing_read
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_wraps_multi_exec_with_multiple_writes() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+    let _select = read_exact_with_timeout(
+        &mut replica_stream,
+        b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n".len(),
+        Duration::from_secs(1),
+    )
+    .await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$8\r\ntx:multi\r\n$2\r\nv1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nGET\r\n$8\r\ntx:multi\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$9\r\ntx:multi2\r\n$2\r\nv2\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"*3\r\n+OK\r\n$2\r\nv1\r\n+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"MULTI"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:multi", b"v1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:multi2", b"v2"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"EXEC"]));
+
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn cluster_routing_returns_moved_for_remote_slots() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
