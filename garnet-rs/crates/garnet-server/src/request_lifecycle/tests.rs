@@ -6059,6 +6059,27 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
 }
 
 #[test]
+fn pfdebug_encoding_and_strlen_follow_sparse_dense_transitions() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "CONFIG SET hll-sparse-max-bytes 30", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "PFADD dense_key a b c d e f g h i j k",
+        b":1\r\n",
+    );
+    assert_command_response(&processor, "PFDEBUG ENCODING dense_key", b"$5\r\ndense\r\n");
+    assert_command_response(&processor, "STRLEN dense_key", b":31\r\n");
+
+    assert_command_response(&processor, "PFADD key2 a b c", b":1\r\n");
+    assert_command_response(&processor, "PFDEBUG ENCODING key2", b"$6\r\nsparse\r\n");
+    assert_command_response(&processor, "STRLEN key2", b":25\r\n");
+    assert_command_response(&processor, "PFDEBUG TODENSE key2", b"+OK\r\n");
+    assert_command_response(&processor, "PFDEBUG ENCODING key2", b"$5\r\ndense\r\n");
+    assert_command_response(&processor, "STRLEN key2", b":31\r\n");
+}
+
+#[test]
 fn quit_and_time_commands_return_expected_responses() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

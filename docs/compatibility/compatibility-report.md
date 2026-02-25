@@ -24,18 +24,18 @@
 
 - Probe script exit code: `0`
 - Cases: `3`
-- PASS: `1`
-- FAIL: `2`
+- PASS: `0`
+- FAIL: `3`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=432; err=156; ignore=123; failed_tests=156  |
-| `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=465; err=123; ignore=123; failed_tests=123  |
+| `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `156`
+- Failed tests extracted from runtest log: `123`
 
 | Test |
 |---|
@@ -94,15 +94,9 @@
 | `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
 | `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
 | `HyperLogLogs are promote from sparse to dense in tests/unit/hyperloglog.tcl` |
-| `Change hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
-| `Hyperloglog promote to dense well in different hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
-| `HyperLogLog sparse encoding stress test in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
-| `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
 | `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
-| `PFCOUNT multiple-keys merge returns cardinality of union #2 in tests/unit/hyperloglog.tcl` |
-| `PFADD / PFCOUNT cache invalidation works in tests/unit/hyperloglog.tcl` |
 | `info command with at most one sub command in tests/unit/info-command.tcl` |
 | `info command with one sub-section in tests/unit/info-command.tcl` |
 | `info command with multiple sub-sections in tests/unit/info-command.tcl` |
@@ -128,32 +122,8 @@
 | `Operations in no-touch mode do not alter the last access time of a key in tests/unit/introspection-2.tcl` |
 | `Operations in no-touch mode TOUCH alters the last access time of a key in tests/unit/introspection-2.tcl` |
 | `Operations in no-touch mode TOUCH from script alters the last access time of a key in tests/unit/introspection-2.tcl` |
-| `TOUCH returns the number of existing keys specified in tests/unit/introspection-2.tcl` |
 | `errors stats for GEOADD in tests/unit/introspection-2.tcl` |
 | `command stats for scripts in tests/unit/introspection-2.tcl` |
-| `CLIENT KILL close the client connection during bgsave in tests/unit/introspection.tcl` |
-| `Vararg DEL in tests/unit/keyspace.tcl` |
-| `Untagged multi-key commands in tests/unit/keyspace.tcl` |
-| `KEYS with pattern in tests/unit/keyspace.tcl` |
-| `KEYS to get all keys in tests/unit/keyspace.tcl` |
-| `DBSIZE in tests/unit/keyspace.tcl` |
-| `KEYS with hashtag in tests/unit/keyspace.tcl` |
-| `EXISTS in tests/unit/keyspace.tcl` |
-| `RENAME basic usage in tests/unit/keyspace.tcl` |
-| `RENAME against already existing key in tests/unit/keyspace.tcl` |
-| `RENAMENX basic usage in tests/unit/keyspace.tcl` |
-| `RENAMENX against already existing key in tests/unit/keyspace.tcl` |
-| `RENAMENX against already existing key (2) in tests/unit/keyspace.tcl` |
-| `RENAME where source and dest key are the same (existing) in tests/unit/keyspace.tcl` |
-| `RENAMENX where source and dest key are the same (existing) in tests/unit/keyspace.tcl` |
-| `RENAME with volatile key, should move the TTL as well in tests/unit/keyspace.tcl` |
-| `RENAME with volatile key, should not inherit TTL of target key in tests/unit/keyspace.tcl` |
-| `COPY basic usage for string in tests/unit/keyspace.tcl` |
-| `COPY for string does not copy data to no-integer DB in tests/unit/keyspace.tcl` |
-| `COPY can copy key expire metadata as well in tests/unit/keyspace.tcl` |
-| `COPY does not create an expire if it does not exist in tests/unit/keyspace.tcl` |
-| `RANDOMKEY in tests/unit/keyspace.tcl` |
-| `KEYS * two times with long key, Github issue #1208 in tests/unit/keyspace.tcl` |
 | `LATENCY HISTOGRAM with empty histogram in tests/unit/latency-monitor.tcl` |
 | `LATENCY HISTOGRAM all commands in tests/unit/latency-monitor.tcl` |
 | `LATENCY HISTOGRAM sub commands in tests/unit/latency-monitor.tcl` |
@@ -174,9 +144,7 @@
 | `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `EXEC fail on lazy expired WATCHed key in tests/unit/multi.tcl` |
 | `MULTI / EXEC is propagated correctly (multiple commands) in tests/unit/multi.tcl` |
-| `MULTI / EXEC with REPLICAOF in tests/unit/multi.tcl` |
 | `MULTI and script timeout in tests/unit/multi.tcl` |
 | `EXEC and script timeout in tests/unit/multi.tcl` |
 | `MULTI-EXEC body and script timeout in tests/unit/multi.tcl` |
@@ -194,7 +162,6 @@
 | `MULTI with SAVE in tests/unit/multi.tcl` |
 | `MULTI with SHUTDOWN in tests/unit/multi.tcl` |
 | `MULTI with config error in tests/unit/multi.tcl` |
-| `Flushall while watching several keys by one client in tests/unit/multi.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
