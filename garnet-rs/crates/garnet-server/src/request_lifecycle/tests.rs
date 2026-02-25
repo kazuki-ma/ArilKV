@@ -6080,6 +6080,29 @@ fn pfdebug_encoding_and_strlen_follow_sparse_dense_transitions() {
 }
 
 #[test]
+fn oversized_hyll_set_is_canonicalized_to_invalid_hll_marker() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let mut payload = String::from("HYLL");
+    payload.push_str(&"x".repeat(270_000));
+    let command = format!("SET hll {}", payload);
+    let response = execute_command_line(&processor, &command).unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    assert_command_response(&processor, "GET hll", b"$4\r\nHYLL\r\n");
+    assert_command_error(
+        &processor,
+        "PFCOUNT hll",
+        b"-INVALIDOBJ Corrupted HLL object detected\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "PFDEBUG GETREG hll",
+        b"-INVALIDOBJ Corrupted HLL object detected\r\n",
+    );
+}
+
+#[test]
 fn quit_and_time_commands_return_expected_responses() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

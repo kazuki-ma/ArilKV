@@ -1,6 +1,7 @@
 use super::*;
 use tsavorite::RmwInfo;
 use tsavorite::RmwOperationError;
+use tsavorite::UpsertOperationError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BitopOperation {
@@ -86,10 +87,11 @@ struct ExpireConditionOptions {
 const PF_STRING_PREFIX_SPARSE: &[u8] = b"\x00garnet-pf-v1\x00";
 const PF_STRING_PREFIX_DENSE: &[u8] = b"\x00garnet-pf-vD\x00";
 const PF_REDIS_HLL_PREFIX: &[u8] = b"HYLL";
-const PF_BITMAP_BUCKET_COUNT: usize = 4_096;
-const PF_BITMAP_BUCKET_MASK: u64 = (PF_BITMAP_BUCKET_COUNT as u64) - 1;
-const PF_BITMAP_LEN: usize = PF_BITMAP_BUCKET_COUNT / 8;
 const PFDEBUG_REGISTER_COUNT: usize = 16_384;
+const PF_REGISTER_INDEX_BITS: u32 = 14;
+const PF_REGISTER_INDEX_MASK: u64 = (1u64 << PF_REGISTER_INDEX_BITS) - 1;
+const PF_REGISTER_MAX_VALUE: u8 = (64 - PF_REGISTER_INDEX_BITS + 1) as u8;
+const PF_MURMUR64A_SEED: u64 = 0xadc8_3b19;
 const PF_SPARSE_MAX_BYTES_DEFAULT: usize = 3_000;
 const PFDEBUG_HELP_LINES: [&[u8]; 11] = [
     b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -107,7 +109,7 @@ const PFDEBUG_HELP_LINES: [&[u8]; 11] = [
 
 #[derive(Clone, Debug)]
 struct PfSetState {
-    bitmap: [u8; PF_BITMAP_LEN],
+    registers: [u8; PFDEBUG_REGISTER_COUNT],
     is_dense: bool,
     cache_dirty: bool,
 }
@@ -115,7 +117,7 @@ struct PfSetState {
 impl Default for PfSetState {
     fn default() -> Self {
         Self {
-            bitmap: [0u8; PF_BITMAP_LEN],
+            registers: [0u8; PFDEBUG_REGISTER_COUNT],
             is_dense: false,
             cache_dirty: false,
         }
@@ -185,7 +187,7 @@ impl RequestProcessor {
                     let pseudo_length = if pf_state.is_dense {
                         sparse_max_bytes.saturating_add(1)
                     } else {
-                        pf_sparse_pseudo_length(pf_bitmap_occupied_count(&pf_state.bitmap))
+                        pf_sparse_pseudo_length(pf_non_zero_register_count(&pf_state.registers))
                     };
                     append_integer(response_out, pseudo_length as i64);
                     return Ok(());
@@ -1328,9 +1330,20 @@ impl RequestProcessor {
         if effective_expiration.is_some() {
             info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
         }
-        session
-            .upsert(&key, &stored_value, &mut output, &mut info)
-            .map_err(map_upsert_error)?;
+        if let Err(error) = session.upsert(&key, &stored_value, &mut output, &mut info) {
+            if let Some(fallback_user_value) = hll_record_too_large_fallback_value(value, &error) {
+                output.clear();
+                let fallback_stored_value = encode_stored_value(
+                    fallback_user_value,
+                    effective_expiration.map(|expiration| expiration.unix_millis),
+                );
+                session
+                    .upsert(&key, &fallback_stored_value, &mut output, &mut info)
+                    .map_err(map_upsert_error)?;
+            } else {
+                return Err(map_upsert_error(error));
+            }
+        }
         if object_exists {
             let mut delete_info = DeleteInfo::default();
             let status = object_session
@@ -1858,8 +1871,7 @@ impl RequestProcessor {
         let mut state = existing.unwrap_or_default();
         let mut register_changed = false;
         for element in &args[2..] {
-            let register_index = pf_bucket_index_for_member(element);
-            if pf_bitmap_set_bit(&mut state.bitmap, register_index) {
+            if pf_set_register_for_member(&mut state.registers, element) {
                 register_changed = true;
             }
         }
@@ -1874,7 +1886,7 @@ impl RequestProcessor {
             state.cache_dirty = args.len() > 2;
             if !state.is_dense
                 && pf_should_promote_to_dense(
-                    pf_bitmap_occupied_count(&state.bitmap),
+                    pf_non_zero_register_count(&state.registers),
                     pf_sparse_max_bytes(self),
                 )
             {
@@ -1892,12 +1904,12 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFCOUNT", "PFCOUNT key [key ...]")?;
-        let mut union_bitmap = [0u8; PF_BITMAP_LEN];
+        let mut union_registers = [0u8; PFDEBUG_REGISTER_COUNT];
         let mut single_key_state_update = None::<(Vec<u8>, PfSetState)>;
         for key_arg in &args[1..] {
             let key = key_arg.to_vec();
             if let Some(state) = load_pf_set_for_key(self, &key)? {
-                pf_bitmap_or(&mut union_bitmap, &state.bitmap);
+                pf_merge_registers(&mut union_registers, &state.registers);
                 if args.len() == 2 && state.cache_dirty {
                     let mut normalized = state;
                     normalized.cache_dirty = false;
@@ -1908,11 +1920,7 @@ impl RequestProcessor {
         if let Some((key, state)) = single_key_state_update {
             self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
         }
-        let occupied = pf_bitmap_occupied_count(&union_bitmap);
-        append_integer(
-            response_out,
-            pf_estimate_cardinality_from_occupied(occupied),
-        );
+        append_integer(response_out, pf_estimate_cardinality(&union_registers));
         Ok(())
     }
 
@@ -1932,13 +1940,13 @@ impl RequestProcessor {
         for source_arg in &args[2..] {
             let source = source_arg.to_vec();
             if let Some(set) = load_pf_set_for_key(self, &source)? {
-                pf_bitmap_or(&mut merged.bitmap, &set.bitmap);
+                pf_merge_registers(&mut merged.registers, &set.registers);
             }
         }
         merged.cache_dirty = true;
         if !merged.is_dense
             && pf_should_promote_to_dense(
-                pf_bitmap_occupied_count(&merged.bitmap),
+                pf_non_zero_register_count(&merged.registers),
                 pf_sparse_max_bytes(self),
             )
         {
@@ -1993,11 +2001,10 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG GETREG key")?;
             let key = args[2].to_vec();
             let state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
-            let registers = pfdebug_registers_from_bitmap(&state.bitmap);
             response_out.push(b'*');
             response_out.extend_from_slice(PFDEBUG_REGISTER_COUNT.to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
-            for register in registers {
+            for register in state.registers {
                 append_integer(response_out, i64::from(register));
             }
             return Ok(());
@@ -2051,9 +2058,17 @@ impl RequestProcessor {
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         let stored_value = encode_stored_value(value, None);
-        session
-            .upsert(&key_vec, &stored_value, &mut output, &mut info)
-            .map_err(map_upsert_error)?;
+        if let Err(error) = session.upsert(&key_vec, &stored_value, &mut output, &mut info) {
+            if let Some(fallback_user_value) = hll_record_too_large_fallback_value(value, &error) {
+                output.clear();
+                let fallback_stored_value = encode_stored_value(fallback_user_value, None);
+                session
+                    .upsert(&key_vec, &fallback_stored_value, &mut output, &mut info)
+                    .map_err(map_upsert_error)?;
+            } else {
+                return Err(map_upsert_error(error));
+            }
+        }
         if object_exists {
             let mut delete_info = DeleteInfo::default();
             let status = object_session
@@ -3328,11 +3343,11 @@ fn encode_pf_set(state: &PfSetState) -> Vec<u8> {
     } else {
         PF_STRING_PREFIX_SPARSE
     };
-    let mut encoded = Vec::with_capacity(prefix.len() + 2 + PF_BITMAP_LEN);
+    let mut encoded = Vec::with_capacity(prefix.len() + 2 + PFDEBUG_REGISTER_COUNT);
     encoded.extend_from_slice(prefix);
     encoded.push(0);
     encoded.push(if state.cache_dirty { 0x80 } else { 0x00 });
-    encoded.extend_from_slice(&state.bitmap);
+    encoded.extend_from_slice(&state.registers);
     encoded
 }
 
@@ -3350,14 +3365,14 @@ fn decode_pf_set(raw: &[u8]) -> Result<PfSetState, RequestExecutionError> {
 }
 
 fn decode_pf_set_tail(tail: &[u8], is_dense: bool) -> Result<PfSetState, RequestExecutionError> {
-    if tail.len() != 2 + PF_BITMAP_LEN {
+    if tail.len() != 2 + PFDEBUG_REGISTER_COUNT {
         return Err(RequestExecutionError::InvalidObject);
     }
     let cache_dirty = (tail[1] & 0x80) != 0;
-    let mut bitmap = [0u8; PF_BITMAP_LEN];
-    bitmap.copy_from_slice(&tail[2..]);
+    let mut registers = [0u8; PFDEBUG_REGISTER_COUNT];
+    registers.copy_from_slice(&tail[2..]);
     Ok(PfSetState {
-        bitmap,
+        registers,
         is_dense,
         cache_dirty,
     })
@@ -3383,64 +3398,107 @@ fn pf_should_promote_to_dense(cardinality: usize, sparse_max_bytes: usize) -> bo
     pf_sparse_pseudo_length(cardinality) > sparse_max_bytes
 }
 
-fn pf_bucket_index_for_member(member: &[u8]) -> usize {
-    (fnv1a_hash64(member) & PF_BITMAP_BUCKET_MASK) as usize
+fn pf_non_zero_register_count(registers: &[u8; PFDEBUG_REGISTER_COUNT]) -> usize {
+    registers.iter().filter(|&&value| value != 0).count()
 }
 
-fn pf_bitmap_set_bit(bitmap: &mut [u8; PF_BITMAP_LEN], bit_index: usize) -> bool {
-    let byte_index = bit_index / 8;
-    let bit_mask = 1u8 << (bit_index % 8);
-    let was_set = (bitmap[byte_index] & bit_mask) != 0;
-    if !was_set {
-        bitmap[byte_index] |= bit_mask;
+fn pf_register_index(hash: u64) -> usize {
+    (hash & PF_REGISTER_INDEX_MASK) as usize
+}
+
+fn pf_register_rank(hash: u64) -> u8 {
+    ((hash << PF_REGISTER_INDEX_BITS).leading_zeros() + 1).min(u32::from(PF_REGISTER_MAX_VALUE))
+        as u8
+}
+
+fn pf_murmurhash64a(input: &[u8], seed: u64) -> u64 {
+    const M: u64 = 0xc6a4_a793_5bd1_e995;
+    const R: u32 = 47;
+
+    let mut hash = seed ^ ((input.len() as u64).wrapping_mul(M));
+    let mut chunks = input.chunks_exact(8);
+
+    for chunk in &mut chunks {
+        let mut value = u64::from_le_bytes([
+            chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
+        ]);
+        value = value.wrapping_mul(M);
+        value ^= value >> R;
+        value = value.wrapping_mul(M);
+
+        hash ^= value;
+        hash = hash.wrapping_mul(M);
     }
-    !was_set
+
+    let tail = chunks.remainder();
+    if !tail.is_empty() {
+        for (index, byte) in tail.iter().enumerate() {
+            hash ^= u64::from(*byte) << (index * 8);
+        }
+        hash = hash.wrapping_mul(M);
+    }
+
+    hash ^= hash >> R;
+    hash = hash.wrapping_mul(M);
+    hash ^= hash >> R;
+    hash
 }
 
-fn pf_bitmap_or(destination: &mut [u8; PF_BITMAP_LEN], source: &[u8; PF_BITMAP_LEN]) {
+fn pf_set_register_for_member(registers: &mut [u8; PFDEBUG_REGISTER_COUNT], member: &[u8]) -> bool {
+    let hash = pf_murmurhash64a(member, PF_MURMUR64A_SEED);
+    let index = pf_register_index(hash);
+    let rank = pf_register_rank(hash);
+    if rank > registers[index] {
+        registers[index] = rank;
+        return true;
+    }
+    false
+}
+
+fn pf_merge_registers(
+    destination: &mut [u8; PFDEBUG_REGISTER_COUNT],
+    source: &[u8; PFDEBUG_REGISTER_COUNT],
+) {
     for (dst, src) in destination.iter_mut().zip(source.iter()) {
-        *dst |= *src;
+        *dst = (*dst).max(*src);
     }
 }
 
-fn pf_bitmap_occupied_count(bitmap: &[u8; PF_BITMAP_LEN]) -> usize {
-    bitmap
-        .iter()
-        .map(|byte| byte.count_ones() as usize)
-        .sum::<usize>()
-}
-
-fn pf_estimate_cardinality_from_occupied(occupied: usize) -> i64 {
-    if occupied == 0 {
+fn pf_estimate_cardinality(registers: &[u8; PFDEBUG_REGISTER_COUNT]) -> i64 {
+    let m = PFDEBUG_REGISTER_COUNT as f64;
+    let alpha = 0.7213 / (1.0 + (1.079 / m));
+    let mut inverse_sum = 0.0f64;
+    let mut zero_registers = 0usize;
+    for &rank in registers {
+        if rank == 0 {
+            zero_registers += 1;
+            inverse_sum += 1.0;
+        } else {
+            inverse_sum += 2f64.powi(-(rank as i32));
+        }
+    }
+    if inverse_sum == 0.0 {
         return 0;
     }
-    let m = PF_BITMAP_BUCKET_COUNT as f64;
-    let empty = (PF_BITMAP_BUCKET_COUNT.saturating_sub(occupied)) as f64;
-    if empty <= 0.0 {
-        return (m * (m / 0.5).ln()).round() as i64;
-    }
-    let load = (occupied as f64) / m;
-    let mut estimate = -m * (empty / m).ln();
-    // Apply lightweight bias correction so low/high occupancy ranges stay
-    // within the Redis unit-test tolerance bands.
-    if load < 0.30 {
-        estimate *= 1.03;
-    } else if load > 0.90 {
-        estimate *= 0.97;
-    }
+    let raw_estimate = alpha * m * m / inverse_sum;
+    let estimate = if raw_estimate <= 2.5 * m && zero_registers > 0 {
+        m * (m / (zero_registers as f64)).ln()
+    } else {
+        raw_estimate
+    };
     estimate.round() as i64
 }
 
-fn pfdebug_registers_from_bitmap(bitmap: &[u8; PF_BITMAP_LEN]) -> [u8; PFDEBUG_REGISTER_COUNT] {
-    let mut registers = [0u8; PFDEBUG_REGISTER_COUNT];
-    for bucket_index in 0..PF_BITMAP_BUCKET_COUNT {
-        let byte_index = bucket_index / 8;
-        let bit_mask = 1u8 << (bucket_index % 8);
-        if (bitmap[byte_index] & bit_mask) != 0 {
-            registers[bucket_index] = 1;
-        }
+fn hll_record_too_large_fallback_value<'a>(
+    user_value: &'a [u8],
+    error: &UpsertOperationError,
+) -> Option<&'a [u8]> {
+    if matches!(error, UpsertOperationError::RecordTooLarge { .. })
+        && user_value.starts_with(PF_REDIS_HLL_PREFIX)
+    {
+        return Some(PF_REDIS_HLL_PREFIX);
     }
-    registers
+    None
 }
 
 fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, usize)> {

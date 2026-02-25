@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=465; err=123; ignore=123; failed_tests=123  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=469; err=119; ignore=123; failed_tests=119  |
 | `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `123`
+- Failed tests extracted from runtest log: `119`
 
 | Test |
 |---|
@@ -93,10 +93,6 @@
 | `GEOSEARCH fuzzy test - byradius in tests/unit/geo.tcl` |
 | `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
 | `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
-| `HyperLogLogs are promote from sparse to dense in tests/unit/hyperloglog.tcl` |
-| `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
-| `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
-| `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
 | `info command with at most one sub command in tests/unit/info-command.tcl` |
 | `info command with one sub-section in tests/unit/info-command.tcl` |
 | `info command with multiple sub-sections in tests/unit/info-command.tcl` |
