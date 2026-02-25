@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=418; err=170; ignore=123; failed_tests=170  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=422; err=166; ignore=123; failed_tests=166  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `170`
+- Failed tests extracted from runtest log: `166`
 
 | Test |
 |---|
@@ -101,7 +101,6 @@
 | `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
-| `Fuzzing dense/sparse encoding: Redis should always detect errors in tests/unit/hyperloglog.tcl` |
 | `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
 | `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
@@ -180,9 +179,6 @@
 | `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `EXEC fails if there are errors while queueing commands #1 in tests/unit/multi.tcl` |
-| `EXEC fails if there are errors while queueing commands #2 in tests/unit/multi.tcl` |
-| `If EXEC aborts, the client MULTI state is cleared in tests/unit/multi.tcl` |
 | `EXEC fail on lazy expired WATCHed key in tests/unit/multi.tcl` |
 | `Delete WATCHed stale keys should not fail EXEC in tests/unit/multi.tcl` |
 | `FLUSHDB while watching stale keys should not fail EXEC in tests/unit/multi.tcl` |

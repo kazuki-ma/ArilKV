@@ -540,6 +540,175 @@ async fn tcp_pipeline_executes_basic_crud_commands() {
 }
 
 #[tokio::test]
+async fn multi_queue_errors_abort_exec_and_reset_connection_state() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$3\r\nFOO\r\n",
+        b"-ERR unknown command\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$11\r\nunknown:key\r\n$1\r\n1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nGET\r\n$11\r\nunknown:key\r\n",
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$4\r\nSAVE\r\n$1\r\nx\r\n",
+        b"-ERR wrong number of arguments for 'SAVE' command\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$9\r\narity:key\r\n$1\r\n1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nGET\r\n$9\r\narity:key\r\n",
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$8\r\nsave:key\r\n$1\r\n1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nSAVE\r\n",
+        b"-ERR Command not allowed inside a transaction\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nGET\r\n$8\r\nsave:key\r\n",
+        b"$-1\r\n",
+    )
+    .await;
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$8\r\nshut:key\r\n$1\r\n1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$8\r\nSHUTDOWN\r\n",
+        b"-ERR Command not allowed inside a transaction\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nGET\r\n$8\r\nshut:key\r\n",
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    send_and_expect(
+        &mut admin,
+        b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$9\r\nmaxmemory\r\n$1\r\n1\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$7\r\noom:key\r\n$1\r\n1\r\n",
+        b"-OOM command not allowed when used memory > 'maxmemory'.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$9\r\nmaxmemory\r\n$1\r\n0\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$8\r\noom2:key\r\n$1\r\n2\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"-EXECABORT Transaction discarded because of previous errors.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nGET\r\n$8\r\noom2:key\r\n",
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_inline_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4570,11 +4739,29 @@ async fn send_and_expect(client: &mut TcpStream, request: &[u8], expected_respon
     client.write_all(request).await.unwrap();
 
     let mut actual = vec![0u8; expected_response.len()];
-    tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut actual))
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(actual, expected_response);
+    match tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut actual)).await {
+        Ok(Ok(_)) => {}
+        Ok(Err(error)) => {
+            panic!(
+                "read_exact failed for request {:?}: {}",
+                String::from_utf8_lossy(request),
+                error
+            );
+        }
+        Err(_) => {
+            panic!(
+                "timed out waiting for response to request {:?}; expected {:?}",
+                String::from_utf8_lossy(request),
+                String::from_utf8_lossy(expected_response)
+            );
+        }
+    }
+    assert_eq!(
+        actual,
+        expected_response,
+        "unexpected response for request {:?}",
+        String::from_utf8_lossy(request)
+    );
 }
 
 async fn send_and_read_integer(client: &mut TcpStream, request: &[u8], timeout: Duration) -> i64 {

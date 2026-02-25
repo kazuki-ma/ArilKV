@@ -650,6 +650,88 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     _ => {
+                        if command == CommandId::Unknown {
+                            transaction.aborted = true;
+                            responses.extend_from_slice(b"-ERR unknown command\r\n");
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
+                            continue;
+                        }
+                        if !command_has_valid_arity(command, argument_count) {
+                            transaction.aborted = true;
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
+                            continue;
+                        }
+                        if command_disallowed_inside_multi(command) {
+                            transaction.aborted = true;
+                            append_error_line(
+                                &mut responses,
+                                b"ERR Command not allowed inside a transaction",
+                            );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
+                            continue;
+                        }
+                        if command_mutating && processor.maxmemory_limit_bytes() > 0 {
+                            transaction.aborted = true;
+                            append_error_line(
+                                &mut responses,
+                                b"OOM command not allowed when used memory > 'maxmemory'.",
+                            );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
+                            continue;
+                        }
                         if replication.is_replica_mode() && command_mutating {
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
@@ -1209,6 +1291,10 @@ fn is_blocking_command(command: CommandId) -> bool {
             | CommandId::Bzpopmax
             | CommandId::Bzmpop,
     )
+}
+
+fn command_disallowed_inside_multi(command: CommandId) -> bool {
+    matches!(command, CommandId::Save | CommandId::Shutdown)
 }
 
 fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {
