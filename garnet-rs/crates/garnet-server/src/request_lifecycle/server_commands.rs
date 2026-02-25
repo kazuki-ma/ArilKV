@@ -97,6 +97,84 @@ const COMMAND_FLAGS_RW_UPDATE: [&[u8]; 2] = [b"RW", b"update"];
 const COMMAND_FLAGS_RW_ACCESS_UPDATE: [&[u8]; 3] = [b"RW", b"access", b"update"];
 const COMMAND_FLAGS_RM_DELETE: [&[u8]; 2] = [b"RM", b"delete"];
 const COMMAND_FLAGS_RW_DELETE: [&[u8]; 2] = [b"RW", b"delete"];
+#[derive(Copy, Clone, Eq, PartialEq)]
+enum InfoSection {
+    Server,
+    Clients,
+    Memory,
+    Stats,
+    Replication,
+    Cpu,
+    Scripting,
+    Commandstats,
+}
+
+fn push_info_section_once(sections: &mut Vec<InfoSection>, section: InfoSection) {
+    if !sections.contains(&section) {
+        sections.push(section);
+    }
+}
+
+fn push_default_info_sections(sections: &mut Vec<InfoSection>) {
+    for section in [
+        InfoSection::Server,
+        InfoSection::Clients,
+        InfoSection::Memory,
+        InfoSection::Stats,
+        InfoSection::Replication,
+        InfoSection::Cpu,
+        InfoSection::Scripting,
+    ] {
+        push_info_section_once(sections, section);
+    }
+}
+
+fn push_all_info_sections(sections: &mut Vec<InfoSection>) {
+    push_default_info_sections(sections);
+    push_info_section_once(sections, InfoSection::Commandstats);
+}
+
+fn append_info_sections_from_token(sections: &mut Vec<InfoSection>, token: &[u8]) {
+    if ascii_eq_ignore_case(token, b"DEFAULT") {
+        push_default_info_sections(sections);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"ALL") || ascii_eq_ignore_case(token, b"EVERYTHING") {
+        push_all_info_sections(sections);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"SERVER") {
+        push_info_section_once(sections, InfoSection::Server);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"CLIENTS") {
+        push_info_section_once(sections, InfoSection::Clients);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"MEMORY") {
+        push_info_section_once(sections, InfoSection::Memory);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"STATS") {
+        push_info_section_once(sections, InfoSection::Stats);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"REPLICATION") {
+        push_info_section_once(sections, InfoSection::Replication);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"CPU") {
+        push_info_section_once(sections, InfoSection::Cpu);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"SCRIPTING") {
+        push_info_section_once(sections, InfoSection::Scripting);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"COMMANDSTATS") {
+        push_info_section_once(sections, InfoSection::Commandstats);
+    }
+}
 
 impl RequestProcessor {
     pub(super) fn handle_quit(
@@ -172,16 +250,7 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_one_of_arities(args, &[1, 2], "INFO", "INFO [section]")?;
-
-        if args.len() == 2 {
-            let section = args[1];
-            if ascii_eq_ignore_case(section, b"COMMANDSTATS") {
-                let payload = self.render_commandstats_info_payload();
-                append_bulk_string(response_out, payload.as_bytes());
-                return Ok(());
-            }
-        }
+        ensure_min_arity(args, 1, "INFO", "INFO [section [section ...]]")?;
 
         let dbsize = self.active_key_count()?;
         let blocked_clients = self.blocked_clients();
@@ -194,29 +263,84 @@ impl RequestProcessor {
         let lazyfreed_objects = self.lazyfreed_objects();
         let scripting_runtime = self.scripting_runtime_config();
         let used_memory_vm_functions = self.used_memory_vm_functions();
-        let payload = format!(
-            "# Server\r\nredis_version:garnet-rs\r\n# Clients\r\nconnected_clients:{}\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfreed_objects:{}\r\n# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nused_memory_vm_functions:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
-            connected_clients,
-            blocked_clients,
-            watching_clients,
-            dbsize,
-            rdb_bgsave_in_progress,
-            rdb_changes_since_last_save,
-            expired_keys,
-            expired_keys_active,
-            lazyfreed_objects,
-            if self.scripting_enabled() { 1 } else { 0 },
-            self.script_cache_entry_count(),
-            scripting_runtime.cache_max_entries,
-            self.script_cache_hits(),
-            self.script_cache_misses(),
-            self.script_cache_evictions(),
-            self.script_runtime_timeouts(),
-            used_memory_vm_functions,
-            scripting_runtime.max_script_bytes,
-            scripting_runtime.max_memory_bytes,
-            scripting_runtime.max_execution_millis,
-        );
+
+        let mut sections = Vec::new();
+        if args.len() == 1 {
+            push_default_info_sections(&mut sections);
+        } else {
+            for token in &args[1..] {
+                append_info_sections_from_token(&mut sections, token);
+            }
+        }
+
+        let mut payload = String::new();
+        for section in sections {
+            match section {
+                InfoSection::Server => {
+                    payload.push_str("# Server\r\nredis_version:garnet-rs\r\n");
+                }
+                InfoSection::Clients => {
+                    payload.push_str(
+                        format!(
+                            "# Clients\r\nconnected_clients:{}\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n",
+                            connected_clients, blocked_clients, watching_clients
+                        )
+                        .as_str(),
+                    );
+                }
+                InfoSection::Memory => {
+                    payload.push_str(
+                        format!("# Memory\r\nused_memory:{}\r\n", used_memory_vm_functions)
+                            .as_str(),
+                    );
+                }
+                InfoSection::Stats => {
+                    payload.push_str(
+                        format!(
+                            "# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfreed_objects:{}\r\n",
+                            dbsize,
+                            rdb_bgsave_in_progress,
+                            rdb_changes_since_last_save,
+                            expired_keys,
+                            expired_keys_active,
+                            lazyfreed_objects,
+                        )
+                        .as_str(),
+                    );
+                }
+                InfoSection::Replication => {
+                    payload.push_str("# Replication\r\nmaster_repl_offset:0\r\n");
+                }
+                InfoSection::Cpu => {
+                    payload.push_str(
+                        "# CPU\r\nused_cpu_user:0.00\r\nused_cpu_sys:0.00\r\nused_cpu_user_children:0.00\r\nused_cpu_sys_children:0.00\r\n",
+                    );
+                }
+                InfoSection::Scripting => {
+                    payload.push_str(
+                        format!(
+                            "# Scripting\r\nscripting_enabled:{}\r\nscripting_cache_entries:{}\r\nscripting_cache_max_entries:{}\r\nscripting_cache_hits:{}\r\nscripting_cache_misses:{}\r\nscripting_cache_evictions:{}\r\nscripting_runtime_timeouts:{}\r\nused_memory_vm_functions:{}\r\nscripting_max_script_bytes:{}\r\nscripting_max_memory_bytes:{}\r\nscripting_max_execution_millis:{}\r\n",
+                            if self.scripting_enabled() { 1 } else { 0 },
+                            self.script_cache_entry_count(),
+                            scripting_runtime.cache_max_entries,
+                            self.script_cache_hits(),
+                            self.script_cache_misses(),
+                            self.script_cache_evictions(),
+                            self.script_runtime_timeouts(),
+                            used_memory_vm_functions,
+                            scripting_runtime.max_script_bytes,
+                            scripting_runtime.max_memory_bytes,
+                            scripting_runtime.max_execution_millis,
+                        )
+                        .as_str(),
+                    );
+                }
+                InfoSection::Commandstats => {
+                    payload.push_str(&self.render_commandstats_info_payload());
+                }
+            }
+        }
+
         append_bulk_string(response_out, payload.as_bytes());
         Ok(())
     }

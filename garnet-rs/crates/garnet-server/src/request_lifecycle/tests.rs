@@ -4402,6 +4402,91 @@ fn info_dbsize_and_command_responses_are_generated() {
 }
 
 #[test]
+fn info_supports_section_filters_and_multi_section_arguments() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let info_default = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload");
+    let info_default_text = String::from_utf8_lossy(&info_default);
+    assert!(info_default_text.contains("redis_version:garnet-rs"));
+    assert!(info_default_text.contains("used_cpu_user:"));
+    assert!(info_default_text.contains("used_memory:"));
+    assert!(info_default_text.contains("master_repl_offset:"));
+    assert!(!info_default_text.contains("rejected_calls"));
+
+    let info_default_section = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"default"]),
+    ))
+    .expect("INFO default returns bulk payload");
+    let info_default_section_text = String::from_utf8_lossy(&info_default_section);
+    assert!(info_default_section_text.contains("used_cpu_user:"));
+    assert!(info_default_section_text.contains("used_memory:"));
+    assert!(info_default_section_text.contains("master_repl_offset:"));
+    assert!(!info_default_section_text.contains("rejected_calls"));
+
+    let info_cpu = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO", b"cpu"])))
+        .expect("INFO cpu returns bulk payload");
+    let info_cpu_text = String::from_utf8_lossy(&info_cpu);
+    assert!(info_cpu_text.contains("used_cpu_user:"));
+    assert!(!info_cpu_text.contains("used_memory:"));
+    assert!(!info_cpu_text.contains("master_repl_offset:"));
+
+    let info_cpu_sentinel = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"cpu", b"sentinel"]),
+    ))
+    .expect("INFO cpu sentinel returns bulk payload");
+    let info_cpu_sentinel_text = String::from_utf8_lossy(&info_cpu_sentinel);
+    assert!(info_cpu_sentinel_text.contains("used_cpu_user:"));
+    assert!(!info_cpu_sentinel_text.contains("master_repl_offset:"));
+
+    processor.record_command_call(b"set");
+    let info_all = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO", b"all"])))
+        .expect("INFO all returns bulk payload");
+    let info_all_text = String::from_utf8_lossy(&info_all);
+    assert!(info_all_text.contains("used_cpu_user:"));
+    assert!(info_all_text.contains("used_memory:"));
+    assert!(info_all_text.contains("master_repl_offset:"));
+    assert!(info_all_text.contains("rejected_calls"));
+    assert_eq!(info_all_text.matches("used_cpu_user_children").count(), 1);
+
+    let info_everything = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"everything"]),
+    ))
+    .expect("INFO everything returns bulk payload");
+    let info_everything_text = String::from_utf8_lossy(&info_everything);
+    assert!(info_everything_text.contains("rejected_calls"));
+
+    let info_cpu_default = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"cpu", b"default"]),
+    ))
+    .expect("INFO cpu default returns bulk payload");
+    let info_cpu_default_text = String::from_utf8_lossy(&info_cpu_default);
+    assert!(info_cpu_default_text.contains("used_cpu_user:"));
+    assert!(info_cpu_default_text.contains("used_memory:"));
+    assert!(info_cpu_default_text.contains("master_repl_offset:"));
+    assert!(!info_cpu_default_text.contains("rejected_calls"));
+    assert_eq!(
+        info_cpu_default_text
+            .matches("used_cpu_user_children")
+            .count(),
+        1
+    );
+
+    let info_commandstats = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"commandstats"]),
+    ))
+    .expect("INFO commandstats returns bulk payload");
+    let info_commandstats_text = String::from_utf8_lossy(&info_commandstats);
+    assert!(info_commandstats_text.contains("rejected_calls"));
+    assert!(!info_commandstats_text.contains("used_memory:"));
+}
+
+#[test]
 fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

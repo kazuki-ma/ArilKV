@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=496; err=92; ignore=123; failed_tests=92  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=498; err=90; ignore=123; failed_tests=90  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `92`
+- Failed tests extracted from runtest log: `90`
 
 | Test |
 |---|
@@ -63,12 +63,10 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
+| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
-| `info command with at most one sub command in tests/unit/info-command.tcl` |
-| `info command with one sub-section in tests/unit/info-command.tcl` |
-| `info command with multiple sub-sections in tests/unit/info-command.tcl` |
 | `KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - Histogram values of Bytes, Kilo and Mega  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - Test hyperloglog  in tests/unit/info-keysizes.tcl` |
