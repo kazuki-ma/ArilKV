@@ -88,6 +88,46 @@ fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
     unsafe { arg.as_slice() }
 }
 
+fn command_uses_subcommand_stats(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Acl
+            | CommandId::Client
+            | CommandId::Cluster
+            | CommandId::Command
+            | CommandId::Config
+            | CommandId::Debug
+            | CommandId::Function
+            | CommandId::Latency
+            | CommandId::Memory
+            | CommandId::Module
+            | CommandId::Script
+            | CommandId::Slowlog
+    )
+}
+
+fn command_call_name_for_stats(
+    command: CommandId,
+    command_name: &[u8],
+    subcommand_name: Option<&[u8]>,
+) -> Vec<u8> {
+    if !command_uses_subcommand_stats(command) {
+        return command_name.to_vec();
+    }
+    let Some(subcommand_name) = subcommand_name else {
+        return command_name.to_vec();
+    };
+    if subcommand_name.is_empty() {
+        return command_name.to_vec();
+    }
+
+    let mut combined = Vec::with_capacity(command_name.len() + subcommand_name.len() + 1);
+    combined.extend_from_slice(command_name);
+    combined.push(b'|');
+    combined.extend_from_slice(subcommand_name);
+    combined
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientReplyMode {
     On,
@@ -299,7 +339,9 @@ pub(crate) async fn handle_connection(
             };
             metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
             metrics.set_client_last_command(client_id, command_name, subcommand_name);
-            processor.record_command_call(command_name);
+            let command_call_name =
+                command_call_name_for_stats(command, command_name, subcommand_name);
+            processor.record_command_call(&command_call_name);
             if command != CommandId::Monitor && command != CommandId::Unknown {
                 metrics.publish_monitor_event(build_monitor_event_line(&args[..argument_count]));
                 if let Some(lua_event) = build_monitor_lua_event_line(&args[..argument_count]) {

@@ -6665,6 +6665,84 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
 }
 
 #[test]
+fn latency_histogram_and_event_queries_cover_compatibility_shapes() {
+    let processor = RequestProcessor::new().unwrap();
+    processor.record_command_call(b"config|resetstat");
+    processor.record_command_call(b"set");
+    processor.record_command_call(b"set");
+    processor.record_command_call(b"client|id");
+    processor.record_command_call(b"client|list");
+    processor.record_command_call(b"latency|histogram");
+
+    let histogram_all = execute_frame(&processor, &encode_resp(&[b"LATENCY", b"HISTOGRAM"]));
+    let histogram_all_text = String::from_utf8_lossy(&histogram_all);
+    assert!(histogram_all_text.contains("config|resetstat"));
+    assert!(histogram_all_text.contains("calls 2 histogram_usec"));
+    assert!(!histogram_all_text.contains("latency|histogram"));
+
+    let histogram_client = execute_frame(
+        &processor,
+        &encode_resp(&[b"LATENCY", b"HISTOGRAM", b"client"]),
+    );
+    let histogram_client_text = String::from_utf8_lossy(&histogram_client);
+    assert!(histogram_client_text.contains("client|id"));
+    assert!(histogram_client_text.contains("client|list"));
+    assert!(!histogram_client_text.contains("$3\r\nset\r\n"));
+
+    let histogram_filtered = execute_frame(
+        &processor,
+        &encode_resp(&[b"LATENCY", b"HISTOGRAM", b"blabla", b"set"]),
+    );
+    let histogram_filtered_text = String::from_utf8_lossy(&histogram_filtered);
+    assert!(histogram_filtered_text.contains("$3\r\nset\r\n"));
+    assert!(!histogram_filtered_text.contains("blabla"));
+
+    processor.record_latency_event(b"command", 300);
+    processor.record_latency_event(b"command", 400);
+    processor.record_latency_event(b"command", 500);
+
+    let history = execute_frame(
+        &processor,
+        &encode_resp(&[b"LATENCY", b"HISTORY", b"command"]),
+    );
+    let history_text = String::from_utf8_lossy(&history);
+    assert!(history_text.contains(":300\r\n"));
+    assert!(history_text.contains(":400\r\n"));
+    assert!(history_text.contains(":500\r\n"));
+
+    let latest = execute_frame(&processor, &encode_resp(&[b"LATENCY", b"LATEST"]));
+    let latest_text = String::from_utf8_lossy(&latest);
+    assert!(latest_text.contains("$7\r\ncommand\r\n"));
+    assert!(latest_text.contains(":500\r\n"));
+
+    let graph = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"LATENCY", b"GRAPH", b"command"]),
+    ))
+    .expect("LATENCY GRAPH should return a bulk payload");
+    let graph_text = String::from_utf8_lossy(&graph);
+    assert!(graph_text.contains("command - high 500 ms, low 300 ms"));
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"LATENCY", b"RESET", b"command"])
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"LATENCY", b"LATEST"])),
+        b"*0\r\n"
+    );
+
+    assert_command_error(
+        &processor,
+        "LATENCY HELP extra",
+        b"-ERR wrong number of arguments for 'latency|help' command\r\n",
+    );
+}
+
+#[test]
 fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 16];

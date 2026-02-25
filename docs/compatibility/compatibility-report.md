@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=498; err=90; ignore=123; failed_tests=90  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=509; err=79; ignore=123; failed_tests=79  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `90`
+- Failed tests extracted from runtest log: `79`
 
 | Test |
 |---|
@@ -63,7 +63,6 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
@@ -91,17 +90,7 @@
 | `Operations in no-touch mode TOUCH from script alters the last access time of a key in tests/unit/introspection-2.tcl` |
 | `errors stats for GEOADD in tests/unit/introspection-2.tcl` |
 | `command stats for scripts in tests/unit/introspection-2.tcl` |
-| `LATENCY HISTOGRAM with empty histogram in tests/unit/latency-monitor.tcl` |
-| `LATENCY HISTOGRAM all commands in tests/unit/latency-monitor.tcl` |
-| `LATENCY HISTOGRAM sub commands in tests/unit/latency-monitor.tcl` |
-| `LATENCY HISTOGRAM with a subset of commands in tests/unit/latency-monitor.tcl` |
-| `LATENCY HISTOGRAM command in tests/unit/latency-monitor.tcl` |
-| `LATENCY HISTOGRAM with wrong command name skips the invalid one in tests/unit/latency-monitor.tcl` |
-| `Test latency events logging in tests/unit/latency-monitor.tcl` |
-| `LATENCY GRAPH can output the event graph in tests/unit/latency-monitor.tcl` |
 | `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
-| `LATENCY RESET is able to reset events in tests/unit/latency-monitor.tcl` |
-| `LATENCY HELP should not have unexpected options in tests/unit/latency-monitor.tcl` |
 | `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
 | `FLUSHDB ASYNC can reclaim memory in background in tests/unit/lazyfree.tcl` |
 | `lazy free a stream with all types of metadata in tests/unit/lazyfree.tcl` |

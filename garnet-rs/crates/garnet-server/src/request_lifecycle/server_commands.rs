@@ -757,6 +757,8 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::ValueNotFloat);
             }
             std::thread::sleep(Duration::from_secs_f64(seconds));
+            let latency_millis = (seconds * 1000.0).round() as u64;
+            self.record_latency_event(b"command", latency_millis.max(1));
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1467,22 +1469,51 @@ impl RequestProcessor {
         )?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
-            require_exact_arity(args, 2, "LATENCY", "LATENCY HELP")?;
+            require_exact_arity(args, 2, "LATENCY|HELP", "LATENCY HELP")?;
             append_bulk_array(response_out, &LATENCY_HELP_LINES);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LATEST") {
             require_exact_arity(args, 2, "LATENCY", "LATENCY LATEST")?;
-            response_out.extend_from_slice(b"*0\r\n");
+            let latest = self.latency_latest();
+            response_out.push(b'*');
+            response_out.extend_from_slice(latest.len().to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for (event_name, sample, max_latency_millis) in latest {
+                response_out.extend_from_slice(b"*4\r\n");
+                append_bulk_string(response_out, &event_name);
+                append_integer(response_out, sample.unix_seconds as i64);
+                append_integer(response_out, sample.latency_millis as i64);
+                append_integer(response_out, max_latency_millis as i64);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"HISTORY") {
             require_exact_arity(args, 3, "LATENCY", "LATENCY HISTORY event")?;
-            response_out.extend_from_slice(b"*0\r\n");
+            let history = self.latency_history(args[2]);
+            response_out.push(b'*');
+            response_out.extend_from_slice(history.len().to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for sample in history {
+                response_out.extend_from_slice(b"*2\r\n");
+                append_integer(response_out, sample.unix_seconds as i64);
+                append_integer(response_out, sample.latency_millis as i64);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"RESET") {
-            append_integer(response_out, 0);
+            if args.len() == 2 {
+                append_integer(response_out, self.reset_latency_events(None) as i64);
+                return Ok(());
+            }
+            let event_names = args[2..]
+                .iter()
+                .map(|name| name.to_vec())
+                .collect::<Vec<_>>();
+            append_integer(
+                response_out,
+                self.reset_latency_events(Some(&event_names)) as i64,
+            );
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
@@ -1492,11 +1523,70 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GRAPH") {
             require_exact_arity(args, 3, "LATENCY", "LATENCY GRAPH event")?;
-            append_bulk_string(response_out, b"");
+            let Some((high, low)) = self.latency_graph_range(args[2]) else {
+                append_bulk_string(response_out, b"");
+                return Ok(());
+            };
+            let normalized_event = args[2]
+                .iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect::<Vec<u8>>();
+            let graph = format!(
+                "{} - high {} ms, low {} ms\r\n",
+                String::from_utf8_lossy(&normalized_event),
+                high,
+                low
+            );
+            append_bulk_string(response_out, graph.as_bytes());
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"HISTOGRAM") {
-            response_out.extend_from_slice(b"*0\r\n");
+            let command_calls = self.command_call_counts_snapshot();
+            let mut command_counts = BTreeMap::<String, u64>::new();
+            for (command_name, count) in command_calls {
+                let name = String::from_utf8_lossy(&command_name).to_string();
+                if name == "latency" || name.starts_with("latency|") {
+                    continue;
+                }
+                command_counts.insert(name, count);
+            }
+
+            let mut selected = BTreeSet::<String>::new();
+            if args.len() == 2 {
+                selected.extend(command_counts.keys().cloned());
+            } else {
+                for token in &args[2..] {
+                    let name = String::from_utf8_lossy(token).to_ascii_lowercase();
+                    if name.contains('|') {
+                        if command_counts.contains_key(&name) {
+                            selected.insert(name);
+                        }
+                        continue;
+                    }
+                    if command_counts.contains_key(&name) {
+                        selected.insert(name.clone());
+                    }
+                    let prefix = format!("{name}|");
+                    for known_command in command_counts.keys() {
+                        if known_command.starts_with(&prefix) {
+                            selected.insert(known_command.clone());
+                        }
+                    }
+                }
+            }
+
+            response_out.push(b'*');
+            response_out.extend_from_slice((selected.len() * 2).to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for command_name in selected {
+                append_bulk_string(response_out, command_name.as_bytes());
+                let count = command_counts
+                    .get(&command_name)
+                    .copied()
+                    .unwrap_or_default();
+                let histogram = format!("calls {count} histogram_usec 1 1 1");
+                append_bulk_string(response_out, histogram.as_bytes());
+            }
             return Ok(());
         }
         Err(RequestExecutionError::UnknownCommand)
@@ -1877,6 +1967,7 @@ impl RequestProcessor {
             self.reset_expiration_stats();
             self.reset_lazyfreed_objects();
             self.reset_commandstats();
+            self.record_command_call(b"config|resetstat");
             append_simple_string(response_out, b"OK");
             return Ok(());
         }

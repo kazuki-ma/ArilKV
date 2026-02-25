@@ -59,6 +59,7 @@ const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
+const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
 
 fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     let mut values = HashMap::new();
@@ -245,6 +246,18 @@ struct FunctionRegistry {
     library_function_names: HashMap<String, Vec<String>>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct LatencySample {
+    pub(crate) unix_seconds: u64,
+    pub(crate) latency_millis: u64,
+}
+
+#[derive(Debug, Default)]
+struct LatencyEventState {
+    samples: VecDeque<LatencySample>,
+    max_latency_millis: u64,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientUnblockMode {
     Timeout,
@@ -277,6 +290,7 @@ pub struct RequestProcessor {
     rdb_key_save_delay_micros: AtomicU64,
     rdb_bgsave_deadline_unix_millis: AtomicU64,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<Vec<u8>>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
@@ -439,6 +453,7 @@ impl RequestProcessor {
             rdb_key_save_delay_micros: AtomicU64::new(0),
             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
             command_calls: Mutex::new(HashMap::new()),
+            latency_events: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
@@ -580,12 +595,105 @@ impl RequestProcessor {
         if command_name.is_empty() {
             return;
         }
-        let normalized = command_name
-            .iter()
-            .map(|byte| byte.to_ascii_lowercase())
-            .collect::<Vec<u8>>();
+        let normalized = normalize_ascii_lower(command_name);
         if let Ok(mut calls) = self.command_calls.lock() {
             *calls.entry(normalized).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn command_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
+        let Ok(calls) = self.command_calls.lock() else {
+            return Vec::new();
+        };
+        let mut ordered = BTreeMap::new();
+        for (command, count) in calls.iter() {
+            ordered.insert(command.clone(), *count);
+        }
+        ordered.into_iter().collect()
+    }
+
+    pub(crate) fn record_latency_event(&self, event_name: &[u8], latency_millis: u64) {
+        if event_name.is_empty() || latency_millis == 0 {
+            return;
+        }
+        let normalized = normalize_ascii_lower(event_name);
+        let unix_seconds = current_unix_time_millis().unwrap_or(0) / 1000;
+        let Ok(mut events) = self.latency_events.lock() else {
+            return;
+        };
+        let event = events.entry(normalized).or_default();
+        event.samples.push_back(LatencySample {
+            unix_seconds,
+            latency_millis,
+        });
+        while event.samples.len() > LATENCY_EVENT_HISTORY_CAPACITY {
+            let _ = event.samples.pop_front();
+        }
+        event.max_latency_millis = event.max_latency_millis.max(latency_millis);
+    }
+
+    pub(crate) fn latency_history(&self, event_name: &[u8]) -> Vec<LatencySample> {
+        let normalized = normalize_ascii_lower(event_name);
+        let Ok(events) = self.latency_events.lock() else {
+            return Vec::new();
+        };
+        let Some(state) = events.get(&normalized) else {
+            return Vec::new();
+        };
+        state.samples.iter().copied().collect()
+    }
+
+    pub(crate) fn latency_latest(&self) -> Vec<(Vec<u8>, LatencySample, u64)> {
+        let Ok(events) = self.latency_events.lock() else {
+            return Vec::new();
+        };
+        let mut ordered = BTreeMap::new();
+        for (event_name, state) in events.iter() {
+            let Some(sample) = state.samples.back().copied() else {
+                continue;
+            };
+            ordered.insert(event_name.clone(), (sample, state.max_latency_millis));
+        }
+        ordered
+            .into_iter()
+            .map(|(name, (sample, max_latency_millis))| (name, sample, max_latency_millis))
+            .collect()
+    }
+
+    pub(crate) fn latency_graph_range(&self, event_name: &[u8]) -> Option<(u64, u64)> {
+        let normalized = normalize_ascii_lower(event_name);
+        let Ok(events) = self.latency_events.lock() else {
+            return None;
+        };
+        let state = events.get(&normalized)?;
+        let min_latency = state
+            .samples
+            .iter()
+            .map(|sample| sample.latency_millis)
+            .min()?;
+        Some((state.max_latency_millis, min_latency))
+    }
+
+    pub(crate) fn reset_latency_events(&self, event_names: Option<&[Vec<u8>]>) -> usize {
+        let Ok(mut events) = self.latency_events.lock() else {
+            return 0;
+        };
+        match event_names {
+            None => {
+                let removed = events.len();
+                events.clear();
+                removed
+            }
+            Some(names) => {
+                let mut removed = 0usize;
+                for event_name in names {
+                    let normalized = normalize_ascii_lower(event_name);
+                    if events.remove(&normalized).is_some() {
+                        removed += 1;
+                    }
+                }
+                removed
+            }
         }
     }
 
@@ -610,14 +718,7 @@ impl RequestProcessor {
 
     pub(crate) fn render_commandstats_info_payload(&self) -> String {
         let mut payload = String::from("# Commandstats\r\n");
-        let Ok(calls) = self.command_calls.lock() else {
-            return payload;
-        };
-        let mut ordered = BTreeMap::new();
-        for (command, count) in calls.iter() {
-            ordered.insert(command.clone(), *count);
-        }
-        for (command, count) in ordered {
+        for (command, count) in self.command_call_counts_snapshot() {
             payload.push_str("cmdstat_");
             payload.push_str(&String::from_utf8_lossy(&command));
             payload.push_str(":calls=");
@@ -883,6 +984,7 @@ impl RequestProcessor {
             return;
         }
         self.expired_keys.fetch_add(count, Ordering::Relaxed);
+        self.record_latency_event(b"expire-cycle", 25);
     }
 
     pub(super) fn record_active_expired_keys(&self, count: u64) {
@@ -891,6 +993,7 @@ impl RequestProcessor {
         }
         self.expired_keys.fetch_add(count, Ordering::Relaxed);
         self.expired_keys_active.fetch_add(count, Ordering::Relaxed);
+        self.record_latency_event(b"expire-cycle", 25);
     }
 
     pub(super) fn reset_expiration_stats(&self) {
@@ -1341,6 +1444,13 @@ fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError
 fn current_unix_time_millis() -> Option<u64> {
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
     u64::try_from(now.as_millis()).ok()
+}
+
+fn normalize_ascii_lower(value: &[u8]) -> Vec<u8> {
+    value
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<u8>>()
 }
 
 fn expiration_metadata_from_relative_expire_amount(
