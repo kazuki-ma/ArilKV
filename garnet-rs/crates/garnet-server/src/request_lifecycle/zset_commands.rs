@@ -104,7 +104,7 @@ impl RequestProcessor {
             response_out,
             selected,
             with_scores,
-            self.resp_protocol_version() == 3,
+            self.emit_resp3_zset_pairs(),
         );
         Ok(())
     }
@@ -156,7 +156,7 @@ impl RequestProcessor {
             response_out,
             selected,
             with_scores,
-            self.resp_protocol_version() == 3,
+            self.emit_resp3_zset_pairs(),
         );
         Ok(())
     }
@@ -382,7 +382,7 @@ impl RequestProcessor {
             response_out,
             &diff,
             with_scores,
-            self.resp_protocol_version() == 3,
+            self.emit_resp3_zset_pairs(),
         );
         Ok(())
     }
@@ -437,7 +437,7 @@ impl RequestProcessor {
             response_out,
             &inter,
             combine_options.with_scores,
-            self.resp_protocol_version() == 3,
+            self.emit_resp3_zset_pairs(),
         );
         Ok(())
     }
@@ -500,7 +500,7 @@ impl RequestProcessor {
             response_out,
             &union,
             combine_options.with_scores,
-            self.resp_protocol_version() == 3,
+            self.emit_resp3_zset_pairs(),
         );
         Ok(())
     }
@@ -808,7 +808,7 @@ impl RequestProcessor {
             response_out,
             &selected,
             options.with_scores,
-            self.resp_protocol_version() == 3,
+            self.emit_resp3_zset_pairs(),
         );
         Ok(())
     }
@@ -961,7 +961,10 @@ impl RequestProcessor {
             select_random_zset_entries_with_replacement(self, &zset, requested)
         };
 
-        let response_items = if with_scores {
+        let emit_pair_array = with_scores && self.emit_resp3_zset_pairs();
+        let response_items = if emit_pair_array {
+            sampled.len()
+        } else if with_scores {
             sampled.len() * 2
         } else {
             sampled.len()
@@ -970,6 +973,13 @@ impl RequestProcessor {
         response_out.extend_from_slice(response_items.to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for (member, score) in sampled {
+            if emit_pair_array {
+                response_out.extend_from_slice(b"*2\r\n");
+                append_bulk_string(response_out, member.as_slice());
+                append_bulk_string(response_out, score.to_string().as_bytes());
+                continue;
+            }
+
             append_bulk_string(response_out, member.as_slice());
             if with_scores {
                 append_bulk_string(response_out, score.to_string().as_bytes());
@@ -1086,10 +1096,25 @@ impl RequestProcessor {
             return Ok(());
         };
 
+        let emit_pair_array = args.len() == 3 && self.emit_resp3_zset_pairs();
         response_out.push(b'*');
-        response_out.extend_from_slice((selected.len() * 2).to_string().as_bytes());
+        response_out.extend_from_slice(
+            if emit_pair_array {
+                selected.len()
+            } else {
+                selected.len() * 2
+            }
+            .to_string()
+            .as_bytes(),
+        );
         response_out.extend_from_slice(b"\r\n");
         for (member, score) in selected {
+            if emit_pair_array {
+                response_out.extend_from_slice(b"*2\r\n");
+                append_bulk_string(response_out, member.as_slice());
+                append_bulk_string(response_out, score.to_string().as_bytes());
+                continue;
+            }
             append_bulk_string(response_out, member.as_slice());
             append_bulk_string(response_out, score.to_string().as_bytes());
         }

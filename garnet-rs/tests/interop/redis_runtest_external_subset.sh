@@ -267,7 +267,9 @@ trap cleanup EXIT
 
 (
     cd "${GARNET_RS_ROOT}"
-    GARNET_BIND_ADDR="127.0.0.1:${GARNET_PORT}" bash -lc "${GARNET_SERVER_CMD}"
+    GARNET_BIND_ADDR="127.0.0.1:${GARNET_PORT}" \
+    GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS=1 \
+    bash -lc "${GARNET_SERVER_CMD}"
 ) >"${RESULT_DIR}/garnet-server.log" 2>&1 &
 GARNET_PID="$!"
 

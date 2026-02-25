@@ -3,6 +3,7 @@ use tsavorite::TsavoriteKvConfig;
 use super::DEFAULT_SERVER_HASH_INDEX_SIZE_BITS;
 use super::DEFAULT_STRING_STORE_SHARDS;
 use super::GARNET_HASH_INDEX_SIZE_BITS_ENV;
+use super::GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS_ENV;
 use super::GARNET_MAX_IN_MEMORY_PAGES_ENV;
 use super::GARNET_PAGE_SIZE_BITS_ENV;
 use super::GARNET_SCRIPTING_CACHE_MAX_ENTRIES_ENV;
@@ -66,6 +67,10 @@ pub(super) fn scripting_runtime_config_from_env() -> ScriptingRuntimeConfig {
         parse_env_usize(GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV),
         parse_env_u64(GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV),
     )
+}
+
+pub(super) fn interop_force_resp3_zset_pairs_from_env() -> bool {
+    parse_env_bool(GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS_ENV).unwrap_or(false)
 }
 
 pub(super) fn scripting_runtime_config_from_values(

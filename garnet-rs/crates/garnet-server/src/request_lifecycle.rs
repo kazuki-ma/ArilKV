@@ -51,6 +51,7 @@ const GARNET_SCRIPTING_MAX_SCRIPT_BYTES_ENV: &str = "GARNET_SCRIPTING_MAX_SCRIPT
 const GARNET_SCRIPTING_CACHE_MAX_ENTRIES_ENV: &str = "GARNET_SCRIPTING_CACHE_MAX_ENTRIES";
 const GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV: &str = "GARNET_SCRIPTING_MAX_MEMORY_BYTES";
 const GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV: &str = "GARNET_SCRIPTING_MAX_EXECUTION_MILLIS";
+const GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS_ENV: &str = "GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS";
 const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 18;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 20;
@@ -120,6 +121,7 @@ use self::command_helpers::ensure_ranged_arity;
 use self::command_helpers::parse_scan_match_count_options;
 #[allow(unused_imports)]
 use self::command_helpers::require_exact_arity;
+use self::config::interop_force_resp3_zset_pairs_from_env;
 use self::config::scale_hash_index_bits_for_shards;
 use self::config::scripting_enabled_from_env;
 use self::config::scripting_runtime_config_from_env;
@@ -267,6 +269,7 @@ pub struct RequestProcessor {
     lastsave_unix_seconds: AtomicU64,
     rdb_changes_since_last_save: AtomicU64,
     resp_protocol_version: AtomicUsize,
+    interop_force_resp3_zset_pairs: bool,
     blocked_clients: AtomicU64,
     connected_clients: AtomicU64,
     watching_clients: AtomicU64,
@@ -428,6 +431,7 @@ impl RequestProcessor {
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
             rdb_changes_since_last_save: AtomicU64::new(0),
             resp_protocol_version: AtomicUsize::new(2),
+            interop_force_resp3_zset_pairs: interop_force_resp3_zset_pairs_from_env(),
             blocked_clients: AtomicU64::new(0),
             connected_clients: AtomicU64::new(0),
             watching_clients: AtomicU64::new(0),
@@ -490,6 +494,10 @@ impl RequestProcessor {
 
     pub(super) fn resp_protocol_version(&self) -> usize {
         self.resp_protocol_version.load(Ordering::Acquire)
+    }
+
+    pub(super) fn emit_resp3_zset_pairs(&self) -> bool {
+        self.resp_protocol_version() == 3 || self.interop_force_resp3_zset_pairs
     }
 
     pub(crate) fn blocked_clients(&self) -> u64 {

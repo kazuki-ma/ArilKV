@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=495; err=93; ignore=123; failed_tests=93  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=496; err=92; ignore=123; failed_tests=92  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `93`
+- Failed tests extracted from runtest log: `92`
 
 | Test |
 |---|
@@ -66,7 +66,6 @@
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
-| `Check geoset values in tests/unit/geo.tcl` |
 | `info command with at most one sub command in tests/unit/info-command.tcl` |
 | `info command with one sub-section in tests/unit/info-command.tcl` |
 | `info command with multiple sub-sections in tests/unit/info-command.tcl` |
