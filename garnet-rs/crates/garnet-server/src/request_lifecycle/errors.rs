@@ -26,6 +26,7 @@ pub enum RequestExecutionError {
     BusyKey,
     BusyScript,
     InvalidDumpPayload,
+    InvalidArguments,
     SyntaxError,
     InvalidExpireTime,
     InvalidGetExExpireTime,
@@ -87,6 +88,9 @@ impl RequestExecutionError {
                 response_out,
                 "ERR DUMP payload version or checksum are wrong",
             ),
+            Self::InvalidArguments => {
+                append_error(response_out, "ERR Invalid arguments specified for command")
+            }
             Self::SyntaxError => append_error(response_out, "ERR syntax error"),
             Self::InvalidExpireTime => {
                 append_error(response_out, "ERR invalid expire time in 'set' command")

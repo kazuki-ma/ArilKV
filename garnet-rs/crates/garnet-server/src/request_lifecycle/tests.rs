@@ -51,6 +51,103 @@ fn parse_bulk_payload(response: &[u8]) -> Option<Vec<u8>> {
     Some(response[payload_start..payload_end].to_vec())
 }
 
+fn parse_bulk_array_payloads(response: &[u8]) -> Vec<Vec<u8>> {
+    assert!(!response.is_empty());
+    assert_eq!(response[0], b'*');
+
+    let mut index = 1usize;
+    while index + 1 < response.len() {
+        if response[index] == b'\r' && response[index + 1] == b'\n' {
+            break;
+        }
+        index += 1;
+    }
+    let array_len = core::str::from_utf8(&response[1..index])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    index += 2;
+
+    let mut out = Vec::with_capacity(array_len);
+    for _ in 0..array_len {
+        assert_eq!(response[index], b'$');
+        let len_start = index + 1;
+        index = len_start;
+        while index + 1 < response.len() {
+            if response[index] == b'\r' && response[index + 1] == b'\n' {
+                break;
+            }
+            index += 1;
+        }
+        let bulk_len = core::str::from_utf8(&response[len_start..index])
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        index += 2;
+        let payload_end = index + bulk_len;
+        out.push(response[index..payload_end].to_vec());
+        index = payload_end + 2;
+    }
+    out
+}
+
+fn parse_resp_array_len(response: &[u8], index: &mut usize) -> usize {
+    assert_eq!(response[*index], b'*');
+    *index += 1;
+    let start = *index;
+    while *index + 1 < response.len() {
+        if response[*index] == b'\r' && response[*index + 1] == b'\n' {
+            break;
+        }
+        *index += 1;
+    }
+    let value = core::str::from_utf8(&response[start..*index])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    *index += 2;
+    value
+}
+
+fn parse_resp_bulk_bytes(response: &[u8], index: &mut usize) -> Vec<u8> {
+    assert_eq!(response[*index], b'$');
+    *index += 1;
+    let start = *index;
+    while *index + 1 < response.len() {
+        if response[*index] == b'\r' && response[*index + 1] == b'\n' {
+            break;
+        }
+        *index += 1;
+    }
+    let len = core::str::from_utf8(&response[start..*index])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    *index += 2;
+    let payload_end = *index + len;
+    let payload = response[*index..payload_end].to_vec();
+    *index = payload_end + 2;
+    payload
+}
+
+fn parse_command_getkeysandflags_response(response: &[u8]) -> Vec<(Vec<u8>, Vec<Vec<u8>>)> {
+    let mut index = 0usize;
+    let outer_len = parse_resp_array_len(response, &mut index);
+    let mut out = Vec::with_capacity(outer_len);
+    for _ in 0..outer_len {
+        assert_eq!(parse_resp_array_len(response, &mut index), 2);
+        let key = parse_resp_bulk_bytes(response, &mut index);
+        let flags_len = parse_resp_array_len(response, &mut index);
+        let mut flags = Vec::with_capacity(flags_len);
+        for _ in 0..flags_len {
+            flags.push(parse_resp_bulk_bytes(response, &mut index));
+        }
+        out.push((key, flags));
+    }
+    assert_eq!(index, response.len());
+    out
+}
+
 fn encode_resp(parts: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::new();
     out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
@@ -5482,6 +5579,270 @@ fn touch_and_unlink_count_existing_keys() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let count_response = execute_command_line(&processor, "COMMAND COUNT").unwrap();
+    assert!(parse_integer_response(&count_response) > 0);
+
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS GET key").unwrap()
+        ),
+        vec![b"key".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS MEMORY USAGE key").unwrap()
+        ),
+        vec![b"key".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS XGROUP CREATE key groupname $")
+                .unwrap()
+        ),
+        vec![b"key".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS EVAL \"return 1\" 1 key").unwrap()
+        ),
+        vec![b"key".to_vec()]
+    );
+    assert_eq!(
+        execute_command_line(&processor, "COMMAND GETKEYS EVAL \"return 1\" 0").unwrap(),
+        b"*0\r\n"
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS LCS key1 key2").unwrap()
+        ),
+        vec![b"key1".to_vec(), b"key2".to_vec()]
+    );
+
+    let numkeys = 260usize;
+    let mut getkeys_parts = vec![
+        b"COMMAND".to_vec(),
+        b"GETKEYS".to_vec(),
+        b"ZUNIONSTORE".to_vec(),
+        b"target".to_vec(),
+        numkeys.to_string().into_bytes(),
+    ];
+    let mut expected_keys = vec![b"target".to_vec()];
+    for i in 1..=numkeys {
+        let key = format!("key{i}").into_bytes();
+        expected_keys.push(key.clone());
+        getkeys_parts.push(key);
+    }
+    let getkeys_part_refs: Vec<&[u8]> = getkeys_parts.iter().map(Vec::as_slice).collect();
+    let getkeys_frame = encode_resp(&getkeys_part_refs);
+    let mut large_args = [ArgSlice::EMPTY; 320];
+    let getkeys_meta = parse_resp_command_arg_slices(&getkeys_frame, &mut large_args).unwrap();
+    let mut getkeys_response = Vec::new();
+    processor
+        .execute(
+            &large_args[..getkeys_meta.argument_count],
+            &mut getkeys_response,
+        )
+        .unwrap();
+    assert_eq!(parse_bulk_array_payloads(&getkeys_response), expected_keys);
+
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS SET k1 v1").unwrap()
+        ),
+        vec![(b"k1".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS MSET k1 v1 k2 v2").unwrap()
+        ),
+        vec![
+            (b"k1".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()]),
+            (b"k2".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()]),
+        ]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS LMOVE k1 k2 left right",)
+                .unwrap()
+        ),
+        vec![
+            (
+                b"k1".to_vec(),
+                vec![b"RW".to_vec(), b"access".to_vec(), b"delete".to_vec()],
+            ),
+            (b"k2".to_vec(), vec![b"RW".to_vec(), b"insert".to_vec()]),
+        ]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS SORT k1 STORE k2").unwrap()
+        ),
+        vec![
+            (b"k1".to_vec(), vec![b"RO".to_vec(), b"access".to_vec()]),
+            (b"k2".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()]),
+        ]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS SET k1 v1 IFEQ v1").unwrap()
+        ),
+        vec![(b"k1".to_vec(), vec![b"RW".to_vec(), b"update".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS SET k1 v1 GET").unwrap()
+        ),
+        vec![(
+            b"k1".to_vec(),
+            vec![b"RW".to_vec(), b"access".to_vec(), b"update".to_vec()]
+        )]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS DELEX k1").unwrap()
+        ),
+        vec![(b"k1".to_vec(), vec![b"RM".to_vec(), b"delete".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS DELEX k1 IFEQ v1").unwrap()
+        ),
+        vec![(b"k1".to_vec(), vec![b"RW".to_vec(), b"delete".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(
+                &processor,
+                "COMMAND GETKEYSANDFLAGS MSETEX 2 k1 v1 k2 v2 EX 10 NX"
+            )
+            .unwrap()
+        ),
+        vec![
+            (b"k1".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()]),
+            (b"k2".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()]),
+        ]
+    );
+    assert_command_error(
+        &processor,
+        "COMMAND GETKEYSANDFLAGS ZINTERSTORE zz 1443677133621497600 asdf",
+        b"-ERR Invalid arguments specified for command\r\n",
+    );
+
+    assert_command_error(&processor, "COMMAND LIST bad_arg", b"-ERR syntax error\r\n");
+    assert_command_error(
+        &processor,
+        "COMMAND LIST FILTERBY bad_arg",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "COMMAND LIST FILTERBY bad_arg bad_arg2",
+        b"-ERR syntax error\r\n",
+    );
+
+    let command_list =
+        parse_bulk_array_payloads(&execute_command_line(&processor, "COMMAND LIST").unwrap());
+    assert!(command_list.contains(&b"set".to_vec()));
+    assert!(command_list.contains(&b"client|list".to_vec()));
+
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(
+                &processor,
+                "COMMAND LIST FILTERBY ACLCAT non_existing_category"
+            )
+            .unwrap()
+        ),
+        Vec::<Vec<u8>>::new()
+    );
+
+    let scripting_list = parse_bulk_array_payloads(
+        &execute_command_line(&processor, "COMMAND LIST FILTERBY ACLCAT scripting").unwrap(),
+    );
+    assert!(scripting_list.contains(&b"eval".to_vec()));
+    assert!(scripting_list.contains(&b"script|kill".to_vec()));
+    assert!(!scripting_list.contains(&b"set".to_vec()));
+
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN set").unwrap()
+        ),
+        vec![b"set".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN get").unwrap()
+        ),
+        vec![b"get".to_vec()]
+    );
+
+    let config_pattern = parse_bulk_array_payloads(
+        &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN config*").unwrap(),
+    );
+    assert!(config_pattern.contains(&b"config".to_vec()));
+    assert!(config_pattern.contains(&b"config|get".to_vec()));
+
+    let config_sub_pattern = parse_bulk_array_payloads(
+        &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN config|*re*").unwrap(),
+    );
+    assert!(config_sub_pattern.contains(&b"config|resetstat".to_vec()));
+    assert!(config_sub_pattern.contains(&b"config|rewrite".to_vec()));
+
+    let help_pattern = parse_bulk_array_payloads(
+        &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN cl*help").unwrap(),
+    );
+    assert!(help_pattern.contains(&b"client|help".to_vec()));
+    assert!(help_pattern.contains(&b"cluster|help".to_vec()));
+
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN non_exists").unwrap()
+        ),
+        Vec::<Vec<u8>>::new()
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND LIST FILTERBY PATTERN non_exists*").unwrap()
+        ),
+        Vec::<Vec<u8>>::new()
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(
+                &processor,
+                "COMMAND LIST FILTERBY MODULE non_existing_module"
+            )
+            .unwrap()
+        ),
+        Vec::<Vec<u8>>::new()
+    );
+
+    assert_command_response(&processor, "COMMAND INFO get|key", b"*1\r\n*0\r\n");
+    assert_command_response(&processor, "COMMAND INFO config|get|key", b"*1\r\n*0\r\n");
+
+    let set_info = execute_command_line(&processor, "COMMAND INFO SET").unwrap();
+    assert!(!String::from_utf8_lossy(&set_info).contains("movablekeys"));
+    let memory_info = execute_command_line(&processor, "COMMAND INFO MEMORY|USAGE").unwrap();
+    assert!(!String::from_utf8_lossy(&memory_info).contains("movablekeys"));
+    let georadius_ro_info = execute_command_line(&processor, "COMMAND INFO GEORADIUS_RO").unwrap();
+    assert!(!String::from_utf8_lossy(&georadius_ro_info).contains("movablekeys"));
+
+    let zunionstore_info = execute_command_line(&processor, "COMMAND INFO ZUNIONSTORE").unwrap();
+    assert!(String::from_utf8_lossy(&zunionstore_info).contains("movablekeys"));
+    let eval_info = execute_command_line(&processor, "COMMAND INFO EVAL").unwrap();
+    assert!(String::from_utf8_lossy(&eval_info).contains("movablekeys"));
+    let sort_info = execute_command_line(&processor, "COMMAND INFO SORT").unwrap();
+    assert!(String::from_utf8_lossy(&sort_info).contains("movablekeys"));
+    let migrate_info = execute_command_line(&processor, "COMMAND INFO MIGRATE").unwrap();
+    assert!(String::from_utf8_lossy(&migrate_info).contains("movablekeys"));
+    let georadius_info = execute_command_line(&processor, "COMMAND INFO GEORADIUS").unwrap();
+    assert!(String::from_utf8_lossy(&georadius_info).contains("movablekeys"));
 }
 
 #[test]

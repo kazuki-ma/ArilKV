@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=384; err=204; ignore=123; failed_tests=204  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=418; err=170; ignore=123; failed_tests=170  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `204`
+- Failed tests extracted from runtest log: `170`
 
 | Test |
 |---|
@@ -63,6 +63,7 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
+| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
@@ -100,6 +101,7 @@
 | `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
+| `Fuzzing dense/sparse encoding: Redis should always detect errors in tests/unit/hyperloglog.tcl` |
 | `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
 | `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
@@ -135,42 +137,6 @@
 | `TOUCH returns the number of existing keys specified in tests/unit/introspection-2.tcl` |
 | `errors stats for GEOADD in tests/unit/introspection-2.tcl` |
 | `command stats for scripts in tests/unit/introspection-2.tcl` |
-| `COMMAND COUNT get total number of Redis commands in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS GET in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYSANDFLAGS in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYSANDFLAGS invalid args in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYSANDFLAGS MSETEX in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS MEMORY USAGE in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS XGROUP in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS EVAL with keys in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS EVAL without keys in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS LCS in tests/unit/introspection-2.tcl` |
-| `COMMAND GETKEYS MORE THAN 256 KEYS in tests/unit/introspection-2.tcl` |
-| `COMMAND LIST WITHOUT FILTERBY in tests/unit/introspection-2.tcl` |
-| `COMMAND LIST FILTERBY ACLCAT against non existing category in tests/unit/introspection-2.tcl` |
-| `COMMAND LIST FILTERBY ACLCAT - list all commands/subcommands in tests/unit/introspection-2.tcl` |
-| `COMMAND LIST FILTERBY PATTERN - list all commands/subcommands in tests/unit/introspection-2.tcl` |
-| `COMMAND LIST FILTERBY MODULE against non existing module in tests/unit/introspection-2.tcl` |
-| `COMMAND INFO of invalid subcommands in tests/unit/introspection-2.tcl` |
-| `SET command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `GET command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `MSET command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `BITFIELD command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `LMOVE command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `LPOP command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `BLPOP command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `PING command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `MEMORY command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `MEMORY\|USAGE command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `RENAME command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `GEORADIUS_RO command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `ZUNIONSTORE command is marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `XREAD command is marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `EVAL command is marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `SORT command is marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `SORT_RO command is marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `MIGRATE command is marked with movablekeys in tests/unit/introspection-2.tcl` |
-| `GEORADIUS command is marked with movablekeys in tests/unit/introspection-2.tcl` |
 | `CLIENT KILL close the client connection during bgsave in tests/unit/introspection.tcl` |
 | `Vararg DEL in tests/unit/keyspace.tcl` |
 | `Untagged multi-key commands in tests/unit/keyspace.tcl` |

@@ -1,4 +1,8 @@
 use super::*;
+use crate::command_spec::ArityPolicy;
+use crate::command_spec::command_arity_policy;
+use crate::command_spec::command_id_from_name;
+use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_names_for_command_response;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
@@ -75,6 +79,24 @@ const ACL_CATEGORIES: [&[u8]; 8] = [
 ];
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
 const MIGRATE_USAGE: &str = "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
+const COMMAND_LIST_EXTRA_NAMES: [&[u8]; 8] = [
+    b"client|help",
+    b"client|list",
+    b"cluster|help",
+    b"config|get",
+    b"config|resetstat",
+    b"config|rewrite",
+    b"memory|usage",
+    b"script|kill",
+];
+const COMMAND_FLAGS_OW_UPDATE: [&[u8]; 2] = [b"OW", b"update"];
+const COMMAND_FLAGS_RW_ACCESS_DELETE: [&[u8]; 3] = [b"RW", b"access", b"delete"];
+const COMMAND_FLAGS_RW_INSERT: [&[u8]; 2] = [b"RW", b"insert"];
+const COMMAND_FLAGS_RO_ACCESS: [&[u8]; 2] = [b"RO", b"access"];
+const COMMAND_FLAGS_RW_UPDATE: [&[u8]; 2] = [b"RW", b"update"];
+const COMMAND_FLAGS_RW_ACCESS_UPDATE: [&[u8]; 3] = [b"RW", b"access", b"update"];
+const COMMAND_FLAGS_RM_DELETE: [&[u8]; 2] = [b"RM", b"delete"];
+const COMMAND_FLAGS_RW_DELETE: [&[u8]; 2] = [b"RW", b"delete"];
 
 impl RequestProcessor {
     pub(super) fn handle_quit(
@@ -908,35 +930,359 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        if ascii_eq_ignore_case(args[1], b"COUNT") {
+            require_exact_arity(args, 2, "COMMAND", "COMMAND COUNT")?;
+            append_integer(
+                response_out,
+                command_names_for_command_response().len() as i64,
+            );
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(args[1], b"LIST") {
+            return self.handle_command_list(args, response_out);
+        }
+        if ascii_eq_ignore_case(args[1], b"INFO") {
+            return self.handle_command_info(args, response_out);
+        }
         if ascii_eq_ignore_case(args[1], b"GETKEYS") {
-            ensure_min_arity(args, 4, "COMMAND", "COMMAND GETKEYS command [arg ...]")?;
-            let target = args[2];
-            if ascii_eq_ignore_case(target, b"FCALL") || ascii_eq_ignore_case(target, b"FCALL_RO") {
-                ensure_min_arity(
-                    args,
-                    5,
-                    "COMMAND",
-                    "COMMAND GETKEYS FCALL function numkeys [key ...] [arg ...]",
-                )?;
-                let Some(numkeys) = parse_i64_ascii(args[4]) else {
-                    return Err(RequestExecutionError::ValueNotInteger);
-                };
-                if numkeys < 0 {
-                    return Err(RequestExecutionError::ValueOutOfRange);
-                }
-                let key_count =
-                    usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-                if key_count > args.len().saturating_sub(5) {
-                    return Err(RequestExecutionError::SyntaxError);
-                }
-                let end = 5 + key_count;
-                append_bulk_array(response_out, &args[5..end]);
-                return Ok(());
-            }
-            return Err(RequestExecutionError::SyntaxError);
+            return self.handle_command_getkeys(args, response_out);
+        }
+        if ascii_eq_ignore_case(args[1], b"GETKEYSANDFLAGS") {
+            return self.handle_command_getkeysandflags(args, response_out);
         }
 
         Err(RequestExecutionError::SyntaxError)
+    }
+
+    fn handle_command_list(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let entries = command_list_entries();
+        if args.len() == 2 {
+            let refs: Vec<&[u8]> = entries.iter().map(Vec::as_slice).collect();
+            append_bulk_array(response_out, &refs);
+            return Ok(());
+        }
+
+        if args.len() != 5 || !ascii_eq_ignore_case(args[2], b"FILTERBY") {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let mut filtered: Vec<&[u8]> = Vec::new();
+        if ascii_eq_ignore_case(args[3], b"ACLCAT") {
+            for entry in &entries {
+                if command_list_entry_matches_acl_category(entry, args[4]) {
+                    filtered.push(entry);
+                }
+            }
+        } else if ascii_eq_ignore_case(args[3], b"PATTERN") {
+            for entry in &entries {
+                if redis_glob_match(args[4], entry, true, 0) {
+                    filtered.push(entry);
+                }
+            }
+        } else if ascii_eq_ignore_case(args[3], b"MODULE") {
+            // Modules are not currently supported by garnet-rs.
+        } else {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        append_bulk_array(response_out, &filtered);
+        Ok(())
+    }
+
+    fn handle_command_info(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "COMMAND", "COMMAND INFO [command-name ...]")?;
+        if args.len() == 2 {
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
+        }
+
+        response_out.push(b'*');
+        response_out.extend_from_slice((args.len() - 2).to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for token in &args[2..] {
+            let Some((name, subcommand)) = split_command_token(token) else {
+                response_out.extend_from_slice(b"*0\r\n");
+                continue;
+            };
+            let command_id = command_id_from_name(name);
+            let subcommand_known =
+                subcommand.is_some_and(|value| command_subcommand_known(name, value));
+            if command_id.is_none() || (subcommand.is_some() && !subcommand_known) {
+                response_out.extend_from_slice(b"*0\r\n");
+                continue;
+            }
+
+            let mut flags = Vec::with_capacity(2);
+            let mut arity = 0i64;
+            if let Some(id) = command_id {
+                flags.push(if command_is_mutating(id) {
+                    b"write".as_slice()
+                } else {
+                    b"readonly".as_slice()
+                });
+                arity = command_arity_for_command_info(id);
+                if command_has_movablekeys(id, subcommand) {
+                    flags.push(b"movablekeys");
+                }
+            }
+
+            append_command_info_entry(response_out, &token.to_ascii_lowercase(), arity, &flags);
+        }
+        Ok(())
+    }
+
+    fn handle_command_getkeys(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 4, "COMMAND", "COMMAND GETKEYS command [arg ...]")?;
+        let target = args[2];
+        let mut keys: Vec<&[u8]> = Vec::new();
+
+        if ascii_eq_ignore_case(target, b"FCALL") || ascii_eq_ignore_case(target, b"FCALL_RO") {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYS FCALL function numkeys [key ...] [arg ...]",
+            )?;
+            let key_count = command_getkeys_numkeys(args[4], args.len().saturating_sub(5))?;
+            let end = 5 + key_count;
+            keys.extend_from_slice(&args[5..end]);
+        } else if ascii_eq_ignore_case(target, b"GET") {
+            require_exact_arity(args, 4, "COMMAND", "COMMAND GETKEYS GET key")?;
+            keys.push(args[3]);
+        } else if ascii_eq_ignore_case(target, b"MEMORY") {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYS MEMORY <subcommand> [arg ...]",
+            )?;
+            if !ascii_eq_ignore_case(args[3], b"USAGE") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            keys.push(args[4]);
+        } else if ascii_eq_ignore_case(target, b"XGROUP") {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYS XGROUP CREATE key group id [options]",
+            )?;
+            keys.push(args[4]);
+        } else if ascii_eq_ignore_case(target, b"EVAL")
+            || ascii_eq_ignore_case(target, b"EVAL_RO")
+            || ascii_eq_ignore_case(target, b"EVALSHA")
+            || ascii_eq_ignore_case(target, b"EVALSHA_RO")
+        {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYS EVAL script numkeys [key ...]",
+            )?;
+            let key_count = command_getkeys_numkeys(args[4], args.len().saturating_sub(5))?;
+            let end = 5 + key_count;
+            keys.extend_from_slice(&args[5..end]);
+        } else if ascii_eq_ignore_case(target, b"LCS") {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYS LCS key1 key2 [options]",
+            )?;
+            keys.push(args[3]);
+            keys.push(args[4]);
+        } else if ascii_eq_ignore_case(target, b"ZUNIONSTORE") {
+            ensure_min_arity(
+                args,
+                6,
+                "COMMAND",
+                "COMMAND GETKEYS ZUNIONSTORE destination numkeys key [key ...]",
+            )?;
+            let key_count = command_getkeys_numkeys(args[4], args.len().saturating_sub(5))?;
+            keys.push(args[3]);
+            let end = 5 + key_count;
+            keys.extend_from_slice(&args[5..end]);
+        } else {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        append_bulk_array(response_out, &keys);
+        Ok(())
+    }
+
+    fn handle_command_getkeysandflags(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "COMMAND",
+            "COMMAND GETKEYSANDFLAGS command [arg ...]",
+        )?;
+        let target = args[2];
+        let mut entries: Vec<(Vec<u8>, &'static [&'static [u8]])> = Vec::new();
+
+        if ascii_eq_ignore_case(target, b"SET") {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS SET key value [option ...]",
+            )?;
+            let mut flags: &[&[u8]] = &COMMAND_FLAGS_OW_UPDATE;
+            let mut index = 5usize;
+            while index < args.len() {
+                let token = args[index];
+                if ascii_eq_ignore_case(token, b"GET") {
+                    flags = &COMMAND_FLAGS_RW_ACCESS_UPDATE;
+                    index += 1;
+                    continue;
+                }
+                if ascii_eq_ignore_case(token, b"IFEQ") {
+                    if index + 1 >= args.len() {
+                        return Err(RequestExecutionError::InvalidArguments);
+                    }
+                    flags = &COMMAND_FLAGS_RW_UPDATE;
+                    index += 2;
+                    continue;
+                }
+                if ascii_eq_ignore_case(token, b"NX")
+                    || ascii_eq_ignore_case(token, b"XX")
+                    || ascii_eq_ignore_case(token, b"KEEPTTL")
+                {
+                    index += 1;
+                    continue;
+                }
+                if ascii_eq_ignore_case(token, b"EX")
+                    || ascii_eq_ignore_case(token, b"PX")
+                    || ascii_eq_ignore_case(token, b"EXAT")
+                    || ascii_eq_ignore_case(token, b"PXAT")
+                {
+                    if index + 1 >= args.len() {
+                        return Err(RequestExecutionError::InvalidArguments);
+                    }
+                    index += 2;
+                    continue;
+                }
+                return Err(RequestExecutionError::InvalidArguments);
+            }
+            entries.push((args[3].to_vec(), flags));
+        } else if ascii_eq_ignore_case(target, b"MSET") {
+            ensure_min_arity(
+                args,
+                5,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS MSET key value [key value ...]",
+            )?;
+            if (args.len() - 3).is_multiple_of(2) {
+                for pair in args[3..].chunks_exact(2) {
+                    entries.push((pair[0].to_vec(), &COMMAND_FLAGS_OW_UPDATE));
+                }
+            } else {
+                return Err(RequestExecutionError::InvalidArguments);
+            }
+        } else if ascii_eq_ignore_case(target, b"LMOVE") {
+            ensure_min_arity(
+                args,
+                7,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS LMOVE source destination LEFT|RIGHT LEFT|RIGHT",
+            )?;
+            entries.push((args[3].to_vec(), &COMMAND_FLAGS_RW_ACCESS_DELETE));
+            entries.push((args[4].to_vec(), &COMMAND_FLAGS_RW_INSERT));
+        } else if ascii_eq_ignore_case(target, b"SORT") {
+            ensure_min_arity(
+                args,
+                4,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS SORT key [option ...]",
+            )?;
+            entries.push((args[3].to_vec(), &COMMAND_FLAGS_RO_ACCESS));
+            let mut index = 4usize;
+            while index < args.len() {
+                if ascii_eq_ignore_case(args[index], b"STORE") {
+                    if index + 1 >= args.len() {
+                        return Err(RequestExecutionError::InvalidArguments);
+                    }
+                    entries.push((args[index + 1].to_vec(), &COMMAND_FLAGS_OW_UPDATE));
+                    break;
+                }
+                index += 1;
+            }
+        } else if ascii_eq_ignore_case(target, b"DELEX") {
+            ensure_min_arity(
+                args,
+                4,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS DELEX key [IFEQ value]",
+            )?;
+            if args.len() == 4 {
+                entries.push((args[3].to_vec(), &COMMAND_FLAGS_RM_DELETE));
+            } else if args.len() == 6 && ascii_eq_ignore_case(args[4], b"IFEQ") {
+                entries.push((args[3].to_vec(), &COMMAND_FLAGS_RW_DELETE));
+            } else {
+                return Err(RequestExecutionError::InvalidArguments);
+            }
+        } else if ascii_eq_ignore_case(target, b"MSETEX") {
+            ensure_min_arity(
+                args,
+                6,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS MSETEX numkeys key value [key value ...] [option ...]",
+            )?;
+            let numkeys =
+                parse_u64_ascii(args[3]).ok_or(RequestExecutionError::InvalidArguments)?;
+            let key_count =
+                usize::try_from(numkeys).map_err(|_| RequestExecutionError::InvalidArguments)?;
+            if key_count == 0 {
+                return Err(RequestExecutionError::InvalidArguments);
+            }
+            let required_values = key_count.saturating_mul(2);
+            if args.len() < 4 + required_values {
+                return Err(RequestExecutionError::InvalidArguments);
+            }
+            for index in 0..key_count {
+                let key_index = 4 + index * 2;
+                entries.push((args[key_index].to_vec(), &COMMAND_FLAGS_OW_UPDATE));
+            }
+        } else if ascii_eq_ignore_case(target, b"ZINTERSTORE") {
+            ensure_min_arity(
+                args,
+                6,
+                "COMMAND",
+                "COMMAND GETKEYSANDFLAGS ZINTERSTORE destination numkeys key [key ...]",
+            )?;
+            let numkeys =
+                parse_u64_ascii(args[4]).ok_or(RequestExecutionError::InvalidArguments)?;
+            let key_count =
+                usize::try_from(numkeys).map_err(|_| RequestExecutionError::InvalidArguments)?;
+            if key_count == 0 || key_count > args.len().saturating_sub(5) {
+                return Err(RequestExecutionError::InvalidArguments);
+            }
+            entries.push((args[3].to_vec(), &COMMAND_FLAGS_OW_UPDATE));
+            for source in &args[5..5 + key_count] {
+                entries.push(((*source).to_vec(), &COMMAND_FLAGS_RO_ACCESS));
+            }
+        } else {
+            return Err(RequestExecutionError::InvalidArguments);
+        }
+
+        append_command_getkeysandflags(response_out, &entries);
+        Ok(())
     }
 
     pub(super) fn handle_dump(
@@ -2031,6 +2377,130 @@ fn append_scan_cursor_and_key_array(
     response_out.extend_from_slice(b"\r\n");
     for key in &keys[start..end] {
         append_bulk_string(response_out, key);
+    }
+}
+
+fn command_list_entries() -> Vec<Vec<u8>> {
+    let mut entries = Vec::with_capacity(
+        command_names_for_command_response().len() + COMMAND_LIST_EXTRA_NAMES.len(),
+    );
+    for name in command_names_for_command_response() {
+        entries.push(name.to_ascii_lowercase());
+    }
+    for entry in COMMAND_LIST_EXTRA_NAMES {
+        entries.push(entry.to_vec());
+    }
+    entries.sort_unstable();
+    entries.dedup();
+    entries
+}
+
+fn command_list_entry_matches_acl_category(entry: &[u8], category: &[u8]) -> bool {
+    if !ascii_eq_ignore_case(category, b"SCRIPTING") {
+        return false;
+    }
+
+    let root = command_root_name(entry);
+    ascii_eq_ignore_case(root, b"EVAL")
+        || ascii_eq_ignore_case(root, b"EVAL_RO")
+        || ascii_eq_ignore_case(root, b"EVALSHA")
+        || ascii_eq_ignore_case(root, b"EVALSHA_RO")
+        || ascii_eq_ignore_case(root, b"FCALL")
+        || ascii_eq_ignore_case(root, b"FCALL_RO")
+        || ascii_eq_ignore_case(root, b"SCRIPT")
+        || ascii_eq_ignore_case(root, b"FUNCTION")
+}
+
+fn command_root_name(entry: &[u8]) -> &[u8] {
+    let Some(separator) = entry.iter().position(|byte| *byte == b'|') else {
+        return entry;
+    };
+    &entry[..separator]
+}
+
+fn split_command_token(token: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
+    let mut sections = token.split(|byte| *byte == b'|');
+    let name = sections.next()?;
+    if name.is_empty() {
+        return None;
+    }
+    let subcommand = sections.next();
+    if sections.next().is_some() {
+        return None;
+    }
+    Some((name, subcommand))
+}
+
+fn command_subcommand_known(command: &[u8], subcommand: &[u8]) -> bool {
+    COMMAND_LIST_EXTRA_NAMES.iter().any(|entry| {
+        let Some((entry_command, entry_subcommand)) = split_command_token(entry) else {
+            return false;
+        };
+        entry_subcommand.is_some_and(|value| {
+            ascii_eq_ignore_case(entry_command, command) && ascii_eq_ignore_case(value, subcommand)
+        })
+    })
+}
+
+fn command_arity_for_command_info(command: CommandId) -> i64 {
+    match command_arity_policy(command) {
+        Some(ArityPolicy::Exact(value)) => value as i64,
+        Some(ArityPolicy::Min(value)) => -(value as i64),
+        None => 0,
+    }
+}
+
+fn command_has_movablekeys(command: CommandId, subcommand: Option<&[u8]>) -> bool {
+    if subcommand.is_some() {
+        return false;
+    }
+    matches!(
+        command,
+        CommandId::Zunionstore
+            | CommandId::Xread
+            | CommandId::Eval
+            | CommandId::Sort
+            | CommandId::SortRo
+            | CommandId::Migrate
+            | CommandId::Georadius
+    )
+}
+
+fn command_getkeys_numkeys(
+    raw_numkeys: &[u8],
+    available_keys: usize,
+) -> Result<usize, RequestExecutionError> {
+    let Some(numkeys) = parse_i64_ascii(raw_numkeys) else {
+        return Err(RequestExecutionError::ValueNotInteger);
+    };
+    if numkeys < 0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    let key_count = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    if key_count > available_keys {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(key_count)
+}
+
+fn append_command_info_entry(response_out: &mut Vec<u8>, name: &[u8], arity: i64, flags: &[&[u8]]) {
+    response_out.extend_from_slice(b"*3\r\n");
+    append_bulk_string(response_out, name);
+    append_integer(response_out, arity);
+    append_bulk_array(response_out, flags);
+}
+
+fn append_command_getkeysandflags(
+    response_out: &mut Vec<u8>,
+    entries: &[(Vec<u8>, &'static [&'static [u8]])],
+) {
+    response_out.push(b'*');
+    response_out.extend_from_slice(entries.len().to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for (key, flags) in entries {
+        response_out.extend_from_slice(b"*2\r\n");
+        append_bulk_string(response_out, key);
+        append_bulk_array(response_out, flags);
     }
 }
 
