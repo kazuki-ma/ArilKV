@@ -22,19 +22,20 @@
 
 ## External Probe Snapshot
 
+- Probe script exit code: `0`
 - Cases: `3`
-- PASS: `2`
-- FAIL: `1`
+- PASS: `1`
+- FAIL: `2`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=174; err=412; ignore=116; failed_tests=412  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=383; err=205; ignore=123; failed_tests=205  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
-| `redis_cli_scripting_probe` | `PASS` | scripting_disabled_mode; eval disabled as expected  |
+| `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `412`
+- Failed tests extracted from runtest log: `205`
 
 | # | Test |
 |---|---|
@@ -62,63 +63,63 @@
 | 22 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | 23 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | 24 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| 25 | `EXPIRE - set timeouts multiple times in tests/unit/expire.tcl` |
-| 26 | `PERSIST can undo an EXPIRE in tests/unit/expire.tcl` |
-| 27 | `EXPIRETIME returns absolute expiration time in seconds in tests/unit/expire.tcl` |
-| 28 | `PEXPIRETIME returns absolute expiration time in milliseconds in tests/unit/expire.tcl` |
-| 29 | `Redis should lazy expire keys in tests/unit/expire.tcl` |
-| 30 | `SET with EX with big integer should report an error in tests/unit/expire.tcl` |
-| 31 | `GETEX with big integer should report an error in tests/unit/expire.tcl` |
-| 32 | `EXPIRE with big integer overflows when converted to milliseconds in tests/unit/expire.tcl` |
-| 33 | `PEXPIRE with big integer overflow when basetime is added in tests/unit/expire.tcl` |
-| 34 | `EXPIRE with big negative integer in tests/unit/expire.tcl` |
-| 35 | `All TTL in commands are propagated as absolute timestamp in replication stream in tests/unit/expire.tcl` |
-| 36 | `SET command will remove expire with large string (optimization path) in tests/unit/expire.tcl` |
-| 37 | `SET - use KEEPTTL option, TTL should not be removed in tests/unit/expire.tcl` |
-| 38 | `SET - use KEEPTTL option, TTL should not be removed after loadaof in tests/unit/expire.tcl` |
-| 39 | `GETEX use of PERSIST option should remove TTL after loadaof in tests/unit/expire.tcl` |
-| 40 | `GETEX propagate as to replica as PERSIST, DEL, or nothing in tests/unit/expire.tcl` |
-| 41 | `EXPIRE with NX option on a key with ttl in tests/unit/expire.tcl` |
-| 42 | `EXPIRE with NX option on a key without ttl in tests/unit/expire.tcl` |
-| 43 | `EXPIRE with XX option on a key with ttl in tests/unit/expire.tcl` |
-| 44 | `EXPIRE with XX option on a key without ttl in tests/unit/expire.tcl` |
-| 45 | `EXPIRE with GT option on a key with lower ttl in tests/unit/expire.tcl` |
-| 46 | `EXPIRE with GT option on a key with higher ttl in tests/unit/expire.tcl` |
-| 47 | `EXPIRE with GT option on a key without ttl in tests/unit/expire.tcl` |
-| 48 | `EXPIRE with LT option on a key with higher ttl in tests/unit/expire.tcl` |
-| 49 | `EXPIRE with LT option on a key with lower ttl in tests/unit/expire.tcl` |
-| 50 | `EXPIRE with LT option on a key without ttl in tests/unit/expire.tcl` |
-| 51 | `EXPIRE with LT and XX option on a key with ttl in tests/unit/expire.tcl` |
-| 52 | `EXPIRE with LT and XX option on a key without ttl in tests/unit/expire.tcl` |
-| 53 | `EXPIRE with conflicting options: LT GT in tests/unit/expire.tcl` |
-| 54 | `EXPIRE with conflicting options: NX GT in tests/unit/expire.tcl` |
-| 55 | `EXPIRE with conflicting options: NX LT in tests/unit/expire.tcl` |
-| 56 | `EXPIRE with conflicting options: NX XX in tests/unit/expire.tcl` |
-| 57 | `EXPIRE with unsupported options in tests/unit/expire.tcl` |
-| 58 | `EXPIRE with unsupported options in tests/unit/expire.tcl` |
-| 59 | `EXPIRE with negative expiry in tests/unit/expire.tcl` |
-| 60 | `EXPIRE with negative expiry on a non-valitale key in tests/unit/expire.tcl` |
-| 61 | `EXPIRE with non-existed key in tests/unit/expire.tcl` |
-| 62 | `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
-| 63 | `SCAN: Lazy-expire should not be wrapped in MULTI/EXEC in tests/unit/expire.tcl` |
-| 64 | `RANDOMKEY: Lazy-expire should not be wrapped in MULTI/EXEC in tests/unit/expire.tcl` |
-| 65 | `Lazy expire should increment expired_keys but not expired_keys_active in tests/unit/expire.tcl` |
-| 66 | `Active expire should increment both expired_keys and expired_keys_active in tests/unit/expire.tcl` |
-| 67 | `Config lazyexpire-nested-arbitrary-keys (yes, direct) in tests/unit/expire.tcl` |
-| 68 | `Config lazyexpire-nested-arbitrary-keys (yes, multi) in tests/unit/expire.tcl` |
-| 69 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
-| 70 | `Config lazyexpire-nested-arbitrary-keys (no, direct) in tests/unit/expire.tcl` |
-| 71 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
-| 72 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
-| 73 | `FUNCTION - Basic usage in tests/unit/functions.tcl` |
-| 74 | `FUNCTION - Load with unknown argument in tests/unit/functions.tcl` |
-| 75 | `FUNCTION - Create an already exiting library raise error in tests/unit/functions.tcl` |
-| 76 | `FUNCTION - Create an already exiting library raise error (case insensitive) in tests/unit/functions.tcl` |
-| 77 | `FUNCTION - Create a library with wrong name format in tests/unit/functions.tcl` |
-| 78 | `FUNCTION - Create library with unexisting engine in tests/unit/functions.tcl` |
-| 79 | `FUNCTION - Test uncompiled script in tests/unit/functions.tcl` |
-| 80 | `FUNCTION - test replace argument in tests/unit/functions.tcl` |
-| ... | `332 more entries` |
+| 25 | `Config lazyexpire-nested-arbitrary-keys (yes, multi) in tests/unit/expire.tcl` |
+| 26 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
+| 27 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
+| 28 | `GEOADD update with invalid option in tests/unit/geo.tcl` |
+| 29 | `Check geoset values in tests/unit/geo.tcl` |
+| 30 | `GEOSEARCH FROMLONLAT and FROMMEMBER one must exist in tests/unit/geo.tcl` |
+| 31 | `GEOSEARCH BYRADIUS and BYBOX one must exist in tests/unit/geo.tcl` |
+| 32 | `GEORADIUS withdist (sorted) in tests/unit/geo.tcl` |
+| 33 | `GEOSEARCH withdist (sorted) in tests/unit/geo.tcl` |
+| 34 | `GEORADIUS with multiple WITH* tokens in tests/unit/geo.tcl` |
+| 35 | `GEORADIUS with ANY not sorted by default in tests/unit/geo.tcl` |
+| 36 | `GEORADIUS with ANY sorted by ASC in tests/unit/geo.tcl` |
+| 37 | `GEORADIUS with ANY but no COUNT in tests/unit/geo.tcl` |
+| 38 | `GEORADIUSBYMEMBER simple (sorted) in tests/unit/geo.tcl` |
+| 39 | `GEORADIUSBYMEMBER_RO simple (sorted) in tests/unit/geo.tcl` |
+| 40 | `GEOSEARCH FROMMEMBER simple (sorted) in tests/unit/geo.tcl` |
+| 41 | `GEOSEARCH corner point test in tests/unit/geo.tcl` |
+| 42 | `GEORADIUSBYMEMBER withdist (sorted) in tests/unit/geo.tcl` |
+| 43 | `GEOHASH with only key as argument in tests/unit/geo.tcl` |
+| 44 | `GEOPOS with only key as argument in tests/unit/geo.tcl` |
+| 45 | `GEODIST simple & unit in tests/unit/geo.tcl` |
+| 46 | `GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage in tests/unit/geo.tcl` |
+| 47 | `GEORANGE STOREDIST option: plain usage in tests/unit/geo.tcl` |
+| 48 | `GEOSEARCHSTORE STOREDIST option: plain usage in tests/unit/geo.tcl` |
+| 49 | `GEORANGE STOREDIST option: COUNT ASC and DESC in tests/unit/geo.tcl` |
+| 50 | `GEOSEARCH with small distance in tests/unit/geo.tcl` |
+| 51 | `GEOSEARCH fuzzy test - byradius in tests/unit/geo.tcl` |
+| 52 | `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
+| 53 | `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
+| 54 | `PFADD without arguments creates an HLL value in tests/unit/hyperloglog.tcl` |
+| 55 | `HyperLogLogs are promote from sparse to dense in tests/unit/hyperloglog.tcl` |
+| 56 | `Change hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
+| 57 | `Hyperloglog promote to dense well in different hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
+| 58 | `HyperLogLog sparse encoding stress test in tests/unit/hyperloglog.tcl` |
+| 59 | `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
+| 60 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
+| 61 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
+| 62 | `Fuzzing dense/sparse encoding: Redis should always detect errors in tests/unit/hyperloglog.tcl` |
+| 63 | `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
+| 64 | `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
+| 65 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
+| 66 | `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
+| 67 | `PFCOUNT multiple-keys merge returns cardinality of union #2 in tests/unit/hyperloglog.tcl` |
+| 68 | `PFDEBUG GETREG returns the HyperLogLog raw registers in tests/unit/hyperloglog.tcl` |
+| 69 | `PFADD / PFCOUNT cache invalidation works in tests/unit/hyperloglog.tcl` |
+| 70 | `info command with at most one sub command in tests/unit/info-command.tcl` |
+| 71 | `info command with one sub-section in tests/unit/info-command.tcl` |
+| 72 | `info command with multiple sub-sections in tests/unit/info-command.tcl` |
+| 73 | `KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected  in tests/unit/info-keysizes.tcl` |
+| 74 | `KEYSIZES - Histogram values of Bytes, Kilo and Mega  in tests/unit/info-keysizes.tcl` |
+| 75 | `KEYSIZES - Test hyperloglog  in tests/unit/info-keysizes.tcl` |
+| 76 | `KEYSIZES - Test List  in tests/unit/info-keysizes.tcl` |
+| 77 | `KEYSIZES - Test SET  in tests/unit/info-keysizes.tcl` |
+| 78 | `KEYSIZES - Test ZSET  in tests/unit/info-keysizes.tcl` |
+| 79 | `KEYSIZES - Test STRING  in tests/unit/info-keysizes.tcl` |
+| 80 | `KEYSIZES - Test complex dataset  in tests/unit/info-keysizes.tcl` |
+| ... | `125 more entries` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

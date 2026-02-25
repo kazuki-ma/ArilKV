@@ -181,7 +181,7 @@ run_full_runtest_case() {
 run_cli_probe_case() {
     local case_name="$1"
     local log_file="${RESULT_DIR}/${case_name}.log"
-    {
+    if {
         redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" FLUSHALL
         redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" SET type:string value
         redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" HSET type:hash field value
@@ -194,8 +194,7 @@ run_cli_probe_case() {
         [[ "${type_string}" == "string" ]]
         [[ "${type_hash}" == "hash" ]]
         [[ "${type_none}" == "none" ]]
-    } >"${log_file}" 2>&1
-    if [[ $? -eq 0 ]]; then
+    } >"${log_file}" 2>&1; then
         record_result "${case_name}" "PASS" "redis-cli TYPE probe passed"
     else
         record_result "${case_name}" "FAIL" "redis-cli TYPE probe failed"

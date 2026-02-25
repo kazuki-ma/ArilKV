@@ -51,7 +51,13 @@ echo "[2/4] building command maturity matrix from yaml..."
 "${MATURITY_SCRIPT}"
 
 echo "[3/4] running redis runtest external probe (mode=${COMPAT_PROBE_MODE})..."
-RESULT_DIR="${PROBE_RESULT_DIR}" REDIS_RUNTEXT_MODE="${COMPAT_PROBE_MODE}" "${SUBSET_SCRIPT}"
+PROBE_SCRIPT_EXIT_CODE=0
+if RESULT_DIR="${PROBE_RESULT_DIR}" REDIS_RUNTEXT_MODE="${COMPAT_PROBE_MODE}" "${SUBSET_SCRIPT}"; then
+    PROBE_SCRIPT_EXIT_CODE=0
+else
+    PROBE_SCRIPT_EXIT_CODE=$?
+    echo "warning: external probe script exited non-zero (${PROBE_SCRIPT_EXIT_CODE}); continuing report generation from captured artifacts" >&2
+fi
 
 if [[ ! -f "${STATUS_CSV}" ]]; then
     echo "status csv not found: ${STATUS_CSV}" >&2
@@ -112,6 +118,7 @@ echo "[4/4] generating compatibility report..."
     echo
     echo "## External Probe Snapshot"
     echo
+    echo "- Probe script exit code: \`${PROBE_SCRIPT_EXIT_CODE}\`"
     echo "- Cases: \`${probe_total}\`"
     echo "- PASS: \`${probe_pass}\`"
     echo "- FAIL: \`${probe_fail}\`"
