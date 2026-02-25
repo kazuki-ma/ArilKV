@@ -134,18 +134,13 @@ echo "[4/4] generating compatibility report..."
         echo "- Failed tests extracted from runtest log: \`${FAILED_TESTS_COUNT}\`"
         if [[ "${FAILED_TESTS_COUNT}" -gt 0 ]]; then
             echo
-            echo "| # | Test |"
-            echo "|---|---|"
+            echo "| Test |"
+            echo "|---|"
             awk '
-            NR <= 80 {
+            {
                 line = $0
                 gsub(/\|/, "\\|", line)
-                printf("| %d | `%s` |\n", NR, line)
-            }
-            END {
-                if (NR > 80) {
-                    printf("| ... | `%d more entries` |\n", NR - 80)
-                }
+                printf("| `%s` |\n", line)
             }
             ' "${FAILED_TESTS_FILE}"
         fi

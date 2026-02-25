@@ -29,97 +29,220 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=383; err=205; ignore=123; failed_tests=205  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=384; err=204; ignore=123; failed_tests=204  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `205`
+- Failed tests extracted from runtest log: `204`
 
-| # | Test |
-|---|---|
-| 1 | `BITFIELD with only key as argument in tests/unit/bitfield.tcl` |
-| 2 | `BITFIELD overflow detection fuzzing in tests/unit/bitfield.tcl` |
-| 3 | `BITFIELD_RO with only key as argument in tests/unit/bitfield.tcl` |
-| 4 | `BITFIELD_RO fails when write option is used in tests/unit/bitfield.tcl` |
-| 5 | `BITCOUNT with illegal arguments in tests/unit/bitops.tcl` |
-| 6 | `BITCOUNT against non-integer value in tests/unit/bitops.tcl` |
-| 7 | `BITOP NOT with multiple source keys in tests/unit/bitops.tcl` |
-| 8 | `BITOP AND\|OR\|XOR\|ONE don't change the string with single input key in tests/unit/bitops.tcl` |
-| 9 | `BITOP DIFF\|DIFF1\|ANDOR with one source key in tests/unit/bitops.tcl` |
-| 10 | `BITOP missing key is considered a stream of zero in tests/unit/bitops.tcl` |
-| 11 | `BITOP shorter keys are zero-padded to the key with max length in tests/unit/bitops.tcl` |
-| 12 | `BITOP diff fuzzing in tests/unit/bitops.tcl` |
-| 13 | `BITOP diff1 fuzzing in tests/unit/bitops.tcl` |
-| 14 | `BITOP andor fuzzing in tests/unit/bitops.tcl` |
-| 15 | `BITOP one fuzzing in tests/unit/bitops.tcl` |
-| 16 | `BITPOS will illegal arguments in tests/unit/bitops.tcl` |
-| 17 | `BITPOS against non-integer value in tests/unit/bitops.tcl` |
-| 18 | `SETBIT/BITFIELD only increase dirty when the value changed in tests/unit/bitops.tcl` |
-| 19 | `RESTORE with ABSTTL in the past in tests/unit/dump.tcl` |
-| 20 | `RESTORE can set LRU in tests/unit/dump.tcl` |
-| 21 | `RESTORE can set LFU in tests/unit/dump.tcl` |
-| 22 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
-| 23 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
-| 24 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| 25 | `Config lazyexpire-nested-arbitrary-keys (yes, multi) in tests/unit/expire.tcl` |
-| 26 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
-| 27 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
-| 28 | `GEOADD update with invalid option in tests/unit/geo.tcl` |
-| 29 | `Check geoset values in tests/unit/geo.tcl` |
-| 30 | `GEOSEARCH FROMLONLAT and FROMMEMBER one must exist in tests/unit/geo.tcl` |
-| 31 | `GEOSEARCH BYRADIUS and BYBOX one must exist in tests/unit/geo.tcl` |
-| 32 | `GEORADIUS withdist (sorted) in tests/unit/geo.tcl` |
-| 33 | `GEOSEARCH withdist (sorted) in tests/unit/geo.tcl` |
-| 34 | `GEORADIUS with multiple WITH* tokens in tests/unit/geo.tcl` |
-| 35 | `GEORADIUS with ANY not sorted by default in tests/unit/geo.tcl` |
-| 36 | `GEORADIUS with ANY sorted by ASC in tests/unit/geo.tcl` |
-| 37 | `GEORADIUS with ANY but no COUNT in tests/unit/geo.tcl` |
-| 38 | `GEORADIUSBYMEMBER simple (sorted) in tests/unit/geo.tcl` |
-| 39 | `GEORADIUSBYMEMBER_RO simple (sorted) in tests/unit/geo.tcl` |
-| 40 | `GEOSEARCH FROMMEMBER simple (sorted) in tests/unit/geo.tcl` |
-| 41 | `GEOSEARCH corner point test in tests/unit/geo.tcl` |
-| 42 | `GEORADIUSBYMEMBER withdist (sorted) in tests/unit/geo.tcl` |
-| 43 | `GEOHASH with only key as argument in tests/unit/geo.tcl` |
-| 44 | `GEOPOS with only key as argument in tests/unit/geo.tcl` |
-| 45 | `GEODIST simple & unit in tests/unit/geo.tcl` |
-| 46 | `GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage in tests/unit/geo.tcl` |
-| 47 | `GEORANGE STOREDIST option: plain usage in tests/unit/geo.tcl` |
-| 48 | `GEOSEARCHSTORE STOREDIST option: plain usage in tests/unit/geo.tcl` |
-| 49 | `GEORANGE STOREDIST option: COUNT ASC and DESC in tests/unit/geo.tcl` |
-| 50 | `GEOSEARCH with small distance in tests/unit/geo.tcl` |
-| 51 | `GEOSEARCH fuzzy test - byradius in tests/unit/geo.tcl` |
-| 52 | `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
-| 53 | `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
-| 54 | `PFADD without arguments creates an HLL value in tests/unit/hyperloglog.tcl` |
-| 55 | `HyperLogLogs are promote from sparse to dense in tests/unit/hyperloglog.tcl` |
-| 56 | `Change hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
-| 57 | `Hyperloglog promote to dense well in different hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
-| 58 | `HyperLogLog sparse encoding stress test in tests/unit/hyperloglog.tcl` |
-| 59 | `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
-| 60 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
-| 61 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
-| 62 | `Fuzzing dense/sparse encoding: Redis should always detect errors in tests/unit/hyperloglog.tcl` |
-| 63 | `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
-| 64 | `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
-| 65 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
-| 66 | `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
-| 67 | `PFCOUNT multiple-keys merge returns cardinality of union #2 in tests/unit/hyperloglog.tcl` |
-| 68 | `PFDEBUG GETREG returns the HyperLogLog raw registers in tests/unit/hyperloglog.tcl` |
-| 69 | `PFADD / PFCOUNT cache invalidation works in tests/unit/hyperloglog.tcl` |
-| 70 | `info command with at most one sub command in tests/unit/info-command.tcl` |
-| 71 | `info command with one sub-section in tests/unit/info-command.tcl` |
-| 72 | `info command with multiple sub-sections in tests/unit/info-command.tcl` |
-| 73 | `KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected  in tests/unit/info-keysizes.tcl` |
-| 74 | `KEYSIZES - Histogram values of Bytes, Kilo and Mega  in tests/unit/info-keysizes.tcl` |
-| 75 | `KEYSIZES - Test hyperloglog  in tests/unit/info-keysizes.tcl` |
-| 76 | `KEYSIZES - Test List  in tests/unit/info-keysizes.tcl` |
-| 77 | `KEYSIZES - Test SET  in tests/unit/info-keysizes.tcl` |
-| 78 | `KEYSIZES - Test ZSET  in tests/unit/info-keysizes.tcl` |
-| 79 | `KEYSIZES - Test STRING  in tests/unit/info-keysizes.tcl` |
-| 80 | `KEYSIZES - Test complex dataset  in tests/unit/info-keysizes.tcl` |
-| ... | `125 more entries` |
+| Test |
+|---|
+| `BITFIELD with only key as argument in tests/unit/bitfield.tcl` |
+| `BITFIELD overflow detection fuzzing in tests/unit/bitfield.tcl` |
+| `BITFIELD_RO with only key as argument in tests/unit/bitfield.tcl` |
+| `BITFIELD_RO fails when write option is used in tests/unit/bitfield.tcl` |
+| `BITCOUNT with illegal arguments in tests/unit/bitops.tcl` |
+| `BITCOUNT against non-integer value in tests/unit/bitops.tcl` |
+| `BITOP NOT with multiple source keys in tests/unit/bitops.tcl` |
+| `BITOP AND\|OR\|XOR\|ONE don't change the string with single input key in tests/unit/bitops.tcl` |
+| `BITOP DIFF\|DIFF1\|ANDOR with one source key in tests/unit/bitops.tcl` |
+| `BITOP missing key is considered a stream of zero in tests/unit/bitops.tcl` |
+| `BITOP shorter keys are zero-padded to the key with max length in tests/unit/bitops.tcl` |
+| `BITOP diff fuzzing in tests/unit/bitops.tcl` |
+| `BITOP diff1 fuzzing in tests/unit/bitops.tcl` |
+| `BITOP andor fuzzing in tests/unit/bitops.tcl` |
+| `BITOP one fuzzing in tests/unit/bitops.tcl` |
+| `BITPOS will illegal arguments in tests/unit/bitops.tcl` |
+| `BITPOS against non-integer value in tests/unit/bitops.tcl` |
+| `SETBIT/BITFIELD only increase dirty when the value changed in tests/unit/bitops.tcl` |
+| `RESTORE with ABSTTL in the past in tests/unit/dump.tcl` |
+| `RESTORE can set LRU in tests/unit/dump.tcl` |
+| `RESTORE can set LFU in tests/unit/dump.tcl` |
+| `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
+| `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
+| `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
+| `Config lazyexpire-nested-arbitrary-keys (yes, multi) in tests/unit/expire.tcl` |
+| `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
+| `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
+| `GEOADD update with invalid option in tests/unit/geo.tcl` |
+| `Check geoset values in tests/unit/geo.tcl` |
+| `GEOSEARCH FROMLONLAT and FROMMEMBER one must exist in tests/unit/geo.tcl` |
+| `GEOSEARCH BYRADIUS and BYBOX one must exist in tests/unit/geo.tcl` |
+| `GEORADIUS withdist (sorted) in tests/unit/geo.tcl` |
+| `GEOSEARCH withdist (sorted) in tests/unit/geo.tcl` |
+| `GEORADIUS with multiple WITH* tokens in tests/unit/geo.tcl` |
+| `GEORADIUS with ANY not sorted by default in tests/unit/geo.tcl` |
+| `GEORADIUS with ANY sorted by ASC in tests/unit/geo.tcl` |
+| `GEORADIUS with ANY but no COUNT in tests/unit/geo.tcl` |
+| `GEORADIUSBYMEMBER simple (sorted) in tests/unit/geo.tcl` |
+| `GEORADIUSBYMEMBER_RO simple (sorted) in tests/unit/geo.tcl` |
+| `GEOSEARCH FROMMEMBER simple (sorted) in tests/unit/geo.tcl` |
+| `GEOSEARCH corner point test in tests/unit/geo.tcl` |
+| `GEORADIUSBYMEMBER withdist (sorted) in tests/unit/geo.tcl` |
+| `GEOHASH with only key as argument in tests/unit/geo.tcl` |
+| `GEOPOS with only key as argument in tests/unit/geo.tcl` |
+| `GEODIST simple & unit in tests/unit/geo.tcl` |
+| `GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage in tests/unit/geo.tcl` |
+| `GEORANGE STOREDIST option: plain usage in tests/unit/geo.tcl` |
+| `GEOSEARCHSTORE STOREDIST option: plain usage in tests/unit/geo.tcl` |
+| `GEORANGE STOREDIST option: COUNT ASC and DESC in tests/unit/geo.tcl` |
+| `GEOSEARCH with small distance in tests/unit/geo.tcl` |
+| `GEOSEARCH fuzzy test - byradius in tests/unit/geo.tcl` |
+| `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
+| `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
+| `PFADD without arguments creates an HLL value in tests/unit/hyperloglog.tcl` |
+| `HyperLogLogs are promote from sparse to dense in tests/unit/hyperloglog.tcl` |
+| `Change hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
+| `Hyperloglog promote to dense well in different hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
+| `HyperLogLog sparse encoding stress test in tests/unit/hyperloglog.tcl` |
+| `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
+| `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
+| `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
+| `PFMERGE with one empty input key, create an empty destkey in tests/unit/hyperloglog.tcl` |
+| `PFMERGE with one non-empty input key, dest key is actually one of the source keys in tests/unit/hyperloglog.tcl` |
+| `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
+| `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
+| `PFCOUNT multiple-keys merge returns cardinality of union #2 in tests/unit/hyperloglog.tcl` |
+| `PFDEBUG GETREG returns the HyperLogLog raw registers in tests/unit/hyperloglog.tcl` |
+| `PFADD / PFCOUNT cache invalidation works in tests/unit/hyperloglog.tcl` |
+| `info command with at most one sub command in tests/unit/info-command.tcl` |
+| `info command with one sub-section in tests/unit/info-command.tcl` |
+| `info command with multiple sub-sections in tests/unit/info-command.tcl` |
+| `KEYSIZES - Test i'th bin counts keysizes between (2^i) and (2^(i+1)-1) as expected  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Histogram values of Bytes, Kilo and Mega  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test hyperloglog  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test List  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test SET  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test ZSET  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test STRING  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test complex dataset  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test HASH (listpackex)  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test Hash field lazy expiration (listpackex)  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test HASH (hashtable)  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test Hash field lazy expiration (hashtable)  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test STRING BITS  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test RESTORE  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test RENAME  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
+| `KEYSIZES - DEBUG RELOAD reset keysizes  in tests/unit/info-keysizes.tcl` |
+| `TTL, TYPE and EXISTS do not alter the last access time of a key in tests/unit/introspection-2.tcl` |
+| `TOUCH alters the last access time of a key in tests/unit/introspection-2.tcl` |
+| `Operations in no-touch mode do not alter the last access time of a key in tests/unit/introspection-2.tcl` |
+| `Operations in no-touch mode TOUCH alters the last access time of a key in tests/unit/introspection-2.tcl` |
+| `Operations in no-touch mode TOUCH from script alters the last access time of a key in tests/unit/introspection-2.tcl` |
+| `TOUCH returns the number of existing keys specified in tests/unit/introspection-2.tcl` |
+| `errors stats for GEOADD in tests/unit/introspection-2.tcl` |
+| `command stats for scripts in tests/unit/introspection-2.tcl` |
+| `COMMAND COUNT get total number of Redis commands in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS GET in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYSANDFLAGS in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYSANDFLAGS invalid args in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYSANDFLAGS MSETEX in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS MEMORY USAGE in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS XGROUP in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS EVAL with keys in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS EVAL without keys in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS LCS in tests/unit/introspection-2.tcl` |
+| `COMMAND GETKEYS MORE THAN 256 KEYS in tests/unit/introspection-2.tcl` |
+| `COMMAND LIST WITHOUT FILTERBY in tests/unit/introspection-2.tcl` |
+| `COMMAND LIST FILTERBY ACLCAT against non existing category in tests/unit/introspection-2.tcl` |
+| `COMMAND LIST FILTERBY ACLCAT - list all commands/subcommands in tests/unit/introspection-2.tcl` |
+| `COMMAND LIST FILTERBY PATTERN - list all commands/subcommands in tests/unit/introspection-2.tcl` |
+| `COMMAND LIST FILTERBY MODULE against non existing module in tests/unit/introspection-2.tcl` |
+| `COMMAND INFO of invalid subcommands in tests/unit/introspection-2.tcl` |
+| `SET command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `GET command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `MSET command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `BITFIELD command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `LMOVE command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `LPOP command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `BLPOP command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `PING command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `MEMORY command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `MEMORY\|USAGE command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `RENAME command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `GEORADIUS_RO command will not be marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `ZUNIONSTORE command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `XREAD command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `EVAL command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `SORT command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `SORT_RO command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `MIGRATE command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `GEORADIUS command is marked with movablekeys in tests/unit/introspection-2.tcl` |
+| `CLIENT KILL close the client connection during bgsave in tests/unit/introspection.tcl` |
+| `Vararg DEL in tests/unit/keyspace.tcl` |
+| `Untagged multi-key commands in tests/unit/keyspace.tcl` |
+| `KEYS with pattern in tests/unit/keyspace.tcl` |
+| `KEYS to get all keys in tests/unit/keyspace.tcl` |
+| `DBSIZE in tests/unit/keyspace.tcl` |
+| `KEYS with hashtag in tests/unit/keyspace.tcl` |
+| `EXISTS in tests/unit/keyspace.tcl` |
+| `RENAME basic usage in tests/unit/keyspace.tcl` |
+| `RENAME against already existing key in tests/unit/keyspace.tcl` |
+| `RENAMENX basic usage in tests/unit/keyspace.tcl` |
+| `RENAMENX against already existing key in tests/unit/keyspace.tcl` |
+| `RENAMENX against already existing key (2) in tests/unit/keyspace.tcl` |
+| `RENAME where source and dest key are the same (existing) in tests/unit/keyspace.tcl` |
+| `RENAMENX where source and dest key are the same (existing) in tests/unit/keyspace.tcl` |
+| `RENAME with volatile key, should move the TTL as well in tests/unit/keyspace.tcl` |
+| `RENAME with volatile key, should not inherit TTL of target key in tests/unit/keyspace.tcl` |
+| `COPY basic usage for string in tests/unit/keyspace.tcl` |
+| `COPY for string does not copy data to no-integer DB in tests/unit/keyspace.tcl` |
+| `COPY can copy key expire metadata as well in tests/unit/keyspace.tcl` |
+| `COPY does not create an expire if it does not exist in tests/unit/keyspace.tcl` |
+| `RANDOMKEY in tests/unit/keyspace.tcl` |
+| `KEYS * two times with long key, Github issue #1208 in tests/unit/keyspace.tcl` |
+| `LATENCY HISTOGRAM with empty histogram in tests/unit/latency-monitor.tcl` |
+| `LATENCY HISTOGRAM all commands in tests/unit/latency-monitor.tcl` |
+| `LATENCY HISTOGRAM sub commands in tests/unit/latency-monitor.tcl` |
+| `LATENCY HISTOGRAM with a subset of commands in tests/unit/latency-monitor.tcl` |
+| `LATENCY HISTOGRAM command in tests/unit/latency-monitor.tcl` |
+| `LATENCY HISTOGRAM with wrong command name skips the invalid one in tests/unit/latency-monitor.tcl` |
+| `Test latency events logging in tests/unit/latency-monitor.tcl` |
+| `LATENCY GRAPH can output the event graph in tests/unit/latency-monitor.tcl` |
+| `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
+| `LATENCY RESET is able to reset events in tests/unit/latency-monitor.tcl` |
+| `LATENCY HELP should not have unexpected options in tests/unit/latency-monitor.tcl` |
+| `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
+| `FLUSHDB ASYNC can reclaim memory in background in tests/unit/lazyfree.tcl` |
+| `lazy free a stream with all types of metadata in tests/unit/lazyfree.tcl` |
+| `lazy free a stream with deleted cgroup in tests/unit/lazyfree.tcl` |
+| `FLUSHALL SYNC optimized to run in bg as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Run consecutive blocking FLUSHALL ASYNC successfully in tests/unit/lazyfree.tcl` |
+| `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `EXEC fails if there are errors while queueing commands #1 in tests/unit/multi.tcl` |
+| `EXEC fails if there are errors while queueing commands #2 in tests/unit/multi.tcl` |
+| `If EXEC aborts, the client MULTI state is cleared in tests/unit/multi.tcl` |
+| `EXEC fail on lazy expired WATCHed key in tests/unit/multi.tcl` |
+| `Delete WATCHed stale keys should not fail EXEC in tests/unit/multi.tcl` |
+| `FLUSHDB while watching stale keys should not fail EXEC in tests/unit/multi.tcl` |
+| `WATCH will consider touched expired keys in tests/unit/multi.tcl` |
+| `MULTI / EXEC is not propagated (single write command) in tests/unit/multi.tcl` |
+| `MULTI / EXEC is propagated correctly (multiple commands) in tests/unit/multi.tcl` |
+| `MULTI / EXEC with REPLICAOF in tests/unit/multi.tcl` |
+| `DISCARD should not fail during OOM in tests/unit/multi.tcl` |
+| `MULTI and script timeout in tests/unit/multi.tcl` |
+| `EXEC and script timeout in tests/unit/multi.tcl` |
+| `MULTI-EXEC body and script timeout in tests/unit/multi.tcl` |
+| `just EXEC and script timeout in tests/unit/multi.tcl` |
+| `exec with write commands and state change in tests/unit/multi.tcl` |
+| `exec with read commands and stale replica state change in tests/unit/multi.tcl` |
+| `EXEC with only read commands should not be rejected when OOM in tests/unit/multi.tcl` |
+| `EXEC with at least one use-memory command should fail in tests/unit/multi.tcl` |
+| `Blocking commands ignores the timeout in tests/unit/multi.tcl` |
+| `MULTI propagation of PUBLISH in tests/unit/multi.tcl` |
+| `MULTI propagation of SCRIPT LOAD in tests/unit/multi.tcl` |
+| `MULTI propagation of EVAL in tests/unit/multi.tcl` |
+| `MULTI propagation of SCRIPT FLUSH in tests/unit/multi.tcl` |
+| `MULTI propagation of XREADGROUP in tests/unit/multi.tcl` |
+| `MULTI with SAVE in tests/unit/multi.tcl` |
+| `MULTI with SHUTDOWN in tests/unit/multi.tcl` |
+| `MULTI with config error in tests/unit/multi.tcl` |
+| `Flushall while watching several keys by one client in tests/unit/multi.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
