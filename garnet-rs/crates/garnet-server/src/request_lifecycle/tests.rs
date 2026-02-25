@@ -5972,6 +5972,64 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     assert_eq!(response, b"$6\r\nsparse\r\n");
 
     response.clear();
+    let pfdebug_getreg = b"*3\r\n$7\r\nPFDEBUG\r\n$6\r\nGETREG\r\n$2\r\nhm\r\n";
+    let meta = parse_resp_command_arg_slices(pfdebug_getreg, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*16384\r\n"));
+
+    response.clear();
+    let pfdebug_simd_off = b"*3\r\n$7\r\nPFDEBUG\r\n$4\r\nSIMD\r\n$3\r\nOFF\r\n";
+    let meta = parse_resp_command_arg_slices(pfdebug_simd_off, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pfdebug_simd_on = b"*3\r\n$7\r\nPFDEBUG\r\n$4\r\nSIMD\r\n$2\r\nON\r\n";
+    let meta = parse_resp_command_arg_slices(pfdebug_simd_on, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let append_corrupt_hll = b"*3\r\n$6\r\nAPPEND\r\n$2\r\nhm\r\n$5\r\nhello\r\n";
+    let meta = parse_resp_command_arg_slices(append_corrupt_hll, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b":"));
+
+    response.clear();
+    let pfcount_invalidobj = b"*2\r\n$7\r\nPFCOUNT\r\n$2\r\nhm\r\n";
+    let meta = parse_resp_command_arg_slices(pfcount_invalidobj, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-INVALIDOBJ Corrupted HLL object detected\r\n");
+
+    response.clear();
+    let set_hyll_like = b"*3\r\n$3\r\nSET\r\n$4\r\nhyll\r\n$4\r\nHYLL\r\n";
+    let meta = parse_resp_command_arg_slices(set_hyll_like, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let pfdebug_getreg_invalidobj = b"*3\r\n$7\r\nPFDEBUG\r\n$6\r\nGETREG\r\n$4\r\nhyll\r\n";
+    let meta = parse_resp_command_arg_slices(pfdebug_getreg_invalidobj, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-INVALIDOBJ Corrupted HLL object detected\r\n");
+
+    response.clear();
     let pfselftest = b"*1\r\n$10\r\nPFSELFTEST\r\n";
     let meta = parse_resp_command_arg_slices(pfselftest, &mut args).unwrap();
     processor

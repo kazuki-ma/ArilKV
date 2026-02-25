@@ -29,13 +29,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=431; err=157; ignore=123; failed_tests=157  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=432; err=156; ignore=123; failed_tests=156  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `157`
+- Failed tests extracted from runtest log: `156`
 
 | Test |
 |---|
@@ -63,6 +63,7 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
+| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
@@ -96,13 +97,11 @@
 | `Change hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
 | `Hyperloglog promote to dense well in different hll-sparse-max-bytes in tests/unit/hyperloglog.tcl` |
 | `HyperLogLog sparse encoding stress test in tests/unit/hyperloglog.tcl` |
-| `Corrupted sparse HyperLogLogs are detected: Additional at tail in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with XZERO opcode in tests/unit/hyperloglog.tcl` |
 | `Corrupted sparse HyperLogLogs doesn't cause overflow and out-of-bounds with ZERO opcode in tests/unit/hyperloglog.tcl` |
 | `PFMERGE results with simd in tests/unit/hyperloglog.tcl` |
 | `PFCOUNT multiple-keys merge returns cardinality of union #1 in tests/unit/hyperloglog.tcl` |
 | `PFCOUNT multiple-keys merge returns cardinality of union #2 in tests/unit/hyperloglog.tcl` |
-| `PFDEBUG GETREG returns the HyperLogLog raw registers in tests/unit/hyperloglog.tcl` |
 | `PFADD / PFCOUNT cache invalidation works in tests/unit/hyperloglog.tcl` |
 | `info command with at most one sub command in tests/unit/info-command.tcl` |
 | `info command with one sub-section in tests/unit/info-command.tcl` |

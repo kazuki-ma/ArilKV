@@ -84,15 +84,22 @@ struct ExpireConditionOptions {
 }
 
 const PF_STRING_PREFIX: &[u8] = b"\x00garnet-pf-v1\x00";
-const PFDEBUG_HELP_LINES: [&[u8]; 8] = [
+const PF_REDIS_HLL_PREFIX: &[u8] = b"HYLL";
+const PFDEBUG_REGISTER_COUNT: usize = 16_384;
+const PFDEBUG_REGISTER_INDEX_BITS: u32 = 14;
+const PFDEBUG_REGISTER_INDEX_MASK: u64 = (1u64 << PFDEBUG_REGISTER_INDEX_BITS) - 1;
+const PFDEBUG_HELP_LINES: [&[u8]; 11] = [
     b"PFDEBUG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"ENCODING <key>",
     b"    Return HyperLogLog internal encoding for key.",
     b"TODENSE <key>",
     b"    Force sparse-to-dense representation (no-op in garnet-rs).",
+    b"GETREG <key>",
+    b"    Return raw HyperLogLog registers.",
+    b"SIMD <ON|OFF>",
+    b"    Toggle SIMD mode (no-op in garnet-rs).",
     b"HELP",
     b"    Print this help.",
-    b"DECODE <key>",
 ];
 
 impl RequestProcessor {
@@ -1883,7 +1890,12 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 2, "PFDEBUG", "PFDEBUG <ENCODING|TODENSE|HELP> [key]")?;
+        ensure_min_arity(
+            args,
+            2,
+            "PFDEBUG",
+            "PFDEBUG <ENCODING|TODENSE|GETREG|SIMD|HELP> [key]",
+        )?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "PFDEBUG", "PFDEBUG HELP")?;
@@ -1899,6 +1911,27 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG TODENSE key")?;
             append_simple_string(response_out, b"OK");
             return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GETREG") {
+            require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG GETREG key")?;
+            let key = args[2].to_vec();
+            let set = load_pf_set_for_key(self, &key)?.unwrap_or_default();
+            let registers = pfdebug_registers_from_set(&set);
+            response_out.push(b'*');
+            response_out.extend_from_slice(PFDEBUG_REGISTER_COUNT.to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+            for register in registers {
+                append_integer(response_out, i64::from(register));
+            }
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SIMD") {
+            require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG SIMD <ON|OFF>")?;
+            if ascii_eq_ignore_case(args[2], b"ON") || ascii_eq_ignore_case(args[2], b"OFF") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
         }
         Err(RequestExecutionError::UnknownCommand)
     }
@@ -3209,9 +3242,7 @@ fn load_pf_set_for_key(
         }
         return Ok(None);
     };
-    decode_pf_set(&value)
-        .map(Some)
-        .ok_or(RequestExecutionError::WrongType)
+    decode_pf_set(&value).map(Some)
 }
 
 fn encode_pf_set(values: &BTreeSet<Vec<u8>>) -> Vec<u8> {
@@ -3221,9 +3252,32 @@ fn encode_pf_set(values: &BTreeSet<Vec<u8>>) -> Vec<u8> {
     encoded
 }
 
-fn decode_pf_set(raw: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
-    let payload = raw.strip_prefix(PF_STRING_PREFIX)?;
-    deserialize_set_object_payload(payload)
+fn decode_pf_set(raw: &[u8]) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
+    if let Some(payload) = raw.strip_prefix(PF_STRING_PREFIX) {
+        return deserialize_set_object_payload(payload).ok_or(RequestExecutionError::InvalidObject);
+    }
+    if raw.starts_with(PF_REDIS_HLL_PREFIX) {
+        return Err(RequestExecutionError::InvalidObject);
+    }
+    Err(RequestExecutionError::WrongType)
+}
+
+fn pfdebug_registers_from_set(values: &BTreeSet<Vec<u8>>) -> [u8; PFDEBUG_REGISTER_COUNT] {
+    let mut registers = [0u8; PFDEBUG_REGISTER_COUNT];
+    for value in values {
+        let hash = fnv1a_hash64(value);
+        let register_index = (hash & PFDEBUG_REGISTER_INDEX_MASK) as usize;
+        let register_rank = pfdebug_register_rank(hash >> PFDEBUG_REGISTER_INDEX_BITS);
+        registers[register_index] = registers[register_index].max(register_rank);
+    }
+    registers
+}
+
+fn pfdebug_register_rank(remaining_hash_bits: u64) -> u8 {
+    if remaining_hash_bits == 0 {
+        return (64 - PFDEBUG_REGISTER_INDEX_BITS + 1) as u8;
+    }
+    (remaining_hash_bits.leading_zeros() + 1) as u8
 }
 
 fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, usize)> {

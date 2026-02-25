@@ -33,6 +33,7 @@ pub enum RequestExecutionError {
     InvalidExpireCommandExpireTime,
     InvalidPExpireCommandExpireTime,
     WrongType,
+    InvalidObject,
     StorageBusy,
     StorageCapacityExceeded,
     StorageFailure,
@@ -108,6 +109,9 @@ impl RequestExecutionError {
                 response_out,
                 "WRONGTYPE Operation against a key holding the wrong kind of value",
             ),
+            Self::InvalidObject => {
+                append_error(response_out, "INVALIDOBJ Corrupted HLL object detected")
+            }
             Self::StorageBusy => append_error(response_out, "ERR storage busy, retry later"),
             Self::StorageCapacityExceeded => append_error(
                 response_out,
