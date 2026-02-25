@@ -43,6 +43,7 @@ This file defines default collaboration and execution rules for repository work,
 - Do not keep required structural changes out of scope only to preserve a "minimal diff" appearance.
 - Use temporary/partial steps only when they are technically necessary, and record explicit rationale plus follow-up TODO.
 - Avoid casual "for now" / "first" staging language unless there is a concrete technical dependency that enforces staged delivery.
+- For performance-sensitive work: make the implementation clean first; once a path is proven performance-critical, keep the code readable/beautiful first, then optimize with measurement-backed changes.
 - Spending more time to reach a robust implementation is preferred over fast-but-fragile patches.
 
 ## Required Validation (Default)

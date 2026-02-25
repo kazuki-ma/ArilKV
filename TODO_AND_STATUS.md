@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-02-26
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 287
+> **Current Iteration**: 288
 
 ---
 
@@ -857,3 +857,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 285 | 2026-02-26 | 11.170 / DR-006 | DONE | Imported returned HLL DeepResearch report from Downloads into `docs/performance/hyperloglog-compatibility-strategy-deepresearch-2026-02-26.md`, added actionable digest `docs/performance/hyperloglog-compatibility-strategy-notes-2026-02-26.md`, and updated Phase 11B tracker `DR-006` status to `RECEIVED` (`pending=0`). |
 | 286 | 2026-02-26 | Process | DONE | Updated `AGENTS.md` quality baseline to explicitly require production-quality, practical/maintainable code, avoid diff-size-driven compromises, and require explicit rationale plus follow-up TODO for temporary steps. |
 | 287 | 2026-02-26 | Process | DONE | Refined `AGENTS.md` quality baseline wording to explicitly prohibit diff-appearance-driven scope reduction and to require concrete technical rationale for any "for now/first" staged delivery language. |
+| 288 | 2026-02-26 | Process | DONE | Added a performance-implementation quality rule in `AGENTS.md`: keep performance-sensitive code clean first, and only after proving a path is performance-critical, optimize while preserving readability/maintainability with measurement-backed changes. |
