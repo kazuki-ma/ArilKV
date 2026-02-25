@@ -24,18 +24,18 @@
 
 - Probe script exit code: `0`
 - Cases: `3`
-- PASS: `0`
-- FAIL: `3`
+- PASS: `2`
+- FAIL: `1`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=475; err=113; ignore=123; failed_tests=113  |
-| `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
-| `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=495; err=93; ignore=123; failed_tests=93  |
+| `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
+| `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `113`
+- Failed tests extracted from runtest log: `93`
 
 | Test |
 |---|
@@ -63,30 +63,10 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
 | `Check geoset values in tests/unit/geo.tcl` |
-| `GEORADIUS withdist (sorted) in tests/unit/geo.tcl` |
-| `GEOSEARCH withdist (sorted) in tests/unit/geo.tcl` |
-| `GEORADIUS with multiple WITH* tokens in tests/unit/geo.tcl` |
-| `GEORADIUS with ANY not sorted by default in tests/unit/geo.tcl` |
-| `GEORADIUS with ANY sorted by ASC in tests/unit/geo.tcl` |
-| `GEORADIUSBYMEMBER simple (sorted) in tests/unit/geo.tcl` |
-| `GEORADIUSBYMEMBER_RO simple (sorted) in tests/unit/geo.tcl` |
-| `GEOSEARCH FROMMEMBER simple (sorted) in tests/unit/geo.tcl` |
-| `GEOSEARCH corner point test in tests/unit/geo.tcl` |
-| `GEORADIUSBYMEMBER withdist (sorted) in tests/unit/geo.tcl` |
-| `GEODIST simple & unit in tests/unit/geo.tcl` |
-| `GEORADIUSBYMEMBER STORE/STOREDIST option: plain usage in tests/unit/geo.tcl` |
-| `GEORANGE STOREDIST option: plain usage in tests/unit/geo.tcl` |
-| `GEOSEARCHSTORE STOREDIST option: plain usage in tests/unit/geo.tcl` |
-| `GEORANGE STOREDIST option: COUNT ASC and DESC in tests/unit/geo.tcl` |
-| `GEOSEARCH with small distance in tests/unit/geo.tcl` |
-| `GEOSEARCH fuzzy test - byradius in tests/unit/geo.tcl` |
-| `GEOSEARCH fuzzy test - bybox in tests/unit/geo.tcl` |
-| `GEOSEARCH box edges fuzzy test in tests/unit/geo.tcl` |
 | `info command with at most one sub command in tests/unit/info-command.tcl` |
 | `info command with one sub-section in tests/unit/info-command.tcl` |
 | `info command with multiple sub-sections in tests/unit/info-command.tcl` |

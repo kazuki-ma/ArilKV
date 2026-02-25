@@ -21,7 +21,9 @@ const STANDARD_GEOHASH_LAT_MAX: f64 = 90.0;
 const GEO_COORD_BITS: u32 = 26;
 const GEO_COORD_MASK: u64 = (1u64 << GEO_COORD_BITS) - 1;
 const GEO_SCORE_MAX: u64 = (GEO_COORD_MASK << GEO_COORD_BITS) | GEO_COORD_MASK;
+const GEO_SCORE_SCALE: f64 = (1u64 << GEO_COORD_BITS) as f64;
 const GEO_EARTH_RADIUS_METERS: f64 = 6_372_797.560_856;
+const GEO_DISTANCE_EPSILON: f64 = 1e-15;
 const GEOHASH_ALPHABET: &[u8; 32] = b"0123456789bcdefghjkmnpqrstuvwxyz";
 const GEOHASH_OUTPUT_LEN: usize = 11;
 const STANDARD_GEOHASH_STEP: u32 = 26;
@@ -275,7 +277,7 @@ impl RequestProcessor {
 
         let meters = geo_distance_meters(lon_a, lat_a, lon_b, lat_b);
         let unit_value = meters / unit_to_meters;
-        let text = format_geo_number(unit_value, 4);
+        let text = format_geo_distance(unit_value);
         append_bulk_string(response_out, text.as_bytes());
         Ok(())
     }
@@ -794,6 +796,11 @@ fn execute_geo_query(
         center_latitude,
         options.shape,
     );
+    if options.sort == GeoSortOrder::None
+        && let GeoSearchOrigin::FromMember(origin_member) = &options.origin
+    {
+        move_match_member_to_front(&mut matches, origin_member);
+    }
     apply_geosearch_sort_and_count(&mut matches, options);
 
     if let Some(destination) = store_key {
@@ -845,8 +852,23 @@ fn collect_geosearch_matches(
     shape: GeoSearchShape,
 ) -> Vec<GeoSearchMatch> {
     let mut matches = Vec::new();
-    for (member, score) in zset {
-        let Some((longitude, latitude)) = decode_geo_score(*score) else {
+    let mut entries: Vec<(&Vec<u8>, f64)> = zset
+        .iter()
+        .map(|(member, score)| (member, *score))
+        .collect();
+    entries.sort_by(|(left_member, left_score), (right_member, right_score)| {
+        let score_order = left_score
+            .partial_cmp(right_score)
+            .unwrap_or(Ordering::Equal);
+        if score_order == Ordering::Equal {
+            left_member.cmp(right_member)
+        } else {
+            score_order
+        }
+    });
+
+    for (member, score) in entries {
+        let Some((longitude, latitude)) = decode_geo_score(score) else {
             continue;
         };
         let distance_meters =
@@ -869,7 +891,7 @@ fn collect_geosearch_matches(
         if in_shape {
             matches.push(GeoSearchMatch {
                 member: member.clone(),
-                score: *score,
+                score,
                 longitude,
                 latitude,
                 distance_meters,
@@ -883,6 +905,12 @@ fn apply_geosearch_sort_and_count(matches: &mut Vec<GeoSearchMatch>, options: &G
     let mut sort = options.sort;
     if options.count.is_some() && sort == GeoSortOrder::None && !options.any {
         sort = GeoSortOrder::Asc;
+    }
+
+    if options.any
+        && let Some(count) = options.count
+    {
+        matches.truncate(count.min(matches.len()));
     }
 
     match sort {
@@ -911,9 +939,25 @@ fn apply_geosearch_sort_and_count(matches: &mut Vec<GeoSearchMatch>, options: &G
         }),
     }
 
-    if let Some(count) = options.count {
+    if !options.any
+        && let Some(count) = options.count
+    {
         matches.truncate(count.min(matches.len()));
     }
+}
+
+fn move_match_member_to_front(matches: &mut Vec<GeoSearchMatch>, member: &[u8]) {
+    let Some(index) = matches
+        .iter()
+        .position(|entry| entry.member.as_slice() == member)
+    else {
+        return;
+    };
+    if index == 0 {
+        return;
+    }
+    let center = matches.remove(index);
+    matches.insert(0, center);
 }
 
 fn append_geosearch_response(
@@ -933,7 +977,7 @@ fn append_geosearch_response(
         append_bulk_string(response_out, &entry.member);
         if options.with_dist {
             let distance_unit = entry.distance_meters / options.shape.unit_to_meters();
-            let text = format_geo_number(distance_unit, 4);
+            let text = format_geo_distance(distance_unit);
             append_bulk_string(response_out, text.as_bytes());
         }
         if options.with_hash {
@@ -957,31 +1001,13 @@ fn geo_box_contains(
     width_meters: f64,
     height_meters: f64,
 ) -> bool {
-    let half_height_delta = ((height_meters * 0.5) / GEO_EARTH_RADIUS_METERS).to_degrees();
-    if (latitude - center_latitude).abs() > half_height_delta {
+    let lat_distance = geo_lat_distance_meters(latitude, center_latitude);
+    if lat_distance > height_meters * 0.5 {
         return false;
     }
 
-    let cos_lat = center_latitude.to_radians().cos().abs();
-    let half_width_delta = if cos_lat <= f64::EPSILON {
-        GEO_LONGITUDE_MAX
-    } else {
-        (((width_meters * 0.5) / (GEO_EARTH_RADIUS_METERS * cos_lat)).to_degrees())
-            .min(GEO_LONGITUDE_MAX)
-    };
-    let longitude_delta = normalized_longitude_delta(longitude - center_longitude).abs();
-    longitude_delta <= half_width_delta
-}
-
-fn normalized_longitude_delta(delta: f64) -> f64 {
-    let mut normalized = delta % 360.0;
-    if normalized > 180.0 {
-        normalized -= 360.0;
-    }
-    if normalized < -180.0 {
-        normalized += 360.0;
-    }
-    normalized
+    let lon_distance = geo_distance_meters(longitude, latitude, center_longitude, latitude);
+    lon_distance <= width_meters * 0.5
 }
 
 fn store_geosearch_result(
@@ -1032,12 +1058,9 @@ fn delete_string_value_for_geo_store_overwrite(
 }
 
 fn encode_geo_score(longitude: f64, latitude: f64) -> f64 {
-    let lon_bits =
-        quantize_geo_coordinate(longitude, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX) & GEO_COORD_MASK;
-    let lat_bits =
-        quantize_geo_coordinate(latitude, GEO_LATITUDE_MIN, GEO_LATITUDE_MAX) & GEO_COORD_MASK;
-    let packed = (lon_bits << GEO_COORD_BITS) | lat_bits;
-    debug_assert!(packed <= GEO_SCORE_MAX);
+    let lon_bits = encode_geo_component(longitude, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX);
+    let lat_bits = encode_geo_component(latitude, GEO_LATITUDE_MIN, GEO_LATITUDE_MAX);
+    let packed = interleave64(lat_bits, lon_bits) & GEO_SCORE_MAX;
     packed as f64
 }
 
@@ -1049,37 +1072,52 @@ fn decode_geo_score(score: f64) -> Option<(f64, f64)> {
         return None;
     }
     let packed = score as u64;
-    let lon_bits = (packed >> GEO_COORD_BITS) & GEO_COORD_MASK;
-    let lat_bits = packed & GEO_COORD_MASK;
-    let longitude = dequantize_geo_coordinate(lon_bits, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX);
-    let latitude = dequantize_geo_coordinate(lat_bits, GEO_LATITUDE_MIN, GEO_LATITUDE_MAX);
+    let separated = deinterleave64(packed);
+    let lat_bits = (separated & 0xffff_ffff) as u32;
+    let lon_bits = (separated >> 32) as u32;
+    let longitude = decode_geo_component(lon_bits, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX);
+    let latitude = decode_geo_component(lat_bits, GEO_LATITUDE_MIN, GEO_LATITUDE_MAX);
     Some((longitude, latitude))
 }
 
-fn quantize_geo_coordinate(value: f64, min: f64, max: f64) -> u64 {
+fn encode_geo_component(value: f64, min: f64, max: f64) -> u32 {
     let normalized = ((value - min) / (max - min)).clamp(0.0, 1.0);
-    (normalized * GEO_COORD_MASK as f64).round() as u64
+    let scaled = normalized * GEO_SCORE_SCALE;
+    scaled as u32
 }
 
-fn dequantize_geo_coordinate(value: u64, min: f64, max: f64) -> f64 {
-    let normalized = value as f64 / GEO_COORD_MASK as f64;
-    min + (max - min) * normalized
+fn decode_geo_component(value: u32, min: f64, max: f64) -> f64 {
+    let scale = max - min;
+    let min_coord = min + (value as f64 / GEO_SCORE_SCALE) * scale;
+    let max_coord = min + ((value as f64 + 1.0) / GEO_SCORE_SCALE) * scale;
+    ((min_coord + max_coord) * 0.5).clamp(min, max)
+}
+
+fn geo_lat_distance_meters(lat_a: f64, lat_b: f64) -> f64 {
+    GEO_EARTH_RADIUS_METERS * (lat_b.to_radians() - lat_a.to_radians()).abs()
 }
 
 fn geo_distance_meters(lon_a: f64, lat_a: f64, lon_b: f64, lat_b: f64) -> f64 {
-    let lat_a = lat_a.to_radians();
-    let lat_b = lat_b.to_radians();
-    let delta_lat = lat_b - lat_a;
-    let delta_lon = (lon_b - lon_a).to_radians();
-    let sin_lat = (delta_lat / 2.0).sin();
-    let sin_lon = (delta_lon / 2.0).sin();
-    let a = sin_lat * sin_lat + lat_a.cos() * lat_b.cos() * sin_lon * sin_lon;
-    let c = 2.0 * a.sqrt().asin();
-    GEO_EARTH_RADIUS_METERS * c
+    let lon_a_radians = lon_a.to_radians();
+    let lon_b_radians = lon_b.to_radians();
+    let lon_sine = ((lon_b_radians - lon_a_radians) * 0.5).sin();
+    if lon_sine.abs() <= GEO_DISTANCE_EPSILON {
+        return geo_lat_distance_meters(lat_a, lat_b);
+    }
+
+    let lat_a_radians = lat_a.to_radians();
+    let lat_b_radians = lat_b.to_radians();
+    let lat_sine = ((lat_b_radians - lat_a_radians) * 0.5).sin();
+    let a = lat_sine * lat_sine + lat_a_radians.cos() * lat_b_radians.cos() * lon_sine * lon_sine;
+    2.0 * GEO_EARTH_RADIUS_METERS * a.sqrt().asin()
 }
 
 fn format_geo_coordinate(value: f64) -> String {
     format_geo_number(value, 17)
+}
+
+fn format_geo_distance(value: f64) -> String {
+    format!("{value:.4}")
 }
 
 fn format_geo_number(value: f64, precision: usize) -> String {
@@ -1142,4 +1180,24 @@ fn interleave64(xlo: u32, ylo: u32) -> u64 {
         y = (y | (y << shift)) & mask;
     }
     x | (y << 1)
+}
+
+fn deinterleave64(interleaved: u64) -> u64 {
+    const MASKS: [u64; 6] = [
+        0x5555_5555_5555_5555,
+        0x3333_3333_3333_3333,
+        0x0f0f_0f0f_0f0f_0f0f,
+        0x00ff_00ff_00ff_00ff,
+        0x0000_ffff_0000_ffff,
+        0x0000_0000_ffff_ffff,
+    ];
+    const SHIFTS: [u32; 6] = [0, 1, 2, 4, 8, 16];
+
+    let mut x = interleaved;
+    let mut y = interleaved >> 1;
+    for (mask, shift) in MASKS.iter().zip(SHIFTS.iter()) {
+        x = (x | (x >> *shift)) & *mask;
+        y = (y | (y >> *shift)) & *mask;
+    }
+    x | (y << 32)
 }

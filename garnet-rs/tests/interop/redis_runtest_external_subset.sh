@@ -178,6 +178,14 @@ run_full_runtest_case() {
     record_result "${case_name}" "${status}" "${details}"
 }
 
+reset_server_after_runtest() {
+    # External runtest can leave the server in BUSY_SCRIPT and/or read-only
+    # replica state. Clear these so post-run probes observe steady behavior.
+    redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw SCRIPT KILL >/dev/null 2>&1 || true
+    redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION KILL >/dev/null 2>&1 || true
+    redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw REPLICAOF NO ONE >/dev/null 2>&1 || true
+}
+
 run_cli_probe_case() {
     local case_name="$1"
     local log_file="${RESULT_DIR}/${case_name}.log"
@@ -303,6 +311,7 @@ case "${REDIS_RUNTEXT_MODE}" in
         ;;
 esac
 
+reset_server_after_runtest
 run_cli_probe_case "redis_cli_type_probe"
 run_cli_scripting_probe_case "redis_cli_scripting_probe"
 

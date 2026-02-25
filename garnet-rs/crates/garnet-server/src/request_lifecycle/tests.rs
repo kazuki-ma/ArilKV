@@ -2198,6 +2198,29 @@ fn zset_commands_roundtrip_over_object_store() {
     assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
 
     response.clear();
+    let zrange_withscores = encode_resp(&[b"ZRANGE", b"key", b"0", b"-1", b"WITHSCORES"]);
+    let meta = parse_resp_command_arg_slices(&zrange_withscores, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"*4\r\n$3\r\ntwo\r\n$1\r\n2\r\n$3\r\none\r\n$1\r\n3\r\n"
+    );
+
+    processor.set_resp_protocol_version(3);
+    response.clear();
+    let meta = parse_resp_command_arg_slices(&zrange_withscores, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"*2\r\n*2\r\n$3\r\ntwo\r\n$1\r\n2\r\n*2\r\n$3\r\none\r\n$1\r\n3\r\n"
+    );
+    processor.set_resp_protocol_version(2);
+
+    response.clear();
     let zadd_update = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n3\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zadd_update, &mut args).unwrap();
     processor
@@ -6780,7 +6803,7 @@ fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
     assert_command_response(
         &processor,
         "GEOPOS sicily palermo unknown",
-        b"*2\r\n*2\r\n$20\r\n13.36138953807039798\r\n$20\r\n38.11555696346235322\r\n$-1\r\n",
+        b"*2\r\n*2\r\n$20\r\n13.36138933897018433\r\n$20\r\n38.11555639549629859\r\n$-1\r\n",
     );
 
     assert_command_response(&processor, "SET plain value", b"+OK\r\n");
@@ -6913,7 +6936,7 @@ fn geosearch_supports_radius_box_and_response_options() {
             b"1",
         ]),
     );
-    assert!(with_options.starts_with(b"*1\r\n*4\r\n$7\r\npalermo\r\n$3\r\n0.0\r\n:"));
+    assert!(with_options.starts_with(b"*1\r\n*4\r\n$7\r\npalermo\r\n$6\r\n0.0000\r\n:"));
     assert!(with_options.windows(5).any(|window| window == b"*2\r\n$"));
 
     assert_command_response(
@@ -7013,6 +7036,22 @@ fn georadius_family_supports_query_and_store_paths() {
         &processor,
         "GEORADIUSBYMEMBER sicily palermo 200 km DESC COUNT 1",
         b"*1\r\n$7\r\ncatania\r\n",
+    );
+    assert_command_integer(
+        &processor,
+        "GEOADD nyc -73.9733487 40.7648057 \"central park n/q/r\" -73.9903085 40.7362513 \"union square\" -74.0131604 40.7126674 \"wtc one\" -73.7858139 40.6428986 \"jfk\" -73.9375699 40.7498929 \"q4\" -73.9564142 40.7480973 4545",
+        6,
+    );
+    assert_command_response(
+        &processor,
+        "GEORADIUS nyc -73.9798091 40.7598464 10 km COUNT 3 ANY ASC",
+        b"*3\r\n$18\r\ncentral park n/q/r\r\n$12\r\nunion square\r\n$7\r\nwtc one\r\n",
+    );
+    assert_command_integer(&processor, "GEOADD k1 45 65 n1 -135 85.05 n2", 2);
+    assert_command_response(
+        &processor,
+        "GEORADIUSBYMEMBER k1 n1 5009431 m",
+        b"*2\r\n$2\r\nn1\r\n$2\r\nn2\r\n",
     );
     assert_command_error(
         &processor,

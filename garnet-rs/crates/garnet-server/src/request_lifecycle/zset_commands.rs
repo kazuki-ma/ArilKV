@@ -70,7 +70,15 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 4, "ZRANGE", "ZRANGE key start stop")?;
+        ensure_ranged_arity(args, 4, 5, "ZRANGE", "ZRANGE key start stop [WITHSCORES]")?;
+        let with_scores = if args.len() == 5 {
+            if !ascii_eq_ignore_case(args[4], b"WITHSCORES") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            true
+        } else {
+            false
+        };
 
         let key = args[1].to_vec();
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -91,13 +99,13 @@ impl RequestProcessor {
             return Ok(());
         };
 
-        let count = stop_index - start_index + 1;
-        response_out.push(b'*');
-        response_out.extend_from_slice(count.to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
-        for (member, _score) in &entries[start_index..=stop_index] {
-            append_bulk_string(response_out, member);
-        }
+        let selected = &entries[start_index..=stop_index];
+        append_zrange_score_entries(
+            response_out,
+            selected,
+            with_scores,
+            self.resp_protocol_version() == 3,
+        );
         Ok(())
     }
 
@@ -144,20 +152,12 @@ impl RequestProcessor {
         };
 
         let selected = &entries[start_index..=stop_index];
-        let item_count = if with_scores {
-            selected.len() * 2
-        } else {
-            selected.len()
-        };
-        response_out.push(b'*');
-        response_out.extend_from_slice(item_count.to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
-        for (member, score) in selected {
-            append_bulk_string(response_out, member);
-            if with_scores {
-                append_bulk_string(response_out, score.to_string().as_bytes());
-            }
-        }
+        append_zrange_score_entries(
+            response_out,
+            selected,
+            with_scores,
+            self.resp_protocol_version() == 3,
+        );
         Ok(())
     }
 
@@ -378,7 +378,12 @@ impl RequestProcessor {
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
         let with_scores = parse_zdiff_withscores(args, option_start)?;
         let diff = compute_zdiff(self, &keys)?;
-        append_zset_combine_response(response_out, &diff, with_scores);
+        append_zset_combine_response(
+            response_out,
+            &diff,
+            with_scores,
+            self.resp_protocol_version() == 3,
+        );
         Ok(())
     }
 
@@ -428,7 +433,12 @@ impl RequestProcessor {
             &combine_options.weights,
             combine_options.aggregate,
         )?;
-        append_zset_combine_response(response_out, &inter, combine_options.with_scores);
+        append_zset_combine_response(
+            response_out,
+            &inter,
+            combine_options.with_scores,
+            self.resp_protocol_version() == 3,
+        );
         Ok(())
     }
 
@@ -486,7 +496,12 @@ impl RequestProcessor {
             &combine_options.weights,
             combine_options.aggregate,
         )?;
-        append_zset_combine_response(response_out, &union, combine_options.with_scores);
+        append_zset_combine_response(
+            response_out,
+            &union,
+            combine_options.with_scores,
+            self.resp_protocol_version() == 3,
+        );
         Ok(())
     }
 
@@ -789,7 +804,12 @@ impl RequestProcessor {
         } else {
             matched
         };
-        append_zrange_score_entries(response_out, &selected, options.with_scores);
+        append_zrange_score_entries(
+            response_out,
+            &selected,
+            options.with_scores,
+            self.resp_protocol_version() == 3,
+        );
         Ok(())
     }
 
@@ -1298,7 +1318,20 @@ fn append_zrange_score_entries(
     response_out: &mut Vec<u8>,
     entries: &[(&Vec<u8>, f64)],
     with_scores: bool,
+    resp3: bool,
 ) {
+    if with_scores && resp3 {
+        response_out.push(b'*');
+        response_out.extend_from_slice(entries.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (member, score) in entries {
+            response_out.extend_from_slice(b"*2\r\n");
+            append_bulk_string(response_out, member);
+            append_bulk_string(response_out, score.to_string().as_bytes());
+        }
+        return;
+    }
+
     let item_count = if with_scores {
         entries.len() * 2
     } else {
@@ -1618,9 +1651,10 @@ fn append_zset_combine_response(
     response_out: &mut Vec<u8>,
     zset: &BTreeMap<Vec<u8>, f64>,
     with_scores: bool,
+    resp3: bool,
 ) {
     let entries = sorted_zset_entries_by_score(zset);
-    append_zrange_score_entries(response_out, &entries, with_scores);
+    append_zrange_score_entries(response_out, &entries, with_scores, resp3);
 }
 
 fn append_zmpop_response(response_out: &mut Vec<u8>, key: &[u8], entries: &[(Vec<u8>, f64)]) {
