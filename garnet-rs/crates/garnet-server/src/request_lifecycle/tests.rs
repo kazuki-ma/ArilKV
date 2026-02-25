@@ -5234,7 +5234,7 @@ fn bitfield_and_bitfield_ro_cover_wrap_sat_fail_and_validation_paths() {
     );
     assert_command_response(&processor, "BITFIELD_RO bfw GET i8 0", b"*1\r\n:127\r\n");
 
-    assert_command_error(&processor, "BITFIELD bfw", b"-ERR syntax error\r\n");
+    assert_command_response(&processor, "BITFIELD bfw", b"*0\r\n");
     assert_command_error(
         &processor,
         "BITFIELD bfw OVERFLOW WRAP",
@@ -5250,15 +5250,15 @@ fn bitfield_and_bitfield_ro_cover_wrap_sat_fail_and_validation_paths() {
         "BITFIELD bfw GET i8 bad",
         b"-ERR value is not an integer or out of range\r\n",
     );
-    assert_command_error(
+    assert_command_response(
         &processor,
         "BITFIELD_RO bfw SET i8 0 1",
-        b"-ERR syntax error\r\n",
+        b"-ERR BITFIELD_RO only supports the GET subcommand\r\n",
     );
-    assert_command_error(
+    assert_command_response(
         &processor,
         "BITFIELD_RO bfw INCRBY i8 0 1",
-        b"-ERR syntax error\r\n",
+        b"-ERR BITFIELD_RO only supports the GET subcommand\r\n",
     );
 
     assert_command_integer(&processor, "HSET hbf f v", 1);

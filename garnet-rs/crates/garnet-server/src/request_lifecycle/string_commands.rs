@@ -37,6 +37,12 @@ enum BitfieldIncrOutcome {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitfieldSetOutcome {
+    Value { raw: u64 },
+    OverflowFail,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LcsResponseMode {
     Sequence,
     LengthOnly,
@@ -688,13 +694,18 @@ impl RequestProcessor {
         let mut operation_count = 0usize;
         let mut wrote = false;
         let mut responses: Vec<Option<i64>> = Vec::new();
+        let mut saw_overflow_directive = false;
 
         while index < args.len() {
             let subcommand = args[index];
 
             if ascii_eq_ignore_case(subcommand, b"OVERFLOW") {
                 if read_only {
-                    return Err(RequestExecutionError::SyntaxError);
+                    append_error(
+                        response_out,
+                        b"ERR BITFIELD_RO only supports the GET subcommand",
+                    );
+                    return Ok(());
                 }
                 let mode_index = index
                     .checked_add(1)
@@ -705,6 +716,7 @@ impl RequestProcessor {
                 let mode = args[mode_index];
                 overflow_mode =
                     parse_bitfield_overflow_mode(mode).ok_or(RequestExecutionError::SyntaxError)?;
+                saw_overflow_directive = true;
                 index = mode_index + 1;
                 continue;
             }
@@ -733,7 +745,11 @@ impl RequestProcessor {
 
             if ascii_eq_ignore_case(subcommand, b"SET") {
                 if read_only {
-                    return Err(RequestExecutionError::SyntaxError);
+                    append_error(
+                        response_out,
+                        b"ERR BITFIELD_RO only supports the GET subcommand",
+                    );
+                    return Ok(());
                 }
                 let encoding_index = index
                     .checked_add(1)
@@ -756,10 +772,15 @@ impl RequestProcessor {
                 let set_value =
                     parse_i64_ascii(value_token).ok_or(RequestExecutionError::ValueNotInteger)?;
                 let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
-                responses.push(Some(decode_bitfield_raw(raw, encoding)));
-                let new_raw = encode_bitfield_value(set_value, encoding);
-                write_unsigned_bits(&mut value, offset, usize::from(encoding.bits), new_raw)?;
-                wrote = true;
+                let previous = decode_bitfield_raw(raw, encoding);
+                match apply_bitfield_set(set_value, encoding, overflow_mode) {
+                    BitfieldSetOutcome::Value { raw } => {
+                        responses.push(Some(previous));
+                        write_unsigned_bits(&mut value, offset, usize::from(encoding.bits), raw)?;
+                        wrote = true;
+                    }
+                    BitfieldSetOutcome::OverflowFail => responses.push(None),
+                }
                 operation_count += 1;
                 index = value_index + 1;
                 continue;
@@ -767,7 +788,11 @@ impl RequestProcessor {
 
             if ascii_eq_ignore_case(subcommand, b"INCRBY") {
                 if read_only {
-                    return Err(RequestExecutionError::SyntaxError);
+                    append_error(
+                        response_out,
+                        b"ERR BITFIELD_RO only supports the GET subcommand",
+                    );
+                    return Ok(());
                 }
                 let encoding_index = index
                     .checked_add(1)
@@ -809,7 +834,11 @@ impl RequestProcessor {
         }
 
         if operation_count == 0 {
-            return Err(RequestExecutionError::SyntaxError);
+            if saw_overflow_directive {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            response_out.extend_from_slice(b"*0\r\n");
+            return Ok(());
         }
 
         if wrote {
@@ -2913,6 +2942,33 @@ fn apply_bitfield_incrby(
             })
         }
         BitfieldOverflowMode::Fail => Ok(BitfieldIncrOutcome::OverflowFail),
+    }
+}
+
+fn apply_bitfield_set(
+    value: i64,
+    encoding: BitfieldEncoding,
+    overflow_mode: BitfieldOverflowMode,
+) -> BitfieldSetOutcome {
+    let target = i128::from(value);
+    let (min, max) = bitfield_bounds(encoding);
+    if target >= min && target <= max {
+        return BitfieldSetOutcome::Value {
+            raw: encode_bitfield_value(value, encoding),
+        };
+    }
+
+    match overflow_mode {
+        BitfieldOverflowMode::Wrap => BitfieldSetOutcome::Value {
+            raw: encode_bitfield_value(value, encoding),
+        },
+        BitfieldOverflowMode::Sat => {
+            let saturated = if target < min { min } else { max } as i64;
+            BitfieldSetOutcome::Value {
+                raw: encode_bitfield_value(saturated, encoding),
+            }
+        }
+        BitfieldOverflowMode::Fail => BitfieldSetOutcome::OverflowFail,
     }
 }
 

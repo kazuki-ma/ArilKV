@@ -24,25 +24,21 @@
 
 - Probe script exit code: `0`
 - Cases: `3`
-- PASS: `2`
-- FAIL: `1`
+- PASS: `0`
+- FAIL: `3`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=542; err=59; ignore=124; failed_tests=59  |
-| `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
-| `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=481; err=39; ignore=89; failed_tests=39  |
+| `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
+| `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `59`
+- Failed tests extracted from runtest log: `39`
 
 | Test |
 |---|
-| `BITFIELD with only key as argument in tests/unit/bitfield.tcl` |
-| `BITFIELD overflow detection fuzzing in tests/unit/bitfield.tcl` |
-| `BITFIELD_RO with only key as argument in tests/unit/bitfield.tcl` |
-| `BITFIELD_RO fails when write option is used in tests/unit/bitfield.tcl` |
 | `BITCOUNT with illegal arguments in tests/unit/bitops.tcl` |
 | `BITCOUNT against non-integer value in tests/unit/bitops.tcl` |
 | `BITOP NOT with multiple source keys in tests/unit/bitops.tcl` |
@@ -62,7 +58,6 @@
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
@@ -83,21 +78,6 @@
 | `KEYSIZES - Test RENAME  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - DEBUG RELOAD reset keysizes  in tests/unit/info-keysizes.tcl` |
-| `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
-| `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
-| `FLUSHDB ASYNC can reclaim memory in background in tests/unit/lazyfree.tcl` |
-| `lazy free a stream with all types of metadata in tests/unit/lazyfree.tcl` |
-| `lazy free a stream with deleted cgroup in tests/unit/lazyfree.tcl` |
-| `FLUSHALL SYNC optimized to run in bg as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Run consecutive blocking FLUSHALL ASYNC successfully in tests/unit/lazyfree.tcl` |
-| `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Blocking commands ignores the timeout in tests/unit/multi.tcl` |
-| `Coverage: HELP commands in tests/unit/other.tcl` |
-| `SAVE - make sure there are all the types as values in tests/unit/other.tcl` |
-| `Check consistency of different data types after a reload in tests/unit/other.tcl` |
-| `Same dataset digest if saving/reloading as AOF? in tests/unit/other.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
