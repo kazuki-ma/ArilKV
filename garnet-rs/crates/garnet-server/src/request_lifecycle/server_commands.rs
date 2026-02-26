@@ -297,7 +297,7 @@ impl RequestProcessor {
                 InfoSection::Stats => {
                     payload.push_str(
                         format!(
-                            "# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfreed_objects:{}\r\n",
+                            "# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
                             dbsize,
                             rdb_bgsave_in_progress,
                             rdb_changes_since_last_save,
@@ -830,7 +830,12 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 2, "OBJECT", "OBJECT <ENCODING|REFCOUNT|IDLETIME> key")?;
+        ensure_min_arity(
+            args,
+            2,
+            "OBJECT",
+            "OBJECT <ENCODING|REFCOUNT|IDLETIME|FREQ> key",
+        )?;
         let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
@@ -882,6 +887,21 @@ impl RequestProcessor {
                 return Ok(());
             }
             append_integer(response_out, self.key_idle_seconds(&key).unwrap_or(0));
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"FREQ") {
+            require_exact_arity(args, 3, "OBJECT", "OBJECT FREQ key")?;
+            let key = args[2].to_vec();
+            self.expire_key_if_needed(&key)?;
+            if !self.key_exists_any(&key)? {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+            append_integer(
+                response_out,
+                i64::from(self.key_frequency(&key).unwrap_or(0)),
+            );
             return Ok(());
         }
 
@@ -2327,6 +2347,8 @@ impl RequestProcessor {
 struct RestoreOptions {
     replace: bool,
     absttl: bool,
+    idle_time_seconds: Option<u64>,
+    frequency: Option<u8>,
 }
 
 fn restore_from_dump_blob(
@@ -2349,12 +2371,12 @@ fn restore_from_dump_blob(
     }
     let dump_blob = args[3];
     let options = parse_restore_options(args, 4, command_name)?;
-    let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
 
     processor.expire_key_if_needed(&key)?;
     if !options.replace && processor.key_exists_any(&key)? {
         return Err(RequestExecutionError::BusyKey);
     }
+    let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
 
     if options.replace {
         processor.delete_string_key_for_migration(&key)?;
@@ -2392,6 +2414,15 @@ fn restore_from_dump_blob(
         }
     }
 
+    if let Some(idle_time_seconds) = options.idle_time_seconds {
+        processor.set_key_idle_seconds(&key, idle_time_seconds);
+    } else {
+        processor.record_key_access(&key, true);
+    }
+    if let Some(frequency) = options.frequency {
+        processor.set_key_frequency(&key, frequency);
+    }
+
     append_simple_string(response_out, b"OK");
     Ok(())
 }
@@ -2404,6 +2435,8 @@ fn parse_restore_options(
     let mut options = RestoreOptions {
         replace: false,
         absttl: false,
+        idle_time_seconds: None,
+        frequency: None,
     };
     let mut index = start_index;
     while index < args.len() {
@@ -2418,14 +2451,32 @@ fn parse_restore_options(
             index += 1;
             continue;
         }
-        if ascii_eq_ignore_case(token, b"IDLETIME") || ascii_eq_ignore_case(token, b"FREQ") {
+        if ascii_eq_ignore_case(token, b"IDLETIME") {
             ensure_min_arity(
                 &args[index..],
                 2,
                 command_name,
                 "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
             )?;
-            parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let idle_time_seconds =
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            options.idle_time_seconds = Some(idle_time_seconds);
+            index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"FREQ") {
+            ensure_min_arity(
+                &args[index..],
+                2,
+                command_name,
+                "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
+            )?;
+            let frequency =
+                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if frequency > u64::from(u8::MAX) {
+                return Err(RequestExecutionError::ValueOutOfRange);
+            }
+            options.frequency = Some(frequency as u8);
             index += 2;
             continue;
         }

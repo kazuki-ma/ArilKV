@@ -5,9 +5,9 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 WORKSPACE_ROOT="$(cd "${SCRIPT_DIR}/../../.." && pwd)"
 COMPAT_DIR="${WORKSPACE_ROOT}/docs/compatibility"
 
-STATUS_SCRIPT="${SCRIPT_DIR}/build_command_status_matrix.sh"
-MATURITY_SCRIPT="${SCRIPT_DIR}/build_command_maturity_matrix.sh"
-SUBSET_SCRIPT="${SCRIPT_DIR}/redis_runtest_external_subset.sh"
+STATUS_SCRIPT="${STATUS_SCRIPT:-${SCRIPT_DIR}/build_command_status_matrix.sh}"
+MATURITY_SCRIPT="${MATURITY_SCRIPT:-${SCRIPT_DIR}/build_command_maturity_matrix.sh}"
+SUBSET_SCRIPT="${SUBSET_SCRIPT:-${SCRIPT_DIR}/redis_runtest_external_subset.sh}"
 COMPAT_PROBE_MODE="${COMPAT_PROBE_MODE:-full}"
 
 STATUS_CSV="${STATUS_CSV:-${COMPAT_DIR}/redis-command-status.csv}"

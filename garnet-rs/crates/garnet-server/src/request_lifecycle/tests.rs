@@ -4161,6 +4161,15 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     assert_eq!(response, b"-BUSYKEY Target key name already exists.\r\n");
 
     response.clear();
+    let restore_busy_invalid = encode_resp(&[b"RESTORE", b"rkey", b"0", b"..."]);
+    let meta = parse_resp_command_arg_slices(&restore_busy_invalid, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(response, b"-BUSYKEY Target key name already exists.\r\n");
+
+    response.clear();
     let restore_replace = encode_resp(&[b"RESTORE", b"rkey", b"1000", &dump_payload, b"REPLACE"]);
     let meta = parse_resp_command_arg_slices(&restore_replace, &mut args).unwrap();
     processor
@@ -4194,6 +4203,28 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
+
+    response.clear();
+    let restore_with_metadata = encode_resp(&[
+        b"RESTORE",
+        b"rmeta",
+        b"0",
+        &dump_payload,
+        b"REPLACE",
+        b"IDLETIME",
+        b"1000",
+        b"FREQ",
+        b"100",
+    ]);
+    let meta = parse_resp_command_arg_slices(&restore_with_metadata, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+    assert_command_integer(&processor, "OBJECT FREQ rmeta", 100);
+    let idle_meta = execute_command_line(&processor, "OBJECT IDLETIME rmeta").unwrap();
+    let idle_meta_value = parse_integer_response(&idle_meta);
+    assert!(idle_meta_value >= 1000);
 
     response.clear();
     let restore_invalid = b"*4\r\n$7\r\nRESTORE\r\n$4\r\nbadk\r\n$1\r\n0\r\n$3\r\nbad\r\n";

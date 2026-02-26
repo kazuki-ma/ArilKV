@@ -24,27 +24,21 @@
 
 - Probe script exit code: `0`
 - Cases: `3`
-- PASS: `1`
-- FAIL: `2`
+- PASS: `2`
+- FAIL: `1`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=494; err=26; ignore=89; failed_tests=26  |
-| `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=500; err=20; ignore=89; failed_tests=20  |
+| `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `26`
+- Failed tests extracted from runtest log: `20`
 
 | Test |
 |---|
-| `RESTORE can set LRU in tests/unit/dump.tcl` |
-| `RESTORE can set LFU in tests/unit/dump.tcl` |
-| `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
-| `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
-| `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |

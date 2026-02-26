@@ -3028,6 +3028,19 @@ fn rewrite_restore_replication_frame(
     let key = arg_slice_bytes(key_arg);
     let payload = arg_slice_bytes(payload_arg);
 
+    match processor.key_exists_any(key) {
+        Ok(false) => {
+            let delete_command = if processor.lazyfree_lazy_server_del_enabled() {
+                b"UNLINK".to_vec()
+            } else {
+                b"DEL".to_vec()
+            };
+            return Some(encode_resp_frame(&[delete_command, key.to_vec()]));
+        }
+        Ok(true) => {}
+        Err(_) => return Some(original_frame.to_vec()),
+    }
+
     let Some(expiration_unix_millis) = processor.expiration_unix_millis_for_key(key) else {
         return Some(original_frame.to_vec());
     };
@@ -3535,5 +3548,106 @@ mod tests {
         assert_eq!(rewritten_del_meta.argument_count, 2);
         assert_eq!(arg_slice_bytes(&rewritten_del_args[0]), b"DEL");
         assert_eq!(arg_slice_bytes(&rewritten_del_args[1]), b"foo");
+    }
+
+    #[test]
+    fn replication_rewrites_restore_past_absttl_to_del_or_unlink() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let dump_payload = b"GRN1\x00\x05\x00\x00\x00value".to_vec();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let set_key1 = encode_resp_frame(&[b"SET".to_vec(), b"key1".to_vec(), b"old".to_vec()]);
+        let set_key1_meta = parse_resp_command_arg_slices(&set_key1, &mut args).unwrap();
+        processor
+            .execute(&args[..set_key1_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let now_millis = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|duration| duration.as_millis() as u64)
+            .unwrap_or(0);
+        let past_millis = now_millis.saturating_sub(1000).to_string().into_bytes();
+
+        response.clear();
+        let restore_key1 = encode_resp_frame(&[
+            b"RESTORE".to_vec(),
+            b"key1".to_vec(),
+            past_millis.clone(),
+            dump_payload.clone(),
+            b"REPLACE".to_vec(),
+            b"ABSTTL".to_vec(),
+        ]);
+        let restore_key1_meta = parse_resp_command_arg_slices(&restore_key1, &mut args).unwrap();
+        processor
+            .execute(&args[..restore_key1_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+        let rewritten_del = replication_frame_for_command(
+            &processor,
+            CommandId::Restore,
+            &args[..restore_key1_meta.argument_count],
+            &response,
+            &restore_key1,
+        )
+        .expect("RESTORE rewrite should exist");
+        let mut rewritten_del_args = [ArgSlice::EMPTY; 8];
+        let rewritten_del_meta =
+            parse_resp_command_arg_slices(&rewritten_del, &mut rewritten_del_args).unwrap();
+        assert_eq!(rewritten_del_meta.argument_count, 2);
+        assert_eq!(arg_slice_bytes(&rewritten_del_args[0]), b"DEL");
+        assert_eq!(arg_slice_bytes(&rewritten_del_args[1]), b"key1");
+
+        response.clear();
+        let config_lazyfree = encode_resp_frame(&[
+            b"CONFIG".to_vec(),
+            b"SET".to_vec(),
+            b"lazyfree-lazy-server-del".to_vec(),
+            b"yes".to_vec(),
+        ]);
+        let config_lazyfree_meta =
+            parse_resp_command_arg_slices(&config_lazyfree, &mut args).unwrap();
+        processor
+            .execute(&args[..config_lazyfree_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let set_key2 = encode_resp_frame(&[b"SET".to_vec(), b"key2".to_vec(), b"old".to_vec()]);
+        let set_key2_meta = parse_resp_command_arg_slices(&set_key2, &mut args).unwrap();
+        processor
+            .execute(&args[..set_key2_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let restore_key2 = encode_resp_frame(&[
+            b"RESTORE".to_vec(),
+            b"key2".to_vec(),
+            past_millis,
+            dump_payload,
+            b"REPLACE".to_vec(),
+            b"ABSTTL".to_vec(),
+        ]);
+        let restore_key2_meta = parse_resp_command_arg_slices(&restore_key2, &mut args).unwrap();
+        processor
+            .execute(&args[..restore_key2_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+        let rewritten_unlink = replication_frame_for_command(
+            &processor,
+            CommandId::Restore,
+            &args[..restore_key2_meta.argument_count],
+            &response,
+            &restore_key2,
+        )
+        .expect("RESTORE rewrite should exist");
+        let mut rewritten_unlink_args = [ArgSlice::EMPTY; 8];
+        let rewritten_unlink_meta =
+            parse_resp_command_arg_slices(&rewritten_unlink, &mut rewritten_unlink_args).unwrap();
+        assert_eq!(rewritten_unlink_meta.argument_count, 2);
+        assert_eq!(arg_slice_bytes(&rewritten_unlink_args[0]), b"UNLINK");
+        assert_eq!(arg_slice_bytes(&rewritten_unlink_args[1]), b"key2");
     }
 }

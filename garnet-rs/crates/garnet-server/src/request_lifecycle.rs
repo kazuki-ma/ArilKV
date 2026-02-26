@@ -114,6 +114,7 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"slaveof".to_vec(), b"".to_vec());
     values.insert(b"daemonize".to_vec(), b"no".to_vec());
     values.insert(b"key-load-delay".to_vec(), b"0".to_vec());
+    values.insert(b"lazyfree-lazy-server-del".to_vec(), b"no".to_vec());
     values.insert(b"port".to_vec(), b"6379".to_vec());
     values
 }
@@ -328,6 +329,7 @@ pub struct RequestProcessor {
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     key_lru_access_millis: Mutex<HashMap<Vec<u8>, u64>>,
+    key_lfu_frequency: Mutex<HashMap<Vec<u8>, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<Vec<u8>>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
@@ -495,6 +497,7 @@ impl RequestProcessor {
             command_failed_calls: Mutex::new(HashMap::new()),
             latency_events: Mutex::new(HashMap::new()),
             key_lru_access_millis: Mutex::new(HashMap::new()),
+            key_lfu_frequency: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
@@ -646,6 +649,16 @@ impl RequestProcessor {
             .lock()
             .map(|values| values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn lazyfree_lazy_server_del_enabled(&self) -> bool {
+        let Ok(values) = self.config_overrides.lock() else {
+            return false;
+        };
+        values
+            .get(b"lazyfree-lazy-server-del".as_slice())
+            .map(|value| value.eq_ignore_ascii_case(b"yes"))
+            .unwrap_or(false)
     }
 
     pub(crate) fn record_command_call(&self, command_name: &[u8]) {
@@ -843,6 +856,9 @@ impl RequestProcessor {
         if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
             let _ = lru_state.remove(key);
         }
+        if let Ok(mut lfu_state) = self.key_lfu_frequency.lock() {
+            let _ = lfu_state.remove(key);
+        }
     }
 
     pub(super) fn key_lru_millis(&self, key: &[u8]) -> Option<u64> {
@@ -857,6 +873,34 @@ impl RequestProcessor {
         let now_millis = current_unix_time_millis().unwrap_or(last_access_millis);
         let idle_millis = now_millis.saturating_sub(last_access_millis);
         i64::try_from(idle_millis / 1000).ok()
+    }
+
+    pub(super) fn set_key_idle_seconds(&self, key: &[u8], idle_seconds: u64) {
+        if key.is_empty() {
+            return;
+        }
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        let idle_millis = idle_seconds.saturating_mul(1000);
+        let lru_millis = now_millis.saturating_sub(idle_millis);
+        if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
+            lru_state.insert(key.to_vec(), lru_millis);
+        }
+    }
+
+    pub(super) fn set_key_frequency(&self, key: &[u8], frequency: u8) {
+        if key.is_empty() {
+            return;
+        }
+        if let Ok(mut lfu_state) = self.key_lfu_frequency.lock() {
+            lfu_state.insert(key.to_vec(), frequency);
+        }
+    }
+
+    pub(super) fn key_frequency(&self, key: &[u8]) -> Option<u8> {
+        let Ok(lfu_state) = self.key_lfu_frequency.lock() else {
+            return None;
+        };
+        lfu_state.get(key).copied()
     }
 
     pub(super) fn scripting_enabled(&self) -> bool {
