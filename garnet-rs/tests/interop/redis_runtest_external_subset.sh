@@ -228,7 +228,7 @@ run_full_runtest_case() {
     local parsed_counts
     parsed_counts="$(
         awk '
-        BEGIN { esc = sprintf("%c", 27); ok = 0; err = 0; ignore = 0 }
+        BEGIN { esc = sprintf("%c", 27); ok = 0; err = 0; ignore = 0; timeout = 0 }
         {
             line = $0
             gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
@@ -239,14 +239,16 @@ run_full_runtest_case() {
                 err++
             } else if (line ~ /^\[ignore\]:/) {
                 ignore++
+            } else if (line ~ /^\[TIMEOUT\]:/) {
+                timeout++
             }
         }
-        END { printf("%d,%d,%d\n", ok + 0, err + 0, ignore + 0) }
+        END { printf("%d,%d,%d,%d\n", ok + 0, err + 0, ignore + 0, timeout + 0) }
         ' "${log_file}"
     )"
 
-    local ok_count err_count ignore_count
-    IFS=',' read -r ok_count err_count ignore_count <<<"${parsed_counts}"
+    local ok_count err_count ignore_count timeout_count
+    IFS=',' read -r ok_count err_count ignore_count timeout_count <<<"${parsed_counts}"
 
     awk '
     BEGIN { esc = sprintf("%c", 27) }
@@ -257,6 +259,14 @@ run_full_runtest_case() {
         if (line ~ /^\[err\]:/) {
             sub(/^\[err\]:[[:space:]]*/, "", line)
             print line
+        } else if (line ~ /^\[TIMEOUT\]:/) {
+            sub(/^\[TIMEOUT\]:[[:space:]]*/, "", line)
+            print "TIMEOUT: " line
+        } else if (line ~ /^sock[0-9]+ => \(IN PROGRESS\)/) {
+            print line
+        } else if (line ~ /^\*\*\* \[TIMEOUT\]:/) {
+            sub(/^\*\*\* \[TIMEOUT\]:[[:space:]]*/, "", line)
+            print "TIMEOUT: " line
         }
     }
     ' "${log_file}" > "${failed_tests_file}"
@@ -281,14 +291,14 @@ run_full_runtest_case() {
     fi
 
     local status="FAIL"
-    if [[ "${exit_code}" -eq 0 && "${err_count}" -eq 0 ]]; then
+    if [[ "${exit_code}" -eq 0 && "${err_count}" -eq 0 && "${timeout_count}" -eq 0 && "${failed_tests_count}" -eq 0 ]]; then
         status="PASS"
     elif [[ "${failed_tests_count}" -gt 0 && "${unexpected_fail_count}" -eq 0 ]]; then
         status="PASS_WITH_KNOWN_GAPS"
     fi
 
     local details
-    details="mode=full; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
+    details="mode=full; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 

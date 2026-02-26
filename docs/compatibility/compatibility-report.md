@@ -30,13 +30,19 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=520; err=0; ignore=89; failed_tests=0; expected_failed_tests=0; unexpected_failed_tests=0  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=520; err=0; timeout=1; ignore=89; failed_tests=3; expected_failed_tests=0; unexpected_failed_tests=3  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `0`
+- Failed tests extracted from runtest log: `3`
+
+| Test |
+|---|
+| `TIMEOUT: clients state report follows.` |
+| `sock6 => (IN PROGRESS) LATENCY of expire events are correctly collected` |
+| `TIMEOUT: clients state report follows.` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
