@@ -121,13 +121,25 @@ This model captures the chain tested by:
 - waiter-2 blocks on `BLMOVE list2 -> list3`
 - producer `RPUSH list1 foo`, then inspector immediately checks list states
 
+Current model knobs:
+
+- `ObserveImmediatelyAfterAck = TRUE` to force post-ACK inspection on the next step
+- `WaitForBlockingDrainBeforeAck = TRUE` for conservative guard (both waiters done)
+- `WaitForTailDrainBeforeAck = TRUE` for minimal guard in this 2-hop chain (waiter-2 done)
+
 Bug config (expected to fail with counterexample):
 
 ```bash
 ./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_bug.cfg
 ```
 
-Fixed config (expected to pass):
+Minimal fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_minimal.cfg
+```
+
+Conservative fixed config (expected to pass):
 
 ```bash
 ./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_fixed.cfg

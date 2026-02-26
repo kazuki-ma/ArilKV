@@ -11,14 +11,23 @@ EXTENDS Naturals
 \* 4) immediately after producer gets reply, inspector should observe:
 \*      list1 = empty, list2 = empty, list3 = [foo]
 \*
-\* Risk modeled here:
-\* If producer reply is returned before wakeup chain drains, inspector may observe
-\* intermediate residue (foo still in list1/list2).
+\* Risks modeled here:
+\* - Producer ACK can be exposed before wakeup chain drain.
+\* - Scheduler can defer inspector until after unrelated actions, masking residue.
 \*
-\* `WaitForBlockingDrainBeforeAck = TRUE` models the guarded behavior where the
-\* wakeup chain is drained before producer ack is exposed.
+\* Guard toggles:
+\* - WaitForBlockingDrainBeforeAck:
+\*     conservative guard (both waiters done before ACK).
+\* - WaitForTailDrainBeforeAck:
+\*     minimal guard for this chain (waiter-2 done before ACK).
+\* - ObserveImmediatelyAfterAck:
+\*     force inspector action as the immediate step after ACK.
 
-CONSTANTS MaxSteps, WaitForBlockingDrainBeforeAck
+CONSTANTS
+    MaxSteps,
+    WaitForBlockingDrainBeforeAck,
+    WaitForTailDrainBeforeAck,
+    ObserveImmediatelyAfterAck
 
 WaiterStates == {"NEW", "BLOCKED", "DONE"}
 
@@ -59,6 +68,9 @@ TypeOK ==
     /\ observedList3HasFoo \in BOOLEAN
     /\ stepsRemaining \in 0..MaxSteps
     /\ WaitForBlockingDrainBeforeAck \in BOOLEAN
+    /\ WaitForTailDrainBeforeAck \in BOOLEAN
+    /\ ObserveImmediatelyAfterAck \in BOOLEAN
+    /\ ~(WaitForBlockingDrainBeforeAck /\ WaitForTailDrainBeforeAck)
 
 TokenConservation ==
     IF pushed
@@ -70,6 +82,20 @@ ObservedNoIntermediateResidue ==
         /\ ~observedList1HasFoo
         /\ ~observedList2HasFoo
         /\ observedList3HasFoo
+
+InspectorPending ==
+    producerAcked /\ ~observed
+
+OtherActionsAllowed ==
+    ~(ObserveImmediatelyAfterAck /\ InspectorPending)
+
+AckGuardSatisfied ==
+    IF WaitForBlockingDrainBeforeAck
+        THEN /\ waiter1 = "DONE"
+             /\ waiter2 = "DONE"
+    ELSE IF WaitForTailDrainBeforeAck
+        THEN waiter2 = "DONE"
+    ELSE TRUE
 
 Init ==
     /\ waiter1 = "NEW"
@@ -87,6 +113,7 @@ Init ==
 
 BlockWaiter1 ==
     /\ stepsRemaining > 0
+    /\ OtherActionsAllowed
     /\ waiter1 = "NEW"
     /\ waiter1' = "BLOCKED"
     /\ UNCHANGED
@@ -96,6 +123,7 @@ BlockWaiter1 ==
 
 BlockWaiter2 ==
     /\ stepsRemaining > 0
+    /\ OtherActionsAllowed
     /\ waiter2 = "NEW"
     /\ waiter2' = "BLOCKED"
     /\ UNCHANGED
@@ -105,6 +133,7 @@ BlockWaiter2 ==
 
 ProducerRpushList1 ==
     /\ stepsRemaining > 0
+    /\ OtherActionsAllowed
     /\ ~pushed
     /\ waiter1 = "BLOCKED"
     /\ waiter2 = "BLOCKED"
@@ -117,6 +146,7 @@ ProducerRpushList1 ==
 
 WakeWaiter1Blmove ==
     /\ stepsRemaining > 0
+    /\ OtherActionsAllowed
     /\ waiter1 = "BLOCKED"
     /\ list1HasFoo
     /\ waiter1' = "DONE"
@@ -129,6 +159,7 @@ WakeWaiter1Blmove ==
 
 WakeWaiter2Blmove ==
     /\ stepsRemaining > 0
+    /\ OtherActionsAllowed
     /\ waiter2 = "BLOCKED"
     /\ list2HasFoo
     /\ waiter2' = "DONE"
@@ -141,12 +172,10 @@ WakeWaiter2Blmove ==
 
 ProducerAck ==
     /\ stepsRemaining > 0
+    /\ OtherActionsAllowed
     /\ pushed
     /\ ~producerAcked
-    /\ IF WaitForBlockingDrainBeforeAck
-        THEN /\ waiter1 = "DONE"
-             /\ waiter2 = "DONE"
-        ELSE TRUE
+    /\ AckGuardSatisfied
     /\ producerAcked' = TRUE
     /\ UNCHANGED
         <<waiter1, waiter2, list1HasFoo, list2HasFoo, list3HasFoo, pushed, observed,
@@ -154,7 +183,6 @@ ProducerAck ==
     /\ stepsRemaining' = stepsRemaining - 1
 
 ObservePostProducerAck ==
-    /\ stepsRemaining > 0
     /\ producerAcked
     /\ ~observed
     /\ observed' = TRUE
@@ -163,10 +191,11 @@ ObservePostProducerAck ==
     /\ observedList3HasFoo' = list3HasFoo
     /\ UNCHANGED
         <<waiter1, waiter2, list1HasFoo, list2HasFoo, list3HasFoo, pushed, producerAcked>>
-    /\ stepsRemaining' = stepsRemaining - 1
+    /\ stepsRemaining' = IF stepsRemaining > 0 THEN stepsRemaining - 1 ELSE 0
 
 DoneStutter ==
-    /\ stepsRemaining = 0 \/ observed
+    /\ (stepsRemaining = 0 \/ observed)
+    /\ OtherActionsAllowed
     /\ UNCHANGED Vars
 
 Next ==
