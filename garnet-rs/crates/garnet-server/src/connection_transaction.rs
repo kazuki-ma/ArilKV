@@ -9,12 +9,13 @@ use crate::connection_protocol::ascii_eq_ignore_case;
 use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
+use crate::request_lifecycle::RedisKey;
 
 #[derive(Default)]
 pub(crate) struct ConnectionTransactionState {
     pub(crate) in_multi: bool,
     pub(crate) queued_frames: Vec<Vec<u8>>,
-    pub(crate) watched_keys: Vec<(Vec<u8>, u64)>,
+    pub(crate) watched_keys: Vec<(RedisKey, u64)>,
     pub(crate) transaction_slot: Option<u16>,
     pub(crate) aborted: bool,
     pub(crate) aborted_due_to_busy_script: bool,
@@ -43,7 +44,7 @@ impl ConnectionTransactionState {
             *watched_version = version;
             return;
         }
-        self.watched_keys.push((key.to_vec(), version));
+        self.watched_keys.push((RedisKey::from(key), version));
     }
 
     pub(crate) fn set_transaction_slot_or_abort(&mut self, slot: u16) -> bool {

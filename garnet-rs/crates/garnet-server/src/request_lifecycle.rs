@@ -735,16 +735,16 @@ impl RequestProcessor {
         Ok(Some(value.len()))
     }
 
-    pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[(Vec<u8>, u64)]) {
+    pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[(RedisKey, u64)]) {
         for (key, _) in watched_keys {
-            let _ = self.expire_key_if_needed(key);
+            let _ = self.expire_key_if_needed(key.as_slice());
         }
     }
 
-    pub fn watch_versions_match(&self, watched_keys: &[(Vec<u8>, u64)]) -> bool {
+    pub(crate) fn watch_versions_match(&self, watched_keys: &[(RedisKey, u64)]) -> bool {
         watched_keys
             .iter()
-            .all(|(key, expected)| self.watch_key_version(key) == *expected)
+            .all(|(key, expected)| self.watch_key_version(key.as_slice()) == *expected)
     }
 
     pub(super) fn set_resp_protocol_version(&self, version: usize) {
