@@ -260,6 +260,43 @@ impl From<&[u8]> for HashField {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct StringValue(Vec<u8>);
+
+impl StringValue {
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl AsRef<[u8]> for StringValue {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl std::borrow::Borrow<[u8]> for StringValue {
+    fn borrow(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl From<Vec<u8>> for StringValue {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[u8]> for StringValue {
+    fn from(value: &[u8]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
     deadline: Instant,
@@ -295,7 +332,7 @@ impl From<TsavoriteKvInitError> for RequestProcessorInitError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationValue {
-    String(Vec<u8>),
+    String(StringValue),
     Object { object_type: u8, payload: Vec<u8> },
 }
 

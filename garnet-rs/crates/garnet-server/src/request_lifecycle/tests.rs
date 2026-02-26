@@ -634,7 +634,7 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
         .export_migration_entry(b"key")
         .unwrap()
         .expect("source key should be exportable");
-    assert!(matches!(&entry.value, MigrationValue::String(value) if value == b"value"));
+    assert!(matches!(&entry.value, MigrationValue::String(value) if value.as_slice() == b"value"));
     assert!(entry.expiration_unix_millis.is_some());
 
     target.import_migration_entry(&entry).unwrap();

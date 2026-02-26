@@ -1771,7 +1771,7 @@ impl RequestProcessor {
         if let Some(value) = self.read_string_value(&key)? {
             append_bulk_string(
                 response_out,
-                &encode_dump_blob(MigrationValue::String(value)),
+                &encode_dump_blob(MigrationValue::String(value.into())),
             );
             return Ok(());
         }
@@ -2820,7 +2820,11 @@ fn restore_from_dump_blob(
 
     match value {
         MigrationValue::String(raw) => {
-            processor.upsert_string_value_for_migration(&key, &raw, expiration_unix_millis)?;
+            processor.upsert_string_value_for_migration(
+                &key,
+                raw.as_slice(),
+                expiration_unix_millis,
+            )?;
             let _ = processor.object_delete(&key)?;
         }
         MigrationValue::Object {
@@ -2913,9 +2917,9 @@ fn encode_dump_blob(value: MigrationValue) -> Vec<u8> {
     match value {
         MigrationValue::String(raw) => {
             encoded.push(0);
-            let len = u32::try_from(raw.len()).unwrap_or(u32::MAX);
+            let len = u32::try_from(raw.as_slice().len()).unwrap_or(u32::MAX);
             encoded.extend_from_slice(&len.to_le_bytes());
-            encoded.extend_from_slice(&raw);
+            encoded.extend_from_slice(raw.as_slice());
         }
         MigrationValue::Object {
             object_type,
@@ -2943,7 +2947,7 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
             let len = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
             index += 4;
             let value = encoded.get(index..index + len)?.to_vec();
-            Some(MigrationValue::String(value))
+            Some(MigrationValue::String(value.into()))
         }
         1 => {
             let object_type = *encoded.get(index)?;

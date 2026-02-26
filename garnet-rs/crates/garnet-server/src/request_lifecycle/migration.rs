@@ -10,7 +10,7 @@ impl RequestProcessor {
         if let Some(value) = self.read_string_value(key)? {
             return Ok(Some(MigrationEntry {
                 key: key.to_vec(),
-                value: MigrationValue::String(value),
+                value: MigrationValue::String(value.into()),
                 expiration_unix_millis: self.expiration_unix_millis_for_key(key),
             }));
         }
@@ -37,7 +37,7 @@ impl RequestProcessor {
             MigrationValue::String(value) => {
                 self.upsert_string_value_for_migration(
                     &entry.key,
-                    value,
+                    value.as_slice(),
                     entry.expiration_unix_millis,
                 )?;
                 let _ = self.object_delete(&entry.key)?;
