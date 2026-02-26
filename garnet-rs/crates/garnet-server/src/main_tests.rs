@@ -1,4 +1,5 @@
 use super::*;
+use garnet_cluster::SlotNumber;
 
 #[test]
 fn parse_server_config_from_values_applies_valid_overrides() {
@@ -326,13 +327,17 @@ fn build_multi_port_cluster_stores_assigns_slot_owners_by_modulo() {
     assert_eq!(local0.local_worker().unwrap().endpoint(), "127.0.0.1:8101");
     assert_eq!(local1.local_worker().unwrap().endpoint(), "127.0.0.1:8102");
 
-    let moved_from_0_for_slot_1 = local0.redirection_error_for_slot(1).unwrap();
+    let moved_from_0_for_slot_1 = local0
+        .redirection_error_for_slot(SlotNumber::new(1))
+        .unwrap();
     assert_eq!(
         moved_from_0_for_slot_1.as_deref(),
         Some("MOVED 1 127.0.0.1:8102")
     );
 
-    let moved_from_1_for_slot_2 = local1.redirection_error_for_slot(2).unwrap();
+    let moved_from_1_for_slot_2 = local1
+        .redirection_error_for_slot(SlotNumber::new(2))
+        .unwrap();
     assert_eq!(
         moved_from_1_for_slot_2.as_deref(),
         Some("MOVED 2 127.0.0.1:8103")
@@ -379,13 +384,17 @@ fn build_multi_port_cluster_stores_assigns_slot_owners_by_contiguous_ranges() {
         build_multi_port_cluster_stores(&bind_addrs, SlotOwnershipPolicy::Contiguous).unwrap();
     let local0 = stores[0].load();
 
-    let moved_at_start_of_worker1 = local0.redirection_error_for_slot(5462).unwrap();
+    let moved_at_start_of_worker1 = local0
+        .redirection_error_for_slot(SlotNumber::new(5462))
+        .unwrap();
     assert_eq!(
         moved_at_start_of_worker1.as_deref(),
         Some("MOVED 5462 127.0.0.1:8202")
     );
 
-    let moved_at_start_of_worker2 = local0.redirection_error_for_slot(10923).unwrap();
+    let moved_at_start_of_worker2 = local0
+        .redirection_error_for_slot(SlotNumber::new(10923))
+        .unwrap();
     assert_eq!(
         moved_at_start_of_worker2.as_deref(),
         Some("MOVED 10923 127.0.0.1:8203")

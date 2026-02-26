@@ -1,5 +1,6 @@
 use garnet_cluster::ClusterConfigError;
 use garnet_cluster::ClusterConfigStore;
+use garnet_cluster::SlotNumber;
 use garnet_cluster::SlotRouteDecision;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
@@ -112,7 +113,7 @@ pub(crate) fn cluster_error_for_command(
 
 fn cluster_redirection_for_slot(
     config: &garnet_cluster::ClusterConfig,
-    slot: u16,
+    slot: SlotNumber,
     asking_allowed: bool,
 ) -> Result<Option<String>, ClusterConfigError> {
     match config.route_for_slot(slot)? {
@@ -125,7 +126,7 @@ fn cluster_redirection_for_slot(
 pub(crate) fn command_hash_slot_for_transaction(
     args: &[ArgSlice],
     command: CommandId,
-) -> Option<u16> {
+) -> Option<SlotNumber> {
     if args.len() < 2 {
         return None;
     }

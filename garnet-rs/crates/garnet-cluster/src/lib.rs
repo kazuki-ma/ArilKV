@@ -61,6 +61,44 @@ impl From<WorkerId> for u16 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct SlotNumber(u16);
+
+impl SlotNumber {
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    pub fn from_usize(value: usize) -> Option<Self> {
+        u16::try_from(value).ok().map(Self)
+    }
+}
+
+impl fmt::Display for SlotNumber {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u16> for SlotNumber {
+    fn from(value: u16) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<SlotNumber> for u16 {
+    fn from(value: SlotNumber) -> Self {
+        value.0
+    }
+}
+
+impl From<SlotNumber> for usize {
+    fn from(value: SlotNumber) -> Self {
+        usize::from(value.0)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SlotState {
@@ -186,7 +224,7 @@ impl Worker {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClusterConfigError {
-    InvalidSlot(u16),
+    InvalidSlot(SlotNumber),
     WorkerNotFound(WorkerId),
     WorkerCapacityExceeded,
     MissingLocalWorker,
@@ -195,9 +233,17 @@ pub enum ClusterConfigError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotRouteDecision {
     Local,
-    Moved { slot: u16, worker_id: WorkerId },
-    Ask { slot: u16, worker_id: WorkerId },
-    Unbound { slot: u16 },
+    Moved {
+        slot: SlotNumber,
+        worker_id: WorkerId,
+    },
+    Ask {
+        slot: SlotNumber,
+        worker_id: WorkerId,
+    },
+    Unbound {
+        slot: SlotNumber,
+    },
 }
 
 impl fmt::Display for ClusterConfigError {
@@ -249,27 +295,31 @@ impl ClusterConfig {
             .ok_or(ClusterConfigError::MissingLocalWorker)
     }
 
-    pub fn slot(&self, slot: u16) -> Result<HashSlot, ClusterConfigError> {
+    pub fn slot(&self, slot: SlotNumber) -> Result<HashSlot, ClusterConfigError> {
         Ok(self.slot_map[Self::slot_index(slot)?])
     }
 
-    pub fn slot_state(&self, slot: u16) -> Result<SlotState, ClusterConfigError> {
+    pub fn slot_state(&self, slot: SlotNumber) -> Result<SlotState, ClusterConfigError> {
         Ok(self.slot(slot)?.state())
     }
 
-    pub fn slot_owner(&self, slot: u16) -> Result<WorkerId, ClusterConfigError> {
+    pub fn slot_owner(&self, slot: SlotNumber) -> Result<WorkerId, ClusterConfigError> {
         Ok(self.slot(slot)?.worker_id())
     }
 
-    pub fn slot_assigned_owner(&self, slot: u16) -> Result<WorkerId, ClusterConfigError> {
+    pub fn slot_assigned_owner(&self, slot: SlotNumber) -> Result<WorkerId, ClusterConfigError> {
         Ok(self.slot(slot)?.assigned_worker_id())
     }
 
-    pub fn slots_in_state(&self, state: SlotState) -> Vec<u16> {
+    pub fn slots_in_state(&self, state: SlotState) -> Vec<SlotNumber> {
         self.slot_map
             .iter()
             .enumerate()
-            .filter_map(|(slot, entry)| (entry.state() == state).then_some(slot as u16))
+            .filter_map(|(slot, entry)| {
+                (entry.state() == state)
+                    .then_some(slot)
+                    .and_then(SlotNumber::from_usize)
+            })
             .collect()
     }
 
@@ -277,7 +327,7 @@ impl ClusterConfig {
         &self,
         worker_id: WorkerId,
         state: SlotState,
-    ) -> Result<Vec<u16>, ClusterConfigError> {
+    ) -> Result<Vec<SlotNumber>, ClusterConfigError> {
         if self.worker(worker_id).is_none() {
             return Err(ClusterConfigError::WorkerNotFound(worker_id));
         }
@@ -287,16 +337,20 @@ impl ClusterConfig {
             .enumerate()
             .filter_map(|(slot, entry)| {
                 (entry.assigned_worker_id() == worker_id && entry.state() == state)
-                    .then_some(slot as u16)
+                    .then_some(slot)
+                    .and_then(SlotNumber::from_usize)
             })
             .collect())
     }
 
-    pub fn is_local_slot(&self, slot: u16) -> Result<bool, ClusterConfigError> {
+    pub fn is_local_slot(&self, slot: SlotNumber) -> Result<bool, ClusterConfigError> {
         Ok(self.slot(slot)?.is_local())
     }
 
-    pub fn route_for_slot(&self, slot: u16) -> Result<SlotRouteDecision, ClusterConfigError> {
+    pub fn route_for_slot(
+        &self,
+        slot: SlotNumber,
+    ) -> Result<SlotRouteDecision, ClusterConfigError> {
         let entry = self.slot(slot)?;
         let assigned_owner = entry.assigned_worker_id();
         let decision = match entry.state() {
@@ -344,7 +398,7 @@ impl ClusterConfig {
 
     pub fn redirection_error_for_slot(
         &self,
-        slot: u16,
+        slot: SlotNumber,
     ) -> Result<Option<String>, ClusterConfigError> {
         match self.route_for_slot(slot)? {
             SlotRouteDecision::Local => Ok(None),
@@ -372,7 +426,7 @@ impl ClusterConfig {
 
     pub fn set_slot_state(
         &self,
-        slot: u16,
+        slot: SlotNumber,
         worker_id: WorkerId,
         state: SlotState,
     ) -> Result<Self, ClusterConfigError> {
@@ -387,7 +441,7 @@ impl ClusterConfig {
 
     pub fn begin_slot_migration_to(
         &self,
-        slot: u16,
+        slot: SlotNumber,
         target_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         self.set_slot_state(slot, target_worker_id, SlotState::Migrating)
@@ -395,7 +449,7 @@ impl ClusterConfig {
 
     pub fn begin_slot_import_from(
         &self,
-        slot: u16,
+        slot: SlotNumber,
         source_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         self.set_slot_state(slot, source_worker_id, SlotState::Importing)
@@ -403,7 +457,7 @@ impl ClusterConfig {
 
     pub fn finalize_slot_migration(
         &self,
-        slot: u16,
+        slot: SlotNumber,
         new_owner_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         self.set_slot_state(slot, new_owner_worker_id, SlotState::Stable)
@@ -586,8 +640,8 @@ impl ClusterConfig {
         next
     }
 
-    fn slot_index(slot: u16) -> Result<usize, ClusterConfigError> {
-        let slot_index = slot as usize;
+    fn slot_index(slot: SlotNumber) -> Result<usize, ClusterConfigError> {
+        let slot_index = usize::from(slot);
         if slot_index >= HASH_SLOT_COUNT {
             return Err(ClusterConfigError::InvalidSlot(slot));
         }
@@ -824,9 +878,9 @@ fn read_len_prefixed_string(
     Ok(as_str.to_owned())
 }
 
-pub fn redis_hash_slot(key: &[u8]) -> u16 {
+pub fn redis_hash_slot(key: &[u8]) -> SlotNumber {
     let hash_key = extract_hash_tag(key).unwrap_or(key);
-    crc16_xmodem(hash_key) % (HASH_SLOT_COUNT as u16)
+    SlotNumber::new(crc16_xmodem(hash_key) % (HASH_SLOT_COUNT as u16))
 }
 
 fn extract_hash_tag(key: &[u8]) -> Option<&[u8]> {

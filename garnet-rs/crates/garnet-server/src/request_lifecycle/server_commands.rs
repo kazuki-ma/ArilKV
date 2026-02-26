@@ -2089,7 +2089,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"KEYSLOT") {
             require_exact_arity(args, 3, "CLUSTER", "CLUSTER KEYSLOT key")?;
             let key = args[2];
-            append_integer(response_out, i64::from(redis_hash_slot(key)));
+            append_integer(response_out, i64::from(u16::from(redis_hash_slot(key))));
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"INFO") {

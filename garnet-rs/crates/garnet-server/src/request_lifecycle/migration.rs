@@ -74,7 +74,11 @@ impl RequestProcessor {
         Ok(moved)
     }
 
-    pub fn migration_keys_for_slot(&self, slot: u16, max_keys: usize) -> Vec<Vec<u8>> {
+    pub fn migration_keys_for_slot(
+        &self,
+        slot: garnet_cluster::SlotNumber,
+        max_keys: usize,
+    ) -> Vec<Vec<u8>> {
         if max_keys == 0 {
             return Vec::new();
         }
@@ -107,7 +111,7 @@ impl RequestProcessor {
     pub fn migrate_slot_to(
         &self,
         target: &RequestProcessor,
-        slot: u16,
+        slot: garnet_cluster::SlotNumber,
         max_keys: usize,
         delete_source: bool,
     ) -> Result<usize, RequestExecutionError> {

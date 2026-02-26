@@ -1,6 +1,7 @@
 use garnet_cluster::ClusterConfig;
 use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::HASH_SLOT_COUNT;
+use garnet_cluster::SlotNumber;
 use garnet_cluster::SlotState;
 use garnet_cluster::Worker;
 use garnet_cluster::WorkerId;
@@ -68,8 +69,11 @@ fn build_cluster_store_for_local_index(
     for slot in 0..HASH_SLOT_COUNT {
         let owner_index = slot_owner_index(slot, bind_addrs.len(), policy);
         let owner_worker_id = worker_ids_by_index[owner_index];
+        let slot_number = SlotNumber::new(
+            u16::try_from(slot).expect("slot index must fit into u16 hash-slot range"),
+        );
         config = config
-            .set_slot_state(slot as u16, owner_worker_id, SlotState::Stable)
+            .set_slot_state(slot_number, owner_worker_id, SlotState::Stable)
             .map_err(|error| {
                 cluster_config_error_to_io("failed to set cluster slot owner", error)
             })?;

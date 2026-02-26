@@ -13,6 +13,7 @@ use garnet_cluster::InMemoryGossipTransport;
 use garnet_cluster::LOCAL_WORKER_ID;
 use garnet_cluster::ReplicationEvent;
 use garnet_cluster::ReplicationManager;
+use garnet_cluster::SlotNumber;
 use garnet_cluster::SlotState;
 use garnet_cluster::Worker;
 use garnet_cluster::WorkerRole;
@@ -3589,7 +3590,7 @@ async fn cluster_manager_failover_and_detected_migration_runner_propagates_migra
 
 #[tokio::test]
 async fn cluster_manager_failover_and_detected_migration_runner_propagates_failover_errors() {
-    let slot = 860u16;
+    let slot = SlotNumber::new(860);
     let mut source_config = ClusterConfig::new_local("node-1", "127.0.0.1", 8601)
         .set_local_worker_role(WorkerRole::Replica)
         .unwrap()
@@ -4812,10 +4813,10 @@ async fn run_live_slot_migrations_until_complete_zero_batch_is_interrupted_noop(
 
 #[test]
 fn detect_live_slot_migration_slots_intersects_migrating_and_importing() {
-    let slot_a = 510u16;
-    let slot_b = 511u16;
-    let slot_c = 512u16;
-    let slot_d = 513u16;
+    let slot_a = SlotNumber::new(510);
+    let slot_b = SlotNumber::new(511);
+    let slot_c = SlotNumber::new(512);
+    let slot_d = SlotNumber::new(513);
 
     let mut config1 = ClusterConfig::new_local("node-1", "127.0.0.1", 7901);
     let (next1, node2_id_in_1) = config1
@@ -4934,7 +4935,7 @@ async fn run_detected_live_slot_migrations_until_complete_executes_detected_slot
     .unwrap();
     assert!(!report.interrupted);
     assert_eq!(report.slots.len(), 2);
-    let migrated_slots: HashSet<u16> = report.slots.iter().map(|slot| slot.slot).collect();
+    let migrated_slots: HashSet<SlotNumber> = report.slots.iter().map(|slot| slot.slot).collect();
     assert_eq!(migrated_slots, HashSet::from([slot_a, slot_b]));
     for slot_report in report.slots {
         assert_eq!(slot_report.batches, 1);
@@ -5000,8 +5001,9 @@ async fn run_detected_live_slot_migrations_until_complete_noop_when_no_detected_
             WorkerRole::Primary,
         ))
         .unwrap();
+    let slot = SlotNumber::new(901);
     config1 = next1
-        .set_slot_state(901, LOCAL_WORKER_ID, SlotState::Stable)
+        .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
         .unwrap();
 
     let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8102);
@@ -5014,7 +5016,7 @@ async fn run_detected_live_slot_migrations_until_complete_noop_when_no_detected_
         ))
         .unwrap();
     config2 = next2
-        .set_slot_state(901, node1_id_in_2, SlotState::Stable)
+        .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
         .unwrap();
 
     let store1 = ClusterConfigStore::new(config1);
@@ -5036,11 +5038,11 @@ async fn run_detected_live_slot_migrations_until_complete_noop_when_no_detected_
     assert!(!report.interrupted);
     assert!(report.slots.is_empty());
     assert_eq!(
-        store1.load().slot_assigned_owner(901).unwrap(),
+        store1.load().slot_assigned_owner(slot).unwrap(),
         LOCAL_WORKER_ID
     );
     assert_eq!(
-        store2.load().slot_assigned_owner(901).unwrap(),
+        store2.load().slot_assigned_owner(slot).unwrap(),
         node1_id_in_2
     );
 }
@@ -5192,7 +5194,7 @@ async fn run_detected_live_slot_migrations_until_shutdown_runs_multiple_detectio
 
     assert_eq!(reports.len(), 2);
     assert!(reports.iter().all(|report| !report.interrupted));
-    let migrated_slots: HashSet<u16> = reports
+    let migrated_slots: HashSet<SlotNumber> = reports
         .iter()
         .flat_map(|report| report.slots.iter().map(|slot| slot.slot))
         .collect();
@@ -5210,8 +5212,9 @@ async fn run_detected_live_slot_migrations_until_shutdown_honors_shutdown_withou
             WorkerRole::Primary,
         ))
         .unwrap();
+    let slot = SlotNumber::new(1001);
     config1 = next1
-        .set_slot_state(1001, LOCAL_WORKER_ID, SlotState::Stable)
+        .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
         .unwrap();
 
     let mut config2 = ClusterConfig::new_local("node-2", "127.0.0.1", 8302);
@@ -5224,7 +5227,7 @@ async fn run_detected_live_slot_migrations_until_shutdown_honors_shutdown_withou
         ))
         .unwrap();
     config2 = next2
-        .set_slot_state(1001, node1_id_in_2, SlotState::Stable)
+        .set_slot_state(slot, node1_id_in_2, SlotState::Stable)
         .unwrap();
 
     let store1 = ClusterConfigStore::new(config1);

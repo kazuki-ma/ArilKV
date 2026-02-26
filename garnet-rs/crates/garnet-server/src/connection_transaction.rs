@@ -1,3 +1,4 @@
+use garnet_cluster::SlotNumber;
 use garnet_common::ArgSlice;
 use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
@@ -16,7 +17,7 @@ pub(crate) struct ConnectionTransactionState {
     pub(crate) in_multi: bool,
     pub(crate) queued_frames: Vec<Vec<u8>>,
     pub(crate) watched_keys: Vec<(RedisKey, u64)>,
-    pub(crate) transaction_slot: Option<u16>,
+    pub(crate) transaction_slot: Option<SlotNumber>,
     pub(crate) aborted: bool,
     pub(crate) aborted_due_to_busy_script: bool,
 }
@@ -47,7 +48,7 @@ impl ConnectionTransactionState {
         self.watched_keys.push((RedisKey::from(key), version));
     }
 
-    pub(crate) fn set_transaction_slot_or_abort(&mut self, slot: u16) -> bool {
+    pub(crate) fn set_transaction_slot_or_abort(&mut self, slot: SlotNumber) -> bool {
         match self.transaction_slot {
             None => {
                 self.transaction_slot = Some(slot);

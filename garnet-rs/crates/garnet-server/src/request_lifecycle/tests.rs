@@ -5,6 +5,7 @@ use crate::testkit::assert_command_error;
 use crate::testkit::assert_command_integer;
 use crate::testkit::assert_command_response;
 use crate::testkit::execute_command_line;
+use garnet_cluster::SlotNumber;
 use garnet_common::parse_resp_command_arg_slices;
 use std::sync::Arc;
 use std::thread;
@@ -7174,10 +7175,8 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert_eq!(
-        parse_integer_response(&response) as u16,
-        redis_hash_slot(b"user1")
-    );
+    let slot = SlotNumber::new(u16::try_from(parse_integer_response(&response)).unwrap());
+    assert_eq!(slot, redis_hash_slot(b"user1"));
 
     response.clear();
     let cluster_info = b"*2\r\n$7\r\nCLUSTER\r\n$4\r\nINFO\r\n";

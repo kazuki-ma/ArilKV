@@ -1,6 +1,7 @@
 use garnet_cluster::ClusterConfigError;
 use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::LOCAL_WORKER_ID;
+use garnet_cluster::SlotNumber;
 use garnet_cluster::SlotState;
 use garnet_cluster::WorkerId;
 use std::collections::HashSet;
@@ -68,7 +69,7 @@ pub struct LiveSlotMigrationRunReport {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LiveSlotMigrationSlotReport {
-    pub slot: u16,
+    pub slot: SlotNumber,
     pub batches: usize,
     pub moved_keys: usize,
     pub finalized: bool,
@@ -176,14 +177,14 @@ fn resolve_migration_peer_ids(
 pub fn detect_live_slot_migration_slots(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
-) -> Result<Vec<u16>, LiveSlotMigrationError> {
+) -> Result<Vec<SlotNumber>, LiveSlotMigrationError> {
     let (target_worker_id_in_source, source_worker_id_in_target) =
         resolve_migration_peer_ids(source_store, target_store)?;
     let source_snapshot = source_store.load();
     let target_snapshot = target_store.load();
     let source_migrating = source_snapshot
         .slots_assigned_to_worker_in_state(target_worker_id_in_source, SlotState::Migrating)?;
-    let target_importing: HashSet<u16> = target_snapshot
+    let target_importing: HashSet<SlotNumber> = target_snapshot
         .slots_assigned_to_worker_in_state(source_worker_id_in_target, SlotState::Importing)?
         .into_iter()
         .collect();
@@ -198,7 +199,7 @@ pub fn execute_live_slot_migration_step(
     target_store: &ClusterConfigStore,
     source_processor: &RequestProcessor,
     target_processor: &RequestProcessor,
-    slot: u16,
+    slot: SlotNumber,
     max_keys: usize,
 ) -> Result<LiveSlotMigrationStepOutcome, LiveSlotMigrationError> {
     if max_keys == 0 {
@@ -210,7 +211,6 @@ pub fn execute_live_slot_migration_step(
 
     let (target_worker_id_in_source, source_worker_id_in_target) =
         resolve_migration_peer_ids(source_store, target_store)?;
-
     let source_migrating = source_store
         .load()
         .as_ref()
@@ -253,7 +253,7 @@ pub fn execute_live_slot_migration(
     target_store: &ClusterConfigStore,
     source_processor: &RequestProcessor,
     target_processor: &RequestProcessor,
-    slot: u16,
+    slot: SlotNumber,
     max_keys: usize,
 ) -> Result<usize, LiveSlotMigrationError> {
     if max_keys == 0 {
@@ -284,7 +284,7 @@ pub async fn run_live_slot_migration_until_complete<F>(
     target_store: &ClusterConfigStore,
     source_processor: &RequestProcessor,
     target_processor: &RequestProcessor,
-    slot: u16,
+    slot: SlotNumber,
     max_keys_per_step: usize,
     step_interval: std::time::Duration,
     shutdown: F,
@@ -339,7 +339,7 @@ pub async fn run_live_slot_migrations_until_complete<F>(
     target_store: &ClusterConfigStore,
     source_processor: &RequestProcessor,
     target_processor: &RequestProcessor,
-    slots: &[u16],
+    slots: &[SlotNumber],
     max_keys_per_step: usize,
     step_interval: std::time::Duration,
     shutdown: F,
