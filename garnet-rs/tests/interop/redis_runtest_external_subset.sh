@@ -298,11 +298,36 @@ reset_server_after_runtest() {
     redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw SCRIPT KILL >/dev/null 2>&1 || true
     redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION KILL >/dev/null 2>&1 || true
     redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw REPLICAOF NO ONE >/dev/null 2>&1 || true
+    if ! wait_for_server_not_busy 100; then
+        echo "warning: server remained BUSY after reset attempts; CLI probes may fail" >&2
+    fi
+}
+
+wait_for_server_not_busy() {
+    local max_attempts="${1:-50}"
+    local ping_output=""
+    local attempt=0
+
+    while (( attempt < max_attempts )); do
+        ping_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw PING 2>&1 || true)"
+        if [[ "${ping_output}" == "PONG" ]]; then
+            return 0
+        fi
+        if [[ "${ping_output}" == *"BUSY Redis is busy running a script"* ]]; then
+            redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw SCRIPT KILL >/dev/null 2>&1 || true
+            redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION KILL >/dev/null 2>&1 || true
+        fi
+        sleep 0.1
+        attempt=$((attempt + 1))
+    done
+
+    return 1
 }
 
 run_cli_probe_case() {
     local case_name="$1"
     local log_file="${RESULT_DIR}/${case_name}.log"
+    wait_for_server_not_busy 20 >/dev/null 2>&1 || true
     if {
         redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" FLUSHALL
         redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" SET type:string value
@@ -328,6 +353,7 @@ run_cli_scripting_probe_case() {
     local log_file="${RESULT_DIR}/${case_name}.log"
     local status="FAIL"
     local details=""
+    wait_for_server_not_busy 20 >/dev/null 2>&1 || true
 
     {
         eval_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw EVAL "return 1" 0 2>&1 || true)"

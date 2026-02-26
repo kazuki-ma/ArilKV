@@ -25,22 +25,18 @@
 - Probe script exit code: `0`
 - Cases: `3`
 - PASS: `2`
-- PASS_WITH_KNOWN_GAPS: `1`
-- FAIL: `0`
+- PASS_WITH_KNOWN_GAPS: `0`
+- FAIL: `1`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `PASS_WITH_KNOWN_GAPS` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=519; err=1; ignore=89; failed_tests=1; expected_failed_tests=1; unexpected_failed_tests=0  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=520; err=0; ignore=89; failed_tests=0; expected_failed_tests=0; unexpected_failed_tests=0  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `1`
-
-| Test |
-|---|
-| `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
+- Failed tests extracted from runtest log: `0`
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
