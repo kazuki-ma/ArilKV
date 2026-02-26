@@ -546,7 +546,7 @@ impl RequestProcessor {
                 .unwrap_or_else(|e| e.into_inner());
             if moved_by_db
                 .get(&target_db)
-                .is_some_and(|keys| keys.contains_key(&key))
+                .is_some_and(|keys| keys.contains_key(key.as_slice()))
             {
                 append_integer(response_out, 0);
                 return Ok(());
@@ -587,7 +587,7 @@ impl RequestProcessor {
             .unwrap_or_else(|e| e.into_inner())
             .entry(target_db)
             .or_default()
-            .insert(key, moved_entry);
+            .insert(RedisKey::from(key), moved_entry);
 
         append_integer(response_out, 1);
         Ok(())

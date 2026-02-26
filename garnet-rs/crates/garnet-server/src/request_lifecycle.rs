@@ -221,6 +221,24 @@ impl TimestampMillis {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct RedisKey(Vec<u8>);
 
+impl RedisKey {
+    pub(crate) fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl AsRef<[u8]> for RedisKey {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl std::borrow::Borrow<[u8]> for RedisKey {
+    fn borrow(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
 impl From<Vec<u8>> for RedisKey {
     fn from(value: Vec<u8>) -> Self {
         Self(value)
@@ -428,7 +446,7 @@ pub struct RequestProcessor {
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
-    moved_keysizes_by_db: Mutex<HashMap<usize, HashMap<Vec<u8>, MovedKeysizesEntry>>>,
+    moved_keysizes_by_db: Mutex<HashMap<usize, HashMap<RedisKey, MovedKeysizesEntry>>>,
     key_lru_access_millis: Mutex<HashMap<Vec<u8>, u64>>,
     key_lfu_frequency: Mutex<HashMap<Vec<u8>, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
