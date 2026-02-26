@@ -4537,6 +4537,7 @@ fn info_supports_section_filters_and_multi_section_arguments() {
         .expect("INFO returns bulk payload");
     let info_default_text = String::from_utf8_lossy(&info_default);
     assert!(info_default_text.contains("redis_version:garnet-rs"));
+    assert!(info_default_text.contains("redis_git_sha1:"));
     assert!(info_default_text.contains("used_cpu_user:"));
     assert!(info_default_text.contains("used_memory:"));
     assert!(info_default_text.contains("master_repl_offset:"));

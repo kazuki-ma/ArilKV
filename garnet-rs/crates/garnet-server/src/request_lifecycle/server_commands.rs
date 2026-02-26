@@ -291,7 +291,9 @@ impl RequestProcessor {
         for section in sections {
             match section {
                 InfoSection::Server => {
-                    payload.push_str("# Server\r\nredis_version:garnet-rs\r\n");
+                    payload.push_str(
+                        "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\n",
+                    );
                 }
                 InfoSection::Clients => {
                     payload.push_str(
