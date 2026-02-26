@@ -218,6 +218,21 @@ impl TimestampMillis {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct RedisKey(Vec<u8>);
+
+impl From<Vec<u8>> for RedisKey {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[u8]> for RedisKey {
+    fn from(value: &[u8]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
     deadline: Instant,
@@ -329,7 +344,7 @@ pub struct RequestProcessor {
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     watch_versions: Vec<AtomicU64>,
-    blocking_wait_queues: Mutex<HashMap<Vec<u8>, VecDeque<u64>>>,
+    blocking_wait_queues: Mutex<HashMap<RedisKey, VecDeque<u64>>>,
     pending_client_unblocks: Mutex<HashMap<u64, ClientUnblockMode>>,
     forced_list_quicklist_keys: Mutex<HashSet<Vec<u8>>>,
     random_state: AtomicU64,
@@ -1071,7 +1086,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn register_blocking_wait(&self, client_id: u64, keys: &[Vec<u8>]) {
+    pub(crate) fn register_blocking_wait(&self, client_id: u64, keys: &[RedisKey]) {
         if keys.is_empty() {
             return;
         }
@@ -1086,7 +1101,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn unregister_blocking_wait(&self, client_id: u64, keys: &[Vec<u8>]) {
+    pub(crate) fn unregister_blocking_wait(&self, client_id: u64, keys: &[RedisKey]) {
         if keys.is_empty() {
             return;
         }
@@ -1105,7 +1120,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn is_blocking_wait_turn(&self, client_id: u64, keys: &[Vec<u8>]) -> bool {
+    pub(crate) fn is_blocking_wait_turn(&self, client_id: u64, keys: &[RedisKey]) -> bool {
         if keys.is_empty() {
             return true;
         }

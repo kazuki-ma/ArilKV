@@ -48,6 +48,7 @@ use crate::connection_transaction::TransactionExecutionOutcome;
 use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
+use crate::request_lifecycle::RedisKey;
 
 const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
@@ -1749,7 +1750,7 @@ fn clear_blocking_client_state(
     processor: &RequestProcessor,
     metrics: &ServerMetrics,
     client_id: u64,
-    blocking_keys: &[Vec<u8>],
+    blocking_keys: &[RedisKey],
 ) {
     // Shared cleanup for both successful wakeups and disconnect/unblock paths.
     // In TLA+ terms this is the queue-removal side of `Disconnect(c)` and wake completion.
@@ -2254,7 +2255,7 @@ fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {
     )
 }
 
-fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
+fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
     match command {
         CommandId::Blpop | CommandId::Brpop | CommandId::Bzpopmin | CommandId::Bzpopmax => {
             if args.len() < 3 {
@@ -2265,7 +2266,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
                 .map(|arg| {
                     // SAFETY: The argument slice was parsed from a live request frame and stays valid
                     // while the request is being executed.
-                    arg_slice_bytes(&arg).to_vec()
+                    RedisKey::from(arg_slice_bytes(&arg))
                 })
                 .collect()
         }
@@ -2276,7 +2277,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
             vec![
                 // SAFETY: The argument slice was parsed from a live request frame and stays valid
                 // while the request is being executed.
-                arg_slice_bytes(&args[1]).to_vec(),
+                RedisKey::from(arg_slice_bytes(&args[1])),
             ]
         }
         CommandId::Blmpop | CommandId::Bzmpop => {
@@ -2299,7 +2300,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<Vec<u8>> {
                 .map(|arg| {
                     // SAFETY: The argument slice was parsed from a live request frame and stays valid
                     // while the request is being executed.
-                    arg_slice_bytes(&arg).to_vec()
+                    RedisKey::from(arg_slice_bytes(&arg))
                 })
                 .collect()
         }
