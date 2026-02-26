@@ -2518,29 +2518,33 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
         tokio::pin!(shutdown);
         loop {
             tokio::select! {
-                _ = &mut shutdown => break,
-                _ = interval.tick() => {
-                    let report = self.engine.run_once().await;
-                    let newly_failed_workers = failure_detector.record_report(&report);
-                    if !newly_failed_workers.is_empty() {
-                        let outcomes = failover_controller
-                            .handle_failed_workers_async(
+                _ = &mut shutdown => {
+                    if reports.is_empty() {
+                        let report = self
+                            .run_failover_round(
                                 config_store,
+                                failure_detector,
+                                failover_controller,
                                 replication_manager,
-                                &newly_failed_workers,
                                 replication_transport,
+                                &mut failover_records,
                             )
                             .await?;
-                        for (failed_worker_id, outcome) in outcomes {
-                            if let Some(plan) = outcome.failover_plan {
-                                failover_records.push(FailoverExecutionRecord {
-                                    failed_worker_id,
-                                    synchronized_replicas: outcome.synchronized_replicas,
-                                    plan,
-                                });
-                            }
-                        }
+                        reports.push(report);
                     }
+                    break;
+                }
+                _ = interval.tick() => {
+                    let report = self
+                        .run_failover_round(
+                            config_store,
+                            failure_detector,
+                            failover_controller,
+                            replication_manager,
+                            replication_transport,
+                            &mut failover_records,
+                        )
+                        .await?;
                     reports.push(report);
                 }
                 update = updates.recv() => {
@@ -2554,6 +2558,42 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
             gossip_reports: reports,
             failover_records,
         })
+    }
+
+    async fn run_failover_round<R>(
+        &mut self,
+        config_store: &ClusterConfigStore,
+        failure_detector: &mut FailureDetector,
+        failover_controller: &mut ClusterFailoverController,
+        replication_manager: &mut ReplicationManager,
+        replication_transport: &mut R,
+        failover_records: &mut Vec<FailoverExecutionRecord>,
+    ) -> Result<GossipRoundReport, FailoverControllerError<R::Error>>
+    where
+        R: AsyncReplicationTransport,
+    {
+        let report = self.engine.run_once().await;
+        let newly_failed_workers = failure_detector.record_report(&report);
+        if !newly_failed_workers.is_empty() {
+            let outcomes = failover_controller
+                .handle_failed_workers_async(
+                    config_store,
+                    replication_manager,
+                    &newly_failed_workers,
+                    replication_transport,
+                )
+                .await?;
+            for (failed_worker_id, outcome) in outcomes {
+                if let Some(plan) = outcome.failover_plan {
+                    failover_records.push(FailoverExecutionRecord {
+                        failed_worker_id,
+                        synchronized_replicas: outcome.synchronized_replicas,
+                        plan,
+                    });
+                }
+            }
+        }
+        Ok(report)
     }
 }
 
@@ -4849,6 +4889,40 @@ mod tests {
             store.load().slot_assigned_owner(461).unwrap(),
             LOCAL_WORKER_ID
         );
+    }
+
+    #[tokio::test]
+    async fn cluster_manager_failover_report_runs_round_on_empty_shutdown() {
+        let store = ClusterConfigStore::new(base_config());
+        let gossip_engine = AsyncGossipEngine::new(
+            GossipCoordinator::new(Vec::new(), 1),
+            AsyncMockTransport::default(),
+            100,
+            0,
+        );
+        let mut manager = ClusterManager::new(gossip_engine, std::time::Duration::from_millis(5));
+
+        let (_tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
+        let mut failure_detector = FailureDetector::new(1);
+        let mut failover_controller = ClusterFailoverController::new();
+        let mut replication_manager = ReplicationManager::new(Some(4), 200, 300).unwrap();
+        let mut replication_transport = AsyncMockReplicationTransport::default();
+
+        let report = manager
+            .run_with_config_updates_and_failover_report(
+                &store,
+                rx_updates,
+                &mut failure_detector,
+                &mut failover_controller,
+                &mut replication_manager,
+                &mut replication_transport,
+                std::future::ready(()),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(report.gossip_reports.len(), 1);
+        assert!(report.failover_records.is_empty());
     }
 
     #[test]

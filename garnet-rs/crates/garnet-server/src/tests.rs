@@ -3091,11 +3091,13 @@ async fn run_with_cluster_control_plane_binds_and_serves_requests() {
     let store2 = Arc::new(ClusterConfigStore::new(config2));
     let target_processor = RequestProcessor::new().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel::<()>();
     let client_addr = addr1;
     let client = tokio::spawn(async move {
         for _ in 0..50 {
             if let Ok(mut stream) = TcpStream::connect(client_addr).await {
                 send_and_expect(&mut stream, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+                let _ = shutdown_tx.send(());
                 return;
             }
             tokio::time::sleep(Duration::from_millis(2)).await;
@@ -3135,7 +3137,9 @@ async fn run_with_cluster_control_plane_binds_and_serves_requests() {
         1,
         Duration::from_millis(1),
         Duration::from_millis(1),
-        tokio::time::sleep(Duration::from_millis(30)),
+        async move {
+            let _ = shutdown_rx.await;
+        },
     )
     .await
     .unwrap();

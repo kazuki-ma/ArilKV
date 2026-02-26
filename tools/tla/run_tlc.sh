@@ -18,6 +18,7 @@ fi
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 JAR_PATH="${TLA_TOOLS_JAR:-${SCRIPT_DIR}/bin/tla2tools.jar}"
 METADIR_ROOT="${TLA_METADIR_ROOT:-${TMPDIR:-/tmp}/garnet-tla}"
+TLA_NOWARNING="${TLA_NOWARNING:-1}"
 
 if ! command -v java >/dev/null 2>&1; then
   echo "java is required but was not found in PATH." >&2
@@ -35,7 +36,11 @@ run_id="$(date +%Y%m%d-%H%M%S)-$$"
 metadir="${METADIR_ROOT}/${run_id}"
 mkdir -p "${metadir}"
 
-cmd=(java -cp "${JAR_PATH}" tlc2.TLC -cleanup -metadir "${metadir}")
+cmd=(java -cp "${JAR_PATH}" tlc2.TLC)
+if [[ "${TLA_NOWARNING}" != "0" ]]; then
+  cmd+=(-nowarning)
+fi
+cmd+=(-cleanup -metadir "${metadir}")
 
 if [[ -n "${CFG_PATH}" ]]; then
   cmd+=(-config "${CFG_PATH}")
