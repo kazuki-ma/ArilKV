@@ -451,8 +451,8 @@ pub struct RequestProcessor {
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     moved_keysizes_by_db: Mutex<HashMap<usize, HashMap<RedisKey, MovedKeysizesEntry>>>,
-    key_lru_access_millis: Mutex<HashMap<Vec<u8>, u64>>,
-    key_lfu_frequency: Mutex<HashMap<Vec<u8>, u8>>,
+    key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
+    key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<RedisKey>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
@@ -988,7 +988,7 @@ impl RequestProcessor {
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
         if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
-            lru_state.insert(key.to_vec(), now_millis);
+            lru_state.insert(RedisKey::from(key), now_millis);
         }
     }
 
@@ -1026,7 +1026,7 @@ impl RequestProcessor {
         let idle_millis = idle_seconds.saturating_mul(1000);
         let lru_millis = now_millis.saturating_sub(idle_millis);
         if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
-            lru_state.insert(key.to_vec(), lru_millis);
+            lru_state.insert(RedisKey::from(key), lru_millis);
         }
     }
 
@@ -1035,7 +1035,7 @@ impl RequestProcessor {
             return;
         }
         if let Ok(mut lfu_state) = self.key_lfu_frequency.lock() {
-            lfu_state.insert(key.to_vec(), frequency);
+            lfu_state.insert(RedisKey::from(key), frequency);
         }
     }
 
