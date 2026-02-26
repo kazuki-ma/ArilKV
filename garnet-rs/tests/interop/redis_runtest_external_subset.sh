@@ -11,8 +11,16 @@ RESULT_DIR="${RESULT_DIR:-${SCRIPT_DIR}/results/redis-runtest-external-$(date +%
 GARNET_PORT="${GARNET_PORT:-6396}"
 GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
 GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED:-1}"
-GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-4096}"
 REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
+if [[ -z "${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-}" ]]; then
+    if [[ "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
+        # Full external probes sweep many suites in one process, so keep
+        # a higher default page budget to reduce false capacity failures.
+        GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="16384"
+    else
+        GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="4096"
+    fi
+fi
 RUNTEXT_TIMEOUT_SECONDS="${RUNTEXT_TIMEOUT_SECONDS:-}"
 RUNTEXT_WALL_TIMEOUT_SECONDS="${RUNTEXT_WALL_TIMEOUT_SECONDS:-1800}"
 RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
@@ -295,7 +303,7 @@ run_full_runtest_case() {
     fi
 
     local details
-    details="mode=full; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
+    details="mode=full; tsavorite_pages=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 
