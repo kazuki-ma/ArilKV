@@ -1,5 +1,5 @@
 schema_version: 1
-last_updated: 2026-02-24
+last_updated: 2026-02-26
 status_enum: [FULL, PARTIAL_MINIMAL, DISABLED]
 commands:
   - command: ACL
@@ -89,6 +89,12 @@ commands:
   - command: DEL
     status: FULL
     comment: ""
+  - command: DELEX
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
+  - command: DIGEST
+    status: PARTIAL_MINIMAL
+    comment: "Compatibility digest surface is limited to DEBUG DIGEST-VALUE."
   - command: DISCARD
     status: FULL
     comment: ""
@@ -200,12 +206,27 @@ commands:
   - command: HEXISTS
     status: FULL
     comment: ""
+  - command: HEXPIRE
+    status: PARTIAL_MINIMAL
+    comment: "Hash-field expiration subset implemented; full command-family parity is not complete."
+  - command: HEXPIREAT
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
+  - command: HEXPIRETIME
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
   - command: HGET
     status: FULL
     comment: ""
   - command: HGETALL
     status: FULL
     comment: ""
+  - command: HGETDEL
+    status: PARTIAL_MINIMAL
+    comment: "Hash-field expiration extension surface implemented with partial parity."
+  - command: HGETEX
+    status: PARTIAL_MINIMAL
+    comment: "Hash-field expiration extension surface implemented with partial parity."
   - command: HINCRBY
     status: FULL
     comment: ""
@@ -218,12 +239,30 @@ commands:
   - command: HLEN
     status: FULL
     comment: ""
+  - command: HOTKEYS
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
   - command: HMGET
     status: FULL
     comment: ""
   - command: HMSET
     status: FULL
     comment: ""
+  - command: HPERSIST
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
+  - command: HPEXPIRE
+    status: PARTIAL_MINIMAL
+    comment: "Hash-field expiration subset implemented; full command-family parity is not complete."
+  - command: HPEXPIREAT
+    status: PARTIAL_MINIMAL
+    comment: "Hash-field expiration subset implemented; full command-family parity is not complete."
+  - command: HPEXPIRETIME
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
+  - command: HPTTL
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
   - command: HRANDFIELD
     status: FULL
     comment: ""
@@ -233,12 +272,18 @@ commands:
   - command: HSET
     status: FULL
     comment: ""
+  - command: HSETEX
+    status: PARTIAL_MINIMAL
+    comment: "Hash-field expiration extension surface implemented with partial parity."
   - command: HSETNX
     status: FULL
     comment: ""
   - command: HSTRLEN
     status: FULL
     comment: ""
+  - command: HTTL
+    status: DISABLED
+    comment: "Declared for compatibility matrix only."
   - command: HVALS
     status: FULL
     comment: ""
@@ -329,6 +374,9 @@ commands:
   - command: MSET
     status: FULL
     comment: ""
+  - command: MSETEX
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: MSETNX
     status: FULL
     comment: ""
@@ -461,6 +509,9 @@ commands:
   - command: SELECT
     status: FULL
     comment: ""
+  - command: SENTINEL
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: SET
     status: FULL
     comment: ""
@@ -476,6 +527,9 @@ commands:
   - command: SETRANGE
     status: FULL
     comment: ""
+  - command: SFLUSH
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: SHUTDOWN
     status: DISABLED
     comment: ""
@@ -560,6 +614,9 @@ commands:
   - command: TOUCH
     status: FULL
     comment: ""
+  - command: TRIMSLOTS
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: TTL
     status: FULL
     comment: ""
@@ -587,6 +644,9 @@ commands:
   - command: XACK
     status: FULL
     comment: ""
+  - command: XACKDEL
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: XADD
     status: FULL
     comment: ""
@@ -596,9 +656,15 @@ commands:
   - command: XCLAIM
     status: FULL
     comment: ""
+  - command: XCFGSET
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: XDEL
     status: FULL
     comment: ""
+  - command: XDELEX
+    status: DISABLED
+    comment: "Declared extension surface; runtime behavior is not implemented."
   - command: XGROUP
     status: FULL
     comment: ""

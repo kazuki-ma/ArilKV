@@ -28,8 +28,8 @@ DEBUG,SUPPORTED_DECLARED,1,1,FULL,
 DECR,SUPPORTED_DECLARED,1,1,FULL,
 DECRBY,SUPPORTED_DECLARED,1,1,FULL,
 DEL,SUPPORTED_DECLARED,1,1,FULL,
-DELEX,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-DIGEST,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+DELEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
+DIGEST,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Compatibility digest surface is limited to DEBUG DIGEST-VALUE.
 DISCARD,SUPPORTED_DECLARED,1,1,FULL,
 DUMP,SUPPORTED_DECLARED,1,1,FULL,
 ECHO,SUPPORTED_DECLARED,1,1,FULL,
@@ -67,32 +67,32 @@ GETSET,SUPPORTED_DECLARED,1,1,FULL,
 HDEL,SUPPORTED_DECLARED,1,1,FULL,
 HELLO,SUPPORTED_DECLARED,1,1,FULL,
 HEXISTS,SUPPORTED_DECLARED,1,1,FULL,
-HEXPIRE,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HEXPIREAT,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HEXPIRETIME,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+HEXPIRE,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
+HEXPIREAT,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HEXPIRETIME,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
 HGET,SUPPORTED_DECLARED,1,1,FULL,
 HGETALL,SUPPORTED_DECLARED,1,1,FULL,
-HGETDEL,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HGETEX,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+HGETDEL,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
+HGETEX,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
 HINCRBY,SUPPORTED_DECLARED,1,1,FULL,
 HINCRBYFLOAT,SUPPORTED_DECLARED,1,1,FULL,
 HKEYS,SUPPORTED_DECLARED,1,1,FULL,
 HLEN,SUPPORTED_DECLARED,1,1,FULL,
 HMGET,SUPPORTED_DECLARED,1,1,FULL,
 HMSET,SUPPORTED_DECLARED,1,1,FULL,
-HOTKEYS,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HPERSIST,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HPEXPIRE,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HPEXPIREAT,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HPEXPIRETIME,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
-HPTTL,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+HOTKEYS,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HPERSIST,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HPEXPIRE,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
+HPEXPIREAT,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
+HPEXPIRETIME,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HPTTL,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
 HRANDFIELD,SUPPORTED_DECLARED,1,1,FULL,
 HSCAN,SUPPORTED_DECLARED,1,1,FULL,
 HSET,SUPPORTED_DECLARED,1,1,FULL,
-HSETEX,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+HSETEX,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
 HSETNX,SUPPORTED_DECLARED,1,1,FULL,
 HSTRLEN,SUPPORTED_DECLARED,1,1,FULL,
-HTTL,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+HTTL,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
 HVALS,SUPPORTED_DECLARED,1,1,FULL,
 INCR,SUPPORTED_DECLARED,1,1,FULL,
 INCRBY,SUPPORTED_DECLARED,1,1,FULL,
@@ -123,7 +123,7 @@ MODULE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal admin and introspection co
 MONITOR,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Compatibility ACK response surface only.
 MOVE,SUPPORTED_DECLARED,1,1,FULL,
 MSET,SUPPORTED_DECLARED,1,1,FULL,
-MSETEX,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+MSETEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 MSETNX,SUPPORTED_DECLARED,1,1,FULL,
 MULTI,SUPPORTED_DECLARED,1,1,FULL,
 OBJECT,SUPPORTED_DECLARED,1,1,FULL,
@@ -168,13 +168,13 @@ SCRIPT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Supports FLUSH/LOAD/EXISTS plus HE
 SDIFF,SUPPORTED_DECLARED,1,1,FULL,
 SDIFFSTORE,SUPPORTED_DECLARED,1,1,FULL,
 SELECT,SUPPORTED_DECLARED,1,1,FULL,
-SENTINEL,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+SENTINEL,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 SET,SUPPORTED_DECLARED,1,1,FULL,
 SETBIT,SUPPORTED_DECLARED,1,1,FULL,
 SETEX,SUPPORTED_DECLARED,1,1,FULL,
 SETNX,SUPPORTED_DECLARED,1,1,FULL,
 SETRANGE,SUPPORTED_DECLARED,1,1,FULL,
-SFLUSH,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+SFLUSH,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 SHUTDOWN,SUPPORTED_DECLARED,1,1,DISABLED,
 SINTER,SUPPORTED_DECLARED,1,1,FULL,
 SINTERCARD,SUPPORTED_DECLARED,1,1,FULL,
@@ -203,7 +203,7 @@ SWAPDB,SUPPORTED_DECLARED,1,1,FULL,
 SYNC,SUPPORTED_DECLARED,1,1,FULL,
 TIME,SUPPORTED_DECLARED,1,1,FULL,
 TOUCH,SUPPORTED_DECLARED,1,1,FULL,
-TRIMSLOTS,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+TRIMSLOTS,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 TTL,SUPPORTED_DECLARED,1,1,FULL,
 TYPE,SUPPORTED_DECLARED,1,1,FULL,
 UNLINK,SUPPORTED_DECLARED,1,1,FULL,
@@ -213,13 +213,13 @@ WAIT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full
 WAITAOF,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full replication and durability semantics are not implemented.
 WATCH,SUPPORTED_DECLARED,1,1,FULL,
 XACK,SUPPORTED_DECLARED,1,1,FULL,
-XACKDEL,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+XACKDEL,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 XADD,SUPPORTED_DECLARED,1,1,FULL,
 XAUTOCLAIM,SUPPORTED_DECLARED,1,1,FULL,
-XCFGSET,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+XCFGSET,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 XCLAIM,SUPPORTED_DECLARED,1,1,FULL,
 XDEL,SUPPORTED_DECLARED,1,1,FULL,
-XDELEX,NOT_IMPLEMENTED,1,0,DISABLED,auto-filled: missing from command-implementation-status.yaml
+XDELEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
 XGROUP,SUPPORTED_DECLARED,1,1,FULL,
 XINFO,SUPPORTED_DECLARED,1,1,FULL,
 XLEN,SUPPORTED_DECLARED,1,1,FULL,
