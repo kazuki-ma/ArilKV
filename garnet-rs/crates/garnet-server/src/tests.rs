@@ -1,6 +1,7 @@
 use super::*;
 use garnet_cluster::AsyncGossipEngine;
 use garnet_cluster::ChannelReplicationTransport;
+use garnet_cluster::CheckpointId;
 use garnet_cluster::ClusterConfig;
 use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::ClusterFailoverController;
@@ -2770,19 +2771,19 @@ async fn cluster_multi_node_slot_routing_and_failover_updates_redirections() {
     send_and_expect(&mut node3, &get_key1, moved_to_node1.as_bytes()).await;
 
     let mut replication1 = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(1_000),
         ReplicationOffset::new(2_000),
     )
     .unwrap();
     let mut replication2 = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(1_000),
         ReplicationOffset::new(2_000),
     )
     .unwrap();
     let mut replication3 = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(1_000),
         ReplicationOffset::new(2_000),
     )
@@ -2997,13 +2998,13 @@ async fn cluster_manager_failover_loop_updates_server_redirections() {
     let mut controller1 = ClusterFailoverController::new();
     let mut controller3 = ClusterFailoverController::new();
     let mut replication1 = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
     .unwrap();
     let mut replication3 = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
@@ -3058,14 +3059,14 @@ async fn cluster_manager_failover_loop_updates_server_redirections() {
         repl1_rx.recv().await,
         Some(ReplicationEvent::Checkpoint {
             worker_id: node3_id_in_1,
-            checkpoint_id: 7,
+            checkpoint_id: CheckpointId::new(7),
         })
     );
     assert_eq!(
         repl3_rx.recv().await,
         Some(ReplicationEvent::Checkpoint {
             worker_id: LOCAL_WORKER_ID,
-            checkpoint_id: 7,
+            checkpoint_id: CheckpointId::new(7),
         })
     );
 
@@ -3157,7 +3158,7 @@ async fn run_listener_with_cluster_control_plane_runs_server_and_detected_migrat
         let mut failure_detector = FailureDetector::new(1_000);
         let mut failover_controller = ClusterFailoverController::new();
         let mut replication_manager = ReplicationManager::new(
-            Some(7),
+            Some(CheckpointId::new(7)),
             ReplicationOffset::new(2_000),
             ReplicationOffset::new(2_200),
         )
@@ -3262,7 +3263,7 @@ async fn run_listener_with_cluster_control_plane_propagates_control_plane_errors
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
     let mut replication_manager = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
@@ -3357,7 +3358,7 @@ async fn run_with_cluster_control_plane_binds_and_serves_requests() {
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
     let mut replication_manager = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
@@ -3422,7 +3423,7 @@ async fn run_with_cluster_control_plane_propagates_bind_errors() {
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
     let mut replication_manager = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
@@ -3524,7 +3525,7 @@ async fn cluster_manager_failover_and_detected_migration_runner_executes_migrati
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
     let mut replication_manager = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
@@ -3617,7 +3618,7 @@ async fn cluster_manager_failover_and_detected_migration_runner_propagates_migra
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
     let mut replication_manager = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )
@@ -3700,7 +3701,7 @@ async fn cluster_manager_failover_and_detected_migration_runner_propagates_failo
     let mut failure_detector = FailureDetector::new(1);
     let mut failover_controller = ClusterFailoverController::new();
     let mut replication_manager = ReplicationManager::new(
-        Some(7),
+        Some(CheckpointId::new(7)),
         ReplicationOffset::new(2_000),
         ReplicationOffset::new(2_200),
     )

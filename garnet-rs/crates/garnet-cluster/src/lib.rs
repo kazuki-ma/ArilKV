@@ -155,6 +155,34 @@ impl From<ReplicationOffset> for u64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct CheckpointId(u64);
+
+impl CheckpointId {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl fmt::Display for CheckpointId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for CheckpointId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<CheckpointId> for u64 {
+    fn from(value: CheckpointId) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SlotState {
@@ -1058,7 +1086,7 @@ pub enum ReplicationSyncMode {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicationSyncPlan {
     pub mode: ReplicationSyncMode,
-    pub checkpoint_id: Option<u64>,
+    pub checkpoint_id: Option<CheckpointId>,
     pub aof_start_offset: ReplicationOffset,
 }
 
@@ -1087,7 +1115,7 @@ pub trait ReplicationTransport {
     fn send_checkpoint(
         &mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Result<(), Self::Error>;
     fn stream_aof_from_offset(
         &mut self,
@@ -1108,7 +1136,7 @@ pub trait AsyncReplicationTransport {
     fn send_checkpoint<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Self::CheckpointFut<'a>;
     fn stream_aof_from_offset<'a>(
         &'a mut self,
@@ -1121,7 +1149,7 @@ pub trait AsyncReplicationTransport {
 pub enum ReplicationEvent {
     Checkpoint {
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     },
     StreamAof {
         worker_id: WorkerId,
@@ -1184,7 +1212,7 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
     fn send_checkpoint<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Self::CheckpointFut<'a> {
         std::future::ready(
             self.sender
@@ -1250,7 +1278,7 @@ impl FileReplicationTransport {
     fn write_checkpoint(
         &self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Result<(), FileReplicationTransportError> {
         self.ensure_root_dir()?;
         std::fs::write(
@@ -1296,7 +1324,7 @@ impl ReplicationTransport for FileReplicationTransport {
     fn send_checkpoint(
         &mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Result<(), Self::Error> {
         self.write_checkpoint(worker_id, checkpoint_id)
     }
@@ -1325,7 +1353,7 @@ impl AsyncReplicationTransport for FileReplicationTransport {
     fn send_checkpoint<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Self::CheckpointFut<'a> {
         std::future::ready(self.write_checkpoint(worker_id, checkpoint_id))
     }
@@ -1404,7 +1432,7 @@ impl ReplicationTransport for TcpReplicationTransport {
     fn send_checkpoint(
         &mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Result<(), Self::Error> {
         let endpoint = self.peer_endpoint(worker_id)?;
         let mut stream =
@@ -1443,7 +1471,7 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
     fn send_checkpoint<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        checkpoint_id: u64,
+        checkpoint_id: CheckpointId,
     ) -> Self::CheckpointFut<'a> {
         let endpoint = self.peers.get(&worker_id).copied();
         Box::pin(async move {
@@ -1481,7 +1509,7 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
 
 #[derive(Debug, Clone)]
 pub struct ReplicationManager {
-    checkpoint_id: Option<u64>,
+    checkpoint_id: Option<CheckpointId>,
     aof_replay_start_offset: ReplicationOffset,
     aof_tail_offset: ReplicationOffset,
     replica_offsets: BTreeMap<WorkerId, ReplicationOffset>,
@@ -1489,7 +1517,7 @@ pub struct ReplicationManager {
 
 impl ReplicationManager {
     pub fn new(
-        checkpoint_id: Option<u64>,
+        checkpoint_id: Option<CheckpointId>,
         aof_replay_start_offset: ReplicationOffset,
         aof_tail_offset: ReplicationOffset,
     ) -> Result<Self, ReplicationError> {
@@ -1507,7 +1535,7 @@ impl ReplicationManager {
         })
     }
 
-    pub fn checkpoint_id(&self) -> Option<u64> {
+    pub fn checkpoint_id(&self) -> Option<CheckpointId> {
         self.checkpoint_id
     }
 
@@ -1521,7 +1549,7 @@ impl ReplicationManager {
 
     pub fn update_recovery_window(
         &mut self,
-        checkpoint_id: Option<u64>,
+        checkpoint_id: Option<CheckpointId>,
         aof_replay_start_offset: ReplicationOffset,
         aof_tail_offset: ReplicationOffset,
     ) -> Result<(), ReplicationError> {
@@ -3335,13 +3363,13 @@ mod tests {
         )
         .unwrap();
         manager
-            .update_recovery_window(Some(2), 150, 400)
+            .update_recovery_window(Some(CheckpointId::new(2)), 150, 400)
             .expect("window update should succeed");
         manager
             .set_aof_tail_offset(ReplicationOffset::new(450))
             .expect("tail advance should succeed");
 
-        assert_eq!(manager.checkpoint_id(), Some(2));
+        assert_eq!(manager.checkpoint_id(), Some(CheckpointId::new(2)));
         assert_eq!(manager.aof_replay_start_offset(), 150);
         assert_eq!(manager.aof_tail_offset(), 450);
     }
@@ -3727,7 +3755,7 @@ mod tests {
             rx.recv().await,
             Some(ReplicationEvent::Checkpoint {
                 worker_id: 9,
-                checkpoint_id: 42,
+                checkpoint_id: CheckpointId::new(42),
             })
         );
         assert_eq!(
@@ -3940,7 +3968,7 @@ mod tests {
             rx.recv().await,
             Some(ReplicationEvent::Checkpoint {
                 worker_id: 9,
-                checkpoint_id: 42,
+                checkpoint_id: CheckpointId::new(42),
             })
         );
         assert_eq!(
