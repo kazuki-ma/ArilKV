@@ -369,8 +369,8 @@ commands:
     status: PARTIAL_MINIMAL
     comment: "Compatibility ACK response surface only."
   - command: MOVE
-    status: FULL
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "single-db mode only; MOVE to non-zero DB is unsupported."
   - command: MSET
     status: FULL
     comment: ""
@@ -507,8 +507,8 @@ commands:
     status: FULL
     comment: ""
   - command: SELECT
-    status: FULL
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "single-db mode only; SELECT supports database 0."
   - command: SENTINEL
     status: DISABLED
     comment: "Declared extension surface; runtime behavior is not implemented."
@@ -603,8 +603,8 @@ commands:
     status: PARTIAL_MINIMAL
     comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
   - command: SWAPDB
-    status: FULL
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "single-db mode only; SWAPDB supports 0<->0 only."
   - command: SYNC
     status: FULL
     comment: ""

@@ -5,10 +5,10 @@
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
 
 - Supported declared commands: `241`
-- `FULL`: `207`
-- `PARTIAL_MINIMAL`: `29`
+- `FULL`: `204`
+- `PARTIAL_MINIMAL`: `32`
 - `DISABLED`: `5`
-- Full implementation ratio over declared commands: `85.89%`
+- Full implementation ratio over declared commands: `84.65%`
 
 ## Non-Full Commands
 
@@ -31,6 +31,7 @@
 | `MIGRATE` | `DISABLED` | - |
 | `MODULE` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `MONITOR` | `PARTIAL_MINIMAL` | Compatibility ACK response surface only. |
+| `MOVE` | `PARTIAL_MINIMAL` | single-db mode only; MOVE to non-zero DB is unsupported. |
 | `PSUBSCRIBE` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
 | `PUBLISH` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
 | `PUBSUB` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
@@ -39,12 +40,14 @@
 | `READWRITE` | `DISABLED` | - |
 | `ROLE` | `PARTIAL_MINIMAL` | Returns fixed master-role shape; full role-state semantics are not implemented. |
 | `SCRIPT` | `PARTIAL_MINIMAL` | Supports FLUSH/LOAD/EXISTS plus HELP/DEBUG/KILL minimal behavior (runtime hardening env knobs included); but full Redis script-admin semantics are not implemented. |
+| `SELECT` | `PARTIAL_MINIMAL` | single-db mode only; SELECT supports database 0. |
 | `SHUTDOWN` | `DISABLED` | - |
 | `SLOWLOG` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `SPUBLISH` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
 | `SSUBSCRIBE` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
 | `SUBSCRIBE` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
 | `SUNSUBSCRIBE` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
+| `SWAPDB` | `PARTIAL_MINIMAL` | single-db mode only; SWAPDB supports 0<->0 only. |
 | `UNSUBSCRIBE` | `PARTIAL_MINIMAL` | Minimal deterministic pubsub compatibility shapes; not full runtime parity. |
 | `WAIT` | `PARTIAL_MINIMAL` | Minimal compatibility behavior; full replication and durability semantics are not implemented. |
 | `WAITAOF` | `PARTIAL_MINIMAL` | Minimal compatibility behavior; full replication and durability semantics are not implemented. |
