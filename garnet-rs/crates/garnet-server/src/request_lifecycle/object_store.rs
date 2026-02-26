@@ -51,12 +51,14 @@ impl RequestProcessor {
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
                 self.set_string_expiration_deadline(&key, None);
+                self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
                 self.bump_watch_version(&key);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
+                self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
                 Ok(false)

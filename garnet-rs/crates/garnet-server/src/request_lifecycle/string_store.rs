@@ -387,6 +387,17 @@ impl RequestProcessor {
     }
 
     #[inline]
+    pub(super) fn lock_hash_field_expirations_for_shard(
+        &self,
+        shard_index: usize,
+    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, HashMap<Vec<u8>, ExpirationMetadata>>> {
+        debug_assert!(shard_index < self.hash_field_expirations.len());
+        self.hash_field_expirations[shard_index]
+            .lock()
+            .expect("hash field expiration mutex poisoned")
+    }
+
+    #[inline]
     pub(super) fn lock_string_key_registry_for_shard(
         &self,
         shard_index: usize,
@@ -507,6 +518,126 @@ impl RequestProcessor {
     pub(super) fn remove_string_key_metadata(&self, key: &[u8]) {
         let shard_index = self.string_store_shard_index_for_key(key);
         self.remove_string_key_metadata_in_shard(key, shard_index);
+    }
+
+    pub(super) fn set_hash_field_expiration_unix_millis_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: usize,
+        field: &[u8],
+        expiration_unix_millis: Option<u64>,
+    ) {
+        let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
+        match expiration_unix_millis {
+            Some(unix_millis) => {
+                let Some(deadline) = instant_from_unix_millis(unix_millis) else {
+                    return;
+                };
+                let per_key = expirations.entry(key.to_vec()).or_default();
+                per_key.insert(
+                    field.to_vec(),
+                    ExpirationMetadata {
+                        deadline,
+                        unix_millis,
+                    },
+                );
+            }
+            None => {
+                if let Some(per_key) = expirations.get_mut(key) {
+                    per_key.remove(field);
+                    if per_key.is_empty() {
+                        expirations.remove(key);
+                    }
+                }
+            }
+        }
+    }
+
+    pub(super) fn set_hash_field_expiration_unix_millis(
+        &self,
+        key: &[u8],
+        field: &[u8],
+        expiration_unix_millis: Option<u64>,
+    ) {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.set_hash_field_expiration_unix_millis_in_shard(
+            key,
+            shard_index,
+            field,
+            expiration_unix_millis,
+        );
+    }
+
+    pub(super) fn clear_hash_field_expirations_for_key_in_shard(
+        &self,
+        key: &[u8],
+        shard_index: usize,
+    ) {
+        self.lock_hash_field_expirations_for_shard(shard_index)
+            .remove(key);
+    }
+
+    pub(super) fn remove_expired_hash_fields_for_access(
+        &self,
+        key: &[u8],
+        fields: &[&[u8]],
+    ) -> Vec<Vec<u8>> {
+        if fields.is_empty() {
+            return Vec::new();
+        }
+        let shard_index = self.object_store_shard_index_for_key(key);
+        let now = Instant::now();
+        let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
+        let Some(per_key) = expirations.get_mut(key) else {
+            return Vec::new();
+        };
+
+        let mut expired_fields = Vec::new();
+        for field in fields {
+            if let Some(metadata) = per_key.get(*field) {
+                if metadata.deadline <= now {
+                    expired_fields.push((*field).to_vec());
+                }
+            }
+        }
+        for field in &expired_fields {
+            per_key.remove(field);
+        }
+        if per_key.is_empty() {
+            expirations.remove(key);
+        }
+        expired_fields
+    }
+
+    pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<Vec<u8>> {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        let now = Instant::now();
+        let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
+        let Some(per_key) = expirations.get_mut(key) else {
+            return Vec::new();
+        };
+
+        let mut expired_fields = per_key
+            .iter()
+            .filter_map(|(field, metadata)| {
+                if metadata.deadline <= now {
+                    Some(field.clone())
+                } else {
+                    None
+                }
+            })
+            .collect::<Vec<_>>();
+        if expired_fields.is_empty() {
+            return Vec::new();
+        }
+        for field in &expired_fields {
+            per_key.remove(field);
+        }
+        if per_key.is_empty() {
+            expirations.remove(key);
+        }
+        expired_fields.shrink_to_fit();
+        expired_fields
     }
 
     pub(super) fn string_expiration_deadline_in_shard(

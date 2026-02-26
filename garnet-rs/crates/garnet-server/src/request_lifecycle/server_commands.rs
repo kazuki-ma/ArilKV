@@ -2330,6 +2330,8 @@ impl RequestProcessor {
 
         for shard_index in 0..self.string_store_shard_count() {
             self.lock_string_expirations_for_shard(shard_index).clear();
+            self.lock_hash_field_expirations_for_shard(shard_index)
+                .clear();
             self.lock_string_key_registry_for_shard(shard_index).clear();
             self.lock_object_key_registry_for_shard(shard_index).clear();
             self.string_expiration_counts[shard_index].store(0, Ordering::Release);
@@ -2354,6 +2356,7 @@ impl RequestProcessor {
 
         for key in keys {
             self.expire_key_if_needed(&key)?;
+            self.active_expire_hash_fields_for_key(&key)?;
 
             if let Some(value) = self.read_string_value(&key)? {
                 let length =

@@ -7,10 +7,10 @@
 
 ## Declaration Coverage Snapshot
 
-- Redis baseline command count: `241`
+- Redis baseline command count: `263`
 - Garnet declared command count: `241`
 - `SUPPORTED_DECLARED`: `241`
-- `NOT_IMPLEMENTED`: `0`
+- `NOT_IMPLEMENTED`: `22`
 - `GARNET_EXTENSION`: `0`
 
 ## Implementation Maturity Snapshot
@@ -29,38 +29,17 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=579; err=22; ignore=124; failed_tests=22  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=16; err=1; ignore=9; failed_tests=1  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `22`
+- Failed tests extracted from runtest log: `1`
 
 | Test |
 |---|
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
-| `KEYSIZES - Test complex dataset  in tests/unit/info-keysizes.tcl` |
-| `KEYSIZES - Test HASH (listpackex)  in tests/unit/info-keysizes.tcl` |
-| `KEYSIZES - Test Hash field lazy expiration (listpackex)  in tests/unit/info-keysizes.tcl` |
-| `KEYSIZES - Test HASH (hashtable)  in tests/unit/info-keysizes.tcl` |
-| `KEYSIZES - Test Hash field lazy expiration (hashtable)  in tests/unit/info-keysizes.tcl` |
 | `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
-| `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
-| `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
-| `FLUSHDB ASYNC can reclaim memory in background in tests/unit/lazyfree.tcl` |
-| `lazy free a stream with all types of metadata in tests/unit/lazyfree.tcl` |
-| `lazy free a stream with deleted cgroup in tests/unit/lazyfree.tcl` |
-| `FLUSHALL SYNC optimized to run in bg as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Run consecutive blocking FLUSHALL ASYNC successfully in tests/unit/lazyfree.tcl` |
-| `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
-| `Blocking commands ignores the timeout in tests/unit/multi.tcl` |
-| `Coverage: HELP commands in tests/unit/other.tcl` |
-| `SAVE - make sure there are all the types as values in tests/unit/other.tcl` |
-| `Check consistency of different data types after a reload in tests/unit/other.tcl` |
-| `Same dataset digest if saving/reloading as AOF? in tests/unit/other.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

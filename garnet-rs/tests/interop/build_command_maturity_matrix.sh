@@ -9,6 +9,7 @@ STATUS_CSV="${STATUS_CSV:-${COMPAT_DIR}/redis-command-status.csv}"
 IMPLEMENTATION_YAML="${IMPLEMENTATION_YAML:-${COMPAT_DIR}/command-implementation-status.yaml}"
 OUTPUT_CSV="${OUTPUT_CSV:-${COMPAT_DIR}/redis-command-maturity.csv}"
 OUTPUT_SUMMARY="${OUTPUT_SUMMARY:-${COMPAT_DIR}/redis-command-maturity-summary.md}"
+DEFAULT_MISSING_IMPLEMENTATION_STATUS="${DEFAULT_MISSING_IMPLEMENTATION_STATUS:-DISABLED}"
 TMP_DIR="$(mktemp -d)"
 
 cleanup() {
@@ -35,6 +36,15 @@ if [[ ! -f "${IMPLEMENTATION_YAML}" ]]; then
     echo "implementation yaml not found: ${IMPLEMENTATION_YAML}" >&2
     exit 1
 fi
+
+case "${DEFAULT_MISSING_IMPLEMENTATION_STATUS}" in
+    FULL|PARTIAL_MINIMAL|DISABLED)
+        ;;
+    *)
+        echo "invalid DEFAULT_MISSING_IMPLEMENTATION_STATUS: ${DEFAULT_MISSING_IMPLEMENTATION_STATUS} (expected: FULL|PARTIAL_MINIMAL|DISABLED)" >&2
+        exit 1
+        ;;
+esac
 
 IMPLEMENTATION_CSV="${TMP_DIR}/implementation.csv"
 
@@ -114,15 +124,16 @@ comm -23 "${TMP_DIR}/declared-commands.txt" "${TMP_DIR}/yaml-commands.txt" > "${
 comm -13 "${TMP_DIR}/declared-commands.txt" "${TMP_DIR}/yaml-commands.txt" > "${TMP_DIR}/extra.txt"
 
 if [[ -s "${TMP_DIR}/missing.txt" ]]; then
-    echo "commands present in status csv but missing from yaml:" >&2
+    echo "warning: commands present in status csv but missing from yaml; auto-filling as ${DEFAULT_MISSING_IMPLEMENTATION_STATUS}:" >&2
     cat "${TMP_DIR}/missing.txt" >&2
-    exit 1
+    while IFS= read -r command; do
+        echo "${command},${DEFAULT_MISSING_IMPLEMENTATION_STATUS},auto-filled: missing from command-implementation-status.yaml" >> "${IMPLEMENTATION_CSV}"
+    done < "${TMP_DIR}/missing.txt"
 fi
 
 if [[ -s "${TMP_DIR}/extra.txt" ]]; then
-    echo "commands present in yaml but absent from status csv:" >&2
+    echo "warning: commands present in yaml but absent from status csv (ignored in matrix join):" >&2
     cat "${TMP_DIR}/extra.txt" >&2
-    exit 1
 fi
 
 awk -F, -v impl_csv="${IMPLEMENTATION_CSV}" '

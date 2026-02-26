@@ -304,6 +304,8 @@ pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, ExpirationMetadata>>>,
+    hash_field_expirations:
+        Vec<OrderedMutex<HashMap<Vec<u8>, HashMap<Vec<u8>, ExpirationMetadata>>>>,
     string_expiration_counts: Vec<AtomicUsize>,
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
@@ -437,6 +439,7 @@ impl RequestProcessor {
         let mut string_stores = Vec::with_capacity(store_shard_count);
         let mut object_stores = Vec::with_capacity(store_shard_count);
         let mut string_expirations = Vec::with_capacity(store_shard_count);
+        let mut hash_field_expirations = Vec::with_capacity(store_shard_count);
         let mut string_expiration_counts = Vec::with_capacity(store_shard_count);
         let mut string_key_registries = Vec::with_capacity(store_shard_count);
         let mut object_key_registries = Vec::with_capacity(store_shard_count);
@@ -456,6 +459,11 @@ impl RequestProcessor {
                 LockClass::Expirations,
                 "request_processor.expirations",
             ));
+            hash_field_expirations.push(OrderedMutex::new(
+                HashMap::new(),
+                LockClass::Expirations,
+                "request_processor.hash_field_expirations",
+            ));
             string_expiration_counts.push(AtomicUsize::new(0));
             string_key_registries.push(OrderedMutex::new(
                 HashSet::new(),
@@ -472,6 +480,7 @@ impl RequestProcessor {
             string_stores,
             object_stores,
             string_expirations,
+            hash_field_expirations,
             string_expiration_counts,
             string_key_registries,
             object_key_registries,
@@ -1294,6 +1303,11 @@ impl RequestProcessor {
         let subcommand = args.get(1).copied();
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
+        }
+        if command == CommandId::Unknown
+            && self.maybe_handle_hash_field_expire_extension(args, response_out)?
+        {
+            return Ok(());
         }
         match command {
             CommandId::Get => self.handle_get(args, response_out),

@@ -3381,15 +3381,7 @@ fn resolve_sort_lookup_value(
 
     if let Some(field_pattern) = hash_field_pattern {
         let field = substitute_sort_wildcard(field_pattern, element);
-        let Some((object_type, payload)) = processor.object_read(&key)? else {
-            return Ok(None);
-        };
-        if object_type != HASH_OBJECT_TYPE_TAG {
-            return Ok(None);
-        }
-        let hash = deserialize_hash_object_payload(&payload)
-            .ok_or_else(|| storage_failure("sort", "failed to deserialize hash payload"))?;
-        return Ok(hash.get(&field).cloned());
+        return processor.hash_get_field_for_sort_lookup(&key, &field);
     }
 
     Ok(processor.read_string_value(&key)?)

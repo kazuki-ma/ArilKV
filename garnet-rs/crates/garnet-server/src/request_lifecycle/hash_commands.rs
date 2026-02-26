@@ -1,6 +1,42 @@
 use super::*;
 
 impl RequestProcessor {
+    pub(super) fn maybe_handle_hash_field_expire_extension(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<bool, RequestExecutionError> {
+        if args.is_empty() {
+            return Ok(false);
+        }
+        let command = args[0];
+        if ascii_eq_ignore_case(command, b"HSETEX") {
+            self.handle_hsetex(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HGETEX") {
+            self.handle_hgetex(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HGETDEL") {
+            self.handle_hgetdel(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HEXPIRE") {
+            self.handle_hexpire(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HPEXPIRE") {
+            self.handle_hpexpire(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HPEXPIREAT") {
+            self.handle_hpexpireat(args, response_out)?;
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     pub(super) fn handle_hset(
         &self,
         args: &[&[u8]],
@@ -10,6 +46,11 @@ impl RequestProcessor {
 
         let key = args[1].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
+        let access_fields = args[2..]
+            .chunks_exact(2)
+            .map(|entry| entry[0])
+            .collect::<Vec<_>>();
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
         let mut inserted = 0i64;
 
         let mut index = 2usize;
@@ -19,6 +60,7 @@ impl RequestProcessor {
             if hash.insert(field, value).is_none() {
                 inserted += 1;
             }
+            self.set_hash_field_expiration_unix_millis(&key, args[index], None);
             index += 2;
         }
 
@@ -36,13 +78,21 @@ impl RequestProcessor {
 
         let key = args[1].to_vec();
         let field = args[2];
-        let hash = match self.load_hash_object(&key)? {
+        let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
                 append_null_bulk_string(response_out);
                 return Ok(());
             }
         };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &[field]);
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+            if hash.is_empty() {
+                append_null_bulk_string(response_out);
+                return Ok(());
+            }
+        }
 
         match hash.get(field) {
             Some(value) => append_bulk_string(response_out, value),
@@ -66,11 +116,13 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &args[2..]);
 
         let mut removed = 0i64;
         for field in &args[2..] {
             if hash.remove(*field).is_some() {
                 removed += 1;
+                self.set_hash_field_expiration_unix_millis(&key, field, None);
             }
         }
 
@@ -134,7 +186,13 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "HMGET", "HMGET key field [field ...]")?;
 
         let key = args[1].to_vec();
-        let hash = self.load_hash_object(&key)?;
+        let mut hash = self.load_hash_object(&key)?;
+        if let Some(hash_mut) = hash.as_mut() {
+            let lazy_expired = self.apply_hash_field_lazy_expiration(&key, hash_mut, &args[2..]);
+            if lazy_expired {
+                self.persist_hash_after_field_expiration(&key, hash_mut)?;
+            }
+        }
         let field_count = args.len() - 2;
         response_out.push(b'*');
         response_out.extend_from_slice(field_count.to_string().as_bytes());
@@ -163,11 +221,17 @@ impl RequestProcessor {
 
         let key = args[1].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
+        let access_fields = args[2..]
+            .chunks_exact(2)
+            .map(|entry| entry[0])
+            .collect::<Vec<_>>();
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
         let mut index = 2usize;
         while index < args.len() {
             let field = args[index].to_vec();
             let value = args[index + 1].to_vec();
             hash.insert(field, value);
+            self.set_hash_field_expiration_unix_millis(&key, args[index], None);
             index += 2;
         }
         self.save_hash_object(&key, &hash)?;
@@ -185,12 +249,14 @@ impl RequestProcessor {
         let key = args[1].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let field = args[2].to_vec();
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &[args[2]]);
         if hash.contains_key(&field) {
             append_integer(response_out, 0);
             return Ok(());
         }
         let value = args[3].to_vec();
         hash.insert(field, value);
+        self.set_hash_field_expiration_unix_millis(&key, args[2], None);
         self.save_hash_object(&key, &hash)?;
         append_integer(response_out, 1);
         Ok(())
@@ -205,10 +271,18 @@ impl RequestProcessor {
 
         let key = args[1].to_vec();
         let field = args[2];
-        let exists = self
-            .load_hash_object(&key)?
-            .map(|hash| hash.contains_key(field))
-            .unwrap_or(false);
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &[field]);
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+        }
+        let exists = hash.contains_key(field);
         append_integer(response_out, i64::from(exists));
         Ok(())
     }
@@ -270,10 +344,18 @@ impl RequestProcessor {
 
         let key = args[1].to_vec();
         let field = args[2];
-        let len = self
-            .load_hash_object(&key)?
-            .and_then(|hash| hash.get(field).map(|value| value.len() as i64))
-            .unwrap_or(0);
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &[field]);
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+        }
+        let len = hash.get(field).map(|value| value.len() as i64).unwrap_or(0);
         append_integer(response_out, len);
         Ok(())
     }
@@ -298,6 +380,20 @@ impl RequestProcessor {
             append_hash_scan_response(response_out, cursor, scan_options.count, &[]);
             return Ok(());
         };
+        let mut hash = hash;
+        let all_fields_owned = hash.keys().cloned().collect::<Vec<_>>();
+        let all_fields = all_fields_owned
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<_>>();
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &all_fields);
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+            if hash.is_empty() {
+                append_hash_scan_response(response_out, cursor, scan_options.count, &[]);
+                return Ok(());
+            }
+        }
 
         let mut matched = Vec::new();
         for (field, value) in &hash {
@@ -324,6 +420,7 @@ impl RequestProcessor {
         let key = args[1].to_vec();
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &[args[2]]);
 
         let current = match hash.get(&field) {
             Some(value) => parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?,
@@ -349,6 +446,7 @@ impl RequestProcessor {
         let key = args[1].to_vec();
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &[args[2]]);
 
         let current = match hash.get(&field) {
             Some(value) => parse_f64_ascii(value).ok_or(RequestExecutionError::ValueNotFloat)?,
@@ -379,7 +477,18 @@ impl RequestProcessor {
         )?;
 
         let key = args[1].to_vec();
-        let hash = self.load_hash_object(&key)?;
+        let mut hash = self.load_hash_object(&key)?;
+        if let Some(hash_mut) = hash.as_mut() {
+            let all_fields_owned = hash_mut.keys().cloned().collect::<Vec<_>>();
+            let all_fields = all_fields_owned
+                .iter()
+                .map(Vec::as_slice)
+                .collect::<Vec<_>>();
+            let lazy_expired = self.apply_hash_field_lazy_expiration(&key, hash_mut, &all_fields);
+            if lazy_expired {
+                self.persist_hash_after_field_expiration(&key, hash_mut)?;
+            }
+        }
         let resp3 = self.resp_protocol_version() == 3;
 
         if args.len() == 2 {
@@ -497,6 +606,370 @@ impl RequestProcessor {
         }
         Ok(())
     }
+
+    pub(super) fn handle_hsetex(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HSETEX",
+            "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+        )?;
+
+        let key = args[1].to_vec();
+        let (expiration_unix_millis, fields_index, expire_if_past_immediately) =
+            parse_hsetex_options(args)?;
+        let field_values = parse_hash_fields_with_values(
+            args,
+            fields_index,
+            "HSETEX",
+            "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+        )?;
+
+        let access_fields = field_values
+            .iter()
+            .map(|(field, _)| *field)
+            .collect::<Vec<_>>();
+        let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
+
+        let mut inserted = 0i64;
+        for (field, value) in &field_values {
+            if hash.insert((*field).to_vec(), (*value).to_vec()).is_none() {
+                inserted += 1;
+            }
+            self.set_hash_field_expiration_unix_millis(&key, field, expiration_unix_millis);
+        }
+
+        if expire_if_past_immediately {
+            if let Some(expiration) = expiration_unix_millis {
+                if expiration
+                    <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+                {
+                    self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
+                }
+            }
+        }
+
+        if hash.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_hash_object(&key, &hash)?;
+        }
+        append_integer(response_out, inserted);
+        Ok(())
+    }
+
+    pub(super) fn handle_hgetex(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "HGETEX",
+            "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+        )?;
+        let key = args[1].to_vec();
+        let (expiration_unix_millis, fields_index, expire_if_past_immediately) =
+            parse_hgetex_options(args)?;
+        let fields = parse_hash_fields(
+            args,
+            fields_index,
+            "HGETEX",
+            "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+        )?;
+
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                response_out.push(b'*');
+                response_out.extend_from_slice(fields.len().to_string().as_bytes());
+                response_out.extend_from_slice(b"\r\n");
+                for _ in 0..fields.len() {
+                    append_null_bulk_string(response_out);
+                }
+                return Ok(());
+            }
+        };
+
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+        response_out.push(b'*');
+        response_out.extend_from_slice(fields.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for field in &fields {
+            match hash.get(*field) {
+                Some(value) => append_bulk_string(response_out, value),
+                None => append_null_bulk_string(response_out),
+            }
+        }
+
+        for field in &fields {
+            if hash.contains_key(*field) {
+                self.set_hash_field_expiration_unix_millis(&key, field, expiration_unix_millis);
+            } else {
+                self.set_hash_field_expiration_unix_millis(&key, field, None);
+            }
+        }
+
+        if expire_if_past_immediately {
+            if let Some(expiration) = expiration_unix_millis {
+                if expiration
+                    <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+                {
+                    self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+                }
+            }
+        }
+
+        if lazy_expired || expiration_unix_millis.is_some() {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_hgetdel(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            4,
+            "HGETDEL",
+            "HGETDEL key FIELDS num field [field ...]",
+        )?;
+        let key = args[1].to_vec();
+        let fields = parse_hash_fields(
+            args,
+            2,
+            "HGETDEL",
+            "HGETDEL key FIELDS num field [field ...]",
+        )?;
+
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                response_out.push(b'*');
+                response_out.extend_from_slice(fields.len().to_string().as_bytes());
+                response_out.extend_from_slice(b"\r\n");
+                for _ in 0..fields.len() {
+                    append_null_bulk_string(response_out);
+                }
+                return Ok(());
+            }
+        };
+
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+        response_out.push(b'*');
+        response_out.extend_from_slice(fields.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for field in &fields {
+            match hash.remove(*field) {
+                Some(value) => {
+                    self.set_hash_field_expiration_unix_millis(&key, field, None);
+                    append_bulk_string(response_out, &value);
+                }
+                None => append_null_bulk_string(response_out),
+            }
+        }
+
+        if hash.is_empty() {
+            let _ = self.object_delete(&key)?;
+        } else {
+            self.save_hash_object(&key, &hash)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_hexpire(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HEXPIRE",
+            "HEXPIRE key seconds FIELDS num field [field ...]",
+        )?;
+        let seconds = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        if seconds < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+        let delta = u64::try_from(seconds)
+            .ok()
+            .and_then(|value| value.checked_mul(1000))
+            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        let expiration_unix_millis = now
+            .checked_add(delta)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        self.handle_hash_field_expire_common(args, 3, expiration_unix_millis, false, response_out)
+    }
+
+    pub(super) fn handle_hpexpire(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HPEXPIRE",
+            "HPEXPIRE key milliseconds FIELDS num field [field ...]",
+        )?;
+        let millis = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        if millis < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+        let delta = u64::try_from(millis).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        let expiration_unix_millis = now
+            .checked_add(delta)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        self.handle_hash_field_expire_common(args, 3, expiration_unix_millis, false, response_out)
+    }
+
+    pub(super) fn handle_hpexpireat(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HPEXPIREAT",
+            "HPEXPIREAT key milliseconds-unix-time FIELDS num field [field ...]",
+        )?;
+        let expiration_unix_millis =
+            parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        self.handle_hash_field_expire_common(args, 3, expiration_unix_millis, true, response_out)
+    }
+
+    pub(super) fn hash_get_field_for_sort_lookup(
+        &self,
+        key: &[u8],
+        field: &[u8],
+    ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => return Ok(None),
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &[field]);
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(key, &hash)?;
+            if hash.is_empty() {
+                return Ok(None);
+            }
+        }
+        Ok(hash.get(field).cloned())
+    }
+
+    pub(super) fn active_expire_hash_fields_for_key(
+        &self,
+        key: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        if !self.active_expire_enabled() {
+            return Ok(());
+        }
+        let expired_fields = self.remove_all_expired_hash_fields_for_key(key);
+        if expired_fields.is_empty() {
+            return Ok(());
+        }
+
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => return Ok(()),
+        };
+        for field in &expired_fields {
+            hash.remove(field);
+        }
+        self.persist_hash_after_field_expiration(key, &hash)
+    }
+
+    fn handle_hash_field_expire_common(
+        &self,
+        args: &[&[u8]],
+        fields_index: usize,
+        expiration_unix_millis: u64,
+        expire_if_past_immediately: bool,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let key = args[1].to_vec();
+        let fields = parse_hash_fields(
+            args,
+            fields_index,
+            "HPEXPIRE",
+            "HPEXPIRE key milliseconds FIELDS num field [field ...]",
+        )?;
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_hash_integer_array(response_out, fields.len(), -2);
+                return Ok(());
+            }
+        };
+        self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+
+        let mut statuses = Vec::with_capacity(fields.len());
+        for field in &fields {
+            if hash.contains_key(*field) {
+                self.set_hash_field_expiration_unix_millis(
+                    &key,
+                    field,
+                    Some(expiration_unix_millis),
+                );
+                statuses.push(1);
+            } else {
+                self.set_hash_field_expiration_unix_millis(&key, field, None);
+                statuses.push(-2);
+            }
+        }
+
+        if expire_if_past_immediately
+            && expiration_unix_millis
+                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+        {
+            self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+        }
+        self.persist_hash_after_field_expiration(&key, &hash)?;
+        append_integer_array(response_out, &statuses);
+        Ok(())
+    }
+
+    fn apply_hash_field_lazy_expiration(
+        &self,
+        key: &[u8],
+        hash: &mut BTreeMap<Vec<u8>, Vec<u8>>,
+        fields: &[&[u8]],
+    ) -> bool {
+        let expired_fields = self.remove_expired_hash_fields_for_access(key, fields);
+        if expired_fields.is_empty() {
+            return false;
+        }
+        for field in expired_fields {
+            hash.remove(&field);
+        }
+        true
+    }
+
+    fn persist_hash_after_field_expiration(
+        &self,
+        key: &[u8],
+        hash: &BTreeMap<Vec<u8>, Vec<u8>>,
+    ) -> Result<(), RequestExecutionError> {
+        if hash.is_empty() {
+            let _ = self.object_delete(key)?;
+        } else {
+            self.save_hash_object(key, hash)?;
+        }
+        Ok(())
+    }
 }
 
 fn append_hash_scan_response(
@@ -533,4 +1006,178 @@ fn looks_like_signed_integer(input: &[u8]) -> bool {
         index = 1;
     }
     index < input.len() && input[index..].iter().all(u8::is_ascii_digit)
+}
+
+fn parse_hsetex_options(
+    args: &[&[u8]],
+) -> Result<(Option<u64>, usize, bool), RequestExecutionError> {
+    if args.len() < 5 {
+        return Err(RequestExecutionError::WrongArity {
+            command: "HSETEX",
+            expected: "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+        });
+    }
+    if ascii_eq_ignore_case(args[2], b"FIELDS") {
+        return Ok((None, 2, false));
+    }
+    if args.len() < 7 {
+        return Err(RequestExecutionError::WrongArity {
+            command: "HSETEX",
+            expected: "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+        });
+    }
+    let option = args[2];
+    let value = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let mut expire_if_past_immediately = false;
+    let expiration_unix_millis = if ascii_eq_ignore_case(option, b"PX") {
+        if value < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let delta = u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        now.checked_add(delta)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?
+    } else if ascii_eq_ignore_case(option, b"PXAT") {
+        if value < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        expire_if_past_immediately = true;
+        u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?
+    } else {
+        return Err(RequestExecutionError::SyntaxError);
+    };
+    if !ascii_eq_ignore_case(args[4], b"FIELDS") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok((Some(expiration_unix_millis), 4, expire_if_past_immediately))
+}
+
+fn parse_hgetex_options(
+    args: &[&[u8]],
+) -> Result<(Option<u64>, usize, bool), RequestExecutionError> {
+    if args.len() < 4 {
+        return Err(RequestExecutionError::WrongArity {
+            command: "HGETEX",
+            expected: "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+        });
+    }
+    if ascii_eq_ignore_case(args[2], b"FIELDS") {
+        return Ok((None, 2, false));
+    }
+    if args.len() < 6 {
+        return Err(RequestExecutionError::WrongArity {
+            command: "HGETEX",
+            expected: "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+        });
+    }
+    let option = args[2];
+    let value = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let mut expire_if_past_immediately = false;
+    let expiration_unix_millis = if ascii_eq_ignore_case(option, b"PX") {
+        if value < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let delta = u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        now.checked_add(delta)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?
+    } else if ascii_eq_ignore_case(option, b"PXAT") {
+        if value < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        expire_if_past_immediately = true;
+        u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?
+    } else {
+        return Err(RequestExecutionError::SyntaxError);
+    };
+    if !ascii_eq_ignore_case(args[4], b"FIELDS") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok((Some(expiration_unix_millis), 4, expire_if_past_immediately))
+}
+
+fn parse_hash_fields<'a>(
+    args: &'a [&'a [u8]],
+    fields_index: usize,
+    command: &'static str,
+    expected: &'static str,
+) -> Result<Vec<&'a [u8]>, RequestExecutionError> {
+    if args.len() <= fields_index + 2 {
+        return Err(RequestExecutionError::WrongArity { command, expected });
+    }
+    if !ascii_eq_ignore_case(args[fields_index], b"FIELDS") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let field_count =
+        parse_u64_ascii(args[fields_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    if field_count == 0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    let field_count =
+        usize::try_from(field_count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    let first_field_index = fields_index + 2;
+    let last_field_index = first_field_index
+        .checked_add(field_count)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    if args.len() != last_field_index {
+        return Err(RequestExecutionError::WrongArity { command, expected });
+    }
+    Ok(args[first_field_index..last_field_index].to_vec())
+}
+
+fn parse_hash_fields_with_values<'a>(
+    args: &'a [&'a [u8]],
+    fields_index: usize,
+    command: &'static str,
+    expected: &'static str,
+) -> Result<Vec<(&'a [u8], &'a [u8])>, RequestExecutionError> {
+    if args.len() <= fields_index + 3 {
+        return Err(RequestExecutionError::WrongArity { command, expected });
+    }
+    if !ascii_eq_ignore_case(args[fields_index], b"FIELDS") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let field_count =
+        parse_u64_ascii(args[fields_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    if field_count == 0 {
+        return Err(RequestExecutionError::ValueOutOfRange);
+    }
+    let field_count =
+        usize::try_from(field_count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    let values_len = field_count
+        .checked_mul(2)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let first_value_index = fields_index + 2;
+    let last_value_index = first_value_index
+        .checked_add(values_len)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    if args.len() != last_value_index {
+        return Err(RequestExecutionError::WrongArity { command, expected });
+    }
+
+    let mut out = Vec::with_capacity(field_count);
+    let mut index = first_value_index;
+    while index < last_value_index {
+        out.push((args[index], args[index + 1]));
+        index += 2;
+    }
+    Ok(out)
+}
+
+fn append_integer_array(response_out: &mut Vec<u8>, values: &[i64]) {
+    response_out.push(b'*');
+    response_out.extend_from_slice(values.len().to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for value in values {
+        append_integer(response_out, *value);
+    }
+}
+
+fn append_hash_integer_array(response_out: &mut Vec<u8>, len: usize, value: i64) {
+    response_out.push(b'*');
+    response_out.extend_from_slice(len.to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    for _ in 0..len {
+        append_integer(response_out, value);
+    }
 }
