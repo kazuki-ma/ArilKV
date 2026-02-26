@@ -30,17 +30,16 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=601; err=35; ignore=130; failed_tests=35; expected_failed_tests=1; unexpected_failed_tests=34  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=627; err=30; ignore=130; failed_tests=30; expected_failed_tests=1; unexpected_failed_tests=29  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `35`
+- Failed tests extracted from runtest log: `30`
 
 | Test |
 |---|
-| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
 | `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
 | `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
@@ -70,11 +69,7 @@
 | `Test that client pause starts at the end of a transaction in tests/unit/pause.tcl` |
 | `Test the randomkey command will not cause the server to get into an infinite loop during the client pause write in tests/unit/pause.tcl` |
 | `CLIENT UNBLOCK is not allow to unblock client blocked by CLIENT PAUSE in tests/unit/pause.tcl` |
-| `Handle an empty query in tests/unit/protocol.tcl` |
-| `Negative multibulk length in tests/unit/protocol.tcl` |
-| `Out of range multibulk length in tests/unit/protocol.tcl` |
-| `Wrong multibulk payload header in tests/unit/protocol.tcl` |
-| `Negative multibulk payload length in tests/unit/protocol.tcl` |
+| `Regression for a crash with blocking ops and pipelining in tests/unit/protocol.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
