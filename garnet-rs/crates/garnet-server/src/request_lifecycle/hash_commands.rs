@@ -34,6 +34,30 @@ impl RequestProcessor {
             self.handle_hpexpireat(args, response_out)?;
             return Ok(true);
         }
+        if ascii_eq_ignore_case(command, b"HEXPIREAT") {
+            self.handle_hexpireat(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HPERSIST") {
+            self.handle_hpersist(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HPTTL") {
+            self.handle_hpttl(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HTTL") {
+            self.handle_httl(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HPEXPIRETIME") {
+            self.handle_hpexpiretime(args, response_out)?;
+            return Ok(true);
+        }
+        if ascii_eq_ignore_case(command, b"HEXPIRETIME") {
+            self.handle_hexpiretime(args, response_out)?;
+            return Ok(true);
+        }
         Ok(false)
     }
 
@@ -809,7 +833,15 @@ impl RequestProcessor {
         let expiration_unix_millis = now
             .checked_add(delta)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
-        self.handle_hash_field_expire_common(args, 3, expiration_unix_millis, false, response_out)
+        self.handle_hash_field_expire_common(
+            args,
+            3,
+            expiration_unix_millis,
+            false,
+            "HEXPIRE",
+            "HEXPIRE key seconds FIELDS num field [field ...]",
+            response_out,
+        )
     }
 
     pub(super) fn handle_hpexpire(
@@ -832,7 +864,15 @@ impl RequestProcessor {
         let expiration_unix_millis = now
             .checked_add(delta)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
-        self.handle_hash_field_expire_common(args, 3, expiration_unix_millis, false, response_out)
+        self.handle_hash_field_expire_common(
+            args,
+            3,
+            expiration_unix_millis,
+            false,
+            "HPEXPIRE",
+            "HPEXPIRE key milliseconds FIELDS num field [field ...]",
+            response_out,
+        )
     }
 
     pub(super) fn handle_hpexpireat(
@@ -848,7 +888,259 @@ impl RequestProcessor {
         )?;
         let expiration_unix_millis =
             parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        self.handle_hash_field_expire_common(args, 3, expiration_unix_millis, true, response_out)
+        self.handle_hash_field_expire_common(
+            args,
+            3,
+            expiration_unix_millis,
+            true,
+            "HPEXPIREAT",
+            "HPEXPIREAT key milliseconds-unix-time FIELDS num field [field ...]",
+            response_out,
+        )
+    }
+
+    pub(super) fn handle_hexpireat(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HEXPIREAT",
+            "HEXPIREAT key unix-time-seconds FIELDS num field [field ...]",
+        )?;
+        let seconds = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        if seconds < 0 {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        let seconds = u64::try_from(seconds).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+        let expiration_unix_millis = seconds
+            .checked_mul(1000)
+            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        self.handle_hash_field_expire_common(
+            args,
+            3,
+            expiration_unix_millis,
+            true,
+            "HEXPIREAT",
+            "HEXPIREAT key unix-time-seconds FIELDS num field [field ...]",
+            response_out,
+        )
+    }
+
+    pub(super) fn handle_hpersist(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HPERSIST",
+            "HPERSIST key FIELDS num field [field ...]",
+        )?;
+        let key = args[1].to_vec();
+        let fields = parse_hash_fields(
+            args,
+            2,
+            "HPERSIST",
+            "HPERSIST key FIELDS num field [field ...]",
+        )?;
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_hash_integer_array(response_out, fields.len(), -2);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+
+        let mut statuses = Vec::with_capacity(fields.len());
+        for field in &fields {
+            if !hash.contains_key(*field) {
+                self.set_hash_field_expiration_unix_millis(&key, field, None);
+                statuses.push(-2);
+                continue;
+            }
+            if self
+                .hash_field_expiration_unix_millis(&key, field)
+                .is_some()
+            {
+                self.set_hash_field_expiration_unix_millis(&key, field, None);
+                statuses.push(1);
+            } else {
+                statuses.push(-1);
+            }
+        }
+
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+        }
+        append_integer_array(response_out, &statuses);
+        Ok(())
+    }
+
+    pub(super) fn handle_hpttl(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 5, "HPTTL", "HPTTL key FIELDS num field [field ...]")?;
+        self.handle_hash_field_ttl_query(
+            args,
+            true,
+            "HPTTL",
+            "HPTTL key FIELDS num field [field ...]",
+            response_out,
+        )
+    }
+
+    pub(super) fn handle_httl(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 5, "HTTL", "HTTL key FIELDS num field [field ...]")?;
+        self.handle_hash_field_ttl_query(
+            args,
+            false,
+            "HTTL",
+            "HTTL key FIELDS num field [field ...]",
+            response_out,
+        )
+    }
+
+    pub(super) fn handle_hpexpiretime(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HPEXPIRETIME",
+            "HPEXPIRETIME key FIELDS num field [field ...]",
+        )?;
+        self.handle_hash_field_expiretime_query(
+            args,
+            true,
+            "HPEXPIRETIME",
+            "HPEXPIRETIME key FIELDS num field [field ...]",
+            response_out,
+        )
+    }
+
+    pub(super) fn handle_hexpiretime(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            5,
+            "HEXPIRETIME",
+            "HEXPIRETIME key FIELDS num field [field ...]",
+        )?;
+        self.handle_hash_field_expiretime_query(
+            args,
+            false,
+            "HEXPIRETIME",
+            "HEXPIRETIME key FIELDS num field [field ...]",
+            response_out,
+        )
+    }
+
+    fn handle_hash_field_ttl_query(
+        &self,
+        args: &[&[u8]],
+        as_millis: bool,
+        command_name: &'static str,
+        command_usage: &'static str,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let key = args[1].to_vec();
+        let fields = parse_hash_fields(args, 2, command_name, command_usage)?;
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_hash_integer_array(response_out, fields.len(), -2);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+        let now_unix_millis =
+            current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+
+        let mut values = Vec::with_capacity(fields.len());
+        for field in &fields {
+            if !hash.contains_key(*field) {
+                values.push(-2);
+                continue;
+            }
+            let Some(expiration_unix_millis) = self.hash_field_expiration_unix_millis(&key, field)
+            else {
+                values.push(-1);
+                continue;
+            };
+            let remaining_millis = expiration_unix_millis.saturating_sub(now_unix_millis);
+            if as_millis {
+                values.push(i64::try_from(remaining_millis).unwrap_or(i64::MAX));
+            } else {
+                values.push(i64::try_from(remaining_millis / 1000).unwrap_or(i64::MAX));
+            }
+        }
+
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+        }
+        append_integer_array(response_out, &values);
+        Ok(())
+    }
+
+    fn handle_hash_field_expiretime_query(
+        &self,
+        args: &[&[u8]],
+        as_millis: bool,
+        command_name: &'static str,
+        command_usage: &'static str,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let key = args[1].to_vec();
+        let fields = parse_hash_fields(args, 2, command_name, command_usage)?;
+        let mut hash = match self.load_hash_object(&key)? {
+            Some(hash) => hash,
+            None => {
+                append_hash_integer_array(response_out, fields.len(), -2);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+
+        let mut values = Vec::with_capacity(fields.len());
+        for field in &fields {
+            if !hash.contains_key(*field) {
+                values.push(-2);
+                continue;
+            }
+            let Some(expiration_unix_millis) = self.hash_field_expiration_unix_millis(&key, field)
+            else {
+                values.push(-1);
+                continue;
+            };
+            let value = if as_millis {
+                expiration_unix_millis
+            } else {
+                expiration_unix_millis / 1000
+            };
+            values.push(i64::try_from(value).unwrap_or(i64::MAX));
+        }
+
+        if lazy_expired {
+            self.persist_hash_after_field_expiration(&key, &hash)?;
+        }
+        append_integer_array(response_out, &values);
+        Ok(())
     }
 
     pub(super) fn hash_get_field_for_sort_lookup(
@@ -898,15 +1190,12 @@ impl RequestProcessor {
         fields_index: usize,
         expiration_unix_millis: u64,
         expire_if_past_immediately: bool,
+        command_name: &'static str,
+        command_usage: &'static str,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let key = args[1].to_vec();
-        let fields = parse_hash_fields(
-            args,
-            fields_index,
-            "HPEXPIRE",
-            "HPEXPIRE key milliseconds FIELDS num field [field ...]",
-        )?;
+        let fields = parse_hash_fields(args, fields_index, command_name, command_usage)?;
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {

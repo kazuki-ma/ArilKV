@@ -30,6 +30,31 @@ fn parse_integer_response(response: &[u8]) -> i64 {
         .unwrap()
 }
 
+fn parse_integer_array_response(response: &[u8]) -> Vec<i64> {
+    let mut index = 0usize;
+    let array_len = parse_resp_array_len(response, &mut index);
+    let mut out = Vec::with_capacity(array_len);
+    for _ in 0..array_len {
+        assert_eq!(response[index], b':');
+        index += 1;
+        let start = index;
+        while index + 1 < response.len() {
+            if response[index] == b'\r' && response[index + 1] == b'\n' {
+                break;
+            }
+            index += 1;
+        }
+        let value = core::str::from_utf8(&response[start..index])
+            .unwrap()
+            .parse::<i64>()
+            .unwrap();
+        out.push(value);
+        index += 2;
+    }
+    assert_eq!(index, response.len());
+    out
+}
+
 fn parse_bulk_payload(response: &[u8]) -> Option<Vec<u8>> {
     if response == b"$-1\r\n" {
         return None;
@@ -989,6 +1014,78 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$1\r\n6\r\n");
+}
+
+#[test]
+fn hash_field_expiration_extension_commands_cover_ttl_expiretime_and_persist() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_integer(&processor, "HSET hx f1 v1 f2 v2", 2);
+
+    let now_millis = current_unix_time_millis().unwrap();
+    let future_secs = (now_millis / 1000) + 30;
+    let future_millis = future_secs * 1000;
+
+    let hpexpireat = format!("HPEXPIREAT hx {future_millis} FIELDS 2 f1 missing");
+    let response = execute_command_line(&processor, &hpexpireat).unwrap();
+    assert_eq!(parse_integer_array_response(&response), vec![1, -2]);
+
+    let hpexpiretime = execute_command_line(&processor, "HPEXPIRETIME hx FIELDS 2 f1 f2").unwrap();
+    assert_eq!(
+        parse_integer_array_response(&hpexpiretime),
+        vec![future_millis as i64, -1]
+    );
+
+    let hexpiretime = execute_command_line(&processor, "HEXPIRETIME hx FIELDS 2 f1 f2").unwrap();
+    assert_eq!(
+        parse_integer_array_response(&hexpiretime),
+        vec![future_secs as i64, -1]
+    );
+
+    let hpttl = execute_command_line(&processor, "HPTTL hx FIELDS 2 f1 f2").unwrap();
+    let hpttl_values = parse_integer_array_response(&hpttl);
+    assert_eq!(hpttl_values.len(), 2);
+    assert!((0..=30_000).contains(&hpttl_values[0]));
+    assert_eq!(hpttl_values[1], -1);
+
+    let httl = execute_command_line(&processor, "HTTL hx FIELDS 2 f1 f2").unwrap();
+    let httl_values = parse_integer_array_response(&httl);
+    assert_eq!(httl_values.len(), 2);
+    assert!((0..=30).contains(&httl_values[0]));
+    assert_eq!(httl_values[1], -1);
+
+    let hpersist = execute_command_line(&processor, "HPERSIST hx FIELDS 3 f1 f2 missing").unwrap();
+    assert_eq!(parse_integer_array_response(&hpersist), vec![1, -1, -2]);
+    assert_eq!(
+        parse_integer_array_response(
+            &execute_command_line(&processor, "HPEXPIRETIME hx FIELDS 1 f1").unwrap()
+        ),
+        vec![-1]
+    );
+
+    let future_secs2 = (current_unix_time_millis().unwrap() / 1000) + 45;
+    let hexpireat = format!("HEXPIREAT hx {future_secs2} FIELDS 1 f2");
+    assert_eq!(
+        parse_integer_array_response(&execute_command_line(&processor, &hexpireat).unwrap()),
+        vec![1]
+    );
+    assert_eq!(
+        parse_integer_array_response(
+            &execute_command_line(&processor, "HEXPIRETIME hx FIELDS 1 f2").unwrap()
+        ),
+        vec![future_secs2 as i64]
+    );
+
+    assert_command_error(
+        &processor,
+        "HEXPIREAT hx -1 FIELDS 1 f2",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_eq!(
+        parse_integer_array_response(
+            &execute_command_line(&processor, "HPERSIST missing-hx FIELDS 1 f").unwrap()
+        ),
+        vec![-2]
+    );
 }
 
 #[test]

@@ -568,6 +568,18 @@ impl RequestProcessor {
         );
     }
 
+    pub(super) fn hash_field_expiration_unix_millis(
+        &self,
+        key: &[u8],
+        field: &[u8],
+    ) -> Option<u64> {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.lock_hash_field_expirations_for_shard(shard_index)
+            .get(key)
+            .and_then(|fields| fields.get(field))
+            .map(|metadata| metadata.unix_millis)
+    }
+
     pub(super) fn clear_hash_field_expirations_for_key_in_shard(
         &self,
         key: &[u8],
