@@ -259,14 +259,9 @@ run_full_runtest_case() {
         if (line ~ /^\[err\]:/) {
             sub(/^\[err\]:[[:space:]]*/, "", line)
             print line
-        } else if (line ~ /^\[TIMEOUT\]:/) {
-            sub(/^\[TIMEOUT\]:[[:space:]]*/, "", line)
-            print "TIMEOUT: " line
         } else if (line ~ /^sock[0-9]+ => \(IN PROGRESS\)/) {
+            sub(/^sock[0-9]+ => \(IN PROGRESS\)[[:space:]]*/, "", line)
             print line
-        } else if (line ~ /^\*\*\* \[TIMEOUT\]:/) {
-            sub(/^\*\*\* \[TIMEOUT\]:[[:space:]]*/, "", line)
-            print "TIMEOUT: " line
         }
     }
     ' "${log_file}" > "${failed_tests_file}"
