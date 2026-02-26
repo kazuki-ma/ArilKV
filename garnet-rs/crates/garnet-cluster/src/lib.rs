@@ -127,6 +127,34 @@ impl From<ConfigEpoch> for u64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct ReplicationOffset(u64);
+
+impl ReplicationOffset {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl fmt::Display for ReplicationOffset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for ReplicationOffset {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<ReplicationOffset> for u64 {
+    fn from(value: ReplicationOffset) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SlotState {
@@ -210,7 +238,7 @@ pub struct Worker {
     pub config_epoch: ConfigEpoch,
     pub role: WorkerRole,
     pub replica_of_node_id: Option<String>,
-    pub replication_offset: u64,
+    pub replication_offset: ReplicationOffset,
 }
 
 impl Worker {
@@ -228,7 +256,7 @@ impl Worker {
             config_epoch: ConfigEpoch::new(0),
             role,
             replica_of_node_id: None,
-            replication_offset: 0,
+            replication_offset: ReplicationOffset::new(0),
         }
     }
 
@@ -241,7 +269,7 @@ impl Worker {
             config_epoch: ConfigEpoch::new(0),
             role: WorkerRole::Unassigned,
             replica_of_node_id: None,
-            replication_offset: 0,
+            replication_offset: ReplicationOffset::new(0),
         }
     }
 
@@ -536,7 +564,7 @@ impl ClusterConfig {
     pub fn set_worker_replication_offset(
         &self,
         worker_id: WorkerId,
-        replication_offset: u64,
+        replication_offset: ReplicationOffset,
     ) -> Result<Self, ClusterConfigError> {
         let mut next = self.clone();
         let worker = next
@@ -756,7 +784,7 @@ pub fn encode_cluster_config_snapshot(
         out.extend_from_slice(&u64::from(worker.config_epoch).to_le_bytes());
         out.extend_from_slice(&worker.port.to_le_bytes());
         out.push(worker.role as u8);
-        out.extend_from_slice(&worker.replication_offset.to_le_bytes());
+        out.extend_from_slice(&u64::from(worker.replication_offset).to_le_bytes());
         push_len_prefixed_string(&mut out, &worker.node_id)?;
         push_len_prefixed_string(&mut out, &worker.host)?;
         match worker.replica_of_node_id.as_deref() {
@@ -803,7 +831,7 @@ pub fn decode_cluster_config_snapshot(
             2 => WorkerRole::Replica,
             _ => WorkerRole::Unassigned,
         };
-        let replication_offset = read_u64(bytes, &mut cursor)?;
+        let replication_offset = ReplicationOffset::new(read_u64(bytes, &mut cursor)?);
         let node_id = read_len_prefixed_string(bytes, &mut cursor)?;
         let host = read_len_prefixed_string(bytes, &mut cursor)?;
         let replica_of_node_id = match read_u8(bytes, &mut cursor)? {
@@ -979,8 +1007,8 @@ impl ClusterConfigStore {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicationError {
     InvalidAofWindow {
-        replay_start_offset: u64,
-        tail_offset: u64,
+        replay_start_offset: ReplicationOffset,
+        tail_offset: ReplicationOffset,
     },
     MissingCheckpointForFullSync,
 }
@@ -1031,26 +1059,26 @@ pub enum ReplicationSyncMode {
 pub struct ReplicationSyncPlan {
     pub mode: ReplicationSyncMode,
     pub checkpoint_id: Option<u64>,
-    pub aof_start_offset: u64,
+    pub aof_start_offset: ReplicationOffset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaProgress {
     pub worker_id: WorkerId,
-    pub acknowledged_offset: u64,
+    pub acknowledged_offset: ReplicationOffset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverPlan {
     pub failed_primary_worker_id: WorkerId,
     pub promoted_worker_id: WorkerId,
-    pub promoted_replication_offset: u64,
+    pub promoted_replication_offset: ReplicationOffset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicationSyncOutcome {
     pub plan: ReplicationSyncPlan,
-    pub streamed_until_offset: u64,
+    pub streamed_until_offset: ReplicationOffset,
 }
 
 pub trait ReplicationTransport {
@@ -1064,8 +1092,8 @@ pub trait ReplicationTransport {
     fn stream_aof_from_offset(
         &mut self,
         worker_id: WorkerId,
-        start_offset: u64,
-    ) -> Result<u64, Self::Error>;
+        start_offset: ReplicationOffset,
+    ) -> Result<ReplicationOffset, Self::Error>;
 }
 
 pub trait AsyncReplicationTransport {
@@ -1073,7 +1101,7 @@ pub trait AsyncReplicationTransport {
     type CheckpointFut<'a>: Future<Output = Result<(), Self::Error>> + 'a
     where
         Self: 'a;
-    type StreamFut<'a>: Future<Output = Result<u64, Self::Error>> + 'a
+    type StreamFut<'a>: Future<Output = Result<ReplicationOffset, Self::Error>> + 'a
     where
         Self: 'a;
 
@@ -1085,7 +1113,7 @@ pub trait AsyncReplicationTransport {
     fn stream_aof_from_offset<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        start_offset: u64,
+        start_offset: ReplicationOffset,
     ) -> Self::StreamFut<'a>;
 }
 
@@ -1097,7 +1125,7 @@ pub enum ReplicationEvent {
     },
     StreamAof {
         worker_id: WorkerId,
-        start_offset: u64,
+        start_offset: ReplicationOffset,
     },
 }
 
@@ -1119,13 +1147,13 @@ impl std::error::Error for ChannelReplicationTransportError {}
 #[derive(Debug)]
 pub struct ChannelReplicationTransport {
     sender: tokio::sync::mpsc::UnboundedSender<ReplicationEvent>,
-    stream_result: u64,
+    stream_result: ReplicationOffset,
 }
 
 impl ChannelReplicationTransport {
     pub fn new(
         sender: tokio::sync::mpsc::UnboundedSender<ReplicationEvent>,
-        stream_result: u64,
+        stream_result: ReplicationOffset,
     ) -> Self {
         Self {
             sender,
@@ -1133,11 +1161,11 @@ impl ChannelReplicationTransport {
         }
     }
 
-    pub fn stream_result(&self) -> u64 {
+    pub fn stream_result(&self) -> ReplicationOffset {
         self.stream_result
     }
 
-    pub fn set_stream_result(&mut self, stream_result: u64) {
+    pub fn set_stream_result(&mut self, stream_result: ReplicationOffset) {
         self.stream_result = stream_result;
     }
 }
@@ -1149,7 +1177,7 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
     where
         Self: 'a;
     type StreamFut<'a>
-        = std::future::Ready<Result<u64, Self::Error>>
+        = std::future::Ready<Result<ReplicationOffset, Self::Error>>
     where
         Self: 'a;
 
@@ -1171,7 +1199,7 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
     fn stream_aof_from_offset<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        start_offset: u64,
+        start_offset: ReplicationOffset,
     ) -> Self::StreamFut<'a> {
         std::future::ready(
             self.sender
@@ -1188,22 +1216,22 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
 #[derive(Debug)]
 pub struct FileReplicationTransport {
     root: PathBuf,
-    stream_result: u64,
+    stream_result: ReplicationOffset,
 }
 
 impl FileReplicationTransport {
-    pub fn new(root: impl Into<PathBuf>, stream_result: u64) -> Self {
+    pub fn new(root: impl Into<PathBuf>, stream_result: ReplicationOffset) -> Self {
         Self {
             root: root.into(),
             stream_result,
         }
     }
 
-    pub fn stream_result(&self) -> u64 {
+    pub fn stream_result(&self) -> ReplicationOffset {
         self.stream_result
     }
 
-    pub fn set_stream_result(&mut self, stream_result: u64) {
+    pub fn set_stream_result(&mut self, stream_result: ReplicationOffset) {
         self.stream_result = stream_result;
     }
 
@@ -1235,7 +1263,7 @@ impl FileReplicationTransport {
     fn append_aof_start_offset(
         &self,
         worker_id: WorkerId,
-        start_offset: u64,
+        start_offset: ReplicationOffset,
     ) -> Result<(), FileReplicationTransportError> {
         self.ensure_root_dir()?;
         let mut file = std::fs::OpenOptions::new()
@@ -1276,8 +1304,8 @@ impl ReplicationTransport for FileReplicationTransport {
     fn stream_aof_from_offset(
         &mut self,
         worker_id: WorkerId,
-        start_offset: u64,
-    ) -> Result<u64, Self::Error> {
+        start_offset: ReplicationOffset,
+    ) -> Result<ReplicationOffset, Self::Error> {
         self.append_aof_start_offset(worker_id, start_offset)?;
         Ok(self.stream_result)
     }
@@ -1290,7 +1318,7 @@ impl AsyncReplicationTransport for FileReplicationTransport {
     where
         Self: 'a;
     type StreamFut<'a>
-        = std::future::Ready<Result<u64, Self::Error>>
+        = std::future::Ready<Result<ReplicationOffset, Self::Error>>
     where
         Self: 'a;
 
@@ -1305,7 +1333,7 @@ impl AsyncReplicationTransport for FileReplicationTransport {
     fn stream_aof_from_offset<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        start_offset: u64,
+        start_offset: ReplicationOffset,
     ) -> Self::StreamFut<'a> {
         std::future::ready(
             self.append_aof_start_offset(worker_id, start_offset)
@@ -1317,11 +1345,11 @@ impl AsyncReplicationTransport for FileReplicationTransport {
 #[derive(Debug)]
 pub struct TcpReplicationTransport {
     peers: BTreeMap<WorkerId, SocketAddr>,
-    stream_result: u64,
+    stream_result: ReplicationOffset,
 }
 
 impl TcpReplicationTransport {
-    pub fn new(stream_result: u64) -> Self {
+    pub fn new(stream_result: ReplicationOffset) -> Self {
         Self {
             peers: BTreeMap::new(),
             stream_result,
@@ -1332,11 +1360,11 @@ impl TcpReplicationTransport {
         self.peers.insert(worker_id, endpoint);
     }
 
-    pub fn stream_result(&self) -> u64 {
+    pub fn stream_result(&self) -> ReplicationOffset {
         self.stream_result
     }
 
-    pub fn set_stream_result(&mut self, stream_result: u64) {
+    pub fn set_stream_result(&mut self, stream_result: ReplicationOffset) {
         self.stream_result = stream_result;
     }
 
@@ -1389,8 +1417,8 @@ impl ReplicationTransport for TcpReplicationTransport {
     fn stream_aof_from_offset(
         &mut self,
         worker_id: WorkerId,
-        start_offset: u64,
-    ) -> Result<u64, Self::Error> {
+        start_offset: ReplicationOffset,
+    ) -> Result<ReplicationOffset, Self::Error> {
         let endpoint = self.peer_endpoint(worker_id)?;
         let mut stream =
             std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
@@ -1408,7 +1436,7 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
     where
         Self: 'a;
     type StreamFut<'a>
-        = Pin<Box<dyn Future<Output = Result<u64, Self::Error>> + Send + 'a>>
+        = Pin<Box<dyn Future<Output = Result<ReplicationOffset, Self::Error>> + Send + 'a>>
     where
         Self: 'a;
 
@@ -1433,7 +1461,7 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
     fn stream_aof_from_offset<'a>(
         &'a mut self,
         worker_id: WorkerId,
-        start_offset: u64,
+        start_offset: ReplicationOffset,
     ) -> Self::StreamFut<'a> {
         let endpoint = self.peers.get(&worker_id).copied();
         let stream_result = self.stream_result;
@@ -1454,16 +1482,16 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
 #[derive(Debug, Clone)]
 pub struct ReplicationManager {
     checkpoint_id: Option<u64>,
-    aof_replay_start_offset: u64,
-    aof_tail_offset: u64,
-    replica_offsets: BTreeMap<WorkerId, u64>,
+    aof_replay_start_offset: ReplicationOffset,
+    aof_tail_offset: ReplicationOffset,
+    replica_offsets: BTreeMap<WorkerId, ReplicationOffset>,
 }
 
 impl ReplicationManager {
     pub fn new(
         checkpoint_id: Option<u64>,
-        aof_replay_start_offset: u64,
-        aof_tail_offset: u64,
+        aof_replay_start_offset: ReplicationOffset,
+        aof_tail_offset: ReplicationOffset,
     ) -> Result<Self, ReplicationError> {
         if aof_replay_start_offset > aof_tail_offset {
             return Err(ReplicationError::InvalidAofWindow {
@@ -1483,19 +1511,19 @@ impl ReplicationManager {
         self.checkpoint_id
     }
 
-    pub fn aof_replay_start_offset(&self) -> u64 {
+    pub fn aof_replay_start_offset(&self) -> ReplicationOffset {
         self.aof_replay_start_offset
     }
 
-    pub fn aof_tail_offset(&self) -> u64 {
+    pub fn aof_tail_offset(&self) -> ReplicationOffset {
         self.aof_tail_offset
     }
 
     pub fn update_recovery_window(
         &mut self,
         checkpoint_id: Option<u64>,
-        aof_replay_start_offset: u64,
-        aof_tail_offset: u64,
+        aof_replay_start_offset: ReplicationOffset,
+        aof_tail_offset: ReplicationOffset,
     ) -> Result<(), ReplicationError> {
         if aof_replay_start_offset > aof_tail_offset {
             return Err(ReplicationError::InvalidAofWindow {
@@ -1509,7 +1537,10 @@ impl ReplicationManager {
         Ok(())
     }
 
-    pub fn set_aof_tail_offset(&mut self, aof_tail_offset: u64) -> Result<(), ReplicationError> {
+    pub fn set_aof_tail_offset(
+        &mut self,
+        aof_tail_offset: ReplicationOffset,
+    ) -> Result<(), ReplicationError> {
         if self.aof_replay_start_offset > aof_tail_offset {
             return Err(ReplicationError::InvalidAofWindow {
                 replay_start_offset: self.aof_replay_start_offset,
@@ -1520,11 +1551,15 @@ impl ReplicationManager {
         Ok(())
     }
 
-    pub fn record_replica_offset(&mut self, worker_id: WorkerId, acknowledged_offset: u64) {
+    pub fn record_replica_offset(
+        &mut self,
+        worker_id: WorkerId,
+        acknowledged_offset: ReplicationOffset,
+    ) {
         self.replica_offsets.insert(worker_id, acknowledged_offset);
     }
 
-    pub fn replica_offset(&self, worker_id: WorkerId) -> Option<u64> {
+    pub fn replica_offset(&self, worker_id: WorkerId) -> Option<ReplicationOffset> {
         self.replica_offsets.get(&worker_id).copied()
     }
 
@@ -1538,7 +1573,7 @@ impl ReplicationManager {
             })
     }
 
-    pub fn plan_sync(&self, replica_offset: Option<u64>) -> ReplicationSyncPlan {
+    pub fn plan_sync(&self, replica_offset: Option<ReplicationOffset>) -> ReplicationSyncPlan {
         if let Some(offset) = replica_offset {
             if offset >= self.aof_replay_start_offset && offset <= self.aof_tail_offset {
                 return ReplicationSyncPlan {
@@ -1559,7 +1594,7 @@ impl ReplicationManager {
     pub fn execute_sync<T: ReplicationTransport>(
         &mut self,
         worker_id: WorkerId,
-        replica_offset: Option<u64>,
+        replica_offset: Option<ReplicationOffset>,
         transport: &mut T,
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         let plan = self.plan_sync(replica_offset);
@@ -1608,7 +1643,7 @@ impl ReplicationManager {
     pub async fn execute_sync_async<T: AsyncReplicationTransport>(
         &mut self,
         worker_id: WorkerId,
-        replica_offset: Option<u64>,
+        replica_offset: Option<ReplicationOffset>,
         transport: &mut T,
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         let plan = self.plan_sync(replica_offset);
@@ -1684,7 +1719,7 @@ impl ReplicationManager {
             worker.role == WorkerRole::Primary && worker.node_id == failed_primary_node_id
         })?;
 
-        let mut best: Option<(u64, WorkerId)> = None;
+        let mut best: Option<(ReplicationOffset, WorkerId)> = None;
         for worker in config.workers().iter() {
             if worker.role != WorkerRole::Replica {
                 continue;
@@ -3015,7 +3050,7 @@ mod tests {
             .apply_failover_plan(&FailoverPlan {
                 failed_primary_worker_id: failed_primary_id,
                 promoted_worker_id: promoted_replica_id,
-                promoted_replication_offset: 888,
+                promoted_replication_offset: ReplicationOffset::new(888),
             })
             .unwrap();
 
@@ -3052,7 +3087,7 @@ mod tests {
         let result = config.apply_failover_plan(&FailoverPlan {
             failed_primary_worker_id: 99,
             promoted_worker_id: LOCAL_WORKER_ID,
-            promoted_replication_offset: 0,
+            promoted_replication_offset: ReplicationOffset::new(0),
         });
         assert!(matches!(
             result,
@@ -3176,7 +3211,7 @@ mod tests {
             .unwrap()
             .set_worker_replica_of(worker3_id, "node-b")
             .unwrap()
-            .set_worker_replication_offset(worker3_id, 1_234)
+            .set_worker_replication_offset(worker3_id, ReplicationOffset::new(1_234))
             .unwrap()
             .set_slot_state(101, worker2_id, SlotState::Stable)
             .unwrap()
@@ -3214,7 +3249,12 @@ mod tests {
 
     #[test]
     fn replication_manager_selects_incremental_when_replica_offset_is_in_window() {
-        let manager = ReplicationManager::new(Some(99), 1_000, 2_000).unwrap();
+        let manager = ReplicationManager::new(
+            Some(99),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let plan = manager.plan_sync(Some(1_500));
         assert_eq!(plan.mode, ReplicationSyncMode::Incremental);
         assert_eq!(plan.checkpoint_id, None);
@@ -3223,7 +3263,12 @@ mod tests {
 
     #[test]
     fn replication_manager_selects_full_when_replica_offset_is_stale() {
-        let manager = ReplicationManager::new(Some(55), 5_000, 8_000).unwrap();
+        let manager = ReplicationManager::new(
+            Some(55),
+            ReplicationOffset::new(5_000),
+            ReplicationOffset::new(8_000),
+        )
+        .unwrap();
         let plan = manager.plan_sync(Some(4_999));
         assert_eq!(plan.mode, ReplicationSyncMode::Full);
         assert_eq!(plan.checkpoint_id, Some(55));
@@ -3232,7 +3277,12 @@ mod tests {
 
     #[test]
     fn replication_manager_selects_full_when_replica_offset_is_unknown() {
-        let manager = ReplicationManager::new(Some(12), 100, 200).unwrap();
+        let manager = ReplicationManager::new(
+            Some(12),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
         let plan = manager.plan_sync(None);
         assert_eq!(plan.mode, ReplicationSyncMode::Full);
         assert_eq!(plan.checkpoint_id, Some(12));
@@ -3241,22 +3291,31 @@ mod tests {
 
     #[test]
     fn replication_manager_rejects_invalid_recovery_window() {
-        let result = ReplicationManager::new(Some(1), 10, 9);
+        let result = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(10),
+            ReplicationOffset::new(9),
+        );
         assert!(matches!(
             result,
             Err(ReplicationError::InvalidAofWindow {
-                replay_start_offset: 10,
-                tail_offset: 9,
+                replay_start_offset: ReplicationOffset::new(10),
+                tail_offset: ReplicationOffset::new(9),
             })
         ));
     }
 
     #[test]
     fn replication_manager_tracks_best_replica_by_highest_offset_then_lowest_id() {
-        let mut manager = ReplicationManager::new(None, 0, 10_000).unwrap();
-        manager.record_replica_offset(7, 8_000);
-        manager.record_replica_offset(2, 9_000);
-        manager.record_replica_offset(5, 9_000);
+        let mut manager = ReplicationManager::new(
+            None,
+            ReplicationOffset::new(0),
+            ReplicationOffset::new(10_000),
+        )
+        .unwrap();
+        manager.record_replica_offset(7, ReplicationOffset::new(8_000));
+        manager.record_replica_offset(2, ReplicationOffset::new(9_000));
+        manager.record_replica_offset(5, ReplicationOffset::new(9_000));
 
         assert_eq!(
             manager.best_replica_candidate(),
@@ -3269,12 +3328,17 @@ mod tests {
 
     #[test]
     fn replication_manager_updates_recovery_window_and_tail() {
-        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
         manager
             .update_recovery_window(Some(2), 150, 400)
             .expect("window update should succeed");
         manager
-            .set_aof_tail_offset(450)
+            .set_aof_tail_offset(ReplicationOffset::new(450))
             .expect("tail advance should succeed");
 
         assert_eq!(manager.checkpoint_id(), Some(2));
@@ -3321,7 +3385,12 @@ mod tests {
 
     #[test]
     fn replication_manager_execute_sync_uses_incremental_plan_without_checkpoint() {
-        let mut manager = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(7),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 1_750,
             ..Default::default()
@@ -3338,7 +3407,12 @@ mod tests {
 
     #[test]
     fn replication_manager_execute_sync_sends_checkpoint_for_full_sync() {
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -3355,7 +3429,12 @@ mod tests {
 
     #[test]
     fn replication_manager_execute_sync_errors_when_checkpoint_missing_for_full_sync() {
-        let mut manager = ReplicationManager::new(None, 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            None,
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 2_000,
             ..Default::default()
@@ -3373,7 +3452,12 @@ mod tests {
 
     #[test]
     fn replication_manager_execute_sync_propagates_transport_errors() {
-        let mut manager = ReplicationManager::new(Some(1), 10, 20).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(10),
+            ReplicationOffset::new(20),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             fail_stream: true,
             ..Default::default()
@@ -3388,7 +3472,12 @@ mod tests {
 
     #[test]
     fn replication_manager_execute_sync_for_worker_reuses_tracked_offset() {
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -3401,7 +3490,9 @@ mod tests {
         assert_eq!(transport.checkpoints, vec![(4, 9)]);
         assert_eq!(transport.streams, vec![(4, 500)]);
 
-        manager.set_aof_tail_offset(940).unwrap();
+        manager
+            .set_aof_tail_offset(ReplicationOffset::new(940))
+            .unwrap();
         transport.checkpoints.clear();
         transport.streams.clear();
         transport.stream_result = 940;
@@ -3450,7 +3541,12 @@ mod tests {
             .set_worker_replica_of(replica_other, "different-primary")
             .unwrap();
 
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -3518,7 +3614,12 @@ mod tests {
 
     #[tokio::test]
     async fn replication_manager_execute_sync_async_uses_incremental_plan_without_checkpoint() {
-        let mut manager = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(7),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             stream_result: 1_750,
             ..Default::default()
@@ -3536,7 +3637,12 @@ mod tests {
 
     #[tokio::test]
     async fn replication_manager_execute_sync_async_sends_checkpoint_for_full_sync() {
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -3554,7 +3660,12 @@ mod tests {
 
     #[tokio::test]
     async fn replication_manager_execute_sync_async_errors_when_checkpoint_missing_for_full_sync() {
-        let mut manager = ReplicationManager::new(None, 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            None,
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             stream_result: 2_000,
             ..Default::default()
@@ -3574,7 +3685,12 @@ mod tests {
 
     #[tokio::test]
     async fn replication_manager_execute_sync_async_propagates_transport_errors() {
-        let mut manager = ReplicationManager::new(Some(1), 10, 20).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(10),
+            ReplicationOffset::new(20),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             fail_stream: true,
             ..Default::default()
@@ -3591,9 +3707,14 @@ mod tests {
 
     #[tokio::test]
     async fn channel_replication_transport_emits_full_sync_events_in_order() {
-        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(42),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut transport = ChannelReplicationTransport::new(tx, 1_750);
+        let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(1_750));
 
         let outcome = manager
             .execute_sync_async(9, Some(999), &mut transport)
@@ -3621,9 +3742,14 @@ mod tests {
 
     #[tokio::test]
     async fn channel_replication_transport_emits_incremental_stream_only() {
-        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(42),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut transport = ChannelReplicationTransport::new(tx, 1_980);
+        let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(1_980));
 
         let outcome = manager
             .execute_sync_async(5, Some(1_500), &mut transport)
@@ -3643,10 +3769,15 @@ mod tests {
 
     #[tokio::test]
     async fn channel_replication_transport_propagates_closed_channel_error() {
-        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(42),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
         drop(rx);
-        let mut transport = ChannelReplicationTransport::new(tx, 1_980);
+        let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(1_980));
 
         let result = manager
             .execute_sync_async(5, Some(1_500), &mut transport)
@@ -3662,8 +3793,13 @@ mod tests {
     #[test]
     fn file_replication_transport_writes_checkpoint_and_stream_offsets() {
         let dir = unique_temp_dir("file-transport-sync");
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
-        let mut transport = FileReplicationTransport::new(&dir, 900);
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
+        let mut transport = FileReplicationTransport::new(&dir, ReplicationOffset::new(900));
 
         let outcome = manager
             .execute_sync(4, Some(400), &mut transport)
@@ -3683,8 +3819,13 @@ mod tests {
     #[tokio::test]
     async fn file_replication_transport_supports_async_full_then_incremental_sync() {
         let dir = unique_temp_dir("file-transport-async");
-        let mut manager = ReplicationManager::new(Some(11), 700, 900).unwrap();
-        let mut transport = FileReplicationTransport::new(&dir, 900);
+        let mut manager = ReplicationManager::new(
+            Some(11),
+            ReplicationOffset::new(700),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
+        let mut transport = FileReplicationTransport::new(&dir, ReplicationOffset::new(900));
 
         let first = manager
             .execute_sync_for_worker_async(6, &mut transport)
@@ -3693,8 +3834,10 @@ mod tests {
         assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(first.plan.aof_start_offset, 700);
 
-        manager.set_aof_tail_offset(960).unwrap();
-        transport.set_stream_result(960);
+        manager
+            .set_aof_tail_offset(ReplicationOffset::new(960))
+            .unwrap();
+        transport.set_stream_result(ReplicationOffset::new(960));
         let second = manager
             .execute_sync_for_worker_async(6, &mut transport)
             .await
@@ -3733,8 +3876,13 @@ mod tests {
             payloads
         });
 
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
-        let mut transport = TcpReplicationTransport::new(900);
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
+        let mut transport = TcpReplicationTransport::new(ReplicationOffset::new(900));
         transport.add_peer(4, addr);
 
         let outcome = manager
@@ -3753,8 +3901,13 @@ mod tests {
 
     #[tokio::test]
     async fn tcp_replication_transport_reports_unknown_peer() {
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
-        let mut transport = TcpReplicationTransport::new(900);
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
+        let mut transport = TcpReplicationTransport::new(ReplicationOffset::new(900));
 
         let result = manager
             .execute_sync_async(4, Some(400), &mut transport)
@@ -3769,9 +3922,14 @@ mod tests {
 
     #[tokio::test]
     async fn replication_manager_execute_sync_for_worker_async_reuses_tracked_offset() {
-        let mut manager = ReplicationManager::new(Some(42), 1_000, 2_000).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(42),
+            ReplicationOffset::new(1_000),
+            ReplicationOffset::new(2_000),
+        )
+        .unwrap();
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let mut transport = ChannelReplicationTransport::new(tx, 2_000);
+        let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(2_000));
 
         let first = manager
             .execute_sync_for_worker_async(9, &mut transport)
@@ -3793,8 +3951,10 @@ mod tests {
             })
         );
 
-        manager.set_aof_tail_offset(2_100).unwrap();
-        transport.set_stream_result(2_100);
+        manager
+            .set_aof_tail_offset(ReplicationOffset::new(2_100))
+            .unwrap();
+        transport.set_stream_result(ReplicationOffset::new(2_100));
         let second = manager
             .execute_sync_for_worker_async(9, &mut transport)
             .await
@@ -3835,7 +3995,12 @@ mod tests {
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap();
 
-        let mut manager = ReplicationManager::new(Some(11), 700, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(11),
+            ReplicationOffset::new(700),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -3851,7 +4016,9 @@ mod tests {
         );
         assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
 
-        manager.set_aof_tail_offset(960).unwrap();
+        manager
+            .set_aof_tail_offset(ReplicationOffset::new(960))
+            .unwrap();
         transport.checkpoints.clear();
         transport.streams.clear();
         transport.stream_result = 960;
@@ -3896,9 +4063,14 @@ mod tests {
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap();
 
-        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
-        manager.record_replica_offset(replica_a, 150);
-        manager.record_replica_offset(replica_b, 180);
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
+        manager.record_replica_offset(replica_a, ReplicationOffset::new(150));
+        manager.record_replica_offset(replica_b, ReplicationOffset::new(180));
 
         let plan = manager.plan_failover(&config, "local-node").unwrap();
         assert_eq!(plan.failed_primary_worker_id, LOCAL_WORKER_ID);
@@ -3931,9 +4103,14 @@ mod tests {
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap();
 
-        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
-        manager.record_replica_offset(replica_a, 190);
-        manager.record_replica_offset(replica_b, 190);
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
+        manager.record_replica_offset(replica_a, ReplicationOffset::new(190));
+        manager.record_replica_offset(replica_b, ReplicationOffset::new(190));
 
         let plan = manager.plan_failover(&config, "local-node").unwrap();
         assert_eq!(plan.promoted_worker_id, replica_a);
@@ -3954,10 +4131,15 @@ mod tests {
         let config = config
             .set_worker_replica_of(replica_a, "local-node")
             .unwrap()
-            .set_worker_replication_offset(replica_a, 777)
+            .set_worker_replication_offset(replica_a, ReplicationOffset::new(777))
             .unwrap();
 
-        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
         let plan = manager.plan_failover(&config, "local-node").unwrap();
         assert_eq!(plan.promoted_worker_id, replica_a);
         assert_eq!(plan.promoted_replication_offset, 777);
@@ -3977,7 +4159,12 @@ mod tests {
         let config = config
             .set_worker_replica_of(replica_a, "some-other-primary")
             .unwrap();
-        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
 
         assert!(manager.plan_failover(&config, "local-node").is_none());
         assert!(manager.plan_failover(&config, "unknown-primary").is_none());
@@ -4010,9 +4197,14 @@ mod tests {
             .set_slot_state(450, LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
 
-        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
-        manager.record_replica_offset(replica_a, 170);
-        manager.record_replica_offset(replica_b, 190);
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
+        manager.record_replica_offset(replica_a, ReplicationOffset::new(170));
+        manager.record_replica_offset(replica_b, ReplicationOffset::new(190));
 
         let (plan, updated) = manager
             .execute_failover(&config, "local-node")
@@ -4042,7 +4234,12 @@ mod tests {
     #[test]
     fn execute_failover_returns_none_when_no_candidate_exists() {
         let config = base_config();
-        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
         let outcome = manager.execute_failover(&config, "local-node").unwrap();
         assert!(outcome.is_none());
     }
@@ -4075,9 +4272,14 @@ mod tests {
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
-        let mut manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
-        manager.record_replica_offset(replica_a, 150);
-        manager.record_replica_offset(replica_b, 190);
+        let mut manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
+        manager.record_replica_offset(replica_a, ReplicationOffset::new(150));
+        manager.record_replica_offset(replica_b, ReplicationOffset::new(190));
         let mut coordinator = FailoverCoordinator::new();
 
         let plan = coordinator
@@ -4101,7 +4303,12 @@ mod tests {
     #[test]
     fn failover_coordinator_keeps_state_clean_when_no_plan_exists() {
         let store = ClusterConfigStore::new(base_config());
-        let manager = ReplicationManager::new(Some(1), 100, 200).unwrap();
+        let manager = ReplicationManager::new(
+            Some(1),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
         let mut coordinator = FailoverCoordinator::new();
 
         let outcome = coordinator
@@ -4139,7 +4346,12 @@ mod tests {
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -4200,7 +4412,12 @@ mod tests {
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
-        let mut manager = ReplicationManager::new(Some(7), 700, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(7),
+            ReplicationOffset::new(700),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -4239,7 +4456,12 @@ mod tests {
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
-        let mut manager = ReplicationManager::new(Some(9), 500, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(9),
+            ReplicationOffset::new(500),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = MockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -4285,7 +4507,12 @@ mod tests {
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
-        let mut manager = ReplicationManager::new(Some(5), 300, 900).unwrap();
+        let mut manager = ReplicationManager::new(
+            Some(5),
+            ReplicationOffset::new(300),
+            ReplicationOffset::new(900),
+        )
+        .unwrap();
         let mut transport = AsyncMockReplicationTransport {
             stream_result: 900,
             ..Default::default()
@@ -4936,7 +5163,12 @@ mod tests {
         let (_tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
         let mut failure_detector = FailureDetector::new(1);
         let mut failover_controller = ClusterFailoverController::new();
-        let mut replication_manager = ReplicationManager::new(Some(3), 100, 200).unwrap();
+        let mut replication_manager = ReplicationManager::new(
+            Some(3),
+            ReplicationOffset::new(100),
+            ReplicationOffset::new(200),
+        )
+        .unwrap();
         let mut replication_transport = AsyncMockReplicationTransport {
             stream_result: 200,
             ..Default::default()
@@ -5005,7 +5237,12 @@ mod tests {
         let (_tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
         let mut failure_detector = FailureDetector::new(1);
         let mut failover_controller = ClusterFailoverController::new();
-        let mut replication_manager = ReplicationManager::new(Some(4), 200, 300).unwrap();
+        let mut replication_manager = ReplicationManager::new(
+            Some(4),
+            ReplicationOffset::new(200),
+            ReplicationOffset::new(300),
+        )
+        .unwrap();
         let mut replication_transport = AsyncMockReplicationTransport {
             stream_result: 300,
             ..Default::default()
@@ -5051,7 +5288,12 @@ mod tests {
         let (_tx_updates, rx_updates) = tokio::sync::mpsc::unbounded_channel();
         let mut failure_detector = FailureDetector::new(1);
         let mut failover_controller = ClusterFailoverController::new();
-        let mut replication_manager = ReplicationManager::new(Some(4), 200, 300).unwrap();
+        let mut replication_manager = ReplicationManager::new(
+            Some(4),
+            ReplicationOffset::new(200),
+            ReplicationOffset::new(300),
+        )
+        .unwrap();
         let mut replication_transport = AsyncMockReplicationTransport::default();
 
         let report = manager

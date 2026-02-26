@@ -13,6 +13,7 @@ use garnet_cluster::InMemoryGossipTransport;
 use garnet_cluster::LOCAL_WORKER_ID;
 use garnet_cluster::ReplicationEvent;
 use garnet_cluster::ReplicationManager;
+use garnet_cluster::ReplicationOffset;
 use garnet_cluster::SlotNumber;
 use garnet_cluster::SlotState;
 use garnet_cluster::Worker;
@@ -2768,12 +2769,27 @@ async fn cluster_multi_node_slot_routing_and_failover_updates_redirections() {
     send_and_expect(&mut node2, &get_key1, moved_to_node1.as_bytes()).await;
     send_and_expect(&mut node3, &get_key1, moved_to_node1.as_bytes()).await;
 
-    let mut replication1 = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
-    let mut replication2 = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
-    let mut replication3 = ReplicationManager::new(Some(7), 1_000, 2_000).unwrap();
-    replication1.record_replica_offset(node3_id_in_1, 1_950);
-    replication2.record_replica_offset(node3_id_in_2, 1_950);
-    replication3.record_replica_offset(LOCAL_WORKER_ID, 1_950);
+    let mut replication1 = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(1_000),
+        ReplicationOffset::new(2_000),
+    )
+    .unwrap();
+    let mut replication2 = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(1_000),
+        ReplicationOffset::new(2_000),
+    )
+    .unwrap();
+    let mut replication3 = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(1_000),
+        ReplicationOffset::new(2_000),
+    )
+    .unwrap();
+    replication1.record_replica_offset(node3_id_in_1, ReplicationOffset::new(1_950));
+    replication2.record_replica_offset(node3_id_in_2, ReplicationOffset::new(1_950));
+    replication3.record_replica_offset(LOCAL_WORKER_ID, ReplicationOffset::new(1_950));
     let mut coordinator1 = FailoverCoordinator::new();
     let mut coordinator2 = FailoverCoordinator::new();
     let mut coordinator3 = FailoverCoordinator::new();
@@ -2980,15 +2996,27 @@ async fn cluster_manager_failover_loop_updates_server_redirections() {
     let mut detector3 = FailureDetector::new(1);
     let mut controller1 = ClusterFailoverController::new();
     let mut controller3 = ClusterFailoverController::new();
-    let mut replication1 = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
-    let mut replication3 = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
-    replication1.record_replica_offset(node3_id_in_1, 1_950);
-    replication3.record_replica_offset(LOCAL_WORKER_ID, 1_950);
+    let mut replication1 = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
+    let mut replication3 = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
+    replication1.record_replica_offset(node3_id_in_1, ReplicationOffset::new(1_950));
+    replication3.record_replica_offset(LOCAL_WORKER_ID, ReplicationOffset::new(1_950));
 
     let (repl1_tx, mut repl1_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
     let (repl3_tx, mut repl3_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-    let mut repl_transport1 = ChannelReplicationTransport::new(repl1_tx, 1_980);
-    let mut repl_transport3 = ChannelReplicationTransport::new(repl3_tx, 1_980);
+    let mut repl_transport1 =
+        ChannelReplicationTransport::new(repl1_tx, ReplicationOffset::new(1_980));
+    let mut repl_transport3 =
+        ChannelReplicationTransport::new(repl3_tx, ReplicationOffset::new(1_980));
     let (_updates1_tx, updates1_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
     let (_updates3_tx, updates3_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
@@ -3128,9 +3156,15 @@ async fn run_listener_with_cluster_control_plane_runs_server_and_detected_migrat
         let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
         let mut failure_detector = FailureDetector::new(1_000);
         let mut failover_controller = ClusterFailoverController::new();
-        let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+        let mut replication_manager = ReplicationManager::new(
+            Some(7),
+            ReplicationOffset::new(2_000),
+            ReplicationOffset::new(2_200),
+        )
+        .unwrap();
         let (repl_tx, mut repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-        let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+        let mut replication_transport =
+            ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
         let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
         let report = run_listener_with_cluster_control_plane(
             listener1,
@@ -3227,9 +3261,15 @@ async fn run_listener_with_cluster_control_plane_propagates_control_plane_errors
     let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
-    let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+    let mut replication_manager = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
     let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-    let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+    let mut replication_transport =
+        ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
     let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
     let result = run_listener_with_cluster_control_plane(
@@ -3316,9 +3356,15 @@ async fn run_with_cluster_control_plane_binds_and_serves_requests() {
     let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
-    let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+    let mut replication_manager = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
     let (repl_tx, mut repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-    let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+    let mut replication_transport =
+        ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
     let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
     let report = run_with_cluster_control_plane(
@@ -3375,9 +3421,15 @@ async fn run_with_cluster_control_plane_propagates_bind_errors() {
     let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
-    let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+    let mut replication_manager = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
     let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-    let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+    let mut replication_transport =
+        ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
     let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
     let result = run_with_cluster_control_plane(
@@ -3471,9 +3523,15 @@ async fn cluster_manager_failover_and_detected_migration_runner_executes_migrati
     let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
-    let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+    let mut replication_manager = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
     let (repl_tx, mut repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-    let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+    let mut replication_transport =
+        ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
     let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
     let report = run_cluster_manager_with_config_updates_failover_and_detected_migrations(
@@ -3558,9 +3616,15 @@ async fn cluster_manager_failover_and_detected_migration_runner_propagates_migra
     let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
     let mut failure_detector = FailureDetector::new(1_000);
     let mut failover_controller = ClusterFailoverController::new();
-    let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+    let mut replication_manager = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
     let (repl_tx, _repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
-    let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+    let mut replication_transport =
+        ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
     let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
     let result = run_cluster_manager_with_config_updates_failover_and_detected_migrations(
@@ -3635,10 +3699,16 @@ async fn cluster_manager_failover_and_detected_migration_runner_propagates_failo
     let mut manager = ClusterManager::new(gossip_engine, Duration::from_millis(2));
     let mut failure_detector = FailureDetector::new(1);
     let mut failover_controller = ClusterFailoverController::new();
-    let mut replication_manager = ReplicationManager::new(Some(7), 2_000, 2_200).unwrap();
+    let mut replication_manager = ReplicationManager::new(
+        Some(7),
+        ReplicationOffset::new(2_000),
+        ReplicationOffset::new(2_200),
+    )
+    .unwrap();
     let (repl_tx, repl_rx) = tokio::sync::mpsc::unbounded_channel::<ReplicationEvent>();
     drop(repl_rx);
-    let mut replication_transport = ChannelReplicationTransport::new(repl_tx, 1_980);
+    let mut replication_transport =
+        ChannelReplicationTransport::new(repl_tx, ReplicationOffset::new(1_980));
     let (_updates_tx, updates_rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
 
     let result = run_cluster_manager_with_config_updates_failover_and_detected_migrations(
