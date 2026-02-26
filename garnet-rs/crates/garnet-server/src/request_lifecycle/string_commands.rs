@@ -1246,7 +1246,10 @@ impl RequestProcessor {
             GetExAction::SetExpiration(expiration) => {
                 let shard_index = self.string_store_shard_index_for_key(&key);
                 self.set_string_expiration_metadata_in_shard(&key, shard_index, Some(expiration));
-                if !self.rewrite_existing_value_expiration(&key, Some(expiration.unix_millis))? {
+                if !self.rewrite_existing_value_expiration(
+                    &key,
+                    Some(expiration.unix_millis.as_u64()),
+                )? {
                     self.set_string_expiration_deadline(&key, None);
                     return Err(storage_failure(
                         "getex",
@@ -1395,7 +1398,7 @@ impl RequestProcessor {
                         instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
                     ExpirationMetadata {
                         deadline,
-                        unix_millis,
+                        unix_millis: TimestampMillis::new(unix_millis),
                     }
                 })
         } else {
@@ -1408,7 +1411,7 @@ impl RequestProcessor {
         let normalized_value = canonicalize_oversized_hyll_value(value);
         let stored_value = encode_stored_value(
             normalized_value,
-            effective_expiration.map(|e| e.unix_millis),
+            effective_expiration.map(|e| e.unix_millis.as_u64()),
         );
         if effective_expiration.is_some() {
             info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
@@ -1420,7 +1423,7 @@ impl RequestProcessor {
                 output.clear();
                 let fallback_stored_value = encode_stored_value(
                     fallback_user_value,
-                    effective_expiration.map(|expiration| expiration.unix_millis),
+                    effective_expiration.map(|expiration| expiration.unix_millis.as_u64()),
                 );
                 session
                     .upsert(&key, &fallback_stored_value, &mut output, &mut info)
@@ -2284,7 +2287,7 @@ impl RequestProcessor {
             shard_index,
             Some(ExpirationMetadata {
                 deadline,
-                unix_millis,
+                unix_millis: TimestampMillis::new(unix_millis),
             }),
         );
         if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
@@ -2359,7 +2362,7 @@ impl RequestProcessor {
             shard_index,
             Some(ExpirationMetadata {
                 deadline,
-                unix_millis,
+                unix_millis: TimestampMillis::new(unix_millis),
             }),
         );
         if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
@@ -2686,7 +2689,7 @@ fn parse_getex_action(args: &[&[u8]]) -> Result<GetExAction, RequestExecutionErr
             .ok_or(RequestExecutionError::InvalidGetExExpireTime)?;
         return Ok(GetExAction::SetExpiration(ExpirationMetadata {
             deadline,
-            unix_millis,
+            unix_millis: TimestampMillis::new(unix_millis),
         }));
     }
 

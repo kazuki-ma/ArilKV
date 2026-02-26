@@ -206,9 +206,22 @@ use self::value_codec::serialize_stream_object_payload;
 use self::value_codec::serialize_zset_object_payload;
 
 #[derive(Debug, Clone, Copy)]
+struct TimestampMillis(u64);
+
+impl TimestampMillis {
+    const fn new(unix_millis: u64) -> Self {
+        Self(unix_millis)
+    }
+
+    const fn as_u64(self) -> u64 {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
     deadline: Instant,
-    unix_millis: u64,
+    unix_millis: TimestampMillis,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1675,7 +1688,7 @@ fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError
                 .ok_or(RequestExecutionError::InvalidExpireTime)?;
             options.expiration = Some(ExpirationMetadata {
                 deadline,
-                unix_millis,
+                unix_millis: TimestampMillis::new(unix_millis),
             });
             index += 2;
             continue;
@@ -1717,7 +1730,7 @@ fn expiration_metadata_from_relative_expire_amount(
     let deadline = instant_from_unix_millis(unix_millis)?;
     Some(ExpirationMetadata {
         deadline,
-        unix_millis,
+        unix_millis: TimestampMillis::new(unix_millis),
     })
 }
 

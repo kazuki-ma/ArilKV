@@ -170,7 +170,7 @@ impl RequestProcessor {
             let deadline = instant_from_unix_millis(unix_millis)?;
             Some(ExpirationMetadata {
                 deadline,
-                unix_millis,
+                unix_millis: TimestampMillis::new(unix_millis),
             })
         });
         let shard_index = self.string_store_shard_index_for_key(key);
@@ -212,7 +212,7 @@ impl RequestProcessor {
         }
         self.lock_string_expirations_for_shard(shard_index)
             .get(key)
-            .map(|metadata| metadata.unix_millis)
+            .map(|metadata| metadata.unix_millis.as_u64())
     }
 
     pub(super) fn rewrite_existing_value_expiration(
@@ -499,7 +499,7 @@ impl RequestProcessor {
             };
             Some(ExpirationMetadata {
                 deadline,
-                unix_millis,
+                unix_millis: TimestampMillis::new(unix_millis),
             })
         });
         self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
@@ -538,7 +538,7 @@ impl RequestProcessor {
                     field.to_vec(),
                     ExpirationMetadata {
                         deadline,
-                        unix_millis,
+                        unix_millis: TimestampMillis::new(unix_millis),
                     },
                 );
             }
@@ -577,7 +577,7 @@ impl RequestProcessor {
         self.lock_hash_field_expirations_for_shard(shard_index)
             .get(key)
             .and_then(|fields| fields.get(field))
-            .map(|metadata| metadata.unix_millis)
+            .map(|metadata| metadata.unix_millis.as_u64())
     }
 
     pub(super) fn clear_hash_field_expirations_for_key_in_shard(
