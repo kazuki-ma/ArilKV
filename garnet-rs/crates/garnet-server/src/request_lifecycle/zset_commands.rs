@@ -20,7 +20,8 @@ impl RequestProcessor {
 
         let mut index = 2usize;
         while index < args.len() {
-            let score = parse_f64_ascii(args[index]).ok_or(RequestExecutionError::ValueNotFloat)?;
+            let score =
+                parse_zset_score_value(args[index]).ok_or(RequestExecutionError::ValueNotFloat)?;
             let member = args[index + 1].to_vec();
             if zset.insert(member, score).is_none() {
                 inserted += 1;
@@ -1406,6 +1407,16 @@ fn parse_zscore_bound(input: &[u8]) -> Option<ZscoreBound> {
         return parse_f64_ascii(exclusive).map(ZscoreBound::Exclusive);
     }
     parse_f64_ascii(input).map(ZscoreBound::Inclusive)
+}
+
+fn parse_zset_score_value(input: &[u8]) -> Option<f64> {
+    if ascii_eq_ignore_case(input, b"-INF") {
+        return Some(f64::NEG_INFINITY);
+    }
+    if ascii_eq_ignore_case(input, b"+INF") || ascii_eq_ignore_case(input, b"INF") {
+        return Some(f64::INFINITY);
+    }
+    parse_f64_ascii(input)
 }
 
 fn parse_zlex_bound(input: &[u8]) -> Option<ZlexBound<'_>> {

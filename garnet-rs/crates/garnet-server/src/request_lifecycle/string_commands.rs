@@ -193,17 +193,10 @@ impl RequestProcessor {
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                if let Ok(pf_state) = decode_pf_set(&output) {
-                    let sparse_max_bytes = pf_sparse_max_bytes(self);
-                    let pseudo_length = if pf_state.is_dense {
-                        sparse_max_bytes.saturating_add(1)
-                    } else {
-                        pf_sparse_pseudo_length(pf_non_zero_register_count(&pf_state.registers))
-                    };
-                    append_integer(response_out, pseudo_length as i64);
-                    return Ok(());
-                }
-                append_integer(response_out, output.len() as i64);
+                append_integer(
+                    response_out,
+                    string_value_len_for_keysizes(self, &output) as i64,
+                );
                 Ok(())
             }
             ReadOperationStatus::NotFound => {
@@ -1412,12 +1405,18 @@ impl RequestProcessor {
 
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
-        let stored_value = encode_stored_value(value, effective_expiration.map(|e| e.unix_millis));
+        let normalized_value = canonicalize_oversized_hyll_value(value);
+        let stored_value = encode_stored_value(
+            normalized_value,
+            effective_expiration.map(|e| e.unix_millis),
+        );
         if effective_expiration.is_some() {
             info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
         }
         if let Err(error) = session.upsert(&key, &stored_value, &mut output, &mut info) {
-            if let Some(fallback_user_value) = hll_record_too_large_fallback_value(value, &error) {
+            if let Some(fallback_user_value) =
+                hll_record_too_large_fallback_value(normalized_value, &error)
+            {
                 output.clear();
                 let fallback_stored_value = encode_stored_value(
                     fallback_user_value,
@@ -2145,9 +2144,12 @@ impl RequestProcessor {
 
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
-        let stored_value = encode_stored_value(value, None);
+        let normalized_value = canonicalize_oversized_hyll_value(value);
+        let stored_value = encode_stored_value(normalized_value, None);
         if let Err(error) = session.upsert(&key_vec, &stored_value, &mut output, &mut info) {
-            if let Some(fallback_user_value) = hll_record_too_large_fallback_value(value, &error) {
+            if let Some(fallback_user_value) =
+                hll_record_too_large_fallback_value(normalized_value, &error)
+            {
                 output.clear();
                 let fallback_stored_value = encode_stored_value(fallback_user_value, None);
                 session
@@ -3532,6 +3534,17 @@ fn pf_sparse_max_bytes(processor: &RequestProcessor) -> usize {
     PF_SPARSE_MAX_BYTES_DEFAULT
 }
 
+pub(super) fn string_value_len_for_keysizes(processor: &RequestProcessor, value: &[u8]) -> usize {
+    if let Ok(pf_state) = decode_pf_set(value) {
+        let sparse_max_bytes = pf_sparse_max_bytes(processor);
+        if pf_state.is_dense {
+            return sparse_max_bytes.saturating_add(1);
+        }
+        return pf_sparse_pseudo_length(pf_non_zero_register_count(&pf_state.registers));
+    }
+    value.len()
+}
+
 fn pf_sparse_pseudo_length(cardinality: usize) -> usize {
     16usize.saturating_add(cardinality.saturating_mul(3))
 }
@@ -3641,6 +3654,16 @@ fn hll_record_too_large_fallback_value<'a>(
         return Some(PF_REDIS_HLL_PREFIX);
     }
     None
+}
+
+fn canonicalize_oversized_hyll_value<'a>(user_value: &'a [u8]) -> &'a [u8] {
+    const OVERSIZED_HYLL_CANONICALIZE_BYTES: usize = 256 * 1024;
+    if user_value.starts_with(PF_REDIS_HLL_PREFIX)
+        && user_value.len() > OVERSIZED_HYLL_CANONICALIZE_BYTES
+    {
+        return PF_REDIS_HLL_PREFIX;
+    }
+    user_value
 }
 
 fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, usize)> {

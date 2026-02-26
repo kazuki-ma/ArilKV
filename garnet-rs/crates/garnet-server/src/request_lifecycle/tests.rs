@@ -4479,6 +4479,7 @@ fn info_supports_section_filters_and_multi_section_arguments() {
     assert!(info_all_text.contains("used_cpu_user:"));
     assert!(info_all_text.contains("used_memory:"));
     assert!(info_all_text.contains("master_repl_offset:"));
+    assert!(info_all_text.contains("# Keysizes"));
     assert!(info_all_text.contains("rejected_calls"));
     assert_eq!(info_all_text.matches("used_cpu_user_children").count(), 1);
 
@@ -4515,6 +4516,102 @@ fn info_supports_section_filters_and_multi_section_arguments() {
     let info_commandstats_text = String::from_utf8_lossy(&info_commandstats);
     assert!(info_commandstats_text.contains("rejected_calls"));
     assert!(!info_commandstats_text.contains("used_memory:"));
+}
+
+#[test]
+fn info_keysizes_reports_type_histograms_with_power_of_two_bins() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SET", b"s_empty", b""])),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SET", b"s_16", b"0123456789ABCDEF"]),
+        ),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPUSH", b"l", b"1", b"2", b"3", b"4", b"5"]),
+        ),
+        b":5\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SADD", b"set", b"a", b"b", b"c", b"d", b"e"]),
+        ),
+        b":5\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"z", b"1", b"a", b"2", b"b", b"3", b"c"]),
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSET", b"h", b"f1", b"v1", b"f2", b"v2", b"f3", b"v3",]),
+        ),
+        b":3\r\n"
+    );
+
+    let info_keysizes = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"KEYSIZES"]),
+    ))
+    .expect("INFO KEYSIZES returns bulk payload");
+    let info_keysizes_text = String::from_utf8_lossy(&info_keysizes);
+    assert!(info_keysizes_text.contains("# Keysizes"));
+    assert!(info_keysizes_text.contains("db0_distrib_strings_sizes:0=1,16=1"));
+    assert!(info_keysizes_text.contains("db0_distrib_lists_items:4=1"));
+    assert!(info_keysizes_text.contains("db0_distrib_sets_items:4=1"));
+    assert!(info_keysizes_text.contains("db0_distrib_zsets_items:2=1"));
+    assert!(info_keysizes_text.contains("db0_distrib_hashes_items:2=1"));
+}
+
+#[test]
+fn info_keysizes_uses_hyperloglog_logical_length_bins() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"PFADD", b"hll", b"a", b"b", b"c"])
+        ),
+        b":1\r\n"
+    );
+    let info_keysizes = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"KEYSIZES"]),
+    ))
+    .expect("INFO KEYSIZES returns bulk payload");
+    let info_keysizes_text = String::from_utf8_lossy(&info_keysizes);
+    assert!(info_keysizes_text.contains("db0_distrib_strings_sizes:16=1"));
+}
+
+#[test]
+fn zadd_accepts_infinite_scores() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZADD", b"z", b"+inf", b"hi", b"-inf", b"lo"]),
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"ZRANGE", b"z", b"0", b"-1", b"WITHSCORES"]),
+        ),
+        b"*4\r\n$2\r\nlo\r\n$4\r\n-inf\r\n$2\r\nhi\r\n$3\r\ninf\r\n"
+    );
 }
 
 #[test]

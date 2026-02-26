@@ -236,7 +236,7 @@ pub(super) fn deserialize_zset_object_payload(encoded: &[u8]) -> Option<BTreeMap
         let mut raw = [0u8; size_of::<f64>()];
         raw.copy_from_slice(bytes);
         let value = f64::from_le_bytes(raw);
-        if !value.is_finite() {
+        if value.is_nan() {
             return None;
         }
         *cursor = end;

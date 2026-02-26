@@ -54,7 +54,7 @@ const GARNET_SCRIPTING_MAX_MEMORY_BYTES_ENV: &str = "GARNET_SCRIPTING_MAX_MEMORY
 const GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV: &str = "GARNET_SCRIPTING_MAX_EXECUTION_MILLIS";
 const GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS_ENV: &str = "GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS";
 const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
-const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 18;
+const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 22;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 20;
 const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
@@ -419,6 +419,8 @@ impl RequestProcessor {
         let mut string_store_config = store_config;
         string_store_config.hash_index_size_bits =
             scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
+        // Redis compatibility includes large-string update paths (for example APPEND growth into MiB
+        // ranges). Keep default string pages large enough to fit those records in one page.
         string_store_config.page_size_bits = string_store_config
             .page_size_bits
             .max(DEFAULT_STRING_STORE_PAGE_SIZE_BITS);

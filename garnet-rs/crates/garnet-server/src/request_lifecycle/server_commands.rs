@@ -97,6 +97,14 @@ const COMMAND_FLAGS_RW_UPDATE: [&[u8]; 2] = [b"RW", b"update"];
 const COMMAND_FLAGS_RW_ACCESS_UPDATE: [&[u8]; 3] = [b"RW", b"access", b"update"];
 const COMMAND_FLAGS_RM_DELETE: [&[u8]; 2] = [b"RM", b"delete"];
 const COMMAND_FLAGS_RW_DELETE: [&[u8]; 2] = [b"RW", b"delete"];
+const INFO_KEYSIZES_BIN_LABELS: [&str; 60] = [
+    "0", "1", "2", "4", "8", "16", "32", "64", "128", "256", "512", "1K", "2K", "4K", "8K", "16K",
+    "32K", "64K", "128K", "256K", "512K", "1M", "2M", "4M", "8M", "16M", "32M", "64M", "128M",
+    "256M", "512M", "1G", "2G", "4G", "8G", "16G", "32G", "64G", "128G", "256G", "512G", "1T",
+    "2T", "4T", "8T", "16T", "32T", "64T", "128T", "256T", "512T", "1P", "2P", "4P", "8P", "16P",
+    "32P", "64P", "128P", "256P",
+];
+const KEYSIZES_HISTOGRAM_TYPE_COUNT: usize = 5;
 #[derive(Copy, Clone, Eq, PartialEq)]
 enum InfoSection {
     Server,
@@ -106,6 +114,7 @@ enum InfoSection {
     Replication,
     Cpu,
     Scripting,
+    Keysizes,
     Commandstats,
 }
 
@@ -131,6 +140,7 @@ fn push_default_info_sections(sections: &mut Vec<InfoSection>) {
 
 fn push_all_info_sections(sections: &mut Vec<InfoSection>) {
     push_default_info_sections(sections);
+    push_info_section_once(sections, InfoSection::Keysizes);
     push_info_section_once(sections, InfoSection::Commandstats);
 }
 
@@ -169,6 +179,10 @@ fn append_info_sections_from_token(sections: &mut Vec<InfoSection>, token: &[u8]
     }
     if ascii_eq_ignore_case(token, b"SCRIPTING") {
         push_info_section_once(sections, InfoSection::Scripting);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"KEYSIZES") {
+        push_info_section_once(sections, InfoSection::Keysizes);
         return;
     }
     if ascii_eq_ignore_case(token, b"COMMANDSTATS") {
@@ -334,6 +348,9 @@ impl RequestProcessor {
                         )
                         .as_str(),
                     );
+                }
+                InfoSection::Keysizes => {
+                    payload.push_str(&self.render_keysizes_info_payload()?);
                 }
                 InfoSection::Commandstats => {
                     payload.push_str(&self.render_commandstats_info_payload());
@@ -2327,6 +2344,46 @@ impl RequestProcessor {
         Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
     }
 
+    fn render_keysizes_info_payload(&self) -> Result<String, RequestExecutionError> {
+        let mut payload = String::from("# Keysizes\r\n");
+        let mut histograms =
+            [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT];
+
+        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        keys.extend(self.object_keys_snapshot());
+
+        for key in keys {
+            self.expire_key_if_needed(&key)?;
+
+            if let Some(value) = self.read_string_value(&key)? {
+                let length =
+                    super::string_commands::string_value_len_for_keysizes(self, value.as_slice());
+                let bin_index = keysizes_histogram_bin_index(length);
+                histograms[0][bin_index] += 1;
+                continue;
+            }
+
+            let Some((object_type, object_payload)) = self.object_read(&key)? else {
+                continue;
+            };
+            let Some((type_index, length)) =
+                keysizes_object_histogram_type_and_len(object_type, &object_payload)?
+            else {
+                continue;
+            };
+            let bin_index = keysizes_histogram_bin_index(length);
+            histograms[type_index][bin_index] += 1;
+        }
+
+        append_keysizes_histogram_line(&mut payload, 0, "distrib_strings_sizes", &histograms[0]);
+        append_keysizes_histogram_line(&mut payload, 0, "distrib_lists_items", &histograms[1]);
+        append_keysizes_histogram_line(&mut payload, 0, "distrib_sets_items", &histograms[2]);
+        append_keysizes_histogram_line(&mut payload, 0, "distrib_zsets_items", &histograms[3]);
+        append_keysizes_histogram_line(&mut payload, 0, "distrib_hashes_items", &histograms[4]);
+
+        Ok(payload)
+    }
+
     fn debug_digest_value_for_key(&self, key: &[u8]) -> Result<Vec<u8>, RequestExecutionError> {
         if let Some(value) = self.read_string_value(key)? {
             return Ok(fnv_hex_digest(1, &value));
@@ -2884,6 +2941,91 @@ fn scan_object_type_matches_filter(object_type: u8, filter: ScanTypeFilter) -> b
         ScanTypeFilter::Set => object_type == SET_OBJECT_TYPE_TAG,
         ScanTypeFilter::Zset => object_type == ZSET_OBJECT_TYPE_TAG,
         ScanTypeFilter::Stream => object_type == STREAM_OBJECT_TYPE_TAG,
+    }
+}
+
+fn keysizes_histogram_bin_index(value: usize) -> usize {
+    if value == 0 {
+        return 0;
+    }
+    let floor_log2 = usize::BITS as usize - 1 - value.leading_zeros() as usize;
+    (floor_log2 + 1).min(INFO_KEYSIZES_BIN_LABELS.len() - 1)
+}
+
+fn append_keysizes_histogram_line(
+    payload: &mut String,
+    db_index: usize,
+    field_name: &str,
+    histogram: &[u64; INFO_KEYSIZES_BIN_LABELS.len()],
+) {
+    if !histogram.iter().any(|count| *count > 0) {
+        return;
+    }
+
+    payload.push_str("db");
+    payload.push_str(&db_index.to_string());
+    payload.push('_');
+    payload.push_str(field_name);
+    payload.push(':');
+
+    let mut first = true;
+    for (index, count) in histogram.iter().enumerate() {
+        if *count == 0 {
+            continue;
+        }
+        if !first {
+            payload.push(',');
+        }
+        first = false;
+        payload.push_str(INFO_KEYSIZES_BIN_LABELS[index]);
+        payload.push('=');
+        payload.push_str(&count.to_string());
+    }
+    payload.push_str("\r\n");
+}
+
+fn keysizes_object_histogram_type_and_len(
+    object_type: u8,
+    payload: &[u8],
+) -> Result<Option<(usize, usize)>, RequestExecutionError> {
+    match object_type {
+        LIST_OBJECT_TYPE_TAG => {
+            let list = deserialize_list_object_payload(payload).ok_or_else(|| {
+                storage_failure(
+                    "info.keysizes",
+                    "failed to deserialize list payload while building keysizes histogram",
+                )
+            })?;
+            Ok(Some((1, list.len())))
+        }
+        SET_OBJECT_TYPE_TAG => {
+            let set = deserialize_set_object_payload(payload).ok_or_else(|| {
+                storage_failure(
+                    "info.keysizes",
+                    "failed to deserialize set payload while building keysizes histogram",
+                )
+            })?;
+            Ok(Some((2, set.len())))
+        }
+        ZSET_OBJECT_TYPE_TAG => {
+            let zset = deserialize_zset_object_payload(payload).ok_or_else(|| {
+                storage_failure(
+                    "info.keysizes",
+                    "failed to deserialize zset payload while building keysizes histogram",
+                )
+            })?;
+            Ok(Some((3, zset.len())))
+        }
+        HASH_OBJECT_TYPE_TAG => {
+            let hash = deserialize_hash_object_payload(payload).ok_or_else(|| {
+                storage_failure(
+                    "info.keysizes",
+                    "failed to deserialize hash payload while building keysizes histogram",
+                )
+            })?;
+            Ok(Some((4, hash.len())))
+        }
+        _ => Ok(None),
     }
 }
 
