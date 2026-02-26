@@ -495,14 +495,102 @@ impl RequestProcessor {
     pub(super) fn handle_move(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
         let target_db = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if target_db == 0 {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
         }
-        Err(RequestExecutionError::DbIndexOutOfRange)
+        if target_db < 0 {
+            return Err(RequestExecutionError::DbIndexOutOfRange);
+        }
+        let target_db =
+            usize::try_from(target_db).map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
+        let key = args[1].to_vec();
+
+        self.expire_key_if_needed(&key)?;
+        self.active_expire_hash_fields_for_key(&key)?;
+
+        let moved_entry = if let Some(value) = self.read_string_value(&key)? {
+            let length =
+                super::string_commands::string_value_len_for_keysizes(self, value.as_slice());
+            Some(super::MovedKeysizesEntry {
+                histogram_type_index: 0,
+                length,
+            })
+        } else if let Some((object_type, object_payload)) = self.object_read(&key)? {
+            let Some((histogram_type_index, length)) =
+                keysizes_object_histogram_type_and_len(object_type, &object_payload)?
+            else {
+                append_integer(response_out, 0);
+                return Ok(());
+            };
+            Some(super::MovedKeysizesEntry {
+                histogram_type_index,
+                length,
+            })
+        } else {
+            None
+        };
+
+        let Some(moved_entry) = moved_entry else {
+            append_integer(response_out, 0);
+            return Ok(());
+        };
+
+        {
+            let moved_by_db = self
+                .moved_keysizes_by_db
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if moved_by_db
+                .get(&target_db)
+                .is_some_and(|keys| keys.contains_key(&key))
+            {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        }
+
+        let mut string_deleted = false;
+        {
+            let mut store = self.lock_string_store_for_key(&key);
+            let mut session = store.session(&self.functions);
+            let mut info = DeleteInfo::default();
+            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
+            match status {
+                DeleteOperationStatus::TombstonedInPlace
+                | DeleteOperationStatus::AppendedTombstone => {
+                    string_deleted = true;
+                }
+                DeleteOperationStatus::NotFound => {}
+                DeleteOperationStatus::RetryLater => {
+                    return Err(RequestExecutionError::StorageBusy);
+                }
+            }
+        }
+        if string_deleted {
+            self.remove_string_key_metadata(&key);
+        }
+        let object_deleted = self.object_delete(&key)?;
+        if !string_deleted && !object_deleted {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if string_deleted && !object_deleted {
+            self.bump_watch_version(&key);
+        }
+
+        self.moved_keysizes_by_db
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(target_db)
+            .or_default()
+            .insert(key, moved_entry);
+
+        append_integer(response_out, 1);
+        Ok(())
     }
 
     pub(super) fn handle_swapdb(
@@ -2538,6 +2626,10 @@ impl RequestProcessor {
             self.lock_object_key_registry_for_shard(shard_index).clear();
             self.string_expiration_counts[shard_index].store(0, Ordering::Release);
         }
+        self.moved_keysizes_by_db
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .clear();
 
         Ok(())
     }
@@ -2552,6 +2644,7 @@ impl RequestProcessor {
         let mut payload = String::from("# Keysizes\r\n");
         let mut histograms =
             [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT];
+        let mut histograms_by_db = BTreeMap::new();
 
         let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
@@ -2580,11 +2673,55 @@ impl RequestProcessor {
             histograms[type_index][bin_index] += 1;
         }
 
-        append_keysizes_histogram_line(&mut payload, 0, "distrib_strings_sizes", &histograms[0]);
-        append_keysizes_histogram_line(&mut payload, 0, "distrib_lists_items", &histograms[1]);
-        append_keysizes_histogram_line(&mut payload, 0, "distrib_sets_items", &histograms[2]);
-        append_keysizes_histogram_line(&mut payload, 0, "distrib_zsets_items", &histograms[3]);
-        append_keysizes_histogram_line(&mut payload, 0, "distrib_hashes_items", &histograms[4]);
+        histograms_by_db.insert(0usize, histograms);
+        {
+            let moved_keysizes_by_db = self
+                .moved_keysizes_by_db
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            for (db_index, moved_keysizes_entries) in moved_keysizes_by_db.iter() {
+                let db_histograms = histograms_by_db.entry(*db_index).or_insert(
+                    [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT],
+                );
+                for moved_entry in moved_keysizes_entries.values() {
+                    let bin_index = keysizes_histogram_bin_index(moved_entry.length);
+                    db_histograms[moved_entry.histogram_type_index][bin_index] += 1;
+                }
+            }
+        }
+
+        for (db_index, db_histograms) in histograms_by_db {
+            append_keysizes_histogram_line(
+                &mut payload,
+                db_index,
+                "distrib_strings_sizes",
+                &db_histograms[0],
+            );
+            append_keysizes_histogram_line(
+                &mut payload,
+                db_index,
+                "distrib_lists_items",
+                &db_histograms[1],
+            );
+            append_keysizes_histogram_line(
+                &mut payload,
+                db_index,
+                "distrib_sets_items",
+                &db_histograms[2],
+            );
+            append_keysizes_histogram_line(
+                &mut payload,
+                db_index,
+                "distrib_zsets_items",
+                &db_histograms[3],
+            );
+            append_keysizes_histogram_line(
+                &mut payload,
+                db_index,
+                "distrib_hashes_items",
+                &db_histograms[4],
+            );
+        }
 
         Ok(payload)
     }

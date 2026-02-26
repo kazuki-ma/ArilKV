@@ -211,6 +211,12 @@ struct ExpirationMetadata {
     unix_millis: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct MovedKeysizesEntry {
+    histogram_type_index: usize,
+    length: usize,
+}
+
 #[derive(Debug)]
 pub enum RequestProcessorInitError {
     Tsavorite(TsavoriteKvInitError),
@@ -330,6 +336,7 @@ pub struct RequestProcessor {
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
+    moved_keysizes_by_db: Mutex<HashMap<usize, HashMap<Vec<u8>, MovedKeysizesEntry>>>,
     key_lru_access_millis: Mutex<HashMap<Vec<u8>, u64>>,
     key_lfu_frequency: Mutex<HashMap<Vec<u8>, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
@@ -507,6 +514,7 @@ impl RequestProcessor {
             command_calls: Mutex::new(HashMap::new()),
             command_failed_calls: Mutex::new(HashMap::new()),
             latency_events: Mutex::new(HashMap::new()),
+            moved_keysizes_by_db: Mutex::new(HashMap::new()),
             key_lru_access_millis: Mutex::new(HashMap::new()),
             key_lfu_frequency: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),

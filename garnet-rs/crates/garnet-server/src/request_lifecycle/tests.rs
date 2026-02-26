@@ -4675,6 +4675,47 @@ fn info_keysizes_reports_type_histograms_with_power_of_two_bins() {
 }
 
 #[test]
+fn move_to_nonzero_db_updates_keysizes_histograms() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"RPUSH", b"l1", b"1", b"2", b"3", b"4"]),
+        ),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"RPUSH", b"l2", b"1"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"MOVE", b"l1", b"1"])),
+        b":1\r\n"
+    );
+
+    let info_keysizes = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"KEYSIZES"]),
+    ))
+    .expect("INFO KEYSIZES returns bulk payload");
+    let info_keysizes_text = String::from_utf8_lossy(&info_keysizes);
+    assert!(info_keysizes_text.contains("db0_distrib_lists_items:1=1"));
+    assert!(info_keysizes_text.contains("db1_distrib_lists_items:4=1"));
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"FLUSHALL"])),
+        b"+OK\r\n"
+    );
+    let info_after_flushall = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"KEYSIZES"]),
+    ))
+    .expect("INFO KEYSIZES returns bulk payload");
+    let info_after_flushall_text = String::from_utf8_lossy(&info_after_flushall);
+    assert!(!info_after_flushall_text.contains("db1_distrib_lists_items:4=1"));
+}
+
+#[test]
 fn info_keysizes_uses_hyperloglog_logical_length_bins() {
     let processor = RequestProcessor::new().unwrap();
     assert_eq!(
@@ -6714,11 +6755,10 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     response.clear();
     let move_other_db = b"*3\r\n$4\r\nMOVE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(move_other_db, &mut args).unwrap();
-    let err = processor
+    processor
         .execute(&args[..meta.argument_count], &mut response)
-        .unwrap_err();
-    err.append_resp_error(&mut response);
-    assert_eq!(response, b"-ERR DB index is out of range\r\n");
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
 
     response.clear();
     let swapdb_zero = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$1\r\n0\r\n";
