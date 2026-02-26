@@ -79,29 +79,29 @@ impl RequestProcessor {
             return Vec::new();
         }
 
-        let mut slot_keys = BTreeSet::new();
+        let mut slot_keys = BTreeSet::<RedisKey>::new();
 
         let string_keys = self.string_keys_snapshot();
         for key in string_keys {
-            if redis_hash_slot(&key) == slot {
+            if redis_hash_slot(key.as_slice()) == slot {
                 slot_keys.insert(key);
                 if slot_keys.len() >= max_keys {
-                    return slot_keys.into_iter().collect();
+                    return slot_keys.into_iter().map(RedisKey::into_vec).collect();
                 }
             }
         }
 
         let object_keys = self.object_keys_snapshot();
         for key in object_keys {
-            if redis_hash_slot(&key) == slot {
+            if redis_hash_slot(key.as_slice()) == slot {
                 slot_keys.insert(key);
                 if slot_keys.len() >= max_keys {
-                    return slot_keys.into_iter().collect();
+                    return slot_keys.into_iter().map(RedisKey::into_vec).collect();
                 }
             }
         }
 
-        slot_keys.into_iter().collect()
+        slot_keys.into_iter().map(RedisKey::into_vec).collect()
     }
 
     pub fn migrate_slot_to(

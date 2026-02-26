@@ -670,7 +670,7 @@ impl RequestProcessor {
         self.string_expiration_deadline_in_shard(key, shard_index)
     }
 
-    pub(super) fn string_keys_snapshot(&self) -> Vec<Vec<u8>> {
+    pub(super) fn string_keys_snapshot(&self) -> Vec<RedisKey> {
         self.string_key_registries
             .iter()
             .flat_map(|registry| {
@@ -679,13 +679,12 @@ impl RequestProcessor {
                     .expect("key registry mutex poisoned")
                     .iter()
                     .cloned()
-                    .map(RedisKey::into_vec)
                     .collect::<Vec<_>>()
             })
             .collect()
     }
 
-    pub(super) fn object_keys_snapshot(&self) -> Vec<Vec<u8>> {
+    pub(super) fn object_keys_snapshot(&self) -> Vec<RedisKey> {
         self.object_key_registries
             .iter()
             .flat_map(|registry| {
@@ -694,7 +693,6 @@ impl RequestProcessor {
                     .expect("object key registry mutex poisoned")
                     .iter()
                     .cloned()
-                    .map(RedisKey::into_vec)
                     .collect::<Vec<_>>()
             })
             .collect()

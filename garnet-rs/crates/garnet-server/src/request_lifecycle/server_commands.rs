@@ -1207,25 +1207,25 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "KEYS", "KEYS pattern")?;
         let pattern = args[1];
 
-        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
 
         let mut matched = Vec::new();
         for key in keys {
-            self.expire_key_if_needed(&key)?;
+            self.expire_key_if_needed(key.as_slice())?;
 
-            let string_exists = self.key_exists(&key)?;
-            let object_exists = self.object_key_exists(&key)?;
+            let string_exists = self.key_exists(key.as_slice())?;
+            let object_exists = self.object_key_exists(key.as_slice())?;
             if !string_exists {
-                self.untrack_string_key(&key);
+                self.untrack_string_key(key.as_slice());
             }
             if !object_exists {
-                self.untrack_object_key(&key);
+                self.untrack_object_key(key.as_slice());
             }
             if !(string_exists || object_exists) {
                 continue;
             }
-            if redis_glob_match(pattern, &key, false, 0) {
+            if redis_glob_match(pattern, key.as_slice(), false, 0) {
                 matched.push(key);
             }
         }
@@ -1234,7 +1234,7 @@ impl RequestProcessor {
         response_out.extend_from_slice(matched.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for key in matched {
-            append_bulk_string(response_out, &key);
+            append_bulk_string(response_out, key.as_slice());
         }
         Ok(())
     }
@@ -1246,20 +1246,20 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "RANDOMKEY", "RANDOMKEY")?;
 
-        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
 
         let mut live_keys = Vec::new();
         for key in keys {
-            self.expire_key_if_needed(&key)?;
+            self.expire_key_if_needed(key.as_slice())?;
 
-            let string_exists = self.key_exists(&key)?;
-            let object_exists = self.object_key_exists(&key)?;
+            let string_exists = self.key_exists(key.as_slice())?;
+            let object_exists = self.object_key_exists(key.as_slice())?;
             if !string_exists {
-                self.untrack_string_key(&key);
+                self.untrack_string_key(key.as_slice());
             }
             if !object_exists {
-                self.untrack_object_key(&key);
+                self.untrack_object_key(key.as_slice());
             }
             if string_exists || object_exists {
                 live_keys.push(key);
@@ -1274,7 +1274,7 @@ impl RequestProcessor {
         live_keys.sort_unstable();
         let index =
             (NEXT_RANDOMKEY_INDEX.fetch_add(1, Ordering::Relaxed) as usize) % live_keys.len();
-        append_bulk_string(response_out, &live_keys[index]);
+        append_bulk_string(response_out, live_keys[index].as_slice());
         Ok(())
     }
 
@@ -1332,37 +1332,42 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
 
         let mut matched = Vec::new();
         for key in keys {
-            self.expire_key_if_needed(&key)?;
-            let string_exists = self.key_exists(&key)?;
-            let object_exists = self.object_key_exists(&key)?;
+            self.expire_key_if_needed(key.as_slice())?;
+            let string_exists = self.key_exists(key.as_slice())?;
+            let object_exists = self.object_key_exists(key.as_slice())?;
             if !string_exists {
-                self.untrack_string_key(&key);
+                self.untrack_string_key(key.as_slice());
             }
             if !object_exists {
-                self.untrack_object_key(&key);
+                self.untrack_object_key(key.as_slice());
             }
             if !(string_exists || object_exists) {
                 continue;
             }
 
             if let Some(filter) = type_filter {
-                if !self.scan_key_matches_type_filter(&key, string_exists, object_exists, filter)? {
+                if !self.scan_key_matches_type_filter(
+                    key.as_slice(),
+                    string_exists,
+                    object_exists,
+                    filter,
+                )? {
                     continue;
                 }
             }
 
             if let Some(pattern) = pattern {
-                if !redis_glob_match(pattern, &key, false, 0) {
+                if !redis_glob_match(pattern, key.as_slice(), false, 0) {
                     continue;
                 }
             }
 
-            matched.push(key);
+            matched.push(key.into_vec());
         }
         matched.sort_unstable();
         append_scan_cursor_and_key_array(response_out, cursor, count, &matched);
@@ -2585,15 +2590,15 @@ impl RequestProcessor {
     }
 
     fn flush_all_keys(&self) -> Result<(), RequestExecutionError> {
-        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
 
         for key in keys {
-            self.expire_key_if_needed(&key)?;
+            self.expire_key_if_needed(key.as_slice())?;
 
             let mut string_deleted = false;
             {
-                let mut store = self.lock_string_store_for_key(&key);
+                let mut store = self.lock_string_store_for_key(key.as_slice());
                 let mut session = store.session(&self.functions);
                 let mut info = DeleteInfo::default();
                 let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
@@ -2609,12 +2614,12 @@ impl RequestProcessor {
                 }
             }
             if string_deleted {
-                self.remove_string_key_metadata(&key);
+                self.remove_string_key_metadata(key.as_slice());
             }
 
-            let object_deleted = self.object_delete(&key)?;
+            let object_deleted = self.object_delete(key.as_slice())?;
             if string_deleted && !object_deleted {
-                self.bump_watch_version(&key);
+                self.bump_watch_version(key.as_slice());
             }
         }
 
@@ -2635,7 +2640,7 @@ impl RequestProcessor {
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
-        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
         Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
     }
@@ -2646,14 +2651,14 @@ impl RequestProcessor {
             [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT];
         let mut histograms_by_db = BTreeMap::new();
 
-        let mut keys: HashSet<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
 
         for key in keys {
-            self.expire_key_if_needed(&key)?;
-            self.active_expire_hash_fields_for_key(&key)?;
+            self.expire_key_if_needed(key.as_slice())?;
+            self.active_expire_hash_fields_for_key(key.as_slice())?;
 
-            if let Some(value) = self.read_string_value(&key)? {
+            if let Some(value) = self.read_string_value(key.as_slice())? {
                 let length =
                     super::string_commands::string_value_len_for_keysizes(self, value.as_slice());
                 let bin_index = keysizes_histogram_bin_index(length);
@@ -2661,7 +2666,7 @@ impl RequestProcessor {
                 continue;
             }
 
-            let Some((object_type, object_payload)) = self.object_read(&key)? else {
+            let Some((object_type, object_payload)) = self.object_read(key.as_slice())? else {
                 continue;
             };
             let Some((type_index, length)) =
@@ -2742,21 +2747,21 @@ impl RequestProcessor {
     }
 
     fn debug_dataset_digest(&self) -> Result<Vec<u8>, RequestExecutionError> {
-        let mut keys: Vec<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        let mut keys: Vec<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
         keys.sort();
         keys.dedup();
 
         let mut combined = Vec::new();
         for key in keys {
-            self.expire_key_if_needed(&key)?;
-            self.active_expire_hash_fields_for_key(&key)?;
-            if !self.key_exists_any(&key)? {
+            self.expire_key_if_needed(key.as_slice())?;
+            self.active_expire_hash_fields_for_key(key.as_slice())?;
+            if !self.key_exists_any(key.as_slice())? {
                 continue;
             }
-            let digest = self.debug_digest_value_for_key(&key)?;
+            let digest = self.debug_digest_value_for_key(key.as_slice())?;
             combined.extend_from_slice(&(key.len() as u64).to_le_bytes());
-            combined.extend_from_slice(&key);
+            combined.extend_from_slice(key.as_slice());
             combined.extend_from_slice(&(digest.len() as u64).to_le_bytes());
             combined.extend_from_slice(&digest);
         }
