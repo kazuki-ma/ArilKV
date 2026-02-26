@@ -1951,24 +1951,28 @@ async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_rep
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
+    let processor = Arc::new(RequestProcessor::new().unwrap());
+    processor.set_active_expire_enabled(false);
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let server_metrics = Arc::clone(&metrics);
+    let server_processor = Arc::clone(&processor);
     let server = tokio::spawn(async move {
-        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
-            let _ = shutdown_rx.await;
-        })
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            server_processor,
+        )
         .await
-        .unwrap();
+        .unwrap()
     });
 
     let mut client = TcpStream::connect(addr).await.unwrap();
-    send_and_expect(
-        &mut client,
-        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
-        b"+OK\r\n",
-    )
-    .await;
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"FLUSHALL"]),
@@ -1977,7 +1981,7 @@ async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_rep
     .await;
     send_and_expect(
         &mut client,
-        &encode_resp_command(&[b"SET", b"foo", b"bar", b"PX", b"1"]),
+        &encode_resp_command(&[b"SET", b"foo", b"bar", b"PX", b"200"]),
         b"+OK\r\n",
     )
     .await;
@@ -1998,8 +2002,12 @@ async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_rep
         read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
 
     let get_foo = encode_resp_command(&[b"GET", b"foo"]);
+    send_and_expect(&mut client, &get_foo, b"$3\r\nbar\r\n").await;
+
     let mut foo_expired = false;
-    for _ in 0..50 {
+    let mut nil_observations = 0u8;
+    for _ in 0..80 {
+        sleep(Duration::from_millis(5)).await;
         client.write_all(&get_foo).await.unwrap();
         let mut response = [0u8; 64];
         let bytes_read =
@@ -2009,11 +2017,15 @@ async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_rep
                 .unwrap();
         let frame = &response[..bytes_read];
         if frame == b"$-1\r\n" {
-            foo_expired = true;
-            break;
+            nil_observations = nil_observations.saturating_add(1);
+            if nil_observations >= 2 {
+                foo_expired = true;
+                break;
+            }
+            continue;
         }
+        nil_observations = 0;
         assert_eq!(frame, b"$3\r\nbar\r\n");
-        sleep(Duration::from_millis(5)).await;
     }
     assert!(
         foo_expired,

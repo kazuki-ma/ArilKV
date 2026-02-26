@@ -166,6 +166,11 @@ impl RedisReplicationCoordinator {
     }
 
     pub(crate) fn subscribe_downstream(&self) -> broadcast::Receiver<Arc<[u8]>> {
+        // Re-arm SELECT before subscribing so post-SYNC frames observed by this subscriber
+        // include an initial SELECT even if writes arrive before stream handoff.
+        self.inner
+            .replication_select_needed
+            .store(true, Ordering::Release);
         self.inner.downstream_tx.subscribe()
     }
 
@@ -198,9 +203,6 @@ impl RedisReplicationCoordinator {
         mut stream: TcpStream,
         mut subscriber: broadcast::Receiver<Arc<[u8]>>,
     ) -> io::Result<()> {
-        self.inner
-            .replication_select_needed
-            .store(true, Ordering::Release);
         self.inner
             .downstream_replica_count
             .fetch_add(1, Ordering::Relaxed);
