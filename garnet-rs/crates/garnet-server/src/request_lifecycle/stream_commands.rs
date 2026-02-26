@@ -14,7 +14,7 @@ impl RequestProcessor {
             "XADD key id field value [field value ...]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let requested_id = args[2];
 
         let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
@@ -46,7 +46,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "XDEL", "XDEL key id [id ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
@@ -89,7 +89,7 @@ impl RequestProcessor {
             if args.len() == 6 && !ascii_eq_ignore_case(args[5], b"MKSTREAM") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
             let id = args[4].to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
@@ -101,7 +101,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"SETID") {
             require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
             let id = args[4].to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
@@ -346,7 +346,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 4, "XACK", "XACK key group id [id ...]")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             append_integer(response_out, 0);
@@ -371,7 +371,7 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [start end count [consumer]]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
@@ -415,7 +415,7 @@ impl RequestProcessor {
             "XCLAIM",
             "XCLAIM key group consumer min-idle-time id [id ...] [options]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
@@ -488,7 +488,7 @@ impl RequestProcessor {
             "XAUTOCLAIM",
             "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let group = args[2];
         let Some(stream) = self.load_stream_object(&key)? else {
             return Err(RequestExecutionError::NoGroup);
@@ -538,7 +538,7 @@ impl RequestProcessor {
             "XSETID",
             "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id] [KEEPREF|DELREF|ACKED]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let last_id = args[2];
         if parse_stream_id(last_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
@@ -602,7 +602,7 @@ impl RequestProcessor {
         if !ascii_eq_ignore_case(full, b"FULL") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        let key = args[2].to_vec();
+        let key = RedisKey::from(args[2]);
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
@@ -621,7 +621,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "XLEN", "XLEN key")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let count = self
             .load_stream_object(&key)?
             .map_or(0usize, |stream| stream.entries.len());
@@ -640,7 +640,7 @@ impl RequestProcessor {
             "XRANGE",
             "XRANGE key start end [COUNT count]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let start = args[2];
         let end = args[3];
         let count = parse_stream_count_option(args)?;
@@ -673,7 +673,7 @@ impl RequestProcessor {
             "XREVRANGE",
             "XREVRANGE key end start [COUNT count]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let end = args[2];
         let start = args[3];
         let count = parse_stream_count_option(args)?;
@@ -706,7 +706,7 @@ impl RequestProcessor {
             "XTRIM",
             "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let spec = parse_xtrim_spec(args)?;
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,

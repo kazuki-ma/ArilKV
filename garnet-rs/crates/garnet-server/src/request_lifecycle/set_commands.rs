@@ -8,7 +8,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut set = self.load_set_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
         for member in &args[2..] {
@@ -28,7 +28,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut set = match self.load_set_object(&key)? {
             Some(set) => set,
             None => {
@@ -59,7 +59,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SMEMBERS", "SMEMBERS key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let set = match self.load_set_object(&key)? {
             Some(set) => set,
             None => {
@@ -84,7 +84,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SISMEMBER", "SISMEMBER key member")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let member = args[2];
         let set = match self.load_set_object(&key)? {
             Some(set) => set,
@@ -104,7 +104,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SCARD", "SCARD key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let len = self
             .load_set_object(&key)?
             .map_or(0, |set| set.len() as i64);
@@ -124,7 +124,7 @@ impl RequestProcessor {
             "SSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -154,7 +154,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SMISMEMBER", "SMISMEMBER key member [member ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let set = self.load_set_object(&key)?;
         let members = &args[2..];
         response_out.push(b'*');
@@ -174,7 +174,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SRANDMEMBER", "SRANDMEMBER key [count]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let set = self.load_set_object(&key)?;
         if args.len() == 2 {
             let Some(set) = set else {
@@ -224,7 +224,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SPOP", "SPOP key [count]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut set = self.load_set_object(&key)?;
         if args.len() == 2 {
             let Some(mut set) = set.take() else {
@@ -289,8 +289,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SMOVE", "SMOVE source destination member")?;
 
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
         let member = args[3].to_vec();
 
         let mut source_set = match self.load_set_object(&source)? {
@@ -421,7 +421,7 @@ impl RequestProcessor {
             "SUNIONSTORE",
             "SUNIONSTORE destination key [key ...]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let union = compute_sunion(self, &keys)?;
         store_set_result(self, &destination, &union)?;
@@ -440,7 +440,7 @@ impl RequestProcessor {
             "SINTERSTORE",
             "SINTERSTORE destination key [key ...]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let inter = compute_sinter(self, &keys)?;
         store_set_result(self, &destination, &inter)?;
@@ -459,7 +459,7 @@ impl RequestProcessor {
             "SDIFFSTORE",
             "SDIFFSTORE destination key [key ...]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let diff = compute_sdiff(self, &keys)?;
         store_set_result(self, &destination, &diff)?;

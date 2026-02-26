@@ -127,7 +127,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "GEOADD", GEOADD_USAGE)?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let (options, mut index) = parse_geoadd_options(args, 2)?;
 
         let remaining = args.len().saturating_sub(index);
@@ -468,7 +468,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 8, "GEOSEARCHSTORE", GEOSEARCHSTORE_USAGE)?;
         let options = parse_geosearch_options(args, 3, false, true)?;
 
-        let destination_key = args[1].to_vec();
+        let destination_key = RedisKey::from(args[1]);
         let source_key = args[2];
         execute_geo_query(
             self,

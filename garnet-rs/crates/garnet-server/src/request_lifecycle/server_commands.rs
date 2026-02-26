@@ -507,7 +507,7 @@ impl RequestProcessor {
         }
         let target_db =
             usize::try_from(target_db).map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(&key)?;
         self.active_expire_hash_fields_for_key(&key)?;
@@ -919,7 +919,7 @@ impl RequestProcessor {
         }
         require_exact_arity(args, 3, "MEMORY", "MEMORY USAGE key")?;
 
-        let key = args[2].to_vec();
+        let key = RedisKey::from(args[2]);
         self.expire_key_if_needed(&key)?;
 
         if let Some(value) = self.read_string_value(&key)? {
@@ -1021,7 +1021,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             let digest = self.debug_digest_value_for_key(&key)?;
             append_bulk_string(response_out, &digest);
@@ -1090,7 +1090,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"OBJECT") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if !self.key_exists_any(&key)? {
                 append_error(response_out, b"ERR no such key");
@@ -1131,7 +1131,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if self.key_exists(&key)? {
                 append_bulk_string(response_out, b"raw");
@@ -1159,7 +1159,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"REFCOUNT") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT REFCOUNT key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 append_integer(response_out, 1);
@@ -1171,7 +1171,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"IDLETIME") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT IDLETIME key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if !self.key_exists_any(&key)? {
                 append_null_bulk_string(response_out);
@@ -1183,7 +1183,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"FREQ") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT FREQ key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if !self.key_exists_any(&key)? {
                 append_null_bulk_string(response_out);
@@ -1766,7 +1766,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "DUMP", "DUMP key")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         if let Some(value) = self.read_string_value(&key)? {
             append_bulk_string(
@@ -2786,7 +2786,7 @@ fn restore_from_dump_blob(
         "RESTORE key ttl serialized-value [REPLACE] [ABSTTL] [IDLETIME seconds] [FREQ frequency]",
     )?;
 
-    let key = args[1].to_vec();
+    let key = RedisKey::from(args[1]);
     let ttl_input = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if ttl_input < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);

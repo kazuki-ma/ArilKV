@@ -243,6 +243,14 @@ impl std::borrow::Borrow<[u8]> for RedisKey {
     }
 }
 
+impl std::ops::Deref for RedisKey {
+    type Target = Vec<u8>;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 impl From<Vec<u8>> for RedisKey {
     fn from(value: Vec<u8>) -> Self {
         Self(value)
@@ -353,6 +361,12 @@ impl From<Vec<u8>> for ItemKey {
 impl From<&[u8]> for ItemKey {
     fn from(value: &[u8]) -> Self {
         Self(value.to_vec())
+    }
+}
+
+impl From<RedisKey> for ItemKey {
+    fn from(value: RedisKey) -> Self {
+        Self(value.into_vec())
     }
 }
 

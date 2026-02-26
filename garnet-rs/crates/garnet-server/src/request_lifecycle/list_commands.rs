@@ -8,7 +8,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSH", "LPUSH key value [value ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut list = self.load_list_object(&key)?.unwrap_or_default();
         for value in &args[2..] {
             list.insert(0, value.to_vec());
@@ -25,7 +25,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSH", "RPUSH key value [value ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut list = self.load_list_object(&key)?.unwrap_or_default();
         for value in &args[2..] {
             list.push(value.to_vec());
@@ -65,7 +65,7 @@ impl RequestProcessor {
         };
         ensure_one_of_arities(args, &[2, 3], command, expected)?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let count = if args.len() == 3 {
             let parsed = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if parsed < 0 {
@@ -149,7 +149,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LRANGE", "LRANGE key start stop")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
@@ -200,7 +200,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "LLEN", "LLEN key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let length = self
             .load_list_object(&key)?
             .map_or(0, |list| list.len() as i64);
@@ -214,7 +214,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "LINDEX", "LINDEX key index")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -242,7 +242,7 @@ impl RequestProcessor {
             "LPOS",
             "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let element = args[2];
         let options = parse_lpos_options(args, 3)?;
         let Some(list) = self.load_list_object(&key)? else {
@@ -325,7 +325,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LSET", "LSET key index element")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let value = args[3].to_vec();
         let mut list = self
@@ -350,7 +350,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LTRIM", "LTRIM key start stop")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let list = match self.load_list_object(&key)? {
@@ -397,7 +397,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSHX", "LPUSHX key value [value ...]")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
@@ -416,7 +416,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSHX", "RPUSHX key value [value ...]")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let Some(mut list) = self.load_list_object(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
@@ -435,7 +435,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LREM", "LREM key count element")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let target = args[3].to_vec();
         let Some(mut list) = self.load_list_object(&key)? else {
@@ -489,7 +489,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 5, "LINSERT", "LINSERT key BEFORE|AFTER pivot element")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let position = args[2];
         let pivot = args[3];
         let element = args[4].to_vec();
@@ -527,8 +527,8 @@ impl RequestProcessor {
             "LMOVE",
             "LMOVE source destination LEFT|RIGHT LEFT|RIGHT",
         )?;
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
         let source_side = parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -549,8 +549,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "RPOPLPUSH", "RPOPLPUSH source destination")?;
 
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
         self.handle_lmove_like(
             &source,
             &destination,
@@ -642,8 +642,8 @@ impl RequestProcessor {
             "BLMOVE",
             "BLMOVE source destination LEFT|RIGHT LEFT|RIGHT timeout",
         )?;
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
         let source_side = parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -668,8 +668,8 @@ impl RequestProcessor {
             "BRPOPLPUSH",
             "BRPOPLPUSH source destination timeout",
         )?;
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
         parse_blocking_timeout_seconds(args, 3)?;
         self.handle_lmove_like(
             &source,

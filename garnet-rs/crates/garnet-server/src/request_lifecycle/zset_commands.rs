@@ -14,7 +14,7 @@ impl RequestProcessor {
             "ZADD key score member [score member ...]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
 
@@ -41,7 +41,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -81,7 +81,7 @@ impl RequestProcessor {
             false
         };
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
@@ -132,7 +132,7 @@ impl RequestProcessor {
             false
         };
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let zset = match self.load_zset_object(&key)? {
@@ -185,7 +185,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "ZSCORE", "ZSCORE key member")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let member = args[2];
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -209,7 +209,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ZCARD", "ZCARD key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let count = self
             .load_zset_object(&key)?
             .map_or(0usize, |zset| zset.len());
@@ -224,7 +224,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let max = parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let zset = match self.load_zset_object(&key)? {
@@ -249,7 +249,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
         let max = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
 
@@ -286,7 +286,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
         let max = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
 
@@ -399,7 +399,7 @@ impl RequestProcessor {
             "ZDIFFSTORE",
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         if option_start != args.len() {
             return Err(RequestExecutionError::SyntaxError);
@@ -454,7 +454,7 @@ impl RequestProcessor {
             "ZINTERSTORE",
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -517,7 +517,7 @@ impl RequestProcessor {
             "ZUNIONSTORE",
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -580,8 +580,8 @@ impl RequestProcessor {
             "ZRANGESTORE",
             "ZRANGESTORE dst src min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]",
         )?;
-        let destination = args[1].to_vec();
-        let source = args[2].to_vec();
+        let destination = RedisKey::from(args[1]);
+        let source = RedisKey::from(args[2]);
         let left = args[3];
         let right = args[4];
         let options = parse_zrangestore_options(args, 5)?;
@@ -608,7 +608,7 @@ impl RequestProcessor {
             "ZSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -653,7 +653,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let increment = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let member = args[3].to_vec();
 
@@ -675,7 +675,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
 
@@ -718,7 +718,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let max = parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
 
@@ -773,7 +773,7 @@ impl RequestProcessor {
             },
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let left_bound = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let right_bound =
             parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
@@ -835,7 +835,7 @@ impl RequestProcessor {
             },
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let left_bound = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
         let right_bound = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let limit = parse_zrangebylex_limit(args, 4)?;
@@ -888,7 +888,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let zset = self.load_zset_object(&key)?;
         let members = &args[2..];
 
@@ -917,7 +917,7 @@ impl RequestProcessor {
             "ZRANDMEMBER",
             "ZRANDMEMBER key [count [WITHSCORES]]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let zset = self.load_zset_object(&key)?;
         if args.len() == 2 {
             let Some(zset) = zset else {
@@ -1038,7 +1038,7 @@ impl RequestProcessor {
             },
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let member = args[2];
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
@@ -1081,7 +1081,7 @@ impl RequestProcessor {
                 "ZPOPMIN key [count]"
             },
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let count = if args.len() == 3 {
             parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?
         } else {

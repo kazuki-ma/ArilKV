@@ -68,7 +68,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 4, 2, "HSET", "HSET key field value [field value ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let access_fields = args[2..]
             .chunks_exact(2)
@@ -100,7 +100,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HGET", "HGET key field")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let field = args[2];
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -132,7 +132,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HDEL", "HDEL key field [field ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -166,7 +166,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HGETALL", "HGETALL key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -193,7 +193,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HLEN", "HLEN key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let len = self
             .load_hash_object(&key)?
             .map(|hash| hash.len() as i64)
@@ -209,7 +209,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HMGET", "HMGET key field [field ...]")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut hash = self.load_hash_object(&key)?;
         if let Some(hash_mut) = hash.as_mut() {
             let lazy_expired = self.apply_hash_field_lazy_expiration(&key, hash_mut, &args[2..]);
@@ -243,7 +243,7 @@ impl RequestProcessor {
             "HMSET key field value [field value ...]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let access_fields = args[2..]
             .chunks_exact(2)
@@ -270,7 +270,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HSETNX", "HSETNX key field value")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let field = args[2].to_vec();
         self.apply_hash_field_lazy_expiration(&key, &mut hash, &[args[2]]);
@@ -293,7 +293,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HEXISTS", "HEXISTS key field")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let field = args[2];
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -318,7 +318,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HKEYS", "HKEYS key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -342,7 +342,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HVALS", "HVALS key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -366,7 +366,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HSTRLEN", "HSTRLEN key field")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let field = args[2];
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -396,7 +396,7 @@ impl RequestProcessor {
             "HSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
@@ -441,7 +441,7 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "HINCRBY", "HINCRBY key field increment")?;
 
         let increment = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         self.apply_hash_field_lazy_expiration(&key, &mut hash, &[args[2]]);
@@ -467,7 +467,7 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "HINCRBYFLOAT", "HINCRBYFLOAT key field increment")?;
 
         let increment = parse_f64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         self.apply_hash_field_lazy_expiration(&key, &mut hash, &[args[2]]);
@@ -500,7 +500,7 @@ impl RequestProcessor {
             "HRANDFIELD key [count [WITHVALUES]]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let mut hash = self.load_hash_object(&key)?;
         if let Some(hash_mut) = hash.as_mut() {
             let all_fields_owned = hash_mut.keys().cloned().collect::<Vec<_>>();
@@ -643,7 +643,7 @@ impl RequestProcessor {
             "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
         )?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let (expiration_unix_millis, fields_index, expire_if_past_immediately) =
             parse_hsetex_options(args)?;
         let field_values = parse_hash_fields_with_values(
@@ -698,7 +698,7 @@ impl RequestProcessor {
             "HGETEX",
             "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let (expiration_unix_millis, fields_index, expire_if_past_immediately) =
             parse_hgetex_options(args)?;
         let fields = parse_hash_fields(
@@ -767,7 +767,7 @@ impl RequestProcessor {
             "HGETDEL",
             "HGETDEL key FIELDS num field [field ...]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let fields = parse_hash_fields(
             args,
             2,
@@ -940,7 +940,7 @@ impl RequestProcessor {
             "HPERSIST",
             "HPERSIST key FIELDS num field [field ...]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let fields = parse_hash_fields(
             args,
             2,
@@ -1059,7 +1059,7 @@ impl RequestProcessor {
         command_usage: &'static str,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let fields = parse_hash_fields(args, 2, command_name, command_usage)?;
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -1106,7 +1106,7 @@ impl RequestProcessor {
         command_usage: &'static str,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let fields = parse_hash_fields(args, 2, command_name, command_usage)?;
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -1194,7 +1194,7 @@ impl RequestProcessor {
         command_usage: &'static str,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let fields = parse_hash_fields(args, fields_index, command_name, command_usage)?;
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,

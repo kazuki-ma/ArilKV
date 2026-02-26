@@ -143,7 +143,7 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_get.enter");
         require_exact_arity(args, 2, "GET", "GET key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
@@ -180,7 +180,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "STRLEN", "STRLEN key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
@@ -241,7 +241,7 @@ impl RequestProcessor {
 
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
@@ -285,7 +285,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let Some(value) = self.read_string_value(&key)? else {
             if self.object_key_exists(&key)? {
@@ -323,7 +323,7 @@ impl RequestProcessor {
             1 => 1u8,
             _ => return Err(RequestExecutionError::ValueOutOfRange),
         };
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
         let mut value = match self.read_string_value(&key)? {
@@ -381,7 +381,7 @@ impl RequestProcessor {
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         let new_segment = args[3];
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
@@ -444,7 +444,7 @@ impl RequestProcessor {
             Some((start, end, bit_mode))
         };
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let Some(value) = self.read_string_value(&key)? else {
             if self.object_key_exists(&key)? {
@@ -508,7 +508,7 @@ impl RequestProcessor {
             "BITPOS",
             "BITPOS key bit [start [end [BYTE|BIT]]]",
         )?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let bit = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if bit != 0 && bit != 1 {
             return Err(RequestExecutionError::ValueOutOfRange);
@@ -648,7 +648,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let destination = args[2].to_vec();
+        let destination = RedisKey::from(args[2]);
         let source_keys = args[3..].iter().map(|key| key.to_vec()).collect::<Vec<_>>();
 
         let mut source_values = Vec::with_capacity(source_keys.len());
@@ -710,7 +710,7 @@ impl RequestProcessor {
         };
         ensure_min_arity(args, 2, command, expected)?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
         let mut value = match self.read_string_value(&key)? {
@@ -923,8 +923,8 @@ impl RequestProcessor {
         )?;
 
         let options = parse_lcs_options(args)?;
-        let left_key = args[1].to_vec();
-        let right_key = args[2].to_vec();
+        let left_key = RedisKey::from(args[1]);
+        let right_key = RedisKey::from(args[2]);
 
         self.expire_key_if_needed(&left_key)?;
         self.expire_key_if_needed(&right_key)?;
@@ -995,7 +995,7 @@ impl RequestProcessor {
         )?;
 
         let options = parse_sort_options(args, read_only)?;
-        let source_key = args[1].to_vec();
+        let source_key = RedisKey::from(args[1]);
         let mut elements = load_sort_elements(self, &source_key)?;
 
         let by_pattern = options.by_pattern.as_deref();
@@ -1153,7 +1153,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "APPEND", "APPEND key value")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let append_value = args[2];
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
@@ -1218,7 +1218,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let action = parse_getex_action(args)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
         let Some(value) = self.read_string_value(&key)? else {
@@ -1289,7 +1289,7 @@ impl RequestProcessor {
         require_exact_arity(args, 3, "INCRBYFLOAT", "INCRBYFLOAT key increment")?;
 
         let increment = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
         let (current, expiration_unix_millis) = match self.read_string_value(&key)? {
@@ -1336,7 +1336,7 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_set.enter");
         ensure_min_arity(args, 3, "SET", "SET key value")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let value = args[2];
         let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
@@ -1639,8 +1639,8 @@ impl RequestProcessor {
             ("RENAME", "RENAME key newkey")
         };
         require_exact_arity(args, 3, command, expected)?;
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
 
         self.expire_key_if_needed(&source)?;
         self.expire_key_if_needed(&destination)?;
@@ -1687,8 +1687,8 @@ impl RequestProcessor {
             "COPY",
             "COPY source destination [DB destination-db] [REPLACE]",
         )?;
-        let source = args[1].to_vec();
-        let destination = args[2].to_vec();
+        let source = RedisKey::from(args[1]);
+        let destination = RedisKey::from(args[2]);
 
         let mut replace = false;
         let mut destination_db = 0u64;
@@ -1754,7 +1754,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 2, command, expected)?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.apply_incr_decr_delta(&key, delta, response_out)
     }
 
@@ -1779,7 +1779,7 @@ impl RequestProcessor {
         } else {
             amount
         };
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.apply_incr_decr_delta(&key, delta, response_out)
     }
 
@@ -1866,7 +1866,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "TYPE", "TYPE key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         if self.key_exists(&key)? {
             append_simple_string(response_out, b"string");
@@ -1955,7 +1955,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFADD", "PFADD key element [element ...]")?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         let existing = load_pf_set_for_key(self, &key)?;
         let was_missing = existing.is_none();
         let mut state = existing.unwrap_or_default();
@@ -2025,7 +2025,7 @@ impl RequestProcessor {
             "PFMERGE",
             "PFMERGE destkey sourcekey [sourcekey ...]",
         )?;
-        let destination = args[1].to_vec();
+        let destination = RedisKey::from(args[1]);
         let mut merged = load_pf_set_for_key(self, &destination)?.unwrap_or_default();
         for source_arg in &args[2..] {
             let source = source_arg.to_vec();
@@ -2066,7 +2066,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG ENCODING key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             let encoding = if load_pf_set_for_key(self, &key)?
                 .map(|state| state.is_dense)
                 .unwrap_or(false)
@@ -2080,7 +2080,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"TODENSE") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG TODENSE key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             let mut state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
             state.is_dense = true;
             self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
@@ -2089,7 +2089,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GETREG") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG GETREG key")?;
-            let key = args[2].to_vec();
+            let key = RedisKey::from(args[2]);
             let state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
             response_out.push(b'*');
             response_out.extend_from_slice(PFDEBUG_REGISTER_COUNT.to_string().as_bytes());
@@ -2236,7 +2236,7 @@ impl RequestProcessor {
             RequestExecutionError::InvalidExpireCommandExpireTime
         };
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(&key)?;
         let string_exists = self.key_exists(&key)?;
@@ -2317,7 +2317,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, command, expected)?;
 
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(&key)?;
         let string_exists = self.key_exists(&key)?;
@@ -2465,7 +2465,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 2, command, expected)?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
         if !self.key_exists_any(&key)? {
@@ -2530,7 +2530,7 @@ impl RequestProcessor {
         };
         require_exact_arity(args, 2, command, expected)?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
         if !self.key_exists_any(&key)? {
@@ -2584,7 +2584,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "PERSIST", "PERSIST key")?;
 
-        let key = args[1].to_vec();
+        let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let string_exists = self.key_exists(&key)?;
         let object_exists = self.object_key_exists(&key)?;
@@ -2596,7 +2596,7 @@ impl RequestProcessor {
         let shard_index = self.string_store_shard_index_for_key(&key);
         let removed_deadline = {
             let mut expirations = self.lock_string_expirations_for_shard(shard_index);
-            let removed = expirations.remove(&key).is_some();
+            let removed = expirations.remove(key.as_slice()).is_some();
             if removed {
                 self.decrement_string_expiration_count(shard_index);
             }
