@@ -16,6 +16,7 @@ use tokio::sync::broadcast;
 use tokio::task::yield_now;
 use tokio::time::sleep;
 
+use crate::ClientId;
 use crate::ClientKillFilter;
 use crate::ClientTypeFilter;
 use crate::RequestExecutionError;
@@ -420,7 +421,7 @@ impl Default for ClientConnectionState {
 
 fn apply_reset_command_side_effects(
     metrics: &ServerMetrics,
-    client_id: u64,
+    client_id: ClientId,
     transaction: &mut ConnectionTransactionState,
     client_state: &mut ClientConnectionState,
     monitor_receiver: &mut Option<broadcast::Receiver<Vec<u8>>>,
@@ -1607,7 +1608,7 @@ async fn execute_blocking_frame_on_owner_thread(
     command_mutating: bool,
     frame: &[u8],
     client_no_touch: bool,
-    client_id: u64,
+    client_id: ClientId,
     stream: &mut TcpStream,
 ) -> Result<(Vec<u8>, bool), OwnerThreadExecutionError> {
     // TLA+ mapping (`formal/tla/specs/BlockingDisconnectLeak.tla`):
@@ -1749,7 +1750,7 @@ async fn execute_blocking_frame_on_owner_thread(
 fn clear_blocking_client_state(
     processor: &RequestProcessor,
     metrics: &ServerMetrics,
-    client_id: u64,
+    client_id: ClientId,
     blocking_keys: &[RedisKey],
 ) {
     // Shared cleanup for both successful wakeups and disconnect/unblock paths.
@@ -2331,7 +2332,7 @@ fn parse_blocking_timeout_arg(args: &[ArgSlice], timeout_index: usize) -> Option
 fn handle_client_command(
     processor: &RequestProcessor,
     metrics: &ServerMetrics,
-    client_id: u64,
+    client_id: ClientId,
     args: &[ArgSlice],
     client_state: &mut ClientConnectionState,
     response_out: &mut Vec<u8>,
@@ -2358,7 +2359,8 @@ fn handle_client_command(
             append_client_subcommand_wrong_arity(response_out, b"id");
             return outcome;
         }
-        append_integer_frame(response_out, client_id as i64);
+        let id = i64::try_from(u64::from(client_id)).unwrap_or(i64::MAX);
+        append_integer_frame(response_out, id);
         return outcome;
     }
 
@@ -2451,7 +2453,7 @@ fn handle_client_command(
     }
 
     if ascii_eq_ignore_case(subcommand, b"LIST") {
-        let mut filter_id = None;
+        let mut filter_id: Option<ClientId> = None;
         if args.len() > 2 {
             if args.len() != 4 {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
@@ -2469,7 +2471,7 @@ fn handle_client_command(
                 response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
                 return outcome;
             };
-            filter_id = Some(parsed_id);
+            filter_id = Some(ClientId::new(parsed_id));
         }
         let payload = metrics.render_client_list_payload(filter_id);
         append_bulk_string_frame(response_out, &payload);
@@ -2507,7 +2509,7 @@ fn handle_client_command(
                         append_error_line(response_out, b"ERR client-id should be greater than 0");
                         return outcome;
                     }
-                    filter.id = Some(parsed_id as u64);
+                    filter.id = Some(ClientId::new(parsed_id as u64));
                 } else if ascii_eq_ignore_case(option, b"TYPE") {
                     if ascii_eq_ignore_case(value, b"NORMAL") {
                         filter.client_type = Some(ClientTypeFilter::Normal);
@@ -2585,10 +2587,11 @@ fn handle_client_command(
         }
         // SAFETY: `args` points to the current request frame.
         let id_arg = arg_slice_bytes(&args[2]);
-        let Some(target_client_id) = parse_u64_ascii(id_arg) else {
+        let Some(target_client_id_raw) = parse_u64_ascii(id_arg) else {
             response_out.extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
             return outcome;
         };
+        let target_client_id = ClientId::new(target_client_id_raw);
         let unblock_mode = if args.len() == 4 {
             // SAFETY: `args` points to the current request frame.
             let mode_arg = arg_slice_bytes(&args[3]);
@@ -3032,7 +3035,7 @@ fn maybe_update_client_resp_protocol_version_after_hello(
 
 fn finalize_client_command(
     metrics: &ServerMetrics,
-    client_id: u64,
+    client_id: ClientId,
     responses: &mut Vec<u8>,
     response_mark: usize,
     client_state: &mut ClientConnectionState,
@@ -3745,7 +3748,7 @@ fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usi
 struct ConnectionLifecycle<'a> {
     metrics: &'a ServerMetrics,
     processor: &'a RequestProcessor,
-    client_id: u64,
+    client_id: ClientId,
 }
 
 impl Drop for ConnectionLifecycle<'_> {
@@ -4165,7 +4168,7 @@ mod tests {
         let outcome = handle_client_command(
             &processor,
             &metrics,
-            1,
+            ClientId::new(1),
             &args[..meta.argument_count],
             &mut client_state,
             &mut response,

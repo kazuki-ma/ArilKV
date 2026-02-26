@@ -83,6 +83,7 @@ pub use shard_owner_threads::ShardOwnerThreadPoolError;
 
 use std::collections::BTreeMap;
 use std::collections::HashSet;
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
@@ -121,6 +122,34 @@ impl Default for ServerConfig {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct ClientId(u64);
+
+impl ClientId {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl fmt::Display for ClientId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for ClientId {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<ClientId> for u64 {
+    fn from(value: ClientId) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug)]
 pub struct ServerMetrics {
     accepted_connections: AtomicU64,
@@ -128,7 +157,7 @@ pub struct ServerMetrics {
     closed_connections: AtomicU64,
     bytes_received: AtomicU64,
     next_client_id: AtomicU64,
-    clients: Mutex<BTreeMap<u64, ClientRuntimeInfo>>,
+    clients: Mutex<BTreeMap<ClientId, ClientRuntimeInfo>>,
     acl_users: Mutex<HashSet<Vec<u8>>>,
     monitor_broadcast: broadcast::Sender<Vec<u8>>,
 }
@@ -161,7 +190,7 @@ pub(crate) enum ClientTypeFilter {
 
 #[derive(Debug, Clone)]
 pub(crate) struct ClientKillFilter {
-    pub id: Option<u64>,
+    pub id: Option<ClientId>,
     pub user: Option<Vec<u8>>,
     pub addr: Option<Vec<u8>>,
     pub laddr: Option<Vec<u8>>,
@@ -254,21 +283,21 @@ impl ServerMetrics {
         &self,
         remote_addr: Option<SocketAddr>,
         local_addr: Option<SocketAddr>,
-    ) -> u64 {
-        let id = self.next_client_id.fetch_add(1, Ordering::Relaxed) + 1;
+    ) -> ClientId {
+        let id = ClientId::new(self.next_client_id.fetch_add(1, Ordering::Relaxed) + 1);
         if let Ok(mut clients) = self.clients.lock() {
             clients.insert(id, ClientRuntimeInfo::new(remote_addr, local_addr));
         }
         id
     }
 
-    pub fn unregister_client(&self, client_id: u64) {
+    pub fn unregister_client(&self, client_id: ClientId) {
         if let Ok(mut clients) = self.clients.lock() {
             let _ = clients.remove(&client_id);
         }
     }
 
-    pub fn set_client_name(&self, client_id: u64, name: Option<Vec<u8>>) {
+    pub fn set_client_name(&self, client_id: ClientId, name: Option<Vec<u8>>) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.name = name;
@@ -277,7 +306,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn client_name(&self, client_id: u64) -> Option<Vec<u8>> {
+    pub fn client_name(&self, client_id: ClientId) -> Option<Vec<u8>> {
         self.clients.lock().ok().and_then(|clients| {
             clients
                 .get(&client_id)
@@ -287,7 +316,7 @@ impl ServerMetrics {
 
     pub fn set_client_last_command(
         &self,
-        client_id: u64,
+        client_id: ClientId,
         command_name: &[u8],
         subcommand_name: Option<&[u8]>,
     ) {
@@ -313,7 +342,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn set_client_blocked(&self, client_id: u64, blocked: bool) {
+    pub fn set_client_blocked(&self, client_id: ClientId, blocked: bool) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.blocked = blocked;
@@ -322,7 +351,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn is_client_blocked(&self, client_id: u64) -> bool {
+    pub fn is_client_blocked(&self, client_id: ClientId) -> bool {
         self.clients
             .lock()
             .ok()
@@ -330,7 +359,7 @@ impl ServerMetrics {
             .unwrap_or(false)
     }
 
-    pub fn set_client_user(&self, client_id: u64, user: Vec<u8>) {
+    pub fn set_client_user(&self, client_id: ClientId, user: Vec<u8>) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.user = user;
@@ -339,7 +368,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn client_user(&self, client_id: u64) -> Option<Vec<u8>> {
+    pub fn client_user(&self, client_id: ClientId) -> Option<Vec<u8>> {
         self.clients.lock().ok().and_then(|clients| {
             clients
                 .get(&client_id)
@@ -347,7 +376,7 @@ impl ServerMetrics {
         })
     }
 
-    pub fn set_client_library_name(&self, client_id: u64, value: Option<Vec<u8>>) {
+    pub fn set_client_library_name(&self, client_id: ClientId, value: Option<Vec<u8>>) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.library_name = value;
@@ -356,7 +385,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn set_client_library_version(&self, client_id: u64, value: Option<Vec<u8>>) {
+    pub fn set_client_library_version(&self, client_id: ClientId, value: Option<Vec<u8>>) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.library_version = value;
@@ -365,7 +394,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn add_client_input_bytes(&self, client_id: u64, bytes: u64) {
+    pub fn add_client_input_bytes(&self, client_id: ClientId, bytes: u64) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
@@ -374,7 +403,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn add_client_output_bytes(&self, client_id: u64, bytes: u64) {
+    pub fn add_client_output_bytes(&self, client_id: ClientId, bytes: u64) {
         if let Ok(mut clients) = self.clients.lock() {
             if let Some(client) = clients.get_mut(&client_id) {
                 client.total_output_bytes = client.total_output_bytes.saturating_add(bytes);
@@ -383,7 +412,7 @@ impl ServerMetrics {
         }
     }
 
-    pub fn add_client_commands_processed(&self, client_id: u64, delta: u64) {
+    pub fn add_client_commands_processed(&self, client_id: ClientId, delta: u64) {
         if delta == 0 {
             return;
         }
@@ -402,7 +431,7 @@ impl ServerMetrics {
         clients.values().filter(|client| !client.killed).count() as u64
     }
 
-    pub fn is_client_killed(&self, client_id: u64) -> bool {
+    pub fn is_client_killed(&self, client_id: ClientId) -> bool {
         self.clients
             .lock()
             .ok()
@@ -412,9 +441,9 @@ impl ServerMetrics {
 
     pub(crate) fn kill_clients(
         &self,
-        current_client_id: u64,
+        current_client_id: ClientId,
         filter: &ClientKillFilter,
-    ) -> Vec<u64> {
+    ) -> Vec<ClientId> {
         let Ok(mut clients) = self.clients.lock() else {
             return Vec::new();
         };
@@ -488,7 +517,7 @@ impl ServerMetrics {
         let _ = self.monitor_broadcast.send(payload);
     }
 
-    pub fn render_client_info_payload(&self, client_id: u64) -> Option<Vec<u8>> {
+    pub fn render_client_info_payload(&self, client_id: ClientId) -> Option<Vec<u8>> {
         let Ok(clients) = self.clients.lock() else {
             return None;
         };
@@ -500,7 +529,7 @@ impl ServerMetrics {
         Some(render_client_line(client_id, client, now))
     }
 
-    pub fn render_client_list_payload(&self, filter_id: Option<u64>) -> Vec<u8> {
+    pub fn render_client_list_payload(&self, filter_id: Option<ClientId>) -> Vec<u8> {
         let Ok(clients) = self.clients.lock() else {
             return Vec::new();
         };
@@ -524,7 +553,7 @@ impl ServerMetrics {
     }
 }
 
-fn render_client_line(client_id: u64, client: &ClientRuntimeInfo, now: Instant) -> Vec<u8> {
+fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Instant) -> Vec<u8> {
     let age_seconds = now.duration_since(client.connect_time).as_secs();
     let idle_seconds = now.duration_since(client.last_activity).as_secs();
     let flags = if client.blocked { "b" } else { "N" };
@@ -547,7 +576,7 @@ fn render_client_line(client_id: u64, client: &ClientRuntimeInfo, now: Instant) 
         .unwrap_or_default();
     format!(
         "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=20474 argv-mem=0 multi-mem=0 rbs=16384 rbp=0 obl=0 oll=0 omem=0 tot-mem=20480 events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
-        client_id,
+        u64::from(client_id),
         String::from_utf8_lossy(&client.addr),
         String::from_utf8_lossy(&client.laddr),
         name,

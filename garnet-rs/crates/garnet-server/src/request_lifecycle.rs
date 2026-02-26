@@ -1,5 +1,6 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
 
+use crate::ClientId;
 use crate::CommandId;
 use crate::command_spec::command_allowed_while_script_busy;
 use crate::debug_concurrency::LockClass;
@@ -526,8 +527,8 @@ pub struct RequestProcessor {
     string_key_registries: Vec<OrderedMutex<HashSet<RedisKey>>>,
     object_key_registries: Vec<OrderedMutex<HashSet<RedisKey>>>,
     watch_versions: Vec<AtomicU64>,
-    blocking_wait_queues: Mutex<HashMap<RedisKey, VecDeque<u64>>>,
-    pending_client_unblocks: Mutex<HashMap<u64, ClientUnblockMode>>,
+    blocking_wait_queues: Mutex<HashMap<RedisKey, VecDeque<ClientId>>>,
+    pending_client_unblocks: Mutex<HashMap<ClientId, ClientUnblockMode>>,
     forced_list_quicklist_keys: Mutex<HashSet<RedisKey>>,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
@@ -1268,7 +1269,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn register_blocking_wait(&self, client_id: u64, keys: &[RedisKey]) {
+    pub(crate) fn register_blocking_wait(&self, client_id: ClientId, keys: &[RedisKey]) {
         if keys.is_empty() {
             return;
         }
@@ -1283,7 +1284,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn unregister_blocking_wait(&self, client_id: u64, keys: &[RedisKey]) {
+    pub(crate) fn unregister_blocking_wait(&self, client_id: ClientId, keys: &[RedisKey]) {
         if keys.is_empty() {
             return;
         }
@@ -1302,7 +1303,7 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn is_blocking_wait_turn(&self, client_id: u64, keys: &[RedisKey]) -> bool {
+    pub(crate) fn is_blocking_wait_turn(&self, client_id: ClientId, keys: &[RedisKey]) -> bool {
         if keys.is_empty() {
             return true;
         }
@@ -1320,7 +1321,11 @@ impl RequestProcessor {
         true
     }
 
-    pub(crate) fn request_client_unblock(&self, client_id: u64, mode: ClientUnblockMode) -> bool {
+    pub(crate) fn request_client_unblock(
+        &self,
+        client_id: ClientId,
+        mode: ClientUnblockMode,
+    ) -> bool {
         let is_blocked = self
             .blocking_wait_queues
             .lock()
@@ -1336,14 +1341,17 @@ impl RequestProcessor {
         false
     }
 
-    pub(crate) fn take_client_unblock_request(&self, client_id: u64) -> Option<ClientUnblockMode> {
+    pub(crate) fn take_client_unblock_request(
+        &self,
+        client_id: ClientId,
+    ) -> Option<ClientUnblockMode> {
         self.pending_client_unblocks
             .lock()
             .ok()
             .and_then(|mut pending| pending.remove(&client_id))
     }
 
-    pub(crate) fn clear_client_unblock_request(&self, client_id: u64) {
+    pub(crate) fn clear_client_unblock_request(&self, client_id: ClientId) {
         if let Ok(mut pending) = self.pending_client_unblocks.lock() {
             let _ = pending.remove(&client_id);
         }
