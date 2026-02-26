@@ -228,6 +228,48 @@ async fn protocol_returns_redis_style_resp_parse_errors() {
 }
 
 #[tokio::test]
+async fn hello_protocol_version_is_connection_scoped() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client_a = TcpStream::connect(addr).await.unwrap();
+    let mut client_b = TcpStream::connect(addr).await.unwrap();
+    let debug_protocol_true = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$4\r\nTRUE\r\n";
+
+    send_and_expect(
+        &mut client_a,
+        b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client_a, debug_protocol_true, b"#t\r\n").await;
+
+    send_and_expect(&mut client_b, debug_protocol_true, b":1\r\n").await;
+
+    send_and_expect(
+        &mut client_a,
+        b"*2\r\n$5\r\nHELLO\r\n$1\r\n2\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client_a, debug_protocol_true, b":1\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -7775,6 +7775,101 @@ fn debug_loadaof_returns_ok() {
 }
 
 #[test]
+fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let debug_attrib = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$6\r\nATTRIB\r\n";
+    let debug_bignum = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$6\r\nBIGNUM\r\n";
+    let debug_true = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$4\r\nTRUE\r\n";
+    let debug_false = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$5\r\nFALSE\r\n";
+    let debug_verbatim = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$8\r\nVERBATIM\r\n";
+
+    processor.set_resp_protocol_version(2);
+
+    let meta = parse_resp_command_arg_slices(debug_attrib, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"$39\r\nSome real reply following the attribute\r\n"
+    );
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_bignum, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"$37\r\n1234567999999999999999999999999999999\r\n"
+    );
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_true, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_false, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_verbatim, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$25\r\nThis is a verbatim\nstring\r\n");
+
+    processor.set_resp_protocol_version(3);
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_attrib, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(
+        response,
+        b"|1\r\n$14\r\nkey-popularity\r\n*2\r\n$7\r\nkey:123\r\n:90\r\n$39\r\nSome real reply following the attribute\r\n"
+    );
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_bignum, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"(1234567999999999999999999999999999999\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_true, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"#t\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_false, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"#f\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_verbatim, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"=29\r\ntxt:This is a verbatim\nstring\r\n");
+}
+
+#[test]
 fn object_encoding_and_refcount_report_basic_metadata() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

@@ -403,6 +403,7 @@ struct ClientConnectionState {
     tracking_mode: ClientTrackingMode,
     no_evict: bool,
     no_touch: bool,
+    resp_protocol_version: usize,
 }
 
 impl Default for ClientConnectionState {
@@ -412,6 +413,7 @@ impl Default for ClientConnectionState {
             tracking_mode: ClientTrackingMode::Off,
             no_evict: false,
             no_touch: false,
+            resp_protocol_version: 2,
         }
     }
 }
@@ -654,6 +656,7 @@ pub(crate) async fn handle_connection(
             } else {
                 None
             };
+            processor.set_resp_protocol_version(client_state.resp_protocol_version);
             metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
             metrics.set_client_last_command(client_id, command_name, subcommand_name);
             let command_call_name =
@@ -1392,6 +1395,12 @@ pub(crate) async fn handle_connection(
                             Ok((frame_response, should_replicate)) => {
                                 wait_for_blocking_progress = blocked_before > 0
                                     && command_may_wake_blocking_waiters(command);
+                                maybe_update_client_resp_protocol_version_after_hello(
+                                    command,
+                                    &args[..argument_count],
+                                    &frame_response,
+                                    &mut client_state,
+                                );
                                 responses.extend_from_slice(&frame_response);
                                 if should_replicate {
                                     replication_frame = replication_frame_for_command(
@@ -2994,6 +3003,30 @@ fn parse_u64_ascii(value: &[u8]) -> Option<u64> {
 fn parse_i64_ascii(value: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(value).ok()?;
     text.parse::<i64>().ok()
+}
+
+fn maybe_update_client_resp_protocol_version_after_hello(
+    command: CommandId,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    client_state: &mut ClientConnectionState,
+) {
+    if command != CommandId::Hello || !frame_response.starts_with(b"+OK\r\n") {
+        return;
+    }
+    if args.len() != 2 {
+        return;
+    }
+    let Some(version_arg) = args.get(1) else {
+        return;
+    };
+    // SAFETY: args reference the currently parsed frame bytes.
+    let Some(version) = parse_u64_ascii(arg_slice_bytes(version_arg)) else {
+        return;
+    };
+    if version == 2 || version == 3 {
+        client_state.resp_protocol_version = version as usize;
+    }
 }
 
 fn finalize_client_command(

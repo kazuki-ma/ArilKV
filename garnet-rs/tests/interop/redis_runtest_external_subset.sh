@@ -136,7 +136,6 @@ run_runtest_case() {
         --host 127.0.0.1
         --port "${GARNET_PORT}"
         --singledb
-        --force-resp3
         --dont-clean
         --single "${unit}"
     )
@@ -182,7 +181,6 @@ run_full_runtest_case() {
         --host 127.0.0.1
         --port "${GARNET_PORT}"
         --singledb
-        --force-resp3
         --dont-clean
         --durable
     )

@@ -167,6 +167,11 @@ const CLIENT_HELP_LINES: [&[u8]; 19] = [
     b"NO-TOUCH (ON|OFF)",
     b"    Avoid touching LRU/LFU stats for current client connection commands.",
 ];
+const DEBUG_PROTOCOL_ATTRIB_REPLY: &[u8] = b"Some real reply following the attribute";
+const DEBUG_PROTOCOL_BIGNUM_VALUE: &[u8] = b"1234567999999999999999999999999999999";
+const DEBUG_PROTOCOL_VERBATIM_VALUE: &[u8] = b"This is a verbatim\nstring";
+const DEBUG_PROTOCOL_ATTRIBUTE_NAME: &[u8] = b"key-popularity";
+const DEBUG_PROTOCOL_ATTRIBUTE_KEY: &[u8] = b"key:123";
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
 const MIGRATE_USAGE: &str = "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
 const COMMAND_LIST_EXTRA_NAMES: [&[u8]; 8] = [
@@ -939,6 +944,61 @@ impl RequestProcessor {
             let digest = self.debug_dataset_digest()?;
             append_bulk_string(response_out, &digest);
             return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"PROTOCOL") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG PROTOCOL <subcommand>")?;
+            let protocol_subcommand = args[2];
+            let resp3 = self.resp_protocol_version() == 3;
+            if ascii_eq_ignore_case(protocol_subcommand, b"ATTRIB") {
+                if resp3 {
+                    response_out.extend_from_slice(b"|1\r\n");
+                    append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIBUTE_NAME);
+                    response_out.extend_from_slice(b"*2\r\n");
+                    append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIBUTE_KEY);
+                    append_integer(response_out, 90);
+                    append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIB_REPLY);
+                } else {
+                    append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIB_REPLY);
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"BIGNUM") {
+                if resp3 {
+                    append_resp3_bignum(response_out, DEBUG_PROTOCOL_BIGNUM_VALUE);
+                } else {
+                    append_bulk_string(response_out, DEBUG_PROTOCOL_BIGNUM_VALUE);
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"TRUE") {
+                if resp3 {
+                    append_resp3_boolean(response_out, true);
+                } else {
+                    append_integer(response_out, 1);
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"FALSE") {
+                if resp3 {
+                    append_resp3_boolean(response_out, false);
+                } else {
+                    append_integer(response_out, 0);
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"VERBATIM") {
+                if resp3 {
+                    append_resp3_verbatim_string(
+                        response_out,
+                        b"txt",
+                        DEBUG_PROTOCOL_VERBATIM_VALUE,
+                    );
+                } else {
+                    append_bulk_string(response_out, DEBUG_PROTOCOL_VERBATIM_VALUE);
+                }
+                return Ok(());
+            }
+            return Err(RequestExecutionError::UnknownSubcommand);
         }
         if ascii_eq_ignore_case(subcommand, b"OBJECT") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
@@ -3353,6 +3413,31 @@ fn bytes_eq(left: u8, right: u8, nocase: bool) -> bool {
     } else {
         left == right
     }
+}
+
+fn append_resp3_boolean(response_out: &mut Vec<u8>, value: bool) {
+    if value {
+        response_out.extend_from_slice(b"#t\r\n");
+    } else {
+        response_out.extend_from_slice(b"#f\r\n");
+    }
+}
+
+fn append_resp3_bignum(response_out: &mut Vec<u8>, value: &[u8]) {
+    response_out.push(b'(');
+    response_out.extend_from_slice(value);
+    response_out.extend_from_slice(b"\r\n");
+}
+
+fn append_resp3_verbatim_string(response_out: &mut Vec<u8>, format: &[u8], value: &[u8]) {
+    response_out.push(b'=');
+    let payload_len = format.len().saturating_add(1).saturating_add(value.len());
+    response_out.extend_from_slice(payload_len.to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    response_out.extend_from_slice(format);
+    response_out.push(b':');
+    response_out.extend_from_slice(value);
+    response_out.extend_from_slice(b"\r\n");
 }
 
 #[cfg(test)]
