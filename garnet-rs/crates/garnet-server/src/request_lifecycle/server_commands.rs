@@ -77,6 +77,96 @@ const ACL_CATEGORIES: [&[u8]; 8] = [
     b"set",
     b"stream",
 ];
+const OBJECT_HELP_LINES: [&[u8]; 11] = [
+    b"OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"ENCODING <key>",
+    b"    Show the internal encoding of the value stored at <key>.",
+    b"FREQ <key>",
+    b"    Show the logarithmic access frequency counter of the object stored at <key>.",
+    b"IDLETIME <key>",
+    b"    Show the idle time of the object stored at <key>.",
+    b"REFCOUNT <key>",
+    b"    Show the reference count of the object stored at <key>.",
+    b"HELP",
+    b"    Print this help.",
+];
+const MEMORY_HELP_LINES: [&[u8]; 7] = [
+    b"MEMORY <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"USAGE <key>",
+    b"    Estimate memory usage for a key.",
+    b"MALLOC-STATS",
+    b"    Return allocator statistics.",
+    b"PURGE",
+    b"    Attempt to purge allocator caches.",
+];
+const PUBSUB_HELP_LINES: [&[u8]; 13] = [
+    b"PUBSUB <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"CHANNELS [<pattern>]",
+    b"    Return the currently active channels matching a pattern (default all).",
+    b"NUMPAT",
+    b"    Return number of subscriptions to patterns.",
+    b"NUMSUB [<channel> ...]",
+    b"    Return number of subscribers for channels.",
+    b"SHARDCHANNELS [<pattern>]",
+    b"    Return active shard channels matching a pattern.",
+    b"SHARDNUMSUB [<channel> ...]",
+    b"    Return number of subscribers for shard channels.",
+    b"HELP",
+    b"    Print this help.",
+];
+const COMMAND_HELP_LINES: [&[u8]; 15] = [
+    b"COMMAND <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"COUNT",
+    b"    Return the total number of commands in this Redis server.",
+    b"GETKEYS <full-command>",
+    b"    Return keys from a full Redis command.",
+    b"GETKEYSANDFLAGS <full-command>",
+    b"    Return keys and flags from a full Redis command.",
+    b"HELP",
+    b"    Print this help.",
+    b"INFO [<command-name> ...]",
+    b"    Return details about specific Redis commands.",
+    b"LIST",
+    b"    Return all commands in this Redis server.",
+    b"DOCS [<command-name> ...]",
+    b"    Return documentation details about specific Redis commands.",
+];
+const CONFIG_HELP_LINES: [&[u8]; 13] = [
+    b"CONFIG <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"GET <pattern>",
+    b"    Return parameters matching the glob-like <pattern> and their values.",
+    b"SET <directive> <value>",
+    b"    Set the configuration <directive> to <value>.",
+    b"RESETSTAT",
+    b"    Reset statistics reported by INFO.",
+    b"REWRITE",
+    b"    Rewrite the configuration file (not supported in garnet-rs).",
+    b"HELP",
+    b"    Print this help.",
+    b"SET [... <directive> <value> ...]",
+    b"    Set multiple configuration directives at once.",
+];
+const CLIENT_HELP_LINES: [&[u8]; 19] = [
+    b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"CACHING (YES|NO)",
+    b"    Enable/disable tracking of the keys for next command in OPTIN/OPTOUT modes.",
+    b"GETNAME",
+    b"    Return the name of the current connection.",
+    b"HELP",
+    b"    Prints this help.",
+    b"ID",
+    b"    Return the ID of the current connection.",
+    b"INFO",
+    b"    Return information about the current client connection.",
+    b"KILL <ip:port>",
+    b"    Kill connection by ip:port.",
+    b"LIST",
+    b"    Return information about client connections.",
+    b"NO-EVICT (ON|OFF)",
+    b"    Protect current client connection from eviction.",
+    b"NO-TOUCH (ON|OFF)",
+    b"    Avoid touching LRU/LFU stats for current client connection commands.",
+];
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
 const MIGRATE_USAGE: &str = "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
 const COMMAND_LIST_EXTRA_NAMES: [&[u8]; 8] = [
@@ -506,9 +596,14 @@ impl RequestProcessor {
             args,
             2,
             "CLIENT",
-            "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-TOUCH> [arguments...]",
+            "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-TOUCH|HELP> [arguments...]",
         )?;
         let subcommand = args[1];
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "CLIENT", "CLIENT HELP")?;
+            append_bulk_array(response_out, &CLIENT_HELP_LINES);
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"ID") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT ID")?;
             append_integer(response_out, 1);
@@ -711,8 +806,23 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MEMORY", "MEMORY USAGE key")?;
         let subcommand = args[1];
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "MEMORY", "MEMORY HELP")?;
+            append_bulk_array(response_out, &MEMORY_HELP_LINES);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"MALLOC-STATS") {
+            require_exact_arity(args, 2, "MEMORY", "MEMORY MALLOC-STATS")?;
+            append_bulk_string(response_out, b"");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"PURGE") {
+            require_exact_arity(args, 2, "MEMORY", "MEMORY PURGE")?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
-            return Err(RequestExecutionError::UnknownCommand);
+            return Err(RequestExecutionError::UnknownSubcommand);
         }
         require_exact_arity(args, 3, "MEMORY", "MEMORY USAGE key")?;
 
@@ -824,6 +934,12 @@ impl RequestProcessor {
             append_bulk_string(response_out, &digest);
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"DIGEST") {
+            require_exact_arity(args, 2, "DEBUG", "DEBUG DIGEST")?;
+            let digest = self.debug_dataset_digest()?;
+            append_bulk_string(response_out, &digest);
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"OBJECT") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
             let key = args[2].to_vec();
@@ -849,13 +965,21 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(args, 2, "OBJECT", "OBJECT subcommand [arguments]")?;
+        let subcommand = args[1];
+
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "OBJECT", "OBJECT HELP")?;
+            append_bulk_array(response_out, &OBJECT_HELP_LINES);
+            return Ok(());
+        }
+
         ensure_min_arity(
             args,
-            2,
+            3,
             "OBJECT",
             "OBJECT <ENCODING|REFCOUNT|IDLETIME|FREQ> key",
         )?;
-        let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
@@ -1128,6 +1252,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        if ascii_eq_ignore_case(args[1], b"HELP") {
+            require_exact_arity(args, 2, "COMMAND", "COMMAND HELP")?;
+            append_bulk_array(response_out, &COMMAND_HELP_LINES);
+            return Ok(());
+        }
         if ascii_eq_ignore_case(args[1], b"COUNT") {
             require_exact_arity(args, 2, "COMMAND", "COMMAND COUNT")?;
             append_integer(
@@ -1960,6 +2089,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PUBSUB", "PUBSUB <subcommand> [arguments ...]")?;
         let subcommand = args[1];
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "PUBSUB", "PUBSUB HELP")?;
+            append_bulk_array(response_out, &PUBSUB_HELP_LINES);
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"CHANNELS")
             || ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS")
         {
@@ -2030,8 +2164,14 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 2, "CONFIG", "CONFIG <GET|SET|RESETSTAT>")?;
+        ensure_min_arity(args, 2, "CONFIG", "CONFIG <GET|SET|RESETSTAT|HELP>")?;
         let subcommand = args[1];
+
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "CONFIG", "CONFIG HELP")?;
+            append_bulk_array(response_out, &CONFIG_HELP_LINES);
+            return Ok(());
+        }
 
         if ascii_eq_ignore_case(subcommand, b"RESETSTAT") {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
@@ -2402,6 +2542,29 @@ impl RequestProcessor {
         }
 
         Ok(fnv_hex_digest(0, b""))
+    }
+
+    fn debug_dataset_digest(&self) -> Result<Vec<u8>, RequestExecutionError> {
+        let mut keys: Vec<Vec<u8>> = self.string_keys_snapshot().into_iter().collect();
+        keys.extend(self.object_keys_snapshot());
+        keys.sort();
+        keys.dedup();
+
+        let mut combined = Vec::new();
+        for key in keys {
+            self.expire_key_if_needed(&key)?;
+            self.active_expire_hash_fields_for_key(&key)?;
+            if !self.key_exists_any(&key)? {
+                continue;
+            }
+            let digest = self.debug_digest_value_for_key(&key)?;
+            combined.extend_from_slice(&(key.len() as u64).to_le_bytes());
+            combined.extend_from_slice(&key);
+            combined.extend_from_slice(&(digest.len() as u64).to_le_bytes());
+            combined.extend_from_slice(&digest);
+        }
+
+        Ok(fnv_hex_digest(3, &combined))
     }
 }
 

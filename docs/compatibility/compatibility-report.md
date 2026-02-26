@@ -30,16 +30,17 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=600; err=36; ignore=130; failed_tests=36; expected_failed_tests=1; unexpected_failed_tests=35  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=601; err=35; ignore=130; failed_tests=35; expected_failed_tests=1; unexpected_failed_tests=34  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `36`
+- Failed tests extracted from runtest log: `35`
 
 | Test |
 |---|
+| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl` |
 | `LATENCY of expire events are correctly collected in tests/unit/latency-monitor.tcl` |
 | `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
@@ -52,10 +53,8 @@
 | `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
 | `Blocking commands ignores the timeout in tests/unit/multi.tcl` |
-| `Coverage: HELP commands in tests/unit/other.tcl` |
 | `SAVE - make sure there are all the types as values in tests/unit/other.tcl` |
 | `Check consistency of different data types after a reload in tests/unit/other.tcl` |
-| `Same dataset digest if saving/reloading as AOF? in tests/unit/other.tcl` |
 | `Test old pause-all takes precedence over new pause-write (less restrictive) in tests/unit/pause.tcl` |
 | `Test new pause time is smaller than old one, then old time preserved in tests/unit/pause.tcl` |
 | `Test write commands are paused by RO in tests/unit/pause.tcl` |

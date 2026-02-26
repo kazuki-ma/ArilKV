@@ -4758,6 +4758,19 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .unwrap();
     assert!(response.starts_with(b":"));
     assert_ne!(response, b":0\r\n");
+
+    response.clear();
+    let memory_help = b"*2\r\n$6\r\nMEMORY\r\n$4\r\nHELP\r\n";
+    let meta = parse_resp_command_arg_slices(memory_help, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*7\r\n"));
+    assert!(
+        String::from_utf8_lossy(&response).contains("MEMORY <subcommand>"),
+        "unexpected MEMORY HELP payload: {}",
+        String::from_utf8_lossy(&response)
+    );
 }
 
 #[test]
@@ -6015,6 +6028,12 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
 
     let count_response = execute_command_line(&processor, "COMMAND COUNT").unwrap();
     assert!(parse_integer_response(&count_response) > 0);
+    let command_help = execute_command_line(&processor, "COMMAND HELP").unwrap();
+    assert!(
+        String::from_utf8_lossy(&command_help).contains("COMMAND <subcommand>"),
+        "unexpected COMMAND HELP payload: {}",
+        String::from_utf8_lossy(&command_help)
+    );
 
     assert_eq!(
         parse_bulk_array_payloads(
@@ -6751,6 +6770,18 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     assert_eq!(response, b"$13\r\nid=1 cmd=exec\r\n");
 
     response.clear();
+    let client_help = b"*2\r\n$6\r\nCLIENT\r\n$4\r\nHELP\r\n";
+    let meta = parse_resp_command_arg_slices(client_help, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(
+        String::from_utf8_lossy(&response).contains("CLIENT <subcommand>"),
+        "unexpected CLIENT HELP payload: {}",
+        String::from_utf8_lossy(&response)
+    );
+
+    response.clear();
     let client_unblock = b"*3\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(client_unblock, &mut args).unwrap();
     processor
@@ -7191,6 +7222,12 @@ fn pubsub_commands_cover_minimal_ack_and_introspection_shapes() {
         b"*2\r\n$2\r\ns1\r\n:0\r\n",
     );
     assert_command_response(&processor, "PUBSUB NUMPAT", b":0\r\n");
+    let pubsub_help = execute_command_line(&processor, "PUBSUB HELP").unwrap();
+    assert!(
+        String::from_utf8_lossy(&pubsub_help).contains("PUBSUB <subcommand>"),
+        "unexpected PUBSUB HELP payload: {}",
+        String::from_utf8_lossy(&pubsub_help)
+    );
 
     assert_command_error(
         &processor,
@@ -7765,6 +7802,19 @@ fn object_encoding_and_refcount_report_basic_metadata() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let object_help = b"*2\r\n$6\r\nOBJECT\r\n$4\r\nHELP\r\n";
+    let meta = parse_resp_command_arg_slices(object_help, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*11\r\n"));
+    assert!(
+        String::from_utf8_lossy(&response).contains("OBJECT <subcommand>"),
+        "unexpected OBJECT HELP payload: {}",
+        String::from_utf8_lossy(&response)
+    );
 }
 
 #[test]
@@ -7804,6 +7854,14 @@ fn debug_digest_value_matches_for_equal_payloads() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, digest_a_response);
+
+    response.clear();
+    let digest_all = b"*2\r\n$5\r\nDEBUG\r\n$6\r\nDIGEST\r\n";
+    let meta = parse_resp_command_arg_slices(digest_all, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"$16\r\n"));
 }
 
 #[test]
@@ -9103,6 +9161,13 @@ fn config_get_known_and_unknown_keys() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"*0\r\n");
+
+    let config_help = execute_command_line(&processor, "CONFIG HELP").unwrap();
+    assert!(
+        String::from_utf8_lossy(&config_help).contains("CONFIG <subcommand>"),
+        "unexpected CONFIG HELP payload: {}",
+        String::from_utf8_lossy(&config_help)
+    );
 
     assert_command_error(&processor, "CONFIG GET_XX", b"-ERR unknown subcommand\r\n");
 }

@@ -58,6 +58,27 @@ const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
 const BLOCKING_PROGRESS_WAIT_BUDGET: Duration = Duration::from_millis(8);
 const KILLED_CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(25);
+const CLIENT_HELP_LINES: [&[u8]; 19] = [
+    b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+    b"CACHING (YES|NO)",
+    b"    Enable/disable tracking of the keys for next command in OPTIN/OPTOUT modes.",
+    b"GETNAME",
+    b"    Return the name of the current connection.",
+    b"HELP",
+    b"    Prints this help.",
+    b"ID",
+    b"    Return the ID of the current connection.",
+    b"INFO",
+    b"    Return information about the current client connection.",
+    b"KILL <ip:port>",
+    b"    Kill connection by ip:port.",
+    b"LIST",
+    b"    Return information about client connections.",
+    b"NO-EVICT (ON|OFF)",
+    b"    Protect current client connection from eviction.",
+    b"NO-TOUCH (ON|OFF)",
+    b"    Avoid touching LRU/LFU stats for current client connection commands.",
+];
 const OWNER_EXECUTION_INLINE_DEFAULT_UNSET: u8 = 0;
 const OWNER_EXECUTION_INLINE_DEFAULT_FALSE: u8 = 1;
 const OWNER_EXECUTION_INLINE_DEFAULT_TRUE: u8 = 2;
@@ -2268,6 +2289,15 @@ fn handle_client_command(
 
     // SAFETY: `args` points to the current request frame.
     let subcommand = arg_slice_bytes(&args[1]);
+    if ascii_eq_ignore_case(subcommand, b"HELP") {
+        if args.len() != 2 {
+            append_client_subcommand_wrong_arity(response_out, b"help");
+            return outcome;
+        }
+        append_bulk_string_array_frame(response_out, &CLIENT_HELP_LINES);
+        return outcome;
+    }
+
     if ascii_eq_ignore_case(subcommand, b"ID") {
         if args.len() != 2 {
             append_client_subcommand_wrong_arity(response_out, b"id");
@@ -2900,6 +2930,15 @@ fn append_bulk_string_frame(output: &mut Vec<u8>, value: &[u8]) {
     output.extend_from_slice(b"\r\n");
     output.extend_from_slice(value);
     output.extend_from_slice(b"\r\n");
+}
+
+fn append_bulk_string_array_frame(output: &mut Vec<u8>, values: &[&[u8]]) {
+    output.push(b'*');
+    output.extend_from_slice(values.len().to_string().as_bytes());
+    output.extend_from_slice(b"\r\n");
+    for value in values {
+        append_bulk_string_frame(output, value);
+    }
 }
 
 fn parse_u64_ascii(value: &[u8]) -> Option<u64> {
@@ -3926,5 +3965,31 @@ mod tests {
         assert_eq!(rewritten_unlink_meta.argument_count, 2);
         assert_eq!(arg_slice_bytes(&rewritten_unlink_args[0]), b"UNLINK");
         assert_eq!(arg_slice_bytes(&rewritten_unlink_args[1]), b"key2");
+    }
+
+    #[test]
+    fn client_help_is_supported_in_connection_handler_path() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"HELP".to_vec()]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        let outcome = handle_client_command(
+            &processor,
+            &metrics,
+            1,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert!(!outcome.disconnect_after_reply);
+        assert!(
+            String::from_utf8_lossy(&response).contains("CLIENT <subcommand>"),
+            "unexpected CLIENT HELP payload: {}",
+            String::from_utf8_lossy(&response)
+        );
     }
 }
