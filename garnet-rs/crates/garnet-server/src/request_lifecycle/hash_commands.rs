@@ -1179,7 +1179,7 @@ impl RequestProcessor {
             None => return Ok(()),
         };
         for field in &expired_fields {
-            hash.remove(field);
+            hash.remove(field.as_ref());
         }
         self.persist_hash_after_field_expiration(key, &hash)
     }
@@ -1242,7 +1242,7 @@ impl RequestProcessor {
             return false;
         }
         for field in expired_fields {
-            hash.remove(&field);
+            hash.remove(field.as_ref());
         }
         true
     }

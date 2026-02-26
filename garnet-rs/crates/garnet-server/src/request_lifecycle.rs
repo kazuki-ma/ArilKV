@@ -233,6 +233,33 @@ impl From<&[u8]> for RedisKey {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub(crate) struct HashField(Vec<u8>);
+
+impl AsRef<[u8]> for HashField {
+    fn as_ref(&self) -> &[u8] {
+        &self.0
+    }
+}
+
+impl std::borrow::Borrow<[u8]> for HashField {
+    fn borrow(&self) -> &[u8] {
+        self.as_ref()
+    }
+}
+
+impl From<Vec<u8>> for HashField {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[u8]> for HashField {
+    fn from(value: &[u8]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
     deadline: Instant,
@@ -339,7 +366,7 @@ pub struct RequestProcessor {
     object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, ExpirationMetadata>>>,
     hash_field_expirations:
-        Vec<OrderedMutex<HashMap<Vec<u8>, HashMap<Vec<u8>, ExpirationMetadata>>>>,
+        Vec<OrderedMutex<HashMap<Vec<u8>, HashMap<HashField, ExpirationMetadata>>>>,
     string_expiration_counts: Vec<AtomicUsize>,
     string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
     object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,

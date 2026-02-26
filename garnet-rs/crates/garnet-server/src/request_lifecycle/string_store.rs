@@ -390,7 +390,7 @@ impl RequestProcessor {
     pub(super) fn lock_hash_field_expirations_for_shard(
         &self,
         shard_index: usize,
-    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, HashMap<Vec<u8>, ExpirationMetadata>>> {
+    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, HashMap<HashField, ExpirationMetadata>>> {
         debug_assert!(shard_index < self.hash_field_expirations.len());
         self.hash_field_expirations[shard_index]
             .lock()
@@ -535,7 +535,7 @@ impl RequestProcessor {
                 };
                 let per_key = expirations.entry(key.to_vec()).or_default();
                 per_key.insert(
-                    field.to_vec(),
+                    HashField::from(field),
                     ExpirationMetadata {
                         deadline,
                         unix_millis: TimestampMillis::new(unix_millis),
@@ -593,7 +593,7 @@ impl RequestProcessor {
         &self,
         key: &[u8],
         fields: &[&[u8]],
-    ) -> Vec<Vec<u8>> {
+    ) -> Vec<HashField> {
         if fields.is_empty() {
             return Vec::new();
         }
@@ -608,12 +608,12 @@ impl RequestProcessor {
         for field in fields {
             if let Some(metadata) = per_key.get(*field) {
                 if metadata.deadline <= now {
-                    expired_fields.push((*field).to_vec());
+                    expired_fields.push(HashField::from(*field));
                 }
             }
         }
         for field in &expired_fields {
-            per_key.remove(field);
+            per_key.remove(field.as_ref());
         }
         if per_key.is_empty() {
             expirations.remove(key);
@@ -621,7 +621,7 @@ impl RequestProcessor {
         expired_fields
     }
 
-    pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<Vec<u8>> {
+    pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<HashField> {
         let shard_index = self.object_store_shard_index_for_key(key);
         let now = Instant::now();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
