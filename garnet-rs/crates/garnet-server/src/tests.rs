@@ -781,6 +781,69 @@ async fn multi_queues_replicaof_until_exec_then_applies_readonly_mode() {
 }
 
 #[tokio::test]
+async fn reset_clears_multi_and_authenticated_state() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        b"*6\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$5\r\nuser1\r\n$2\r\non\r\n$7\r\n>secret\r\n$5\r\n+@all\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$4\r\nAUTH\r\n$5\r\nuser1\r\n$6\r\nsecret\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n",
+        b"$5\r\nuser1\r\n",
+    )
+    .await;
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$3\r\nbar\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$5\r\nRESET\r\n", b"+RESET\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"-ERR EXEC without MULTI\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*2\r\n$3\r\nGET\r\n$3\r\nfoo\r\n", b"$-1\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n",
+        b"$7\r\ndefault\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

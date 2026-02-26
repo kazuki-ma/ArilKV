@@ -30,13 +30,13 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=597; err=39; ignore=130; failed_tests=39; expected_failed_tests=1; unexpected_failed_tests=38  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=600; err=36; ignore=130; failed_tests=36; expected_failed_tests=1; unexpected_failed_tests=35  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `39`
+- Failed tests extracted from runtest log: `36`
 
 | Test |
 |---|
@@ -56,9 +56,6 @@
 | `SAVE - make sure there are all the types as values in tests/unit/other.tcl` |
 | `Check consistency of different data types after a reload in tests/unit/other.tcl` |
 | `Same dataset digest if saving/reloading as AOF? in tests/unit/other.tcl` |
-| `RESET clears and discards MULTI state in tests/unit/other.tcl` |
-| `RESET clears authenticated state in tests/unit/other.tcl` |
-| `Subcommand syntax error crash (issue #10070) in tests/unit/other.tcl` |
 | `Test old pause-all takes precedence over new pause-write (less restrictive) in tests/unit/pause.tcl` |
 | `Test new pause time is smaller than old one, then old time preserved in tests/unit/pause.tcl` |
 | `Test write commands are paused by RO in tests/unit/pause.tcl` |

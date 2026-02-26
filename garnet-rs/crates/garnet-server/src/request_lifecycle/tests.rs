@@ -9103,6 +9103,8 @@ fn config_get_known_and_unknown_keys() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"*0\r\n");
+
+    assert_command_error(&processor, "CONFIG GET_XX", b"-ERR unknown subcommand\r\n");
 }
 
 #[test]

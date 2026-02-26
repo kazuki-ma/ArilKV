@@ -395,6 +395,21 @@ impl Default for ClientConnectionState {
     }
 }
 
+fn apply_reset_command_side_effects(
+    metrics: &ServerMetrics,
+    client_id: u64,
+    transaction: &mut ConnectionTransactionState,
+    client_state: &mut ClientConnectionState,
+    monitor_receiver: &mut Option<broadcast::Receiver<Vec<u8>>>,
+    allow_asking_once: &mut bool,
+) {
+    transaction.reset();
+    *client_state = ClientConnectionState::default();
+    *monitor_receiver = None;
+    *allow_asking_once = false;
+    metrics.set_client_user(client_id, b"default".to_vec());
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientCommandReplyBehavior {
     Default,
@@ -702,6 +717,31 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
+            if command == CommandId::Acl
+                && argument_count == 2
+                && ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"WHOAMI")
+            {
+                let whoami = metrics
+                    .client_user(client_id)
+                    .unwrap_or_else(|| b"default".to_vec());
+                append_bulk_string_frame(&mut responses, &whoami);
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
             if command == CommandId::Migrate {
                 append_simple_string(&mut responses, b"NOKEY");
                 disconnect_after_write |= finalize_client_command(
@@ -984,6 +1024,21 @@ pub(crate) async fn handle_connection(
                             append_simple_string(&mut responses, b"OK");
                         }
                     }
+                    TransactionControlCommand::Reset => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            apply_reset_command_side_effects(
+                                &metrics,
+                                client_id,
+                                &mut transaction,
+                                &mut client_state,
+                                &mut monitor_receiver,
+                                &mut allow_asking_once,
+                            );
+                            append_simple_string(&mut responses, b"RESET");
+                        }
+                    }
                     _ => {
                         match processor.command_rejected_while_script_busy(command, subcommand_name)
                         {
@@ -1162,6 +1217,21 @@ pub(crate) async fn handle_connection(
                 }
             } else {
                 match transaction_control {
+                    TransactionControlCommand::Reset => {
+                        if !command_has_valid_arity(command, argument_count) {
+                            append_wrong_arity_error_for_command(&mut responses, command);
+                        } else {
+                            apply_reset_command_side_effects(
+                                &metrics,
+                                client_id,
+                                &mut transaction,
+                                &mut client_state,
+                                &mut monitor_receiver,
+                                &mut allow_asking_once,
+                            );
+                            append_simple_string(&mut responses, b"RESET");
+                        }
+                    }
                     TransactionControlCommand::Multi => {
                         if !command_has_valid_arity(command, argument_count) {
                             append_wrong_arity_error_for_command(&mut responses, command);

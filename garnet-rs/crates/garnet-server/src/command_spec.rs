@@ -276,6 +276,7 @@ pub enum TransactionControlCommand {
     Discard,
     Watch,
     Unwatch,
+    Reset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2158,7 +2159,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         key_access_pattern: KeyAccessPattern::None,
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: false,
-        transaction_control: TransactionControlCommand::None,
+        transaction_control: TransactionControlCommand::Reset,
         arity_policy: Some(ArityPolicy::Exact(1)),
         include_in_command_response: true,
     },
@@ -2955,6 +2956,10 @@ mod tests {
         assert_eq!(
             command_transaction_control(CommandId::Unwatch),
             TransactionControlCommand::Unwatch
+        );
+        assert_eq!(
+            command_transaction_control(CommandId::Reset),
+            TransactionControlCommand::Reset
         );
         assert_eq!(
             command_transaction_control(CommandId::Set),

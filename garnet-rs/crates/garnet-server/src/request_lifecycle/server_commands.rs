@@ -570,7 +570,7 @@ impl RequestProcessor {
             }
             return Err(RequestExecutionError::SyntaxError);
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_role(
@@ -841,7 +841,7 @@ impl RequestProcessor {
             append_bulk_string(response_out, payload.as_bytes());
             return Ok(());
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_object(
@@ -2271,7 +2271,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_flushdb(
