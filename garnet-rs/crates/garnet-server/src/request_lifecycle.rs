@@ -1304,6 +1304,48 @@ impl RequestProcessor {
         }
     }
 
+    pub(crate) fn has_ready_blocking_waiters(&self) -> bool {
+        let keys = match self.blocking_wait_queues.lock() {
+            Ok(queues) => queues.keys().cloned().collect::<Vec<_>>(),
+            Err(_) => return false,
+        };
+        for key in keys {
+            if self.expire_key_if_needed(key.as_slice()).is_err() {
+                // Treat storage contention as pending wake work so producer ACK
+                // does not race ahead of a partially observed blocking chain.
+                return true;
+            }
+            let Ok(object) = self.object_read(key.as_slice()) else {
+                return true;
+            };
+            let Some((object_type, payload)) = object else {
+                continue;
+            };
+            match object_type {
+                LIST_OBJECT_TYPE_TAG => {
+                    if let Some(list) = deserialize_list_object_payload(&payload) {
+                        if !list.is_empty() {
+                            return true;
+                        }
+                    } else {
+                        return true;
+                    }
+                }
+                ZSET_OBJECT_TYPE_TAG => {
+                    if let Some(zset) = deserialize_zset_object_payload(&payload) {
+                        if !zset.is_empty() {
+                            return true;
+                        }
+                    } else {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+
     pub(super) fn force_list_quicklist_encoding(&self, key: &[u8]) {
         if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
             forced.insert(RedisKey::from(key));

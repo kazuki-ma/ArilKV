@@ -57,7 +57,6 @@ const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
-const BLOCKING_PROGRESS_WAIT_BUDGET: Duration = Duration::from_millis(8);
 const KILLED_CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(25);
 const CLIENT_HELP_LINES: [&[u8]; 19] = [
     b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -1765,15 +1764,15 @@ async fn yield_for_blocking_progress(processor: &RequestProcessor, initial_block
     if initial_blocked == 0 {
         return;
     }
-    let deadline = Instant::now() + BLOCKING_PROGRESS_WAIT_BUDGET;
-    let mut observed = initial_blocked;
-    while Instant::now() < deadline {
+    loop {
         let current = processor.blocked_clients();
         if current == 0 {
             return;
         }
-        if current < observed {
-            observed = current;
+        // TLA+ minimal guard (`LinkedBlmoveChainResidue_minimal`): producer ACK should
+        // not be exposed while any queued blocking waiter is already ready to run.
+        if !processor.has_ready_blocking_waiters() {
+            return;
         }
         sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
         yield_now().await;
