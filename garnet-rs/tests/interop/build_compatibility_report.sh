@@ -17,6 +17,90 @@ REPORT_MD="${REPORT_MD:-${COMPAT_DIR}/compatibility-report.md}"
 RESULT_ROOT="${RESULT_ROOT:-${SCRIPT_DIR}/results/compatibility-report-$(date +%Y%m%d-%H%M%S)}"
 PROBE_RESULT_DIR="${PROBE_RESULT_DIR:-${RESULT_ROOT}/redis-runtest-external-${COMPAT_PROBE_MODE}}"
 PROBE_SUMMARY_CSV="${PROBE_RESULT_DIR}/summary.csv"
+PROBE_HEARTBEAT_ENABLED="${PROBE_HEARTBEAT_ENABLED:-1}"
+PROBE_HEARTBEAT_INTERVAL_SECONDS="${PROBE_HEARTBEAT_INTERVAL_SECONDS:-30}"
+
+choose_probe_progress_log() {
+    if [[ -f "${PROBE_RESULT_DIR}/redis_runtest_full_external.log" ]]; then
+        echo "${PROBE_RESULT_DIR}/redis_runtest_full_external.log"
+        return
+    fi
+
+    local latest_log
+    latest_log="$(
+        find "${PROBE_RESULT_DIR}" -maxdepth 1 -type f -name 'redis_runtest_*.log' 2>/dev/null \
+            | sort \
+            | tail -n 1
+    )"
+    if [[ -n "${latest_log}" ]]; then
+        echo "${latest_log}"
+    fi
+}
+
+probe_progress_snapshot() {
+    local log_file="$1"
+    awk '
+    BEGIN {
+        esc = sprintf("%c", 27)
+        ok = 0
+        err = 0
+        ignore = 0
+        timeout = 0
+        latest = ""
+    }
+    {
+        line = $0
+        gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
+        gsub(/\r/, "", line)
+        if (line ~ /^\[ok\]:/) {
+            ok++
+        } else if (line ~ /^\[err\]:/) {
+            err++
+        } else if (line ~ /^\[ignore\]:/) {
+            ignore++
+        } else if (line ~ /^\[TIMEOUT\]:/) {
+            timeout++
+        }
+        if (line ~ /^Testing / || line ~ /^\[[0-9]+\/[0-9]+ .*done\]:/) {
+            latest = line
+        }
+    }
+    END {
+        if (latest == "") {
+            latest = "progress pending"
+        }
+        gsub(/"/, "\\\"", latest)
+        printf("ok=%d err=%d ignore=%d timeout=%d latest=\"%s\"", ok, err, ignore, timeout, latest)
+    }
+    ' "${log_file}"
+}
+
+run_external_probe_with_heartbeat() {
+    RESULT_DIR="${PROBE_RESULT_DIR}" REDIS_RUNTEXT_MODE="${COMPAT_PROBE_MODE}" "${SUBSET_SCRIPT}" &
+    local probe_pid="$!"
+    local start_epoch
+    start_epoch="$(date +%s)"
+
+    while kill -0 "${probe_pid}" >/dev/null 2>&1; do
+        sleep "${PROBE_HEARTBEAT_INTERVAL_SECONDS}"
+        if ! kill -0 "${probe_pid}" >/dev/null 2>&1; then
+            break
+        fi
+
+        local now_epoch elapsed_seconds progress_log progress_snapshot
+        now_epoch="$(date +%s)"
+        elapsed_seconds="$(( now_epoch - start_epoch ))"
+        progress_log="$(choose_probe_progress_log)"
+        if [[ -n "${progress_log}" && -f "${progress_log}" ]]; then
+            progress_snapshot="$(probe_progress_snapshot "${progress_log}")"
+        else
+            progress_snapshot="probe-log-not-yet-created"
+        fi
+        echo "[3/4] heartbeat: elapsed=${elapsed_seconds}s ${progress_snapshot}"
+    done
+
+    wait "${probe_pid}"
+}
 
 if [[ ! -x "${STATUS_SCRIPT}" ]]; then
     echo "missing executable: ${STATUS_SCRIPT}" >&2
@@ -29,6 +113,13 @@ fi
 if [[ ! -x "${SUBSET_SCRIPT}" ]]; then
     echo "missing executable: ${SUBSET_SCRIPT}" >&2
     exit 1
+fi
+if [[ "${PROBE_HEARTBEAT_ENABLED}" != "0" ]]; then
+    if [[ ! "${PROBE_HEARTBEAT_INTERVAL_SECONDS}" =~ ^[0-9]+$ ]] \
+        || [[ "${PROBE_HEARTBEAT_INTERVAL_SECONDS}" -le 0 ]]; then
+        echo "invalid PROBE_HEARTBEAT_INTERVAL_SECONDS: ${PROBE_HEARTBEAT_INTERVAL_SECONDS}" >&2
+        exit 1
+    fi
 fi
 
 case "${COMPAT_PROBE_MODE}" in
@@ -52,10 +143,22 @@ echo "[2/4] building command maturity matrix from yaml..."
 
 echo "[3/4] running redis runtest external probe (mode=${COMPAT_PROBE_MODE})..."
 PROBE_SCRIPT_EXIT_CODE=0
-if RESULT_DIR="${PROBE_RESULT_DIR}" REDIS_RUNTEXT_MODE="${COMPAT_PROBE_MODE}" "${SUBSET_SCRIPT}"; then
+if [[ "${PROBE_HEARTBEAT_ENABLED}" == "0" ]]; then
+    if RESULT_DIR="${PROBE_RESULT_DIR}" REDIS_RUNTEXT_MODE="${COMPAT_PROBE_MODE}" "${SUBSET_SCRIPT}"; then
+        PROBE_SCRIPT_EXIT_CODE=0
+    else
+        PROBE_SCRIPT_EXIT_CODE=$?
+    fi
+else
+    if run_external_probe_with_heartbeat; then
+        PROBE_SCRIPT_EXIT_CODE=0
+    else
+        PROBE_SCRIPT_EXIT_CODE=$?
+    fi
+fi
+if [[ "${PROBE_SCRIPT_EXIT_CODE}" -eq 0 ]]; then
     PROBE_SCRIPT_EXIT_CODE=0
 else
-    PROBE_SCRIPT_EXIT_CODE=$?
     echo "warning: external probe script exited non-zero (${PROBE_SCRIPT_EXIT_CODE}); continuing report generation from captured artifacts" >&2
 fi
 
