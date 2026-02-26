@@ -84,6 +84,7 @@ disabled_total="$(awk -F, 'NR>1 && $2=="SUPPORTED_DECLARED" && $5=="DISABLED" {c
 full_ratio="$(awk -v full="${full_total}" -v total="${supported_declared}" 'BEGIN { if (total==0) print "0.00"; else printf "%.2f", (full*100.0)/total }')"
 
 probe_pass="$(awk -F, 'NR>1 && $2=="PASS" {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
+probe_pass_known_gaps="$(awk -F, 'NR>1 && $2=="PASS_WITH_KNOWN_GAPS" {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
 probe_fail="$(awk -F, 'NR>1 && $2=="FAIL" {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
 probe_total="$(awk -F, 'NR>1 {c++} END {print c+0}' "${PROBE_SUMMARY_CSV}")"
 FAILED_TESTS_FILE="${PROBE_RESULT_DIR}/failed-tests.txt"
@@ -121,6 +122,7 @@ echo "[4/4] generating compatibility report..."
     echo "- Probe script exit code: \`${PROBE_SCRIPT_EXIT_CODE}\`"
     echo "- Cases: \`${probe_total}\`"
     echo "- PASS: \`${probe_pass}\`"
+    echo "- PASS_WITH_KNOWN_GAPS: \`${probe_pass_known_gaps}\`"
     echo "- FAIL: \`${probe_fail}\`"
     echo
     echo "| Case | Status | Details |"

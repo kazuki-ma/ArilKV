@@ -15,6 +15,7 @@ REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
 RUNTEXT_TIMEOUT_SECONDS="${RUNTEXT_TIMEOUT_SECONDS:-}"
 RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
 RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
+EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-${SCRIPT_DIR}/known-failed-tests-singledb.txt}"
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY_CSV="${RESULT_DIR}/summary.csv"
@@ -97,6 +98,8 @@ run_full_runtest_case() {
     local case_name="$1"
     local log_file="${RESULT_DIR}/${case_name}.log"
     local failed_tests_file="${RESULT_DIR}/failed-tests.txt"
+    local expected_failed_tests_file="${RESULT_DIR}/expected-failed-tests.txt"
+    local unexpected_failed_tests_file="${RESULT_DIR}/unexpected-failed-tests.txt"
     local cmd=(
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
@@ -168,14 +171,32 @@ run_full_runtest_case() {
 
     local failed_tests_count
     failed_tests_count="$(awk 'END {print NR+0}' "${failed_tests_file}")"
+    local expected_fail_count=0
+    local unexpected_fail_count=0
+
+    : > "${expected_failed_tests_file}"
+    : > "${unexpected_failed_tests_file}"
+    if [[ "${failed_tests_count}" -gt 0 ]]; then
+        if [[ -f "${EXPECTED_FAILS_FILE}" && -s "${EXPECTED_FAILS_FILE}" ]]; then
+            grep -Fxf "${EXPECTED_FAILS_FILE}" "${failed_tests_file}" > "${expected_failed_tests_file}" || true
+            grep -Fvx -f "${EXPECTED_FAILS_FILE}" "${failed_tests_file}" > "${unexpected_failed_tests_file}" || true
+            expected_fail_count="$(awk 'END {print NR+0}' "${expected_failed_tests_file}")"
+            unexpected_fail_count="$(awk 'END {print NR+0}' "${unexpected_failed_tests_file}")"
+        else
+            cp "${failed_tests_file}" "${unexpected_failed_tests_file}"
+            unexpected_fail_count="${failed_tests_count}"
+        fi
+    fi
 
     local status="FAIL"
     if [[ "${exit_code}" -eq 0 && "${err_count}" -eq 0 ]]; then
         status="PASS"
+    elif [[ "${failed_tests_count}" -gt 0 && "${unexpected_fail_count}" -eq 0 ]]; then
+        status="PASS_WITH_KNOWN_GAPS"
     fi
 
     local details
-    details="mode=full; exit_code=${exit_code}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
+    details="mode=full; exit_code=${exit_code}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 

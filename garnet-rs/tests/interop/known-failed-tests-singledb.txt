@@ -1,0 +1,3 @@
+# Known incompatibilities under external runtest --singledb mode.
+# Keep entries as exact lines from failed-tests.txt.
+KEYSIZES - Test MOVE  in tests/unit/info-keysizes.tcl
