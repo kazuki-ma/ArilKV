@@ -1438,7 +1438,8 @@ pub(crate) async fn handle_connection(
                                 published_select = true;
                             }
                             for key in lazy_expired_keys {
-                                let del_frame = encode_resp_frame(&[b"DEL".to_vec(), key]);
+                                let del_frame =
+                                    encode_resp_frame(&[b"DEL".to_vec(), key.into_vec()]);
                                 processor.record_rdb_change(1);
                                 replication.publish_write_frame(&del_frame);
                             }
@@ -2075,7 +2076,7 @@ fn publish_transaction_replication_frames(
     let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
     if should_publish_lazy_expire_deletes(processor, CommandId::Exec, true) {
         for key in lazy_expired_keys {
-            replication_frames.push(encode_resp_frame(&[b"DEL".to_vec(), key]));
+            replication_frames.push(encode_resp_frame(&[b"DEL".to_vec(), key.into_vec()]));
         }
     }
 

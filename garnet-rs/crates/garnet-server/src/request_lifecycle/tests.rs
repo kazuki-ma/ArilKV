@@ -4395,6 +4395,10 @@ fn lazy_expire_tracks_replication_delete_keys_on_read_access() {
 
     assert_command_response(&processor, "GET lazy:key", b"$-1\r\n");
     let queued = processor.take_lazy_expired_keys_for_replication();
+    let queued = queued
+        .into_iter()
+        .map(|key| key.into_vec())
+        .collect::<Vec<_>>();
     assert_eq!(queued, vec![b"lazy:key".to_vec()]);
     assert!(
         processor

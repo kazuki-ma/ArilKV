@@ -225,6 +225,10 @@ impl RedisKey {
     pub(crate) fn as_slice(&self) -> &[u8] {
         &self.0
     }
+
+    pub(crate) fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
 }
 
 impl AsRef<[u8]> for RedisKey {
@@ -450,7 +454,7 @@ pub struct RequestProcessor {
     key_lru_access_millis: Mutex<HashMap<Vec<u8>, u64>>,
     key_lfu_frequency: Mutex<HashMap<Vec<u8>, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
-    lazy_expired_keys_for_replication: Mutex<Vec<Vec<u8>>>,
+    lazy_expired_keys_for_replication: Mutex<Vec<RedisKey>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
     script_cache_insertion_order: Mutex<VecDeque<String>>,
     script_cache_hits: AtomicU64,
@@ -929,11 +933,11 @@ impl RequestProcessor {
 
     pub(crate) fn enqueue_lazy_expired_key_for_replication(&self, key: &[u8]) {
         if let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() {
-            pending.push(key.to_vec());
+            pending.push(RedisKey::from(key));
         }
     }
 
-    pub(crate) fn take_lazy_expired_keys_for_replication(&self) -> Vec<Vec<u8>> {
+    pub(crate) fn take_lazy_expired_keys_for_replication(&self) -> Vec<RedisKey> {
         let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() else {
             return Vec::new();
         };
