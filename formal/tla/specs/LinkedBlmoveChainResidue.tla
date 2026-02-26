@@ -1,0 +1,187 @@
+-------------------------- MODULE LinkedBlmoveChainResidue --------------------------
+EXTENDS Naturals
+
+\* Model target:
+\* `linked_blmove_chain_is_observable_without_intermediate_residue`
+\*
+\* Test intent:
+\* 1) waiter-1 blocks on BLMOVE list1 -> list2
+\* 2) waiter-2 blocks on BLMOVE list2 -> list3
+\* 3) producer RPUSH list1 foo
+\* 4) immediately after producer gets reply, inspector should observe:
+\*      list1 = empty, list2 = empty, list3 = [foo]
+\*
+\* Risk modeled here:
+\* If producer reply is returned before wakeup chain drains, inspector may observe
+\* intermediate residue (foo still in list1/list2).
+\*
+\* `WaitForBlockingDrainBeforeAck = TRUE` models the guarded behavior where the
+\* wakeup chain is drained before producer ack is exposed.
+
+CONSTANTS MaxSteps, WaitForBlockingDrainBeforeAck
+
+WaiterStates == {"NEW", "BLOCKED", "DONE"}
+
+VARIABLES
+    waiter1,
+    waiter2,
+    list1HasFoo,
+    list2HasFoo,
+    list3HasFoo,
+    pushed,
+    producerAcked,
+    observed,
+    observedList1HasFoo,
+    observedList2HasFoo,
+    observedList3HasFoo,
+    stepsRemaining
+
+Vars ==
+    <<waiter1, waiter2, list1HasFoo, list2HasFoo, list3HasFoo, pushed, producerAcked, observed,
+      observedList1HasFoo, observedList2HasFoo, observedList3HasFoo, stepsRemaining>>
+
+BoolToNat(v) == IF v THEN 1 ELSE 0
+
+TokenCount ==
+    BoolToNat(list1HasFoo) + BoolToNat(list2HasFoo) + BoolToNat(list3HasFoo)
+
+TypeOK ==
+    /\ waiter1 \in WaiterStates
+    /\ waiter2 \in WaiterStates
+    /\ list1HasFoo \in BOOLEAN
+    /\ list2HasFoo \in BOOLEAN
+    /\ list3HasFoo \in BOOLEAN
+    /\ pushed \in BOOLEAN
+    /\ producerAcked \in BOOLEAN
+    /\ observed \in BOOLEAN
+    /\ observedList1HasFoo \in BOOLEAN
+    /\ observedList2HasFoo \in BOOLEAN
+    /\ observedList3HasFoo \in BOOLEAN
+    /\ stepsRemaining \in 0..MaxSteps
+    /\ WaitForBlockingDrainBeforeAck \in BOOLEAN
+
+TokenConservation ==
+    IF pushed
+        THEN TokenCount = 1
+        ELSE TokenCount = 0
+
+ObservedNoIntermediateResidue ==
+    observed =>
+        /\ ~observedList1HasFoo
+        /\ ~observedList2HasFoo
+        /\ observedList3HasFoo
+
+Init ==
+    /\ waiter1 = "NEW"
+    /\ waiter2 = "NEW"
+    /\ list1HasFoo = FALSE
+    /\ list2HasFoo = FALSE
+    /\ list3HasFoo = FALSE
+    /\ pushed = FALSE
+    /\ producerAcked = FALSE
+    /\ observed = FALSE
+    /\ observedList1HasFoo = FALSE
+    /\ observedList2HasFoo = FALSE
+    /\ observedList3HasFoo = FALSE
+    /\ stepsRemaining = MaxSteps
+
+BlockWaiter1 ==
+    /\ stepsRemaining > 0
+    /\ waiter1 = "NEW"
+    /\ waiter1' = "BLOCKED"
+    /\ UNCHANGED
+        <<waiter2, list1HasFoo, list2HasFoo, list3HasFoo, pushed, producerAcked, observed,
+          observedList1HasFoo, observedList2HasFoo, observedList3HasFoo>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+BlockWaiter2 ==
+    /\ stepsRemaining > 0
+    /\ waiter2 = "NEW"
+    /\ waiter2' = "BLOCKED"
+    /\ UNCHANGED
+        <<waiter1, list1HasFoo, list2HasFoo, list3HasFoo, pushed, producerAcked, observed,
+          observedList1HasFoo, observedList2HasFoo, observedList3HasFoo>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+ProducerRpushList1 ==
+    /\ stepsRemaining > 0
+    /\ ~pushed
+    /\ waiter1 = "BLOCKED"
+    /\ waiter2 = "BLOCKED"
+    /\ pushed' = TRUE
+    /\ list1HasFoo' = TRUE
+    /\ UNCHANGED
+        <<waiter1, waiter2, list2HasFoo, list3HasFoo, producerAcked, observed,
+          observedList1HasFoo, observedList2HasFoo, observedList3HasFoo>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+WakeWaiter1Blmove ==
+    /\ stepsRemaining > 0
+    /\ waiter1 = "BLOCKED"
+    /\ list1HasFoo
+    /\ waiter1' = "DONE"
+    /\ list1HasFoo' = FALSE
+    /\ list2HasFoo' = TRUE
+    /\ UNCHANGED
+        <<waiter2, list3HasFoo, pushed, producerAcked, observed, observedList1HasFoo,
+          observedList2HasFoo, observedList3HasFoo>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+WakeWaiter2Blmove ==
+    /\ stepsRemaining > 0
+    /\ waiter2 = "BLOCKED"
+    /\ list2HasFoo
+    /\ waiter2' = "DONE"
+    /\ list2HasFoo' = FALSE
+    /\ list3HasFoo' = TRUE
+    /\ UNCHANGED
+        <<waiter1, list1HasFoo, pushed, producerAcked, observed, observedList1HasFoo,
+          observedList2HasFoo, observedList3HasFoo>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+ProducerAck ==
+    /\ stepsRemaining > 0
+    /\ pushed
+    /\ ~producerAcked
+    /\ IF WaitForBlockingDrainBeforeAck
+        THEN /\ waiter1 = "DONE"
+             /\ waiter2 = "DONE"
+        ELSE TRUE
+    /\ producerAcked' = TRUE
+    /\ UNCHANGED
+        <<waiter1, waiter2, list1HasFoo, list2HasFoo, list3HasFoo, pushed, observed,
+          observedList1HasFoo, observedList2HasFoo, observedList3HasFoo>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+ObservePostProducerAck ==
+    /\ stepsRemaining > 0
+    /\ producerAcked
+    /\ ~observed
+    /\ observed' = TRUE
+    /\ observedList1HasFoo' = list1HasFoo
+    /\ observedList2HasFoo' = list2HasFoo
+    /\ observedList3HasFoo' = list3HasFoo
+    /\ UNCHANGED
+        <<waiter1, waiter2, list1HasFoo, list2HasFoo, list3HasFoo, pushed, producerAcked>>
+    /\ stepsRemaining' = stepsRemaining - 1
+
+DoneStutter ==
+    /\ stepsRemaining = 0 \/ observed
+    /\ UNCHANGED Vars
+
+Next ==
+    \/ BlockWaiter1
+    \/ BlockWaiter2
+    \/ ProducerRpushList1
+    \/ WakeWaiter1Blmove
+    \/ WakeWaiter2Blmove
+    \/ ProducerAck
+    \/ ObservePostProducerAck
+    \/ DoneStutter
+
+Spec ==
+    Init /\ [][Next]_Vars
+
+THEOREM Spec => []TypeOK
+
+================================================================================

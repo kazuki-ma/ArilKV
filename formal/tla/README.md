@@ -112,6 +112,27 @@ Fixed config (expected to pass):
 ./tools/tla/run_tlc.sh formal/tla/specs/LazyExpireReplicationSyncSelectRace.tla formal/tla/specs/LazyExpireReplicationSyncSelectRace_fixed.cfg
 ```
 
+## Reproduce linked BLMOVE chain intermediate-residue race
+
+This model captures the chain tested by:
+
+- `linked_blmove_chain_is_observable_without_intermediate_residue`
+- waiter-1 blocks on `BLMOVE list1 -> list2`
+- waiter-2 blocks on `BLMOVE list2 -> list3`
+- producer `RPUSH list1 foo`, then inspector immediately checks list states
+
+Bug config (expected to fail with counterexample):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_bug.cfg
+```
+
+Fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_fixed.cfg
+```
+
 ## Add new model
 
 1. Add `<Name>.tla` and `<Name>.cfg` under `formal/tla/specs/`.
