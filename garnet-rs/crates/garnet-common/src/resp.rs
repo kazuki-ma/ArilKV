@@ -18,10 +18,14 @@ pub enum RespParseError {
     InvalidArrayPrefix { found: u8, position: usize },
     InvalidBulkPrefix { found: u8, position: usize },
     InvalidInteger { position: usize },
+    InvalidArrayLength,
+    InvalidBulkLength,
     IntegerOverflow,
     InvalidCrlf { position: usize },
     NegativeArrayLength { length: i64 },
+    ArrayLengthOutOfRange { length: i64 },
     NegativeBulkLength { length: i64 },
+    BulkLengthOutOfRange { length: i64 },
     ArgumentLengthOverflow { length: usize },
     ArgumentCapacityExceeded { required: usize, capacity: usize },
 }
@@ -43,13 +47,21 @@ impl core::fmt::Display for RespParseError {
             Self::InvalidInteger { position } => {
                 write!(f, "invalid RESP integer at byte {}", position)
             }
+            Self::InvalidArrayLength => write!(f, "invalid RESP array length"),
+            Self::InvalidBulkLength => write!(f, "invalid RESP bulk-string length"),
             Self::IntegerOverflow => write!(f, "RESP integer overflow"),
             Self::InvalidCrlf { position } => write!(f, "invalid CRLF at byte {}", position),
             Self::NegativeArrayLength { length } => {
                 write!(f, "negative RESP array length {}", length)
             }
+            Self::ArrayLengthOutOfRange { length } => {
+                write!(f, "RESP array length {} is out of range", length)
+            }
             Self::NegativeBulkLength { length } => {
                 write!(f, "negative RESP bulk-string length {}", length)
+            }
+            Self::BulkLengthOutOfRange { length } => {
+                write!(f, "RESP bulk-string length {} is out of range", length)
             }
             Self::ArgumentLengthOverflow { length } => write!(
                 f,
@@ -132,6 +144,9 @@ fn parse_resp_command_with<'a, F>(
 where
     F: FnMut(usize, &'a [u8]) -> Result<(), RespParseError>,
 {
+    const RESP_ARRAY_LENGTH_LIMIT: i64 = i32::MAX as i64;
+    const RESP_BULK_LENGTH_LIMIT: i64 = 512 * 1024 * 1024;
+
     if input.is_empty() {
         return Err(RespParseError::Incomplete);
     }
@@ -142,9 +157,18 @@ where
         });
     }
 
-    let (array_len, mut cursor) = parse_i64_until_crlf(input, 1)?;
+    let (array_len, mut cursor) = match parse_i64_until_crlf(input, 1) {
+        Ok(parsed) => parsed,
+        Err(RespParseError::InvalidInteger { .. }) => {
+            return Err(RespParseError::InvalidArrayLength);
+        }
+        Err(error) => return Err(error),
+    };
     if array_len < 0 {
         return Err(RespParseError::NegativeArrayLength { length: array_len });
+    }
+    if array_len > RESP_ARRAY_LENGTH_LIMIT {
+        return Err(RespParseError::ArrayLengthOutOfRange { length: array_len });
     }
     let argument_count = array_len as usize;
     if argument_count > capacity {
@@ -166,10 +190,19 @@ where
         }
         cursor += 1;
 
-        let (bulk_len, after_len_cursor) = parse_i64_until_crlf(input, cursor)?;
+        let (bulk_len, after_len_cursor) = match parse_i64_until_crlf(input, cursor) {
+            Ok(parsed) => parsed,
+            Err(RespParseError::InvalidInteger { .. }) => {
+                return Err(RespParseError::InvalidBulkLength);
+            }
+            Err(error) => return Err(error),
+        };
         cursor = after_len_cursor;
         if bulk_len < 0 {
             return Err(RespParseError::NegativeBulkLength { length: bulk_len });
+        }
+        if bulk_len > RESP_BULK_LENGTH_LIMIT {
+            return Err(RespParseError::BulkLengthOutOfRange { length: bulk_len });
         }
         let bulk_len = bulk_len as usize;
 
@@ -314,6 +347,33 @@ mod tests {
 
         let err = parse_resp_command(frame, &mut args).err().unwrap();
         assert!(matches!(err, RespParseError::NegativeBulkLength { .. }));
+    }
+
+    #[test]
+    fn rejects_out_of_range_array_length() {
+        let frame = b"*3000000000\r\n";
+        let mut args = [&b""[..]; 1];
+
+        let err = parse_resp_command(frame, &mut args).err().unwrap();
+        assert!(matches!(err, RespParseError::ArrayLengthOutOfRange { .. }));
+    }
+
+    #[test]
+    fn rejects_out_of_range_bulk_length_without_waiting_for_payload() {
+        let frame = b"*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$2000000000\r\n";
+        let mut args = [&b""[..]; 3];
+
+        let err = parse_resp_command(frame, &mut args).err().unwrap();
+        assert!(matches!(err, RespParseError::BulkLengthOutOfRange { .. }));
+    }
+
+    #[test]
+    fn rejects_non_numeric_bulk_length() {
+        let frame = b"*1\r\n$foo\r\n";
+        let mut args = [&b""[..]; 1];
+
+        let err = parse_resp_command(frame, &mut args).err().unwrap();
+        assert_eq!(err, RespParseError::InvalidBulkLength);
     }
 
     #[test]

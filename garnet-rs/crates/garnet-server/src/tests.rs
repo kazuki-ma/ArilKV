@@ -144,6 +144,90 @@ async fn config_port_reflects_listener_port_and_accepts_noop_set() {
 }
 
 #[tokio::test]
+async fn protocol_ignores_empty_and_negative_multibulk_queries() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    client.write_all(b"\r\n").await.unwrap();
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    client.write_all(b"*-10\r\n").await.unwrap();
+    send_and_expect(&mut client, b"*1\r\n$4\r\nPING\r\n", b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn protocol_returns_redis_style_resp_parse_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client.write_all(b"*3000000000\r\n").await.unwrap();
+        let error = read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await;
+        assert!(String::from_utf8_lossy(&error).contains("invalid multibulk length"));
+    }
+
+    {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nx\r\nfooz\r\n")
+            .await
+            .unwrap();
+        let error = read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await;
+        assert!(String::from_utf8_lossy(&error).contains("expected '$', got 'f'"));
+    }
+
+    {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$-10\r\n")
+            .await
+            .unwrap();
+        let error = read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await;
+        assert!(String::from_utf8_lossy(&error).contains("invalid bulk length"));
+    }
+
+    {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        client
+            .write_all(b"*3\r\n$3\r\nSET\r\n$1\r\nx\r\n$2000000000\r\n")
+            .await
+            .unwrap();
+        let error = read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await;
+        assert!(String::from_utf8_lossy(&error).contains("invalid bulk length"));
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

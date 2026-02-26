@@ -523,6 +523,12 @@ pub(crate) async fn handle_connection(
         let mut replica_subscriber = None;
 
         loop {
+            if receive_buffer[consumed..].starts_with(b"\r\n") {
+                // Redis ignores empty queries and keeps the connection open.
+                consumed += 2;
+                continue;
+            }
+
             let mut inline_frame = Vec::new();
             let (argument_count, frame_bytes_consumed) = match parse_resp_command_arg_slices_dynamic(
                 &receive_buffer[consumed..],
@@ -531,7 +537,38 @@ pub(crate) async fn handle_connection(
             ) {
                 Ok(meta) => (meta.argument_count, meta.bytes_consumed),
                 Err(RespParseError::Incomplete) => break,
+                Err(RespParseError::NegativeArrayLength { .. }) => {
+                    if let Some(bytes_consumed) =
+                        consume_negative_multibulk_frame(&receive_buffer[consumed..])
+                    {
+                        // Redis ignores negative multibulk length frames.
+                        consumed += bytes_consumed;
+                        continue;
+                    }
+                    append_error_line(
+                        &mut responses,
+                        b"ERR Protocol error: invalid multibulk length",
+                    );
+                    stream.write_all(&responses).await?;
+                    return Ok(());
+                }
+                Err(RespParseError::ArrayLengthOutOfRange { .. }) => {
+                    append_error_line(
+                        &mut responses,
+                        b"ERR Protocol error: invalid multibulk length",
+                    );
+                    stream.write_all(&responses).await?;
+                    return Ok(());
+                }
                 Err(RespParseError::InvalidArrayPrefix { .. }) => {
+                    if let Some(first_byte) = receive_buffer.get(consumed).copied()
+                        && !first_byte.is_ascii_graphic()
+                        && !first_byte.is_ascii_whitespace()
+                    {
+                        append_error_line(&mut responses, b"ERR Protocol error");
+                        stream.write_all(&responses).await?;
+                        return Ok(());
+                    }
                     match parse_inline_frame(&receive_buffer[consumed..]) {
                         InlineFrameParse::Parsed {
                             frame,
@@ -552,16 +589,24 @@ pub(crate) async fn handle_connection(
                                     stream.write_all(&responses).await?;
                                     return Ok(());
                                 }
-                                Err(_) => {
-                                    responses.extend_from_slice(b"-ERR protocol error\r\n");
+                                Err(error) => {
+                                    append_resp_parse_error(&mut responses, error);
                                     stream.write_all(&responses).await?;
                                     return Ok(());
                                 }
                             }
                         }
                         InlineFrameParse::Incomplete => break,
+                        InlineFrameParse::UnbalancedQuotes => {
+                            append_error_line(
+                                &mut responses,
+                                b"ERR Protocol error: unbalanced quotes in request",
+                            );
+                            stream.write_all(&responses).await?;
+                            return Ok(());
+                        }
                         InlineFrameParse::ProtocolError => {
-                            responses.extend_from_slice(b"-ERR protocol error\r\n");
+                            append_error_line(&mut responses, b"ERR Protocol error");
                             stream.write_all(&responses).await?;
                             return Ok(());
                         }
@@ -572,8 +617,8 @@ pub(crate) async fn handle_connection(
                     stream.write_all(&responses).await?;
                     return Ok(());
                 }
-                Err(_) => {
-                    responses.extend_from_slice(b"-ERR protocol error\r\n");
+                Err(error) => {
+                    append_resp_parse_error(&mut responses, error);
                     stream.write_all(&responses).await?;
                     return Ok(());
                 }
@@ -3445,22 +3490,30 @@ enum InlineFrameParse {
         bytes_consumed: usize,
     },
     Incomplete,
+    UnbalancedQuotes,
     ProtocolError,
 }
 
 fn parse_inline_frame(input: &[u8]) -> InlineFrameParse {
     let Some(newline_offset) = input.iter().position(|byte| *byte == b'\n') else {
+        if input.contains(&b'\0') {
+            return InlineFrameParse::ProtocolError;
+        }
         return InlineFrameParse::Incomplete;
     };
 
     let bytes_consumed = newline_offset + 1;
     let mut line = &input[..newline_offset];
+    if line.contains(&b'\0') {
+        return InlineFrameParse::ProtocolError;
+    }
     if line.ends_with(b"\r") {
         line = &line[..line.len() - 1];
     }
 
     let tokens = match tokenize_inline_command(line) {
         Ok(tokens) if !tokens.is_empty() => tokens,
+        Err(InlineTokenizeError::UnbalancedQuotes) => return InlineFrameParse::UnbalancedQuotes,
         _ => return InlineFrameParse::ProtocolError,
     };
 
@@ -3470,13 +3523,90 @@ fn parse_inline_frame(input: &[u8]) -> InlineFrameParse {
     }
 }
 
-fn tokenize_inline_command(line: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
+fn consume_negative_multibulk_frame(input: &[u8]) -> Option<usize> {
+    if !input.starts_with(b"*-") {
+        return None;
+    }
+    let mut index = 2usize;
+    if index >= input.len() {
+        return None;
+    }
+    while index < input.len() {
+        match input[index] {
+            b'0'..=b'9' => index += 1,
+            b'\r' => {
+                if index + 1 >= input.len() {
+                    return None;
+                }
+                if input[index + 1] != b'\n' {
+                    return None;
+                }
+                return Some(index + 2);
+            }
+            _ => return None,
+        }
+    }
+    None
+}
+
+fn append_resp_parse_error(response_out: &mut Vec<u8>, error: RespParseError) {
+    match error {
+        RespParseError::InvalidArrayLength
+        | RespParseError::InvalidArrayPrefix { .. }
+        | RespParseError::InvalidInteger { .. }
+        | RespParseError::InvalidCrlf { .. } => {
+            append_error_line(
+                response_out,
+                b"ERR Protocol error: invalid multibulk length",
+            );
+        }
+        RespParseError::InvalidBulkPrefix { found, .. } => {
+            let printable = if found.is_ascii_graphic() {
+                found as char
+            } else {
+                '?'
+            };
+            append_error_line(
+                response_out,
+                format!("ERR Protocol error: expected '$', got '{}'", printable).as_bytes(),
+            );
+        }
+        RespParseError::NegativeArrayLength { .. }
+        | RespParseError::ArrayLengthOutOfRange { .. } => {
+            append_error_line(
+                response_out,
+                b"ERR Protocol error: invalid multibulk length",
+            );
+        }
+        RespParseError::InvalidBulkLength
+        | RespParseError::NegativeBulkLength { .. }
+        | RespParseError::BulkLengthOutOfRange { .. } => {
+            append_error_line(response_out, b"ERR Protocol error: invalid bulk length");
+        }
+        _ => {
+            append_error_line(response_out, b"ERR Protocol error");
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InlineTokenizeError {
+    UnbalancedQuotes,
+    InvalidInlineCommand,
+}
+
+fn tokenize_inline_command(line: &[u8]) -> Result<Vec<Vec<u8>>, InlineTokenizeError> {
     let mut tokens = Vec::new();
     let mut current = Vec::new();
     let mut quote: Option<u8> = None;
     let mut escaping = false;
+    let mut just_closed_quote = false;
 
     for &byte in line {
+        if byte == b'\0' {
+            return Err(InlineTokenizeError::InvalidInlineCommand);
+        }
+
         if escaping {
             current.push(byte);
             escaping = false;
@@ -3491,13 +3621,26 @@ fn tokenize_inline_command(line: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
         if let Some(quote_byte) = quote {
             if byte == quote_byte {
                 quote = None;
+                just_closed_quote = true;
             } else {
                 current.push(byte);
             }
             continue;
         }
 
+        if just_closed_quote {
+            if byte.is_ascii_whitespace() {
+                tokens.push(core::mem::take(&mut current));
+                just_closed_quote = false;
+                continue;
+            }
+            return Err(InlineTokenizeError::UnbalancedQuotes);
+        }
+
         if byte == b'\'' || byte == b'"' {
+            if !current.is_empty() {
+                return Err(InlineTokenizeError::UnbalancedQuotes);
+            }
             quote = Some(byte);
             continue;
         }
@@ -3513,9 +3656,9 @@ fn tokenize_inline_command(line: &[u8]) -> Result<Vec<Vec<u8>>, ()> {
     }
 
     if escaping || quote.is_some() {
-        return Err(());
+        return Err(InlineTokenizeError::UnbalancedQuotes);
     }
-    if !current.is_empty() {
+    if !current.is_empty() || just_closed_quote {
         tokens.push(current);
     }
 
@@ -3707,6 +3850,14 @@ mod tests {
         assert!(matches!(
             parse_inline_frame(b"SET key value"),
             InlineFrameParse::Incomplete
+        ));
+    }
+
+    #[test]
+    fn inline_frame_rejects_nul_without_newline() {
+        assert!(matches!(
+            parse_inline_frame(b"$\0"),
+            InlineFrameParse::ProtocolError
         ));
     }
 
