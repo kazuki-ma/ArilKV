@@ -3,6 +3,7 @@ use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::HASH_SLOT_COUNT;
 use garnet_cluster::SlotState;
 use garnet_cluster::Worker;
+use garnet_cluster::WorkerId;
 use garnet_cluster::WorkerRole;
 use garnet_server::ServerConfig;
 use garnet_server::ServerMetrics;
@@ -42,7 +43,7 @@ fn build_cluster_store_for_local_index(
         local_addr.port(),
     );
 
-    let mut worker_ids_by_index = vec![0u16; bind_addrs.len()];
+    let mut worker_ids_by_index = vec![WorkerId::new(0); bind_addrs.len()];
     worker_ids_by_index[local_index] = config
         .local_worker()
         .map_err(|error| cluster_config_error_to_io("failed to read local worker", error))?

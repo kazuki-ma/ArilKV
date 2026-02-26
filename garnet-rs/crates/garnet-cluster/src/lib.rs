@@ -18,8 +18,48 @@ use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 
 pub const HASH_SLOT_COUNT: usize = 16_384;
-pub const RESERVED_WORKER_ID: u16 = 0;
-pub const LOCAL_WORKER_ID: u16 = 1;
+pub const RESERVED_WORKER_ID: WorkerId = WorkerId::new(0);
+pub const LOCAL_WORKER_ID: WorkerId = WorkerId::new(1);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct WorkerId(u16);
+
+impl WorkerId {
+    pub const fn new(raw: u16) -> Self {
+        Self(raw)
+    }
+
+    pub const fn as_u16(self) -> u16 {
+        self.0
+    }
+
+    pub const fn as_usize(self) -> usize {
+        self.0 as usize
+    }
+
+    pub fn from_usize(value: usize) -> Option<Self> {
+        u16::try_from(value).ok().map(Self)
+    }
+}
+
+impl fmt::Display for WorkerId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u16> for WorkerId {
+    fn from(value: u16) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<WorkerId> for u16 {
+    fn from(value: WorkerId) -> Self {
+        value.as_u16()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -53,18 +93,18 @@ pub struct HashSlot {
 }
 
 impl HashSlot {
-    pub fn new(worker_id: u16, state: SlotState) -> Self {
-        let [lo, hi] = worker_id.to_le_bytes();
+    pub fn new(worker_id: WorkerId, state: SlotState) -> Self {
+        let [lo, hi] = worker_id.as_u16().to_le_bytes();
         Self {
             bytes: [lo, hi, state as u8],
         }
     }
 
-    pub fn assigned_worker_id(self) -> u16 {
-        u16::from_le_bytes([self.bytes[0], self.bytes[1]])
+    pub fn assigned_worker_id(self) -> WorkerId {
+        WorkerId::new(u16::from_le_bytes([self.bytes[0], self.bytes[1]]))
     }
 
-    pub fn worker_id(self) -> u16 {
+    pub fn worker_id(self) -> WorkerId {
         if self.state() == SlotState::Migrating {
             LOCAL_WORKER_ID
         } else {
@@ -97,7 +137,7 @@ pub enum WorkerRole {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Worker {
-    pub id: u16,
+    pub id: WorkerId,
     pub node_id: String,
     pub host: String,
     pub port: u16,
@@ -147,7 +187,7 @@ impl Worker {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ClusterConfigError {
     InvalidSlot(u16),
-    WorkerNotFound(u16),
+    WorkerNotFound(WorkerId),
     WorkerCapacityExceeded,
     MissingLocalWorker,
 }
@@ -155,8 +195,8 @@ pub enum ClusterConfigError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SlotRouteDecision {
     Local,
-    Moved { slot: u16, worker_id: u16 },
-    Ask { slot: u16, worker_id: u16 },
+    Moved { slot: u16, worker_id: WorkerId },
+    Ask { slot: u16, worker_id: WorkerId },
     Unbound { slot: u16 },
 }
 
@@ -200,8 +240,8 @@ impl ClusterConfig {
         &self.workers
     }
 
-    pub fn worker(&self, worker_id: u16) -> Option<&Worker> {
-        self.workers.get(worker_id as usize)
+    pub fn worker(&self, worker_id: WorkerId) -> Option<&Worker> {
+        self.workers.get(worker_id.as_usize())
     }
 
     pub fn local_worker(&self) -> Result<&Worker, ClusterConfigError> {
@@ -217,11 +257,11 @@ impl ClusterConfig {
         Ok(self.slot(slot)?.state())
     }
 
-    pub fn slot_owner(&self, slot: u16) -> Result<u16, ClusterConfigError> {
+    pub fn slot_owner(&self, slot: u16) -> Result<WorkerId, ClusterConfigError> {
         Ok(self.slot(slot)?.worker_id())
     }
 
-    pub fn slot_assigned_owner(&self, slot: u16) -> Result<u16, ClusterConfigError> {
+    pub fn slot_assigned_owner(&self, slot: u16) -> Result<WorkerId, ClusterConfigError> {
         Ok(self.slot(slot)?.assigned_worker_id())
     }
 
@@ -235,7 +275,7 @@ impl ClusterConfig {
 
     pub fn slots_assigned_to_worker_in_state(
         &self,
-        worker_id: u16,
+        worker_id: WorkerId,
         state: SlotState,
     ) -> Result<Vec<u16>, ClusterConfigError> {
         if self.worker(worker_id).is_none() {
@@ -333,7 +373,7 @@ impl ClusterConfig {
     pub fn set_slot_state(
         &self,
         slot: u16,
-        worker_id: u16,
+        worker_id: WorkerId,
         state: SlotState,
     ) -> Result<Self, ClusterConfigError> {
         let slot_index = Self::slot_index(slot)?;
@@ -348,7 +388,7 @@ impl ClusterConfig {
     pub fn begin_slot_migration_to(
         &self,
         slot: u16,
-        target_worker_id: u16,
+        target_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         self.set_slot_state(slot, target_worker_id, SlotState::Migrating)
     }
@@ -356,7 +396,7 @@ impl ClusterConfig {
     pub fn begin_slot_import_from(
         &self,
         slot: u16,
-        source_worker_id: u16,
+        source_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         self.set_slot_state(slot, source_worker_id, SlotState::Importing)
     }
@@ -364,7 +404,7 @@ impl ClusterConfig {
     pub fn finalize_slot_migration(
         &self,
         slot: u16,
-        new_owner_worker_id: u16,
+        new_owner_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         self.set_slot_state(slot, new_owner_worker_id, SlotState::Stable)
     }
@@ -373,7 +413,7 @@ impl ClusterConfig {
         let mut next = self.clone();
         let local = next
             .workers
-            .get_mut(LOCAL_WORKER_ID as usize)
+            .get_mut(LOCAL_WORKER_ID.as_usize())
             .ok_or(ClusterConfigError::MissingLocalWorker)?;
         local.role = role;
         if role != WorkerRole::Replica {
@@ -384,13 +424,13 @@ impl ClusterConfig {
 
     pub fn set_worker_config_epoch(
         &self,
-        worker_id: u16,
+        worker_id: WorkerId,
         config_epoch: u64,
     ) -> Result<Self, ClusterConfigError> {
         let mut next = self.clone();
         let worker = next
             .workers
-            .get_mut(worker_id as usize)
+            .get_mut(worker_id.as_usize())
             .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
         worker.config_epoch = config_epoch;
         Ok(next)
@@ -398,13 +438,13 @@ impl ClusterConfig {
 
     pub fn set_worker_replica_of(
         &self,
-        worker_id: u16,
+        worker_id: WorkerId,
         primary_node_id: impl Into<String>,
     ) -> Result<Self, ClusterConfigError> {
         let mut next = self.clone();
         let worker = next
             .workers
-            .get_mut(worker_id as usize)
+            .get_mut(worker_id.as_usize())
             .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
         worker.role = WorkerRole::Replica;
         worker.replica_of_node_id = Some(primary_node_id.into());
@@ -413,21 +453,21 @@ impl ClusterConfig {
 
     pub fn set_worker_replication_offset(
         &self,
-        worker_id: u16,
+        worker_id: WorkerId,
         replication_offset: u64,
     ) -> Result<Self, ClusterConfigError> {
         let mut next = self.clone();
         let worker = next
             .workers
-            .get_mut(worker_id as usize)
+            .get_mut(worker_id.as_usize())
             .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
         worker.replication_offset = replication_offset;
         Ok(next)
     }
 
-    pub fn add_worker(&self, mut worker: Worker) -> Result<(Self, u16), ClusterConfigError> {
-        let worker_id = u16::try_from(self.workers.len())
-            .map_err(|_| ClusterConfigError::WorkerCapacityExceeded)?;
+    pub fn add_worker(&self, mut worker: Worker) -> Result<(Self, WorkerId), ClusterConfigError> {
+        let worker_id = WorkerId::from_usize(self.workers.len())
+            .ok_or(ClusterConfigError::WorkerCapacityExceeded)?;
         let mut next = self.clone();
         worker.id = worker_id;
         next.workers.push(worker);
@@ -436,7 +476,7 @@ impl ClusterConfig {
 
     pub fn take_over_slots_from_primary(
         &self,
-        failed_primary_worker_id: u16,
+        failed_primary_worker_id: WorkerId,
     ) -> Result<Self, ClusterConfigError> {
         if self.worker(failed_primary_worker_id).is_none() {
             return Err(ClusterConfigError::WorkerNotFound(failed_primary_worker_id));
@@ -451,7 +491,7 @@ impl ClusterConfig {
 
         let local = next
             .workers
-            .get_mut(LOCAL_WORKER_ID as usize)
+            .get_mut(LOCAL_WORKER_ID.as_usize())
             .ok_or(ClusterConfigError::MissingLocalWorker)?;
         local.role = WorkerRole::Primary;
         local.replica_of_node_id = None;
@@ -469,10 +509,10 @@ impl ClusterConfig {
         }
 
         let mut next = self.clone();
-        let failed_primary_node_id = next.workers[plan.failed_primary_worker_id as usize]
+        let failed_primary_node_id = next.workers[plan.failed_primary_worker_id.as_usize()]
             .node_id
             .clone();
-        let promoted_node_id = next.workers[plan.promoted_worker_id as usize]
+        let promoted_node_id = next.workers[plan.promoted_worker_id.as_usize()]
             .node_id
             .clone();
 
@@ -519,7 +559,7 @@ impl ClusterConfig {
         let mut next = self.clone();
 
         for incoming_worker in &incoming.workers {
-            let worker_index = incoming_worker.id as usize;
+            let worker_index = incoming_worker.id.as_usize();
             if worker_index >= next.workers.len() {
                 next.workers.push(incoming_worker.clone());
                 continue;
@@ -554,7 +594,7 @@ impl ClusterConfig {
         Ok(slot_index)
     }
 
-    fn worker_endpoint(&self, worker_id: u16) -> Result<String, ClusterConfigError> {
+    fn worker_endpoint(&self, worker_id: WorkerId) -> Result<String, ClusterConfigError> {
         let worker = self
             .worker(worker_id)
             .ok_or(ClusterConfigError::WorkerNotFound(worker_id))?;
@@ -630,7 +670,7 @@ pub fn encode_cluster_config_snapshot(
     out.extend_from_slice(&worker_count_u16.to_le_bytes());
 
     for worker in &config.workers {
-        out.extend_from_slice(&worker.id.to_le_bytes());
+        out.extend_from_slice(&worker.id.as_u16().to_le_bytes());
         out.extend_from_slice(&worker.config_epoch.to_le_bytes());
         out.extend_from_slice(&worker.port.to_le_bytes());
         out.push(worker.role as u8);
@@ -647,7 +687,7 @@ pub fn encode_cluster_config_snapshot(
     }
 
     for slot in config.slot_map.iter() {
-        out.extend_from_slice(&slot.assigned_worker_id().to_le_bytes());
+        out.extend_from_slice(&slot.assigned_worker_id().as_u16().to_le_bytes());
         out.push(slot.state() as u8);
     }
 
@@ -670,9 +710,9 @@ pub fn decode_cluster_config_snapshot(
 
     let worker_count = read_u16(bytes, &mut cursor)? as usize;
     let mut decoded_workers = Vec::with_capacity(worker_count);
-    let mut max_worker_id = 0u16;
+    let mut max_worker_id = RESERVED_WORKER_ID;
     for _ in 0..worker_count {
-        let id = read_u16(bytes, &mut cursor)?;
+        let id = WorkerId::new(read_u16(bytes, &mut cursor)?);
         let config_epoch = read_u64(bytes, &mut cursor)?;
         let port = read_u16(bytes, &mut cursor)?;
         let role = match read_u8(bytes, &mut cursor)? {
@@ -704,15 +744,15 @@ pub fn decode_cluster_config_snapshot(
     }
 
     let mut workers = if worker_count == 0 {
-        vec![Worker::reserved(); (LOCAL_WORKER_ID as usize) + 1]
+        vec![Worker::reserved(); LOCAL_WORKER_ID.as_usize() + 1]
     } else {
-        vec![Worker::reserved(); (max_worker_id as usize) + 1]
+        vec![Worker::reserved(); max_worker_id.as_usize() + 1]
     };
-    if workers.len() <= LOCAL_WORKER_ID as usize {
-        workers.resize((LOCAL_WORKER_ID as usize) + 1, Worker::reserved());
+    if workers.len() <= LOCAL_WORKER_ID.as_usize() {
+        workers.resize(LOCAL_WORKER_ID.as_usize() + 1, Worker::reserved());
     }
     for worker in decoded_workers {
-        let worker_id = worker.id as usize;
+        let worker_id = worker.id.as_usize();
         if worker_id >= workers.len() {
             workers.resize(worker_id + 1, Worker::reserved());
         }
@@ -721,7 +761,7 @@ pub fn decode_cluster_config_snapshot(
 
     let mut slot_map = [HashSlot::default(); HASH_SLOT_COUNT];
     for slot in &mut slot_map {
-        let worker_id = read_u16(bytes, &mut cursor)?;
+        let worker_id = WorkerId::new(read_u16(bytes, &mut cursor)?);
         let state = SlotState::from_u8(read_u8(bytes, &mut cursor)?);
         *slot = HashSlot::new(worker_id, state);
     }
@@ -914,14 +954,14 @@ pub struct ReplicationSyncPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicaProgress {
-    pub worker_id: u16,
+    pub worker_id: WorkerId,
     pub acknowledged_offset: u64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverPlan {
-    pub failed_primary_worker_id: u16,
-    pub promoted_worker_id: u16,
+    pub failed_primary_worker_id: WorkerId,
+    pub promoted_worker_id: WorkerId,
     pub promoted_replication_offset: u64,
 }
 
@@ -934,10 +974,14 @@ pub struct ReplicationSyncOutcome {
 pub trait ReplicationTransport {
     type Error;
 
-    fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error>;
+    fn send_checkpoint(
+        &mut self,
+        worker_id: WorkerId,
+        checkpoint_id: u64,
+    ) -> Result<(), Self::Error>;
     fn stream_aof_from_offset(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Result<u64, Self::Error>;
 }
@@ -953,20 +997,26 @@ pub trait AsyncReplicationTransport {
 
     fn send_checkpoint<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         checkpoint_id: u64,
     ) -> Self::CheckpointFut<'a>;
     fn stream_aof_from_offset<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Self::StreamFut<'a>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ReplicationEvent {
-    Checkpoint { worker_id: u16, checkpoint_id: u64 },
-    StreamAof { worker_id: u16, start_offset: u64 },
+    Checkpoint {
+        worker_id: WorkerId,
+        checkpoint_id: u64,
+    },
+    StreamAof {
+        worker_id: WorkerId,
+        start_offset: u64,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1023,7 +1073,7 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
 
     fn send_checkpoint<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         checkpoint_id: u64,
     ) -> Self::CheckpointFut<'a> {
         std::future::ready(
@@ -1038,7 +1088,7 @@ impl AsyncReplicationTransport for ChannelReplicationTransport {
 
     fn stream_aof_from_offset<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Self::StreamFut<'a> {
         std::future::ready(
@@ -1075,11 +1125,11 @@ impl FileReplicationTransport {
         self.stream_result = stream_result;
     }
 
-    fn checkpoint_path(&self, worker_id: u16) -> PathBuf {
+    fn checkpoint_path(&self, worker_id: WorkerId) -> PathBuf {
         self.root.join(format!("worker-{worker_id}.checkpoint"))
     }
 
-    fn aof_path(&self, worker_id: u16) -> PathBuf {
+    fn aof_path(&self, worker_id: WorkerId) -> PathBuf {
         self.root.join(format!("worker-{worker_id}.aof"))
     }
 
@@ -1089,7 +1139,7 @@ impl FileReplicationTransport {
 
     fn write_checkpoint(
         &self,
-        worker_id: u16,
+        worker_id: WorkerId,
         checkpoint_id: u64,
     ) -> Result<(), FileReplicationTransportError> {
         self.ensure_root_dir()?;
@@ -1102,7 +1152,7 @@ impl FileReplicationTransport {
 
     fn append_aof_start_offset(
         &self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Result<(), FileReplicationTransportError> {
         self.ensure_root_dir()?;
@@ -1133,13 +1183,17 @@ impl std::error::Error for FileReplicationTransportError {}
 impl ReplicationTransport for FileReplicationTransport {
     type Error = FileReplicationTransportError;
 
-    fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error> {
+    fn send_checkpoint(
+        &mut self,
+        worker_id: WorkerId,
+        checkpoint_id: u64,
+    ) -> Result<(), Self::Error> {
         self.write_checkpoint(worker_id, checkpoint_id)
     }
 
     fn stream_aof_from_offset(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Result<u64, Self::Error> {
         self.append_aof_start_offset(worker_id, start_offset)?;
@@ -1160,7 +1214,7 @@ impl AsyncReplicationTransport for FileReplicationTransport {
 
     fn send_checkpoint<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         checkpoint_id: u64,
     ) -> Self::CheckpointFut<'a> {
         std::future::ready(self.write_checkpoint(worker_id, checkpoint_id))
@@ -1168,7 +1222,7 @@ impl AsyncReplicationTransport for FileReplicationTransport {
 
     fn stream_aof_from_offset<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Self::StreamFut<'a> {
         std::future::ready(
@@ -1180,7 +1234,7 @@ impl AsyncReplicationTransport for FileReplicationTransport {
 
 #[derive(Debug)]
 pub struct TcpReplicationTransport {
-    peers: BTreeMap<u16, SocketAddr>,
+    peers: BTreeMap<WorkerId, SocketAddr>,
     stream_result: u64,
 }
 
@@ -1192,7 +1246,7 @@ impl TcpReplicationTransport {
         }
     }
 
-    pub fn add_peer(&mut self, worker_id: u16, endpoint: SocketAddr) {
+    pub fn add_peer(&mut self, worker_id: WorkerId, endpoint: SocketAddr) {
         self.peers.insert(worker_id, endpoint);
     }
 
@@ -1204,7 +1258,10 @@ impl TcpReplicationTransport {
         self.stream_result = stream_result;
     }
 
-    fn peer_endpoint(&self, worker_id: u16) -> Result<SocketAddr, TcpReplicationTransportError> {
+    fn peer_endpoint(
+        &self,
+        worker_id: WorkerId,
+    ) -> Result<SocketAddr, TcpReplicationTransportError> {
         self.peers
             .get(&worker_id)
             .copied()
@@ -1214,7 +1271,7 @@ impl TcpReplicationTransport {
 
 #[derive(Debug)]
 pub enum TcpReplicationTransportError {
-    UnknownPeer(u16),
+    UnknownPeer(WorkerId),
     Io(std::io::Error),
 }
 
@@ -1234,7 +1291,11 @@ impl std::error::Error for TcpReplicationTransportError {}
 impl ReplicationTransport for TcpReplicationTransport {
     type Error = TcpReplicationTransportError;
 
-    fn send_checkpoint(&mut self, worker_id: u16, checkpoint_id: u64) -> Result<(), Self::Error> {
+    fn send_checkpoint(
+        &mut self,
+        worker_id: WorkerId,
+        checkpoint_id: u64,
+    ) -> Result<(), Self::Error> {
         let endpoint = self.peer_endpoint(worker_id)?;
         let mut stream =
             std::net::TcpStream::connect(endpoint).map_err(TcpReplicationTransportError::Io)?;
@@ -1245,7 +1306,7 @@ impl ReplicationTransport for TcpReplicationTransport {
 
     fn stream_aof_from_offset(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Result<u64, Self::Error> {
         let endpoint = self.peer_endpoint(worker_id)?;
@@ -1271,7 +1332,7 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
 
     fn send_checkpoint<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         checkpoint_id: u64,
     ) -> Self::CheckpointFut<'a> {
         let endpoint = self.peers.get(&worker_id).copied();
@@ -1289,7 +1350,7 @@ impl AsyncReplicationTransport for TcpReplicationTransport {
 
     fn stream_aof_from_offset<'a>(
         &'a mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         start_offset: u64,
     ) -> Self::StreamFut<'a> {
         let endpoint = self.peers.get(&worker_id).copied();
@@ -1313,7 +1374,7 @@ pub struct ReplicationManager {
     checkpoint_id: Option<u64>,
     aof_replay_start_offset: u64,
     aof_tail_offset: u64,
-    replica_offsets: BTreeMap<u16, u64>,
+    replica_offsets: BTreeMap<WorkerId, u64>,
 }
 
 impl ReplicationManager {
@@ -1377,11 +1438,11 @@ impl ReplicationManager {
         Ok(())
     }
 
-    pub fn record_replica_offset(&mut self, worker_id: u16, acknowledged_offset: u64) {
+    pub fn record_replica_offset(&mut self, worker_id: WorkerId, acknowledged_offset: u64) {
         self.replica_offsets.insert(worker_id, acknowledged_offset);
     }
 
-    pub fn replica_offset(&self, worker_id: u16) -> Option<u64> {
+    pub fn replica_offset(&self, worker_id: WorkerId) -> Option<u64> {
         self.replica_offsets.get(&worker_id).copied()
     }
 
@@ -1415,7 +1476,7 @@ impl ReplicationManager {
 
     pub fn execute_sync<T: ReplicationTransport>(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         replica_offset: Option<u64>,
         transport: &mut T,
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
@@ -1442,7 +1503,7 @@ impl ReplicationManager {
 
     pub fn execute_sync_for_worker<T: ReplicationTransport>(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         transport: &mut T,
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         self.execute_sync(worker_id, self.replica_offset(worker_id), transport)
@@ -1453,7 +1514,7 @@ impl ReplicationManager {
         config: &ClusterConfig,
         primary_node_id: &str,
         transport: &mut T,
-    ) -> Result<Vec<(u16, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
+    ) -> Result<Vec<(WorkerId, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
         let mut outcomes = Vec::new();
         for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
             let outcome = self.execute_sync_for_worker(worker_id, transport)?;
@@ -1464,7 +1525,7 @@ impl ReplicationManager {
 
     pub async fn execute_sync_async<T: AsyncReplicationTransport>(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         replica_offset: Option<u64>,
         transport: &mut T,
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
@@ -1493,7 +1554,7 @@ impl ReplicationManager {
 
     pub async fn execute_sync_for_worker_async<T: AsyncReplicationTransport>(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         transport: &mut T,
     ) -> Result<ReplicationSyncOutcome, ReplicationSyncError<T::Error>> {
         self.execute_sync_async(worker_id, self.replica_offset(worker_id), transport)
@@ -1505,7 +1566,7 @@ impl ReplicationManager {
         config: &ClusterConfig,
         primary_node_id: &str,
         transport: &mut T,
-    ) -> Result<Vec<(u16, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
+    ) -> Result<Vec<(WorkerId, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
         let mut outcomes = Vec::new();
         for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
             let outcome = self
@@ -1520,7 +1581,7 @@ impl ReplicationManager {
         &self,
         config: &ClusterConfig,
         primary_node_id: &str,
-    ) -> Vec<u16> {
+    ) -> Vec<WorkerId> {
         let mut worker_ids = config
             .workers()
             .iter()
@@ -1541,7 +1602,7 @@ impl ReplicationManager {
             worker.role == WorkerRole::Primary && worker.node_id == failed_primary_node_id
         })?;
 
-        let mut best: Option<(u64, u16)> = None;
+        let mut best: Option<(u64, WorkerId)> = None;
         for worker in config.workers().iter() {
             if worker.role != WorkerRole::Replica {
                 continue;
@@ -1652,14 +1713,14 @@ impl<E: std::error::Error + 'static> std::error::Error for FailoverControllerErr
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverControllerOutcome {
-    pub synchronized_replicas: Vec<(u16, ReplicationSyncOutcome)>,
+    pub synchronized_replicas: Vec<(WorkerId, ReplicationSyncOutcome)>,
     pub failover_plan: Option<FailoverPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverExecutionRecord {
-    pub failed_worker_id: u16,
-    pub synchronized_replicas: Vec<(u16, ReplicationSyncOutcome)>,
+    pub failed_worker_id: WorkerId,
+    pub synchronized_replicas: Vec<(WorkerId, ReplicationSyncOutcome)>,
     pub plan: FailoverPlan,
 }
 
@@ -1754,9 +1815,9 @@ impl ClusterFailoverController {
         &mut self,
         config_store: &ClusterConfigStore,
         replication_manager: &mut ReplicationManager,
-        failed_worker_ids: &[u16],
+        failed_worker_ids: &[WorkerId],
         transport: &mut T,
-    ) -> Result<Vec<(u16, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
+    ) -> Result<Vec<(WorkerId, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
         let mut failed_primaries = Vec::new();
         {
             let snapshot = config_store.load();
@@ -1786,9 +1847,9 @@ impl ClusterFailoverController {
         &mut self,
         config_store: &ClusterConfigStore,
         replication_manager: &mut ReplicationManager,
-        failed_worker_ids: &[u16],
+        failed_worker_ids: &[WorkerId],
         transport: &mut T,
-    ) -> Result<Vec<(u16, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
+    ) -> Result<Vec<(WorkerId, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
         let mut failed_primaries = Vec::new();
         {
             let snapshot = config_store.load();
@@ -1818,12 +1879,12 @@ impl ClusterFailoverController {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GossipNode {
-    pub worker_id: u16,
+    pub worker_id: WorkerId,
     pub last_gossip_tick: u64,
 }
 
 impl GossipNode {
-    pub fn new(worker_id: u16, last_gossip_tick: u64) -> Self {
+    pub fn new(worker_id: WorkerId, last_gossip_tick: u64) -> Self {
         Self {
             worker_id,
             last_gossip_tick,
@@ -1839,9 +1900,9 @@ pub enum GossipSendResult {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GossipRoundReport {
-    pub attempted_worker_ids: Vec<u16>,
-    pub successful_worker_ids: Vec<u16>,
-    pub failed_worker_ids: Vec<u16>,
+    pub attempted_worker_ids: Vec<WorkerId>,
+    pub successful_worker_ids: Vec<WorkerId>,
+    pub failed_worker_ids: Vec<WorkerId>,
     pub success_count: usize,
     pub failure_count: usize,
     pub remaining_failure_budget: usize,
@@ -1859,8 +1920,8 @@ pub fn calculate_gossip_failure_budget(node_count: usize, sample_percent: usize)
 #[derive(Debug, Clone)]
 pub struct FailureDetector {
     failure_threshold: usize,
-    consecutive_failures: BTreeMap<u16, usize>,
-    failed_workers: BTreeSet<u16>,
+    consecutive_failures: BTreeMap<WorkerId, usize>,
+    failed_workers: BTreeSet<WorkerId>,
 }
 
 impl FailureDetector {
@@ -1876,27 +1937,27 @@ impl FailureDetector {
         self.failure_threshold
     }
 
-    pub fn failed_workers(&self) -> &BTreeSet<u16> {
+    pub fn failed_workers(&self) -> &BTreeSet<WorkerId> {
         &self.failed_workers
     }
 
-    pub fn consecutive_failures(&self, worker_id: u16) -> usize {
+    pub fn consecutive_failures(&self, worker_id: WorkerId) -> usize {
         self.consecutive_failures
             .get(&worker_id)
             .copied()
             .unwrap_or(0)
     }
 
-    pub fn is_failed(&self, worker_id: u16) -> bool {
+    pub fn is_failed(&self, worker_id: WorkerId) -> bool {
         self.failed_workers.contains(&worker_id)
     }
 
-    pub fn clear_worker(&mut self, worker_id: u16) {
+    pub fn clear_worker(&mut self, worker_id: WorkerId) {
         self.consecutive_failures.remove(&worker_id);
         self.failed_workers.remove(&worker_id);
     }
 
-    pub fn record_report(&mut self, report: &GossipRoundReport) -> Vec<u16> {
+    pub fn record_report(&mut self, report: &GossipRoundReport) -> Vec<WorkerId> {
         let failed_in_round = report
             .failed_worker_ids
             .iter()
@@ -1983,7 +2044,7 @@ where
 pub trait GossipTransport {
     type Error;
 
-    fn try_gossip(&mut self, worker_id: u16) -> Result<(), Self::Error>;
+    fn try_gossip(&mut self, worker_id: WorkerId) -> Result<(), Self::Error>;
 }
 
 pub trait AsyncGossipTransport {
@@ -1992,13 +2053,13 @@ pub trait AsyncGossipTransport {
     where
         Self: 'a;
 
-    fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a>;
+    fn try_gossip<'a>(&'a mut self, worker_id: WorkerId) -> Self::Fut<'a>;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum InMemoryGossipTransportError {
-    UnknownPeer(u16),
-    ChannelClosed(u16),
+    UnknownPeer(WorkerId),
+    ChannelClosed(WorkerId),
 }
 
 impl fmt::Display for InMemoryGossipTransportError {
@@ -2017,7 +2078,7 @@ impl std::error::Error for InMemoryGossipTransportError {}
 #[derive(Debug)]
 pub struct InMemoryGossipTransport {
     local_config: Arc<ClusterConfigStore>,
-    peers: BTreeMap<u16, tokio::sync::mpsc::UnboundedSender<ClusterConfig>>,
+    peers: BTreeMap<WorkerId, tokio::sync::mpsc::UnboundedSender<ClusterConfig>>,
 }
 
 impl InMemoryGossipTransport {
@@ -2030,7 +2091,7 @@ impl InMemoryGossipTransport {
 
     pub fn add_peer(
         &mut self,
-        worker_id: u16,
+        worker_id: WorkerId,
         sender: tokio::sync::mpsc::UnboundedSender<ClusterConfig>,
     ) {
         self.peers.insert(worker_id, sender);
@@ -2044,7 +2105,7 @@ impl AsyncGossipTransport for InMemoryGossipTransport {
     where
         Self: 'a;
 
-    fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a> {
+    fn try_gossip<'a>(&'a mut self, worker_id: WorkerId) -> Self::Fut<'a> {
         let Some(peer) = self.peers.get(&worker_id) else {
             return std::future::ready(Err(InMemoryGossipTransportError::UnknownPeer(worker_id)));
         };
@@ -2059,7 +2120,7 @@ impl AsyncGossipTransport for InMemoryGossipTransport {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TcpGossipTransportError {
-    UnknownPeer(u16),
+    UnknownPeer(WorkerId),
     MessageTooLarge(usize),
     Codec(ClusterConfigCodecError),
     Io(String),
@@ -2127,7 +2188,7 @@ pub async fn read_gossip_snapshot(
 #[derive(Debug)]
 pub struct TcpGossipTransport {
     local_config: Arc<ClusterConfigStore>,
-    peers: BTreeMap<u16, SocketAddr>,
+    peers: BTreeMap<WorkerId, SocketAddr>,
 }
 
 impl TcpGossipTransport {
@@ -2138,7 +2199,7 @@ impl TcpGossipTransport {
         }
     }
 
-    pub fn add_peer(&mut self, worker_id: u16, endpoint: SocketAddr) {
+    pub fn add_peer(&mut self, worker_id: WorkerId, endpoint: SocketAddr) {
         self.peers.insert(worker_id, endpoint);
     }
 }
@@ -2150,7 +2211,7 @@ impl AsyncGossipTransport for TcpGossipTransport {
     where
         Self: 'a;
 
-    fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a> {
+    fn try_gossip<'a>(&'a mut self, worker_id: WorkerId) -> Self::Fut<'a> {
         let peer_endpoint = self.peers.get(&worker_id).copied();
         let snapshot = self.local_config.load();
         let payload = encode_cluster_config_snapshot(snapshot.as_ref());

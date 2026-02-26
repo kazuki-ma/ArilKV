@@ -2,6 +2,7 @@ use garnet_cluster::ClusterConfigError;
 use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::LOCAL_WORKER_ID;
 use garnet_cluster::SlotState;
+use garnet_cluster::WorkerId;
 use std::collections::HashSet;
 use std::collections::VecDeque;
 use std::future::Future;
@@ -151,7 +152,7 @@ impl<E> From<ClusterManagerFailoverMigrationError<E>> for ClusteredServerRunErro
 fn resolve_migration_peer_ids(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
-) -> Result<(u16, u16), LiveSlotMigrationError> {
+) -> Result<(WorkerId, WorkerId), LiveSlotMigrationError> {
     let source_snapshot = source_store.load();
     let target_snapshot = target_store.load();
     let source_local_node_id = source_snapshot.local_worker()?.node_id.clone();
