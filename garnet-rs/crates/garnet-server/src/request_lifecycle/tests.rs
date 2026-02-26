@@ -465,25 +465,25 @@ fn sharded_string_metadata_tracks_keys_and_expiration_per_shard() {
         processor.string_key_registries[shard_a]
             .lock()
             .expect("key registry mutex poisoned")
-            .contains(&key_a)
+            .contains(key_a.as_slice())
     );
     assert!(
         processor.string_key_registries[shard_b]
             .lock()
             .expect("key registry mutex poisoned")
-            .contains(&key_b)
+            .contains(key_b.as_slice())
     );
     assert!(
         !processor.string_key_registries[shard_a]
             .lock()
             .expect("key registry mutex poisoned")
-            .contains(&key_b)
+            .contains(key_b.as_slice())
     );
     assert!(
         !processor.string_key_registries[shard_b]
             .lock()
             .expect("key registry mutex poisoned")
-            .contains(&key_a)
+            .contains(key_a.as_slice())
     );
 }
 

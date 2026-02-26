@@ -32,7 +32,7 @@ impl RequestProcessor {
         }
 
         let now = Instant::now();
-        let expired_keys: Vec<Vec<u8>> = self
+        let expired_keys: Vec<RedisKey> = self
             .lock_string_expirations_for_shard(shard_index)
             .iter()
             .filter_map(|(key, metadata)| {
@@ -54,15 +54,15 @@ impl RequestProcessor {
                 session.delete(&key, &mut info).map_err(map_delete_error)?
             };
 
-            self.remove_string_key_metadata_in_shard(&key, shard_index);
-            let object_deleted = self.object_delete(&key)?;
+            self.remove_string_key_metadata_in_shard(key.as_slice(), shard_index);
+            let object_deleted = self.object_delete(key.as_slice())?;
 
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     removed += 1;
                     if !object_deleted {
-                        self.bump_watch_version(&key);
+                        self.bump_watch_version(key.as_slice());
                     }
                 }
                 DeleteOperationStatus::NotFound => {
@@ -379,7 +379,7 @@ impl RequestProcessor {
     pub(super) fn lock_string_expirations_for_shard(
         &self,
         shard_index: usize,
-    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, ExpirationMetadata>> {
+    ) -> OrderedMutexGuard<'_, HashMap<RedisKey, ExpirationMetadata>> {
         debug_assert!(shard_index < self.string_expirations.len());
         self.string_expirations[shard_index]
             .lock()
@@ -390,7 +390,7 @@ impl RequestProcessor {
     pub(super) fn lock_hash_field_expirations_for_shard(
         &self,
         shard_index: usize,
-    ) -> OrderedMutexGuard<'_, HashMap<Vec<u8>, HashMap<HashField, ExpirationMetadata>>> {
+    ) -> OrderedMutexGuard<'_, HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>> {
         debug_assert!(shard_index < self.hash_field_expirations.len());
         self.hash_field_expirations[shard_index]
             .lock()
@@ -401,7 +401,7 @@ impl RequestProcessor {
     pub(super) fn lock_string_key_registry_for_shard(
         &self,
         shard_index: usize,
-    ) -> OrderedMutexGuard<'_, HashSet<Vec<u8>>> {
+    ) -> OrderedMutexGuard<'_, HashSet<RedisKey>> {
         debug_assert!(shard_index < self.string_key_registries.len());
         self.string_key_registries[shard_index]
             .lock()
@@ -412,7 +412,7 @@ impl RequestProcessor {
     pub(super) fn lock_object_key_registry_for_shard(
         &self,
         shard_index: usize,
-    ) -> OrderedMutexGuard<'_, HashSet<Vec<u8>>> {
+    ) -> OrderedMutexGuard<'_, HashSet<RedisKey>> {
         debug_assert!(shard_index < self.object_key_registries.len());
         self.object_key_registries[shard_index]
             .lock()
@@ -424,7 +424,7 @@ impl RequestProcessor {
         if registry.contains(key) {
             return;
         }
-        registry.insert(key.to_vec());
+        registry.insert(RedisKey::from(key));
     }
 
     pub(super) fn track_string_key(&self, key: &[u8]) {
@@ -445,7 +445,7 @@ impl RequestProcessor {
 
     pub(super) fn track_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
         self.lock_object_key_registry_for_shard(shard_index)
-            .insert(key.to_vec());
+            .insert(RedisKey::from(key));
     }
 
     pub(super) fn untrack_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
@@ -468,7 +468,7 @@ impl RequestProcessor {
         let mut expirations = self.lock_string_expirations_for_shard(shard_index);
         match expiration {
             Some(expiration) => {
-                let previous = expirations.insert(key.to_vec(), expiration);
+                let previous = expirations.insert(RedisKey::from(key), expiration);
                 if previous.is_none() {
                     self.increment_string_expiration_count(shard_index);
                 }
@@ -533,7 +533,7 @@ impl RequestProcessor {
                 let Some(deadline) = instant_from_unix_millis(unix_millis) else {
                     return;
                 };
-                let per_key = expirations.entry(key.to_vec()).or_default();
+                let per_key = expirations.entry(RedisKey::from(key)).or_default();
                 per_key.insert(
                     HashField::from(field),
                     ExpirationMetadata {
@@ -679,6 +679,7 @@ impl RequestProcessor {
                     .expect("key registry mutex poisoned")
                     .iter()
                     .cloned()
+                    .map(RedisKey::into_vec)
                     .collect::<Vec<_>>()
             })
             .collect()
@@ -693,6 +694,7 @@ impl RequestProcessor {
                     .expect("object key registry mutex poisoned")
                     .iter()
                     .cloned()
+                    .map(RedisKey::into_vec)
                     .collect::<Vec<_>>()
             })
             .collect()

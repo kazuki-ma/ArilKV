@@ -474,16 +474,16 @@ pub(crate) enum ClientUnblockMode {
 pub struct RequestProcessor {
     string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    string_expirations: Vec<OrderedMutex<HashMap<Vec<u8>, ExpirationMetadata>>>,
+    string_expirations: Vec<OrderedMutex<HashMap<RedisKey, ExpirationMetadata>>>,
     hash_field_expirations:
-        Vec<OrderedMutex<HashMap<Vec<u8>, HashMap<HashField, ExpirationMetadata>>>>,
+        Vec<OrderedMutex<HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>>>,
     string_expiration_counts: Vec<AtomicUsize>,
-    string_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
-    object_key_registries: Vec<OrderedMutex<HashSet<Vec<u8>>>>,
+    string_key_registries: Vec<OrderedMutex<HashSet<RedisKey>>>,
+    object_key_registries: Vec<OrderedMutex<HashSet<RedisKey>>>,
     watch_versions: Vec<AtomicU64>,
     blocking_wait_queues: Mutex<HashMap<RedisKey, VecDeque<u64>>>,
     pending_client_unblocks: Mutex<HashMap<u64, ClientUnblockMode>>,
-    forced_list_quicklist_keys: Mutex<HashSet<Vec<u8>>>,
+    forced_list_quicklist_keys: Mutex<HashSet<RedisKey>>,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
     expired_keys: AtomicU64,
@@ -1306,7 +1306,7 @@ impl RequestProcessor {
 
     pub(super) fn force_list_quicklist_encoding(&self, key: &[u8]) {
         if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
-            forced.insert(key.to_vec());
+            forced.insert(RedisKey::from(key));
         }
     }
 
