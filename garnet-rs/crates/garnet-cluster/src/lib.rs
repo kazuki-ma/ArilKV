@@ -99,6 +99,34 @@ impl From<SlotNumber> for usize {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct ConfigEpoch(u64);
+
+impl ConfigEpoch {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl fmt::Display for ConfigEpoch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for ConfigEpoch {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<ConfigEpoch> for u64 {
+    fn from(value: ConfigEpoch) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SlotState {
@@ -179,7 +207,7 @@ pub struct Worker {
     pub node_id: String,
     pub host: String,
     pub port: u16,
-    pub config_epoch: u64,
+    pub config_epoch: ConfigEpoch,
     pub role: WorkerRole,
     pub replica_of_node_id: Option<String>,
     pub replication_offset: u64,
@@ -197,7 +225,7 @@ impl Worker {
             node_id: node_id.into(),
             host: host.into(),
             port,
-            config_epoch: 0,
+            config_epoch: ConfigEpoch::new(0),
             role,
             replica_of_node_id: None,
             replication_offset: 0,
@@ -210,7 +238,7 @@ impl Worker {
             node_id: String::new(),
             host: String::new(),
             port: 0,
-            config_epoch: 0,
+            config_epoch: ConfigEpoch::new(0),
             role: WorkerRole::Unassigned,
             replica_of_node_id: None,
             replication_offset: 0,
@@ -479,7 +507,7 @@ impl ClusterConfig {
     pub fn set_worker_config_epoch(
         &self,
         worker_id: WorkerId,
-        config_epoch: u64,
+        config_epoch: ConfigEpoch,
     ) -> Result<Self, ClusterConfigError> {
         let mut next = self.clone();
         let worker = next
@@ -579,7 +607,7 @@ impl ClusterConfig {
         let next_epoch = next
             .workers
             .iter()
-            .map(|worker| worker.config_epoch)
+            .map(|worker| u64::from(worker.config_epoch))
             .max()
             .unwrap_or(0)
             .saturating_add(1);
@@ -589,7 +617,7 @@ impl ClusterConfig {
                 worker.role = WorkerRole::Primary;
                 worker.replica_of_node_id = None;
                 worker.replication_offset = plan.promoted_replication_offset;
-                worker.config_epoch = next_epoch;
+                worker.config_epoch = ConfigEpoch::new(next_epoch);
                 continue;
             }
 
@@ -668,11 +696,11 @@ fn should_prefer_incoming_slot(
         || (incoming_claim.0 == local_claim.0 && incoming_claim.1 < local_claim.1)
 }
 
-fn slot_claim_key(config: &ClusterConfig, slot: HashSlot) -> (u64, &str) {
+fn slot_claim_key(config: &ClusterConfig, slot: HashSlot) -> (ConfigEpoch, &str) {
     config
         .worker(slot.assigned_worker_id())
         .map(|worker| (worker.config_epoch, worker.node_id.as_str()))
-        .unwrap_or((0, ""))
+        .unwrap_or((ConfigEpoch::new(0), ""))
 }
 
 const CLUSTER_CONFIG_SNAPSHOT_MAGIC: [u8; 4] = *b"GCFG";
@@ -725,7 +753,7 @@ pub fn encode_cluster_config_snapshot(
 
     for worker in &config.workers {
         out.extend_from_slice(&worker.id.as_u16().to_le_bytes());
-        out.extend_from_slice(&worker.config_epoch.to_le_bytes());
+        out.extend_from_slice(&u64::from(worker.config_epoch).to_le_bytes());
         out.extend_from_slice(&worker.port.to_le_bytes());
         out.push(worker.role as u8);
         out.extend_from_slice(&worker.replication_offset.to_le_bytes());
@@ -767,7 +795,7 @@ pub fn decode_cluster_config_snapshot(
     let mut max_worker_id = RESERVED_WORKER_ID;
     for _ in 0..worker_count {
         let id = WorkerId::new(read_u16(bytes, &mut cursor)?);
-        let config_epoch = read_u64(bytes, &mut cursor)?;
+        let config_epoch = ConfigEpoch::new(read_u64(bytes, &mut cursor)?);
         let port = read_u16(bytes, &mut cursor)?;
         let role = match read_u8(bytes, &mut cursor)? {
             0 => WorkerRole::Unassigned,
@@ -2970,11 +2998,11 @@ mod tests {
             .unwrap()
             .set_worker_replica_of(follower_replica_id, "node-2")
             .unwrap()
-            .set_worker_config_epoch(failed_primary_id, 3)
+            .set_worker_config_epoch(failed_primary_id, ConfigEpoch::new(3))
             .unwrap()
-            .set_worker_config_epoch(promoted_replica_id, 2)
+            .set_worker_config_epoch(promoted_replica_id, ConfigEpoch::new(2))
             .unwrap()
-            .set_worker_config_epoch(follower_replica_id, 1)
+            .set_worker_config_epoch(follower_replica_id, ConfigEpoch::new(1))
             .unwrap()
             .set_slot_state(300, failed_primary_id, SlotState::Stable)
             .unwrap()
@@ -3007,7 +3035,7 @@ mod tests {
         assert_eq!(promoted.role, WorkerRole::Primary);
         assert_eq!(promoted.replica_of_node_id, None);
         assert_eq!(promoted.replication_offset, 888);
-        assert!(promoted.config_epoch > 3);
+        assert!(promoted.config_epoch > ConfigEpoch::new(3));
 
         let failed = updated.worker(failed_primary_id).unwrap();
         assert_eq!(failed.role, WorkerRole::Replica);
@@ -3057,15 +3085,15 @@ mod tests {
         let worker3 = Worker::new("node-c", "10.0.0.3", 6381, WorkerRole::Primary);
         let (base, worker3_id) = base.add_worker(worker3).unwrap();
         let base = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_worker_config_epoch(worker3_id, 1)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(1))
             .unwrap()
             .set_slot_state(200, worker2_id, SlotState::Stable)
             .unwrap();
 
         let incoming = base
-            .set_worker_config_epoch(worker3_id, 2)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
             .set_slot_state(200, worker3_id, SlotState::Stable)
             .unwrap();
@@ -3082,9 +3110,9 @@ mod tests {
         let worker3 = Worker::new("node-a", "10.0.0.3", 6381, WorkerRole::Primary);
         let (base, worker3_id) = base.add_worker(worker3).unwrap();
         let base = base
-            .set_worker_config_epoch(worker2_id, 7)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(7))
             .unwrap()
-            .set_worker_config_epoch(worker3_id, 7)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(7))
             .unwrap()
             .set_slot_state(201, worker2_id, SlotState::Stable)
             .unwrap();
@@ -3119,12 +3147,12 @@ mod tests {
         let (base, worker3_id) = base.add_worker(worker3).unwrap();
 
         let current = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
             .set_slot_state(202, worker2_id, SlotState::Stable)
             .unwrap();
         let incoming = base
-            .set_worker_config_epoch(worker3_id, 2)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
             .set_slot_state(202, worker3_id, SlotState::Stable)
             .unwrap();
@@ -3144,7 +3172,7 @@ mod tests {
             .add_worker(Worker::new("node-c", "10.0.0.3", 6381, WorkerRole::Replica))
             .unwrap();
         let original = base
-            .set_worker_config_epoch(worker2_id, 5)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(5))
             .unwrap()
             .set_worker_replica_of(worker3_id, "node-b")
             .unwrap()
@@ -3162,7 +3190,10 @@ mod tests {
         assert_eq!(decoded.slot_state(101).unwrap(), SlotState::Stable);
         assert_eq!(decoded.slot_assigned_owner(102).unwrap(), worker3_id);
         assert_eq!(decoded.slot_state(102).unwrap(), SlotState::Importing);
-        assert_eq!(decoded.worker(worker2_id).unwrap().config_epoch, 5);
+        assert_eq!(
+            decoded.worker(worker2_id).unwrap().config_epoch,
+            ConfigEpoch::new(5)
+        );
         assert_eq!(
             decoded.worker(worker3_id).unwrap().role,
             WorkerRole::Replica
@@ -4693,12 +4724,12 @@ mod tests {
         let (base, worker3_id) = base.add_worker(worker3).unwrap();
 
         let current = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
             .set_slot_state(303, worker2_id, SlotState::Stable)
             .unwrap();
         let incoming = base
-            .set_worker_config_epoch(worker3_id, 2)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
             .set_slot_state(303, worker3_id, SlotState::Stable)
             .unwrap();
@@ -4737,16 +4768,16 @@ mod tests {
         let (base, worker3_id) = base.add_worker(worker3).unwrap();
 
         let newer = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_worker_config_epoch(worker3_id, 2)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
             .set_slot_state(304, worker3_id, SlotState::Stable)
             .unwrap();
         let older = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_worker_config_epoch(worker3_id, 1)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(1))
             .unwrap()
             .set_slot_state(304, worker2_id, SlotState::Stable)
             .unwrap();
@@ -4805,16 +4836,16 @@ mod tests {
         let (base, worker3_id) = base.add_worker(worker3).unwrap();
 
         let newer = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_worker_config_epoch(worker3_id, 2)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
             .set_slot_state(305, worker3_id, SlotState::Stable)
             .unwrap();
         let older = base
-            .set_worker_config_epoch(worker2_id, 1)
+            .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_worker_config_epoch(worker3_id, 1)
+            .set_worker_config_epoch(worker3_id, ConfigEpoch::new(1))
             .unwrap()
             .set_slot_state(305, worker2_id, SlotState::Stable)
             .unwrap();
