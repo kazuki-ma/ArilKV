@@ -91,6 +91,27 @@ Fixed config (expected to pass):
 ./tools/tla/run_tlc.sh formal/tla/specs/ScriptExecutorAcceptProgress.tla formal/tla/specs/ScriptExecutorAcceptProgress_fixed.cfg
 ```
 
+## Reproduce lazy-expire SYNC select re-arm race
+
+This model captures the flaky test path:
+
+- downstream replica subscribes via `SYNC`
+- lazy-expire `GET` emits synthetic `DEL`
+- a following mutating command emits `SET`
+- required frame order is `SELECT -> DEL -> SET`
+
+Bug config (expected to fail with counterexample):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/LazyExpireReplicationSyncSelectRace.tla formal/tla/specs/LazyExpireReplicationSyncSelectRace_bug.cfg
+```
+
+Fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/LazyExpireReplicationSyncSelectRace.tla formal/tla/specs/LazyExpireReplicationSyncSelectRace_fixed.cfg
+```
+
 ## Add new model
 
 1. Add `<Name>.tla` and `<Name>.cfg` under `formal/tla/specs/`.
