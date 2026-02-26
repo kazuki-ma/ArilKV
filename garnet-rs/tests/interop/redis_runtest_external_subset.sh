@@ -13,6 +13,7 @@ GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
 GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED:-1}"
 REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
 RUNTEXT_TIMEOUT_SECONDS="${RUNTEXT_TIMEOUT_SECONDS:-}"
+RUNTEXT_WALL_TIMEOUT_SECONDS="${RUNTEXT_WALL_TIMEOUT_SECONDS:-1800}"
 RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
 RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
 EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-${SCRIPT_DIR}/known-failed-tests-singledb.txt}"
@@ -46,6 +47,82 @@ wait_for_ping() {
         sleep 0.1
     done
     return 1
+}
+
+kill_process_tree() {
+    local pid="$1"
+    local signal="${2:-TERM}"
+    local child_pids=""
+
+    child_pids="$(pgrep -P "${pid}" 2>/dev/null || true)"
+    if [[ -n "${child_pids}" ]]; then
+        while IFS= read -r child_pid; do
+            [[ -z "${child_pid}" ]] && continue
+            kill_process_tree "${child_pid}" "${signal}"
+        done <<< "${child_pids}"
+    fi
+
+    kill "-${signal}" "${pid}" >/dev/null 2>&1 || true
+}
+
+run_with_watchdogs() {
+    local wall_timeout_seconds="$1"
+    shift
+    local -a cmd=("$@")
+    local cmd_pid=""
+    local start_epoch=""
+    local elapsed_seconds=0
+    local timed_out=0
+    local server_exited=0
+
+    if [[ -n "${wall_timeout_seconds}" && ! "${wall_timeout_seconds}" =~ ^[0-9]+$ ]]; then
+        echo "invalid RUNTEXT_WALL_TIMEOUT_SECONDS value: ${wall_timeout_seconds}" >&2
+        return 2
+    fi
+
+    "${cmd[@]}" &
+    cmd_pid="$!"
+    start_epoch="$(date +%s)"
+
+    while kill -0 "${cmd_pid}" >/dev/null 2>&1; do
+        if [[ -n "${GARNET_PID:-}" ]] && ! kill -0 "${GARNET_PID}" >/dev/null 2>&1; then
+            echo "warning: garnet server exited during runtest; aborting runtest command" >&2
+            server_exited=1
+            kill_process_tree "${cmd_pid}" TERM
+            sleep 2
+            kill_process_tree "${cmd_pid}" KILL
+            break
+        fi
+
+        if [[ -n "${wall_timeout_seconds}" && "${wall_timeout_seconds}" -gt 0 ]]; then
+            elapsed_seconds="$(( $(date +%s) - start_epoch ))"
+            if (( elapsed_seconds >= wall_timeout_seconds )); then
+                echo "warning: runtest exceeded wall timeout (${wall_timeout_seconds}s); aborting command" >&2
+                timed_out=1
+                kill_process_tree "${cmd_pid}" TERM
+                sleep 2
+                kill_process_tree "${cmd_pid}" KILL
+                break
+            fi
+        fi
+
+        sleep 1
+    done
+
+    local cmd_exit=0
+    if wait "${cmd_pid}" >/dev/null 2>&1; then
+        cmd_exit=0
+    else
+        cmd_exit=$?
+    fi
+
+    if (( server_exited == 1 )); then
+        return 125
+    fi
+    if (( timed_out == 1 )); then
+        return 124
+    fi
+    return "${cmd_exit}"
 }
 
 run_runtest_case() {
@@ -124,14 +201,30 @@ run_full_runtest_case() {
     fi
 
     local exit_code=0
+    local exit_reason="completed"
     if (
         cd "${REDIS_REPO_ROOT}"
-        "${cmd[@]}"
+        run_with_watchdogs "${RUNTEXT_WALL_TIMEOUT_SECONDS}" "${cmd[@]}"
     ) >"${log_file}" 2>&1; then
         exit_code=0
     else
         exit_code=$?
     fi
+
+    case "${exit_code}" in
+        124)
+            exit_reason="wall_timeout"
+            ;;
+        125)
+            exit_reason="garnet_server_exited"
+            ;;
+        0)
+            exit_reason="completed"
+            ;;
+        *)
+            exit_reason="runtest_exit_nonzero"
+            ;;
+    esac
 
     local parsed_counts
     parsed_counts="$(
@@ -196,7 +289,7 @@ run_full_runtest_case() {
     fi
 
     local details
-    details="mode=full; exit_code=${exit_code}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
+    details="mode=full; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 
@@ -271,6 +364,7 @@ run_cli_scripting_probe_case() {
 
 require_cmd redis-cli
 require_cmd cargo
+require_cmd pgrep
 require_cmd "${RUNTEXT_BIN}"
 
 if [[ ! -x "${RUNTEXT_BIN}" ]]; then
