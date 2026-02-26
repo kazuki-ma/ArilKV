@@ -9,7 +9,7 @@ impl RequestProcessor {
 
         if let Some(value) = self.read_string_value(key)? {
             return Ok(Some(MigrationEntry {
-                key: key.to_vec(),
+                key: ItemKey::from(key),
                 value: MigrationValue::String(value.into()),
                 expiration_unix_millis: self.expiration_unix_millis_for_key(key),
             }));
@@ -17,7 +17,7 @@ impl RequestProcessor {
 
         if let Some((object_type, payload)) = self.object_read(key)? {
             return Ok(Some(MigrationEntry {
-                key: key.to_vec(),
+                key: ItemKey::from(key),
                 value: MigrationValue::Object {
                     object_type,
                     payload,
@@ -36,18 +36,18 @@ impl RequestProcessor {
         match &entry.value {
             MigrationValue::String(value) => {
                 self.upsert_string_value_for_migration(
-                    &entry.key,
+                    entry.key.as_slice(),
                     value.as_slice(),
                     entry.expiration_unix_millis,
                 )?;
-                let _ = self.object_delete(&entry.key)?;
+                let _ = self.object_delete(entry.key.as_slice())?;
             }
             MigrationValue::Object {
                 object_type,
                 payload,
             } => {
-                self.delete_string_key_for_migration(&entry.key)?;
-                self.object_upsert(&entry.key, *object_type, payload)?;
+                self.delete_string_key_for_migration(entry.key.as_slice())?;
+                self.object_upsert(entry.key.as_slice(), *object_type, payload)?;
             }
         }
         Ok(())

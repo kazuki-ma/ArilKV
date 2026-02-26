@@ -1663,7 +1663,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        source_entry.key = destination.clone();
+        source_entry.key = destination.clone().into();
         self.import_migration_entry(&source_entry)?;
         self.delete_string_key_for_migration(&source)?;
         let _ = self.object_delete(&source)?;
@@ -1735,7 +1735,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        source_entry.key = destination;
+        source_entry.key = destination.into();
         self.import_migration_entry(&source_entry)?;
         append_integer(response_out, 1);
         Ok(())

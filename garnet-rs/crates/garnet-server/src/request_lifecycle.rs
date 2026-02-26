@@ -319,6 +319,43 @@ impl From<&[u8]> for StringValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ItemKey(Vec<u8>);
+
+impl ItemKey {
+    pub fn as_slice(&self) -> &[u8] {
+        &self.0
+    }
+
+    pub fn into_vec(self) -> Vec<u8> {
+        self.0
+    }
+}
+
+impl AsRef<[u8]> for ItemKey {
+    fn as_ref(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl std::borrow::Borrow<[u8]> for ItemKey {
+    fn borrow(&self) -> &[u8] {
+        self.as_slice()
+    }
+}
+
+impl From<Vec<u8>> for ItemKey {
+    fn from(value: Vec<u8>) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&[u8]> for ItemKey {
+    fn from(value: &[u8]) -> Self {
+        Self(value.to_vec())
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
     deadline: Instant,
@@ -360,7 +397,7 @@ pub enum MigrationValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MigrationEntry {
-    pub key: Vec<u8>,
+    pub key: ItemKey,
     pub value: MigrationValue,
     pub expiration_unix_millis: Option<u64>,
 }

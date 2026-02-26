@@ -64,6 +64,7 @@ pub use limited_fixed_buffer_pool::LimitedFixedBufferPoolConfig;
 pub use limited_fixed_buffer_pool::LimitedFixedBufferPoolError;
 pub use limited_fixed_buffer_pool::PoolEntry;
 pub use limited_fixed_buffer_pool::ReturnStatus;
+pub use request_lifecycle::ItemKey;
 pub use request_lifecycle::MigrationEntry;
 pub use request_lifecycle::MigrationValue;
 pub use request_lifecycle::RequestExecutionError;
