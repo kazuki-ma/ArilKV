@@ -194,8 +194,10 @@ run_full_runtest_case() {
         cmd+=(--clients "${RUNTEXT_CLIENTS}")
     fi
     if [[ -n "${RUNTEXT_EXTRA_ARGS}" ]]; then
-        # shellcheck disable=SC2206
-        extra_args=(${RUNTEXT_EXTRA_ARGS})
+        # Parse developer-provided extra args with shell quoting preserved
+        # (for example: --only "LATENCY of expire events are correctly collected").
+        # shellcheck disable=SC2294,SC2206
+        eval "extra_args=(${RUNTEXT_EXTRA_ARGS})"
         cmd+=("${extra_args[@]}")
     fi
 
