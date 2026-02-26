@@ -2,6 +2,7 @@ use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::mem::size_of;
 
+use super::ObjectTypeTag;
 use super::StreamObject;
 
 const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
@@ -10,6 +11,40 @@ const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
 pub(super) struct DecodedStoredValue<'a> {
     pub(super) expiration_unix_millis: Option<u64>,
     pub(super) user_value: &'a [u8],
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct DecodedObjectValue {
+    pub(super) object_type: ObjectTypeTag,
+    pub(super) payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) struct EncodedObjectValue {
+    bytes: Vec<u8>,
+}
+
+impl EncodedObjectValue {
+    pub(super) fn from_parts(object_type: ObjectTypeTag, payload: &[u8]) -> Self {
+        let mut bytes = Vec::with_capacity(1 + payload.len());
+        object_type.write_to(&mut bytes);
+        bytes.extend_from_slice(payload);
+        Self { bytes }
+    }
+
+    pub(super) fn as_vec(&self) -> &Vec<u8> {
+        &self.bytes
+    }
+
+    pub(super) fn as_slice(&self) -> &[u8] {
+        &self.bytes
+    }
+}
+
+impl DecodedObjectValue {
+    pub(super) fn encode(&self) -> EncodedObjectValue {
+        EncodedObjectValue::from_parts(self.object_type, &self.payload)
+    }
 }
 
 pub(super) fn parse_i64_ascii(input: &[u8]) -> Option<i64> {
@@ -71,16 +106,19 @@ pub(super) fn encode_stored_value(
     stored
 }
 
-pub(super) fn encode_object_value(object_type: u8, payload: &[u8]) -> Vec<u8> {
-    let mut value = Vec::with_capacity(1 + payload.len());
-    value.push(object_type);
-    value.extend_from_slice(payload);
-    value
+pub(super) fn encode_object_value(
+    object_type: ObjectTypeTag,
+    payload: &[u8],
+) -> EncodedObjectValue {
+    EncodedObjectValue::from_parts(object_type, payload)
 }
 
-pub(super) fn decode_object_value(encoded: &[u8]) -> Option<(u8, Vec<u8>)> {
+pub(super) fn decode_object_value(encoded: &[u8]) -> Option<DecodedObjectValue> {
     let (&object_type, payload) = encoded.split_first()?;
-    Some((object_type, payload.to_vec()))
+    Some(DecodedObjectValue {
+        object_type: ObjectTypeTag::from_u8(object_type)?,
+        payload: payload.to_vec(),
+    })
 }
 
 pub(super) fn serialize_hash_object_payload(hash: &BTreeMap<Vec<u8>, Vec<u8>>) -> Vec<u8> {

@@ -579,10 +579,12 @@ fn set_and_get_supports_50kb_key_for_keyspace_regression() {
 fn object_store_roundtrip_respects_redis_type_semantics() {
     let processor = RequestProcessor::new().unwrap();
 
-    processor.object_upsert(b"obj", 3, b"payload").unwrap();
-    let (object_type, payload) = processor.object_read(b"obj").unwrap().unwrap();
-    assert_eq!(object_type, 3);
-    assert_eq!(payload, b"payload");
+    processor
+        .object_upsert(b"obj", ObjectTypeTag::Hash, b"payload")
+        .unwrap();
+    let object = processor.object_read(b"obj").unwrap().unwrap();
+    assert_eq!(object.object_type, ObjectTypeTag::Hash);
+    assert_eq!(object.payload, b"payload");
 
     let mut args = [ArgSlice::EMPTY; 3];
     let mut response = Vec::new();

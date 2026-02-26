@@ -1874,9 +1874,7 @@ impl RequestProcessor {
         }
 
         let value_type = match self.object_read(&key)? {
-            Some((object_type, _)) => object_type_name(object_type).ok_or_else(|| {
-                storage_failure("type", "unknown object type tag in object store")
-            })?,
+            Some(object) => object_type_name(object.object_type),
             None => b"none",
         };
         append_simple_string(response_out, value_type);
@@ -3340,20 +3338,20 @@ fn load_sort_elements(
     if processor.read_string_value(key)?.is_some() {
         return Err(RequestExecutionError::WrongType);
     }
-    let Some((object_type, payload)) = processor.object_read(key)? else {
+    let Some(object) = processor.object_read(key)? else {
         return Ok(Vec::new());
     };
-    match object_type {
-        LIST_OBJECT_TYPE_TAG => deserialize_list_object_payload(&payload)
+    match object.object_type {
+        LIST_OBJECT_TYPE_TAG => deserialize_list_object_payload(&object.payload)
             .ok_or_else(|| storage_failure("sort", "failed to deserialize source list payload")),
         SET_OBJECT_TYPE_TAG => {
-            let set = deserialize_set_object_payload(&payload).ok_or_else(|| {
+            let set = deserialize_set_object_payload(&object.payload).ok_or_else(|| {
                 storage_failure("sort", "failed to deserialize source set payload")
             })?;
             Ok(set.into_iter().collect())
         }
         ZSET_OBJECT_TYPE_TAG => {
-            let zset = deserialize_zset_object_payload(&payload).ok_or_else(|| {
+            let zset = deserialize_zset_object_payload(&object.payload).ok_or_else(|| {
                 storage_failure("sort", "failed to deserialize source zset payload")
             })?;
             Ok(zset.into_keys().collect())
@@ -3697,13 +3695,6 @@ fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, us
     Some((start_i as usize, end_i as usize))
 }
 
-fn object_type_name(object_type: u8) -> Option<&'static [u8]> {
-    match object_type {
-        HASH_OBJECT_TYPE_TAG => Some(b"hash"),
-        LIST_OBJECT_TYPE_TAG => Some(b"list"),
-        SET_OBJECT_TYPE_TAG => Some(b"set"),
-        ZSET_OBJECT_TYPE_TAG => Some(b"zset"),
-        STREAM_OBJECT_TYPE_TAG => Some(b"stream"),
-        _ => None,
-    }
+fn object_type_name(object_type: ObjectTypeTag) -> &'static [u8] {
+    object_type.name()
 }

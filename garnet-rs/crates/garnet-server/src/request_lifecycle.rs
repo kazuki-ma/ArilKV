@@ -35,11 +35,11 @@ use tsavorite::TsavoriteKvInitError;
 use tsavorite::UpsertInfo;
 
 const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
-const HASH_OBJECT_TYPE_TAG: u8 = 3;
-const LIST_OBJECT_TYPE_TAG: u8 = 2;
-const SET_OBJECT_TYPE_TAG: u8 = 4;
-const ZSET_OBJECT_TYPE_TAG: u8 = 5;
-const STREAM_OBJECT_TYPE_TAG: u8 = 6;
+const HASH_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Hash;
+const LIST_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::List;
+const SET_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Set;
+const ZSET_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Zset;
+const STREAM_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Stream;
 const WATCH_VERSION_MAP_SIZE: usize = 1024;
 const WATCH_VERSION_MAP_MASK: usize = WATCH_VERSION_MAP_SIZE - 1;
 const GARNET_HASH_INDEX_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS";
@@ -187,6 +187,7 @@ use self::resp::append_simple_string;
 use self::resp::ascii_eq_ignore_case;
 use self::session_functions::KvSessionFunctions;
 use self::session_functions::ObjectSessionFunctions;
+use self::value_codec::DecodedObjectValue;
 use self::value_codec::decode_object_value;
 use self::value_codec::decode_stored_value;
 use self::value_codec::deserialize_hash_object_payload;
@@ -370,6 +371,47 @@ impl From<RedisKey> for ItemKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum ObjectTypeTag {
+    List = 2,
+    Hash = 3,
+    Set = 4,
+    Zset = 5,
+    Stream = 6,
+}
+
+impl ObjectTypeTag {
+    pub(crate) fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            2 => Some(Self::List),
+            3 => Some(Self::Hash),
+            4 => Some(Self::Set),
+            5 => Some(Self::Zset),
+            6 => Some(Self::Stream),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub(crate) fn write_to(self, target: &mut Vec<u8>) {
+        target.push(self.as_u8());
+    }
+
+    pub(crate) const fn name(self) -> &'static [u8] {
+        match self {
+            Self::Hash => b"hash",
+            Self::List => b"list",
+            Self::Set => b"set",
+            Self::Zset => b"zset",
+            Self::Stream => b"stream",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpirationMetadata {
     deadline: Instant,
@@ -406,7 +448,10 @@ impl From<TsavoriteKvInitError> for RequestProcessorInitError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MigrationValue {
     String(StringValue),
-    Object { object_type: u8, payload: Vec<u8> },
+    Object {
+        object_type: ObjectTypeTag,
+        payload: Vec<u8>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1318,12 +1363,12 @@ impl RequestProcessor {
             let Ok(object) = self.object_read(key.as_slice()) else {
                 return true;
             };
-            let Some((object_type, payload)) = object else {
+            let Some(object) = object else {
                 continue;
             };
-            match object_type {
+            match object.object_type {
                 LIST_OBJECT_TYPE_TAG => {
-                    if let Some(list) = deserialize_list_object_payload(&payload) {
+                    if let Some(list) = deserialize_list_object_payload(&object.payload) {
                         if !list.is_empty() {
                             return true;
                         }
@@ -1332,7 +1377,7 @@ impl RequestProcessor {
                     }
                 }
                 ZSET_OBJECT_TYPE_TAG => {
-                    if let Some(zset) = deserialize_zset_object_payload(&payload) {
+                    if let Some(zset) = deserialize_zset_object_payload(&object.payload) {
                         if !zset.is_empty() {
                             return true;
                         }

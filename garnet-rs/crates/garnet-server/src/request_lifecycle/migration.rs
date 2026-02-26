@@ -15,12 +15,12 @@ impl RequestProcessor {
             }));
         }
 
-        if let Some((object_type, payload)) = self.object_read(key)? {
+        if let Some(object) = self.object_read(key)? {
             return Ok(Some(MigrationEntry {
                 key: ItemKey::from(key),
                 value: MigrationValue::Object {
-                    object_type,
-                    payload,
+                    object_type: object.object_type,
+                    payload: object.payload,
                 },
                 expiration_unix_millis: None,
             }));

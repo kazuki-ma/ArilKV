@@ -1,10 +1,10 @@
 use super::*;
 
 impl RequestProcessor {
-    pub fn object_upsert(
+    pub(super) fn object_upsert(
         &self,
         key: &[u8],
-        object_type: u8,
+        object_type: ObjectTypeTag,
         payload: &[u8],
     ) -> Result<(), RequestExecutionError> {
         let shard_index = self.object_store_shard_index_for_key(key);
@@ -15,14 +15,17 @@ impl RequestProcessor {
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         session
-            .upsert(&key, &value, &mut output, &mut info)
+            .upsert(&key, value.as_vec(), &mut output, &mut info)
             .map_err(map_upsert_error)?;
         self.track_object_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
         Ok(())
     }
 
-    pub fn object_read(&self, key: &[u8]) -> Result<Option<(u8, Vec<u8>)>, RequestExecutionError> {
+    pub(super) fn object_read(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
         let key = key.to_vec();
         let mut store = self.lock_object_store_for_key(&key);
         let mut session = store.session(&self.object_functions);
@@ -41,7 +44,7 @@ impl RequestProcessor {
         }
     }
 
-    pub fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+    pub(super) fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         let shard_index = self.object_store_shard_index_for_key(key);
         let key = key.to_vec();
         let mut store = self.lock_object_store_for_shard(shard_index);
@@ -81,10 +84,10 @@ impl RequestProcessor {
                 return Ok(None);
             }
         };
-        if object.0 != HASH_OBJECT_TYPE_TAG {
+        if object.object_type != HASH_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_hash_object_payload(&object.1)
+        deserialize_hash_object_payload(&object.payload)
             .map(Some)
             .ok_or_else(|| {
                 storage_failure("load_hash_object", "failed to deserialize hash payload")
@@ -114,10 +117,10 @@ impl RequestProcessor {
                 return Ok(None);
             }
         };
-        if object.0 != LIST_OBJECT_TYPE_TAG {
+        if object.object_type != LIST_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_list_object_payload(&object.1)
+        deserialize_list_object_payload(&object.payload)
             .map(Some)
             .ok_or_else(|| {
                 storage_failure("load_list_object", "failed to deserialize list payload")
@@ -153,10 +156,10 @@ impl RequestProcessor {
                 return Ok(None);
             }
         };
-        if object.0 != SET_OBJECT_TYPE_TAG {
+        if object.object_type != SET_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_set_object_payload(&object.1)
+        deserialize_set_object_payload(&object.payload)
             .map(Some)
             .ok_or_else(|| storage_failure("load_set_object", "failed to deserialize set payload"))
     }
@@ -184,10 +187,10 @@ impl RequestProcessor {
                 return Ok(None);
             }
         };
-        if object.0 != ZSET_OBJECT_TYPE_TAG {
+        if object.object_type != ZSET_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_zset_object_payload(&object.1)
+        deserialize_zset_object_payload(&object.payload)
             .map(Some)
             .ok_or_else(|| {
                 storage_failure("load_zset_object", "failed to deserialize zset payload")
@@ -217,10 +220,10 @@ impl RequestProcessor {
                 return Ok(None);
             }
         };
-        if object.0 != STREAM_OBJECT_TYPE_TAG {
+        if object.object_type != STREAM_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_stream_object_payload(&object.1)
+        deserialize_stream_object_payload(&object.payload)
             .map(Some)
             .ok_or_else(|| {
                 storage_failure("load_stream_object", "failed to deserialize stream payload")

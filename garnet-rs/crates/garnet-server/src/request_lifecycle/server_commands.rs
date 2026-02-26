@@ -519,9 +519,9 @@ impl RequestProcessor {
                 histogram_type_index: 0,
                 length,
             })
-        } else if let Some((object_type, object_payload)) = self.object_read(&key)? {
+        } else if let Some(object) = self.object_read(&key)? {
             let Some((histogram_type_index, length)) =
-                keysizes_object_histogram_type_and_len(object_type, &object_payload)?
+                keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
             else {
                 append_integer(response_out, 0);
                 return Ok(());
@@ -929,10 +929,10 @@ impl RequestProcessor {
             );
             return Ok(());
         }
-        if let Some((_object_type, payload)) = self.object_read(&key)? {
+        if let Some(object) = self.object_read(&key)? {
             append_integer(
                 response_out,
-                estimate_memory_usage_bytes(key.len(), payload.len()),
+                estimate_memory_usage_bytes(key.len(), object.payload.len()),
             );
             return Ok(());
         }
@@ -1137,19 +1137,21 @@ impl RequestProcessor {
                 append_bulk_string(response_out, b"raw");
                 return Ok(());
             }
-            let Some((object_type, payload)) = self.object_read(&key)? else {
+            let Some(object) = self.object_read(&key)? else {
                 append_null_bulk_string(response_out);
                 return Ok(());
             };
-            if object_type == LIST_OBJECT_TYPE_TAG && self.list_quicklist_encoding_is_forced(&key) {
+            if object.object_type == LIST_OBJECT_TYPE_TAG
+                && self.list_quicklist_encoding_is_forced(&key)
+            {
                 append_bulk_string(response_out, b"quicklist");
                 return Ok(());
             }
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let encoding = object_encoding_name(
-                object_type,
-                &payload,
+                object.object_type,
+                &object.payload,
                 zset_max_listpack_entries,
                 list_max_listpack_size,
             )?;
@@ -1387,11 +1389,14 @@ impl RequestProcessor {
         if string_exists || !object_exists {
             return Ok(false);
         }
-        let Some((object_type, _)) = self.object_read(key)? else {
+        let Some(object) = self.object_read(key)? else {
             self.untrack_object_key(key);
             return Ok(false);
         };
-        Ok(scan_object_type_matches_filter(object_type, type_filter))
+        Ok(scan_object_type_matches_filter(
+            object.object_type,
+            type_filter,
+        ))
     }
 
     pub(super) fn handle_command(
@@ -1780,12 +1785,12 @@ impl RequestProcessor {
             );
             return Ok(());
         }
-        if let Some((object_type, payload)) = self.object_read(&key)? {
+        if let Some(object) = self.object_read(&key)? {
             append_bulk_string(
                 response_out,
                 &encode_dump_blob(MigrationValue::Object {
-                    object_type,
-                    payload,
+                    object_type: object.object_type,
+                    payload: object.payload,
                 }),
             );
             return Ok(());
@@ -2666,11 +2671,11 @@ impl RequestProcessor {
                 continue;
             }
 
-            let Some((object_type, object_payload)) = self.object_read(key.as_slice())? else {
+            let Some(object) = self.object_read(key.as_slice())? else {
                 continue;
             };
             let Some((type_index, length)) =
-                keysizes_object_histogram_type_and_len(object_type, &object_payload)?
+                keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
             else {
                 continue;
             };
@@ -2736,11 +2741,9 @@ impl RequestProcessor {
             return Ok(fnv_hex_digest(1, &value));
         }
 
-        if let Some((object_type, payload)) = self.object_read(key)? {
-            let mut combined = Vec::with_capacity(1 + payload.len());
-            combined.push(object_type);
-            combined.extend_from_slice(&payload);
-            return Ok(fnv_hex_digest(2, &combined));
+        if let Some(object) = self.object_read(key)? {
+            let encoded = object.encode();
+            return Ok(fnv_hex_digest(2, encoded.as_slice()));
         }
 
         Ok(fnv_hex_digest(0, b""))
@@ -2931,7 +2934,7 @@ fn encode_dump_blob(value: MigrationValue) -> Vec<u8> {
             payload,
         } => {
             encoded.push(1);
-            encoded.push(object_type);
+            object_type.write_to(&mut encoded);
             let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
             encoded.extend_from_slice(&len.to_le_bytes());
             encoded.extend_from_slice(&payload);
@@ -2955,7 +2958,7 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
             Some(MigrationValue::String(value.into()))
         }
         1 => {
-            let object_type = *encoded.get(index)?;
+            let object_type = ObjectTypeTag::from_u8(*encoded.get(index)?)?;
             index += 1;
             let len = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
             index += 4;
@@ -3002,7 +3005,7 @@ fn append_pubsub_ack(
 }
 
 fn object_encoding_name(
-    object_type: u8,
+    object_type: ObjectTypeTag,
     payload: &[u8],
     zset_listpack_max_entries: usize,
     list_max_listpack_size: i64,
@@ -3069,10 +3072,6 @@ fn object_encoding_name(
             }
         }
         STREAM_OBJECT_TYPE_TAG => Ok(b"stream"),
-        _ => Err(storage_failure(
-            "object.encoding",
-            "unknown object type tag in object store",
-        )),
     }
 }
 
@@ -3307,7 +3306,7 @@ fn parse_scan_type_filter(input: &[u8]) -> Option<ScanTypeFilter> {
     None
 }
 
-fn scan_object_type_matches_filter(object_type: u8, filter: ScanTypeFilter) -> bool {
+fn scan_object_type_matches_filter(object_type: ObjectTypeTag, filter: ScanTypeFilter) -> bool {
     match filter {
         ScanTypeFilter::String => false,
         ScanTypeFilter::Hash => object_type == HASH_OBJECT_TYPE_TAG,
@@ -3359,7 +3358,7 @@ fn append_keysizes_histogram_line(
 }
 
 fn keysizes_object_histogram_type_and_len(
-    object_type: u8,
+    object_type: ObjectTypeTag,
     payload: &[u8],
 ) -> Result<Option<(usize, usize)>, RequestExecutionError> {
     match object_type {
