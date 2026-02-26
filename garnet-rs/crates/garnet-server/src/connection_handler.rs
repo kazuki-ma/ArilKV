@@ -27,6 +27,7 @@ use crate::command_spec::CommandId;
 use crate::command_spec::TransactionControlCommand;
 use crate::command_spec::command_has_valid_arity;
 use crate::command_spec::command_is_effectively_mutating;
+use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_scripting_family;
 use crate::command_spec::command_transaction_control;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
@@ -208,6 +209,7 @@ fn pre_string_len_for_mutation_detection(
 }
 
 fn command_effectively_mutated_for_replication(
+    processor: &RequestProcessor,
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
@@ -221,8 +223,103 @@ fn command_effectively_mutated_for_replication(
             bitfield_single_set_mutated_for_replication(args, frame_response, pre_string_len)
                 .unwrap_or(true)
         }
+        CommandId::Eval | CommandId::EvalRo | CommandId::Evalsha | CommandId::EvalshaRo => {
+            !eval_script_is_read_only_for_replication(processor, command, args).unwrap_or(false)
+        }
         _ => true,
     }
+}
+
+fn eval_script_is_read_only_for_replication(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> Option<bool> {
+    let script = script_source_for_replication(processor, command, args)?;
+    Some(!script_contains_mutating_call(&script))
+}
+
+fn script_source_for_replication(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> Option<Vec<u8>> {
+    match command {
+        CommandId::Eval | CommandId::EvalRo => Some(arg_slice_bytes(args.get(1)?).to_vec()),
+        CommandId::Evalsha | CommandId::EvalshaRo => {
+            let sha = arg_slice_bytes(args.get(1)?);
+            processor.cached_script_for_sha(sha)
+        }
+        _ => None,
+    }
+}
+
+fn script_contains_mutating_call(script: &[u8]) -> bool {
+    let mut lower = script.to_vec();
+    lower.make_ascii_lowercase();
+    let mut cursor = 0usize;
+    while cursor < lower.len() {
+        let Some((marker_start, marker_len)) = next_script_call_marker(&lower, cursor) else {
+            return false;
+        };
+        cursor = marker_start + marker_len;
+        while cursor < lower.len() && lower[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= lower.len() || lower[cursor] != b'(' {
+            return true;
+        }
+        cursor += 1;
+        while cursor < lower.len() && lower[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        if cursor >= lower.len() {
+            return true;
+        }
+        let quote = lower[cursor];
+        if quote != b'\'' && quote != b'"' {
+            return true;
+        }
+        cursor += 1;
+        let token_start = cursor;
+        while cursor < lower.len() && lower[cursor] != quote {
+            cursor += 1;
+        }
+        if cursor >= lower.len() || cursor == token_start {
+            return true;
+        }
+        let command_name = &lower[token_start..cursor];
+        let command = crate::dispatch_command_name(command_name);
+        if command == CommandId::Unknown || command_is_mutating(command) {
+            return true;
+        }
+        cursor += 1;
+    }
+    false
+}
+
+fn next_script_call_marker(input: &[u8], start: usize) -> Option<(usize, usize)> {
+    let calls = [
+        (find_bytes(input, b"redis.call", start), b"redis.call".len()),
+        (
+            find_bytes(input, b"redis.pcall", start),
+            b"redis.pcall".len(),
+        ),
+    ];
+    calls
+        .into_iter()
+        .filter_map(|(position, len)| position.map(|pos| (pos, len)))
+        .min_by_key(|(pos, _)| *pos)
+}
+
+fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
+    if needle.is_empty() || start >= haystack.len() || haystack.len() < needle.len() {
+        return None;
+    }
+    haystack[start..]
+        .windows(needle.len())
+        .position(|window| window == needle)
+        .map(|offset| start + offset)
 }
 
 fn command_uses_subcommand_stats(command: CommandId) -> bool {
@@ -1183,8 +1280,13 @@ pub(crate) async fn handle_connection(
                             }
                         }
                         let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
+                        let publish_lazy_expire_deletes = should_publish_lazy_expire_deletes(
+                            &processor,
+                            command,
+                            command_mutating,
+                        );
                         let mut published_select = false;
-                        if !command_mutating {
+                        if publish_lazy_expire_deletes {
                             if !lazy_expired_keys.is_empty() {
                                 publish_select_if_needed(&replication);
                                 published_select = true;
@@ -1460,6 +1562,7 @@ async fn execute_blocking_frame_on_owner_thread(
         } else {
             command_mutating
                 && command_effectively_mutated_for_replication(
+                    processor,
                     command,
                     args,
                     &frame_response,
@@ -1709,6 +1812,33 @@ fn publish_select_if_needed(replication: &RedisReplicationCoordinator) {
     replication.publish_write_frame(&select_frame);
 }
 
+fn is_nested_lazy_expire_context(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Exec
+            | CommandId::Eval
+            | CommandId::EvalRo
+            | CommandId::Evalsha
+            | CommandId::EvalshaRo
+            | CommandId::Fcall
+            | CommandId::FcallRo,
+    )
+}
+
+fn should_publish_lazy_expire_deletes(
+    processor: &RequestProcessor,
+    command: CommandId,
+    command_mutating: bool,
+) -> bool {
+    if !command_mutating {
+        return true;
+    }
+    if !is_nested_lazy_expire_context(command) {
+        return false;
+    }
+    processor.lazyexpire_nested_arbitrary_keys_enabled()
+}
+
 async fn apply_queued_replication_transition(
     replication: &Arc<RedisReplicationCoordinator>,
     transition: QueuedReplicationTransition,
@@ -1796,8 +1926,11 @@ fn publish_transaction_replication_frames(
         replication_frames.push(replication_frame);
     }
 
-    for key in processor.take_lazy_expired_keys_for_replication() {
-        replication_frames.push(encode_resp_frame(&[b"DEL".to_vec(), key]));
+    let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
+    if should_publish_lazy_expire_deletes(processor, CommandId::Exec, true) {
+        for key in lazy_expired_keys {
+            replication_frames.push(encode_resp_frame(&[b"DEL".to_vec(), key]));
+        }
     }
 
     if replication_frames.is_empty() {
@@ -3347,6 +3480,80 @@ impl Drop for ConnectionLifecycle<'_> {
 mod tests {
     use super::*;
     use garnet_common::parse_resp_command_arg_slices;
+
+    #[test]
+    fn eval_mutation_detection_skips_read_only_scripts() {
+        let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true)
+            .expect("processor must initialize");
+
+        let eval_read_only = encode_resp_frame(&[
+            b"EVAL".to_vec(),
+            b"return redis.call('SCAN', 0)".to_vec(),
+            b"0".to_vec(),
+        ]);
+        let mut eval_args = [ArgSlice::EMPTY; 8];
+        let eval_meta = parse_resp_command_arg_slices(&eval_read_only, &mut eval_args).unwrap();
+        assert!(
+            !command_effectively_mutated_for_replication(
+                &processor,
+                CommandId::Eval,
+                &eval_args[..eval_meta.argument_count],
+                b"*2\r\n$1\r\n0\r\n*0\r\n",
+                None,
+            ),
+            "read-only EVAL should not force replication propagation"
+        );
+
+        let eval_write = encode_resp_frame(&[
+            b"EVAL".to_vec(),
+            b"return redis.call('SET', KEYS[1], ARGV[1])".to_vec(),
+            b"1".to_vec(),
+            b"k".to_vec(),
+            b"v".to_vec(),
+        ]);
+        let mut eval_write_args = [ArgSlice::EMPTY; 8];
+        let eval_write_meta =
+            parse_resp_command_arg_slices(&eval_write, &mut eval_write_args).unwrap();
+        assert!(command_effectively_mutated_for_replication(
+            &processor,
+            CommandId::Eval,
+            &eval_write_args[..eval_write_meta.argument_count],
+            b"+OK\r\n",
+            None,
+        ));
+    }
+
+    #[test]
+    fn lazy_expire_nested_arbitrary_keys_policy_follows_config() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        assert!(should_publish_lazy_expire_deletes(
+            &processor,
+            CommandId::Scan,
+            false,
+        ));
+        assert!(should_publish_lazy_expire_deletes(
+            &processor,
+            CommandId::Eval,
+            true,
+        ));
+        assert!(!should_publish_lazy_expire_deletes(
+            &processor,
+            CommandId::Set,
+            true,
+        ));
+
+        processor.set_config_value(b"lazyexpire-nested-arbitrary-keys", b"no".to_vec());
+        assert!(!should_publish_lazy_expire_deletes(
+            &processor,
+            CommandId::Eval,
+            true,
+        ));
+        assert!(!should_publish_lazy_expire_deletes(
+            &processor,
+            CommandId::Exec,
+            true,
+        ));
+    }
 
     #[test]
     fn parses_inline_frame_as_resp() {

@@ -8911,6 +8911,26 @@ fn config_get_known_and_unknown_keys() {
 }
 
 #[test]
+fn lazyexpire_nested_arbitrary_keys_config_defaults_yes_and_honors_no() {
+    let processor = RequestProcessor::new().unwrap();
+    assert!(processor.lazyexpire_nested_arbitrary_keys_enabled());
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET lazyexpire-nested-arbitrary-keys no",
+        b"+OK\r\n",
+    );
+    assert!(!processor.lazyexpire_nested_arbitrary_keys_enabled());
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET lazyexpire-nested-arbitrary-keys yes",
+        b"+OK\r\n",
+    );
+    assert!(processor.lazyexpire_nested_arbitrary_keys_enabled());
+}
+
+#[test]
 fn config_set_port_accepts_current_value_and_rejects_port_changes() {
     let processor = RequestProcessor::new().unwrap();
     processor.set_config_value(b"port", b"6380".to_vec());

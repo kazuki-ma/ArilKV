@@ -1947,6 +1947,111 @@ async fn sync_replication_stream_starts_with_select_db_zero() {
 }
 
 #[tokio::test]
+async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_replicating_get() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let get_foo = encode_resp_command(&[b"GET", b"foo"]);
+    let mut foo_expired = false;
+    for _ in 0..50 {
+        client.write_all(&get_foo).await.unwrap();
+        let mut response = [0u8; 64];
+        let bytes_read =
+            tokio::time::timeout(Duration::from_millis(200), client.read(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+        let frame = &response[..bytes_read];
+        if frame == b"$-1\r\n" {
+            foo_expired = true;
+            break;
+        }
+        assert_eq!(frame, b"$3\r\nbar\r\n");
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert!(
+        foo_expired,
+        "GET foo did not observe expiration within retry budget"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"DEL", b"foo"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"x", b"1"]));
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let mut trailing = [0u8; 1];
+    let trailing_read = tokio::time::timeout(
+        Duration::from_millis(200),
+        replica_stream.read_exact(&mut trailing),
+    )
+    .await;
+    assert!(
+        trailing_read.is_err(),
+        "unexpected extra replication frames after lazy-expire GET path: {:?}",
+        trailing_read
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_propagates_single_write_multi_exec_without_wrappers() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

@@ -661,6 +661,16 @@ impl RequestProcessor {
             .unwrap_or(false)
     }
 
+    pub(crate) fn lazyexpire_nested_arbitrary_keys_enabled(&self) -> bool {
+        let Ok(values) = self.config_overrides.lock() else {
+            return true;
+        };
+        match values.get(b"lazyexpire-nested-arbitrary-keys".as_slice()) {
+            Some(value) if value.eq_ignore_ascii_case(b"no") => false,
+            _ => true,
+        }
+    }
+
     pub(crate) fn record_command_call(&self, command_name: &[u8]) {
         if command_name.is_empty() {
             return;
