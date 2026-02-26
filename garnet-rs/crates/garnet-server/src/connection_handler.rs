@@ -88,6 +88,143 @@ fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
     unsafe { arg.as_slice() }
 }
 
+fn parse_i64_ascii_bytes(value: &[u8]) -> Option<i64> {
+    let text = std::str::from_utf8(value).ok()?;
+    text.parse::<i64>().ok()
+}
+
+fn parse_resp_single_integer_array(frame: &[u8]) -> Option<i64> {
+    if !frame.starts_with(b"*1\r\n:") || !frame.ends_with(b"\r\n") {
+        return None;
+    }
+    parse_i64_ascii_bytes(&frame[5..frame.len().saturating_sub(2)])
+}
+
+fn parse_bitfield_encoding_for_replication(token: &[u8]) -> Option<(bool, usize)> {
+    if token.len() < 2 {
+        return None;
+    }
+    let signed = match token[0].to_ascii_uppercase() {
+        b'I' => true,
+        b'U' => false,
+        _ => return None,
+    };
+    let bits = usize::try_from(parse_i64_ascii_bytes(&token[1..])?).ok()?;
+    let valid = if signed {
+        (1..=64).contains(&bits)
+    } else {
+        (1..=63).contains(&bits)
+    };
+    valid.then_some((signed, bits))
+}
+
+fn parse_bitfield_offset_for_replication(token: &[u8], bits: usize) -> Option<usize> {
+    let (type_relative, raw) = match token.split_first() {
+        Some((b'#', rest)) => (true, rest),
+        _ => (false, token),
+    };
+    let offset = parse_i64_ascii_bytes(raw)?;
+    if offset < 0 {
+        return None;
+    }
+    let offset = usize::try_from(offset).ok()?;
+    if type_relative {
+        offset.checked_mul(bits)
+    } else {
+        Some(offset)
+    }
+}
+
+fn bitfield_wrap_set_value_for_replication(value: i64, signed: bool, bits: usize) -> Option<i64> {
+    let modulus = 1i128.checked_shl(bits as u32)?;
+    let mut raw = i128::from(value) % modulus;
+    if raw < 0 {
+        raw += modulus;
+    }
+    if signed {
+        let sign_bit = 1i128.checked_shl((bits.checked_sub(1)?) as u32)?;
+        if raw >= sign_bit {
+            raw -= modulus;
+        }
+    }
+    i64::try_from(raw).ok()
+}
+
+fn bitfield_single_set_mutated_for_replication(
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    pre_string_len: Option<usize>,
+) -> Option<bool> {
+    if args.len() != 6 || !ascii_eq_ignore_case(arg_slice_bytes(args.get(2)?), b"SET") {
+        return None;
+    }
+    let (signed, bits) = parse_bitfield_encoding_for_replication(arg_slice_bytes(args.get(3)?))?;
+    let offset = parse_bitfield_offset_for_replication(arg_slice_bytes(args.get(4)?), bits)?;
+    let input_value = parse_i64_ascii_bytes(arg_slice_bytes(args.get(5)?))?;
+    let old_value = parse_resp_single_integer_array(frame_response)?;
+    let wrapped_value = bitfield_wrap_set_value_for_replication(input_value, signed, bits)?;
+    let required_bits = offset.checked_add(bits)?;
+    let required_bytes = required_bits.checked_add(7)?.checked_div(8)?;
+    let length_changed = pre_string_len.unwrap_or(0) < required_bytes;
+    Some(length_changed || old_value != wrapped_value)
+}
+
+fn setbit_mutated_for_replication(
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    pre_string_len: Option<usize>,
+) -> Option<bool> {
+    if args.len() != 4 {
+        return None;
+    }
+    let offset = parse_i64_ascii_bytes(arg_slice_bytes(args.get(2)?))?;
+    if offset < 0 {
+        return Some(true);
+    }
+    let offset = usize::try_from(offset).ok()?;
+    let input_bit = parse_i64_ascii_bytes(arg_slice_bytes(args.get(3)?))?;
+    if input_bit != 0 && input_bit != 1 {
+        return Some(true);
+    }
+    let old_bit = parse_resp_integer(frame_response)?;
+    let required_len = offset.checked_div(8)?.checked_add(1)?;
+    let length_changed = pre_string_len.unwrap_or(0) < required_len;
+    Some(length_changed || old_bit != input_bit)
+}
+
+fn pre_string_len_for_mutation_detection(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> Option<usize> {
+    if !matches!(command, CommandId::Setbit | CommandId::Bitfield) {
+        return None;
+    }
+    let key = arg_slice_bytes(args.get(1)?);
+    processor
+        .string_value_len_for_replication(key)
+        .ok()
+        .flatten()
+}
+
+fn command_effectively_mutated_for_replication(
+    command: CommandId,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    pre_string_len: Option<usize>,
+) -> bool {
+    match command {
+        CommandId::Setbit => {
+            setbit_mutated_for_replication(args, frame_response, pre_string_len).unwrap_or(true)
+        }
+        CommandId::Bitfield => {
+            bitfield_single_set_mutated_for_replication(args, frame_response, pre_string_len)
+                .unwrap_or(true)
+        }
+        _ => true,
+    }
+}
+
 fn command_uses_subcommand_stats(command: CommandId) -> bool {
     matches!(
         command,
@@ -1293,6 +1430,7 @@ async fn execute_blocking_frame_on_owner_thread(
             continue;
         }
 
+        let pre_string_len = pre_string_len_for_mutation_detection(processor, command, args);
         let frame_response = match execute_frame_on_owner_thread_async(
             processor,
             owner_thread_pool,
@@ -1321,6 +1459,12 @@ async fn execute_blocking_frame_on_owner_thread(
             command_mutating && !is_blocking_empty_response(&frame_response)
         } else {
             command_mutating
+                && command_effectively_mutated_for_replication(
+                    command,
+                    args,
+                    &frame_response,
+                    pre_string_len,
+                )
         };
         if !is_blocking_command(command) || !is_blocking_empty_response(&frame_response) {
             if blocked {

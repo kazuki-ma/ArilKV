@@ -5069,6 +5069,66 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     assert_eq!(response, b"$1\r\n\xbe\r\n");
 
     response.clear();
+    let bitop_one = b"*5\r\n$5\r\nBITOP\r\n$3\r\nONE\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
+    let meta = parse_resp_command_arg_slices(bitop_one, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n \r\n");
+
+    response.clear();
+    let bitop_diff = b"*5\r\n$5\r\nBITOP\r\n$4\r\nDIFF\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
+    let meta = parse_resp_command_arg_slices(bitop_diff, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n\x00\r\n");
+
+    response.clear();
+    let bitop_diff1 = b"*5\r\n$5\r\nBITOP\r\n$5\r\nDIFF1\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
+    let meta = parse_resp_command_arg_slices(bitop_diff1, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\n \r\n");
+
+    response.clear();
+    let bitop_andor = b"*5\r\n$5\r\nBITOP\r\n$5\r\nANDOR\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
+    let meta = parse_resp_command_arg_slices(bitop_andor, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$1\r\nA\r\n");
+
+    response.clear();
     let bitop_and_missing =
         b"*5\r\n$5\r\nBITOP\r\n$3\r\nAND\r\n$6\r\nbempty\r\n$8\r\nmissing1\r\n$8\r\nmissing2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_and_missing, &mut args).unwrap();
@@ -5185,18 +5245,15 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
     );
 
-    response.clear();
-    let bitop_not_wrong_arity =
-        b"*5\r\n$5\r\nBITOP\r\n$3\r\nNOT\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
-    let meta = parse_resp_command_arg_slices(bitop_not_wrong_arity, &mut args).unwrap();
-    let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
-        .err()
-        .unwrap();
-    err.append_resp_error(&mut response);
-    assert_eq!(
-        response,
-        b"-ERR wrong number of arguments for 'bitop' command\r\n"
+    assert_command_response(
+        &processor,
+        "BITOP NOT bdst b1 b2",
+        b"-ERR BITOP NOT must be called with a single source key.\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "BITOP DIFF bdst b1",
+        b"-ERR BITOP DIFF must be called with multiple source keys.\r\n",
     );
 }
 

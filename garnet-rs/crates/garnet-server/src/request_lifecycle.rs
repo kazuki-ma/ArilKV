@@ -534,6 +534,20 @@ impl RequestProcessor {
         self.expire_key_if_needed(key)
     }
 
+    pub(crate) fn string_value_len_for_replication(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<usize>, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
+        let Some(value) = self.read_string_value(key)? else {
+            if self.object_key_exists(key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            return Ok(None);
+        };
+        Ok(Some(value.len()))
+    }
+
     pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[(Vec<u8>, u64)]) {
         for (key, _) in watched_keys {
             let _ = self.expire_key_if_needed(key);

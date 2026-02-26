@@ -9,6 +9,10 @@ enum BitopOperation {
     Or,
     Xor,
     Not,
+    Diff,
+    Diff1,
+    AndOr,
+    One,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -349,19 +353,25 @@ impl RequestProcessor {
         let required_len = byte_index
             .checked_add(1)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
-        if value.len() < required_len {
-            value.resize(required_len, 0);
+        let old_len = value.len();
+        let changed = old_bit != i64::from(bit_value) || old_len < required_len;
+        if changed {
+            if value.len() < required_len {
+                value.resize(required_len, 0);
+            }
+            if bit_value == 1 {
+                value[byte_index] |= 1u8 << bit_index;
+            } else {
+                value[byte_index] &= !(1u8 << bit_index);
+            }
+            self.upsert_string_value_with_expiration_unix_millis(
+                &key,
+                &value,
+                expiration_unix_millis,
+            )?;
+            self.track_string_key(&key);
+            self.bump_watch_version(&key);
         }
-
-        if bit_value == 1 {
-            value[byte_index] |= 1u8 << bit_index;
-        } else {
-            value[byte_index] &= !(1u8 << bit_index);
-        }
-
-        self.upsert_string_value_with_expiration_unix_millis(&key, &value, expiration_unix_millis)?;
-        self.track_string_key(&key);
-        self.bump_watch_version(&key);
         append_integer(response_out, old_bit);
         Ok(())
     }
@@ -416,12 +426,31 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_one_of_arities(
-            args,
-            &[2, 4, 5],
-            "BITCOUNT",
-            "BITCOUNT key [start end [BYTE|BIT]]",
-        )?;
+        ensure_min_arity(args, 2, "BITCOUNT", "BITCOUNT key [start end [BYTE|BIT]]")?;
+        if args.len() != 2 && args.len() != 4 && args.len() != 5 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let parsed_range = if args.len() == 2 {
+            None
+        } else {
+            let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let bit_mode = if args.len() == 5 {
+                let mode = args[4];
+                if ascii_eq_ignore_case(mode, b"BYTE") {
+                    false
+                } else if ascii_eq_ignore_case(mode, b"BIT") {
+                    true
+                } else {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+            } else {
+                false
+            };
+            Some((start, end, bit_mode))
+        };
+
         let key = args[1].to_vec();
         self.expire_key_if_needed(&key)?;
         let Some(value) = self.read_string_value(&key)? else {
@@ -435,25 +464,14 @@ impl RequestProcessor {
             append_integer(response_out, 0);
             return Ok(());
         }
-        if args.len() == 2 {
+        if parsed_range.is_none() {
             let bits = value.iter().map(|byte| i64::from(byte.count_ones())).sum();
             append_integer(response_out, bits);
             return Ok(());
         }
 
-        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let bit_mode = if args.len() == 5 {
-            let mode = args[4];
-            if ascii_eq_ignore_case(mode, b"BYTE") {
-                false
-            } else if ascii_eq_ignore_case(mode, b"BIT") {
-                true
-            } else {
-                return Err(RequestExecutionError::SyntaxError);
-            }
-        } else {
-            false
+        let Some((start, end, bit_mode)) = parsed_range else {
+            return Err(RequestExecutionError::SyntaxError);
         };
 
         let count = if bit_mode {
@@ -504,20 +522,6 @@ impl RequestProcessor {
         }
         let target_bit = bit as u8;
 
-        self.expire_key_if_needed(&key)?;
-        let Some(value) = self.read_string_value(&key)? else {
-            if self.object_key_exists(&key)? {
-                return Err(RequestExecutionError::WrongType);
-            }
-            let missing_result = if target_bit == 0 { 0 } else { -1 };
-            append_integer(response_out, missing_result);
-            return Ok(());
-        };
-        if value.is_empty() {
-            append_integer(response_out, -1);
-            return Ok(());
-        }
-
         let mut mode_is_bit = false;
         if args.len() == 6 {
             let mode = args[5];
@@ -537,6 +541,27 @@ impl RequestProcessor {
         };
         let end = if args.len() >= 5 {
             parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?
+        } else {
+            i64::MAX
+        };
+        let has_explicit_end = args.len() >= 5;
+
+        self.expire_key_if_needed(&key)?;
+        let Some(value) = self.read_string_value(&key)? else {
+            if self.object_key_exists(&key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            let missing_result = if target_bit == 0 { 0 } else { -1 };
+            append_integer(response_out, missing_result);
+            return Ok(());
+        };
+        if value.is_empty() {
+            append_integer(response_out, -1);
+            return Ok(());
+        }
+
+        let end = if has_explicit_end {
+            end
         } else if mode_is_bit {
             let total_bits = value
                 .len()
@@ -546,7 +571,6 @@ impl RequestProcessor {
         } else {
             (value.len() as i64) - 1
         };
-        let has_explicit_end = args.len() >= 5;
 
         let result = if mode_is_bit {
             let total_bits = value
@@ -611,7 +635,24 @@ impl RequestProcessor {
 
         let operation = parse_bitop_operation(args[1]).ok_or(RequestExecutionError::SyntaxError)?;
         if operation == BitopOperation::Not && args.len() != 4 {
-            require_exact_arity(args, 4, "BITOP", "BITOP NOT destkey key")?;
+            append_error(
+                response_out,
+                b"ERR BITOP NOT must be called with a single source key.",
+            );
+            return Ok(());
+        }
+        if matches!(
+            operation,
+            BitopOperation::Diff | BitopOperation::Diff1 | BitopOperation::AndOr
+        ) && args.len() < 5
+        {
+            let operation_name = std::str::from_utf8(args[1]).unwrap_or("DIFF");
+            let error_message = format!(
+                "ERR BITOP {} must be called with multiple source keys.",
+                operation_name.to_ascii_uppercase()
+            );
+            append_error(response_out, error_message.as_bytes());
+            return Ok(());
         }
 
         let destination = args[2].to_vec();
@@ -772,12 +813,27 @@ impl RequestProcessor {
                 let set_value =
                     parse_i64_ascii(value_token).ok_or(RequestExecutionError::ValueNotInteger)?;
                 let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
+                let required_bits = offset
+                    .checked_add(usize::from(encoding.bits))
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let required_bytes = required_bits
+                    .checked_add(7)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?
+                    / 8;
+                let length_changed = required_bytes > value.len();
                 let previous = decode_bitfield_raw(raw, encoding);
                 match apply_bitfield_set(set_value, encoding, overflow_mode) {
-                    BitfieldSetOutcome::Value { raw } => {
+                    BitfieldSetOutcome::Value { raw: next_raw } => {
                         responses.push(Some(previous));
-                        write_unsigned_bits(&mut value, offset, usize::from(encoding.bits), raw)?;
-                        wrote = true;
+                        if raw != next_raw || length_changed {
+                            write_unsigned_bits(
+                                &mut value,
+                                offset,
+                                usize::from(encoding.bits),
+                                next_raw,
+                            )?;
+                            wrote = true;
+                        }
                     }
                     BitfieldSetOutcome::OverflowFail => responses.push(None),
                 }
@@ -2744,6 +2800,18 @@ fn parse_bitop_operation(token: &[u8]) -> Option<BitopOperation> {
     if ascii_eq_ignore_case(token, b"NOT") {
         return Some(BitopOperation::Not);
     }
+    if ascii_eq_ignore_case(token, b"DIFF") {
+        return Some(BitopOperation::Diff);
+    }
+    if ascii_eq_ignore_case(token, b"DIFF1") {
+        return Some(BitopOperation::Diff1);
+    }
+    if ascii_eq_ignore_case(token, b"ANDOR") {
+        return Some(BitopOperation::AndOr);
+    }
+    if ascii_eq_ignore_case(token, b"ONE") {
+        return Some(BitopOperation::One);
+    }
     None
 }
 
@@ -3355,31 +3423,46 @@ fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> 
     if source_values.is_empty() {
         return Vec::new();
     }
-    match operation {
-        BitopOperation::Not => source_values[0].iter().map(|byte| !*byte).collect(),
-        BitopOperation::And | BitopOperation::Or | BitopOperation::Xor => {
-            let max_len = source_values.iter().map(Vec::len).max().unwrap_or(0);
-            let mut result = vec![0u8; max_len];
-            for index in 0..max_len {
-                let mut value = match operation {
-                    BitopOperation::And => 0xFFu8,
-                    BitopOperation::Or | BitopOperation::Xor => 0u8,
-                    BitopOperation::Not => unreachable!(),
-                };
+    let max_len = source_values.iter().map(Vec::len).max().unwrap_or(0);
+    let mut result = vec![0u8; max_len];
+    for index in 0..max_len {
+        let first = source_values[0].get(index).copied().unwrap_or(0);
+        result[index] = match operation {
+            BitopOperation::Not => !first,
+            BitopOperation::And => source_values[1..].iter().fold(first, |acc, source| {
+                acc & source.get(index).copied().unwrap_or(0)
+            }),
+            BitopOperation::Or => source_values[1..].iter().fold(first, |acc, source| {
+                acc | source.get(index).copied().unwrap_or(0)
+            }),
+            BitopOperation::Xor => source_values[1..].iter().fold(first, |acc, source| {
+                acc ^ source.get(index).copied().unwrap_or(0)
+            }),
+            BitopOperation::Diff | BitopOperation::Diff1 | BitopOperation::AndOr => {
+                let others_or = source_values[1..].iter().fold(0u8, |acc, source| {
+                    acc | source.get(index).copied().unwrap_or(0)
+                });
+                match operation {
+                    BitopOperation::Diff => first & !others_or,
+                    BitopOperation::Diff1 => !first & others_or,
+                    BitopOperation::AndOr => first & others_or,
+                    _ => unreachable!(),
+                }
+            }
+            BitopOperation::One => {
+                let mut seen_once = 0u8;
+                let mut seen_multiple = 0u8;
                 for source in source_values {
                     let source_byte = source.get(index).copied().unwrap_or(0);
-                    value = match operation {
-                        BitopOperation::And => value & source_byte,
-                        BitopOperation::Or => value | source_byte,
-                        BitopOperation::Xor => value ^ source_byte,
-                        BitopOperation::Not => unreachable!(),
-                    };
+                    seen_multiple |= seen_once & source_byte;
+                    seen_once ^= source_byte;
+                    seen_once &= !seen_multiple;
                 }
-                result[index] = value;
+                seen_once
             }
-            result
-        }
+        };
     }
+    result
 }
 
 fn load_pf_set_for_key(

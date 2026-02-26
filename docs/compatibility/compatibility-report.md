@@ -24,40 +24,27 @@
 
 - Probe script exit code: `0`
 - Cases: `3`
-- PASS: `0`
-- FAIL: `3`
+- PASS: `1`
+- FAIL: `2`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=481; err=39; ignore=89; failed_tests=39  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; exit_code=1; ok=494; err=26; ignore=89; failed_tests=26  |
 | `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
-| `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
+| `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `39`
+- Failed tests extracted from runtest log: `26`
 
 | Test |
 |---|
-| `BITCOUNT with illegal arguments in tests/unit/bitops.tcl` |
-| `BITCOUNT against non-integer value in tests/unit/bitops.tcl` |
-| `BITOP NOT with multiple source keys in tests/unit/bitops.tcl` |
-| `BITOP AND\|OR\|XOR\|ONE don't change the string with single input key in tests/unit/bitops.tcl` |
-| `BITOP DIFF\|DIFF1\|ANDOR with one source key in tests/unit/bitops.tcl` |
-| `BITOP missing key is considered a stream of zero in tests/unit/bitops.tcl` |
-| `BITOP shorter keys are zero-padded to the key with max length in tests/unit/bitops.tcl` |
-| `BITOP diff fuzzing in tests/unit/bitops.tcl` |
-| `BITOP diff1 fuzzing in tests/unit/bitops.tcl` |
-| `BITOP andor fuzzing in tests/unit/bitops.tcl` |
-| `BITOP one fuzzing in tests/unit/bitops.tcl` |
-| `BITPOS will illegal arguments in tests/unit/bitops.tcl` |
-| `BITPOS against non-integer value in tests/unit/bitops.tcl` |
-| `SETBIT/BITFIELD only increase dirty when the value changed in tests/unit/bitops.tcl` |
 | `RESTORE can set LRU in tests/unit/dump.tcl` |
 | `RESTORE can set LFU in tests/unit/dump.tcl` |
 | `RESTORE returns an error of the key already exists in tests/unit/dump.tcl` |
 | `RESTORE should not store key that are already expired, with REPLACE will propagate it as DEL or UNLINK in tests/unit/dump.tcl` |
 | `MIGRATE cached connections are released after some time in tests/unit/dump.tcl` |
+| `Redis should not propagate the read command on lazy expire in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (yes, lua) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, multi) in tests/unit/expire.tcl` |
 | `Config lazyexpire-nested-arbitrary-keys (no, lua) in tests/unit/expire.tcl` |
