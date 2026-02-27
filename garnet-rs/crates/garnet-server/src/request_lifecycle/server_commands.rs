@@ -519,15 +519,15 @@ impl RequestProcessor {
                 length,
             })
         } else if let Some(object) = self.object_read(&key)? {
-            let Some((histogram_type_index, length)) =
+            let Some(histogram_entry) =
                 keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
             else {
                 append_integer(response_out, 0);
                 return Ok(());
             };
             Some(super::MovedKeysizesEntry {
-                histogram_type_index,
-                length,
+                histogram_type_index: histogram_entry.histogram_type_index,
+                length: histogram_entry.length,
             })
         } else {
             None
@@ -2673,13 +2673,13 @@ impl RequestProcessor {
             let Some(object) = self.object_read(key.as_slice())? else {
                 continue;
             };
-            let Some((type_index, length)) =
+            let Some(histogram_entry) =
                 keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
             else {
                 continue;
             };
-            let bin_index = keysizes_histogram_bin_index(length);
-            histograms[type_index][bin_index] += 1;
+            let bin_index = keysizes_histogram_bin_index(histogram_entry.length);
+            histograms[histogram_entry.histogram_type_index][bin_index] += 1;
         }
 
         histograms_by_db.insert(0usize, histograms);
@@ -3356,10 +3356,25 @@ fn append_keysizes_histogram_line(
     payload.push_str("\r\n");
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct HistogramEntry {
+    histogram_type_index: usize,
+    length: usize,
+}
+
+impl HistogramEntry {
+    const fn new(histogram_type_index: usize, length: usize) -> Self {
+        Self {
+            histogram_type_index,
+            length,
+        }
+    }
+}
+
 fn keysizes_object_histogram_type_and_len(
     object_type: ObjectTypeTag,
     payload: &[u8],
-) -> Result<Option<(usize, usize)>, RequestExecutionError> {
+) -> Result<Option<HistogramEntry>, RequestExecutionError> {
     match object_type {
         LIST_OBJECT_TYPE_TAG => {
             let list = deserialize_list_object_payload(payload).ok_or_else(|| {
@@ -3368,7 +3383,7 @@ fn keysizes_object_histogram_type_and_len(
                     "failed to deserialize list payload while building keysizes histogram",
                 )
             })?;
-            Ok(Some((1, list.len())))
+            Ok(Some(HistogramEntry::new(1, list.len())))
         }
         SET_OBJECT_TYPE_TAG => {
             let set = deserialize_set_object_payload(payload).ok_or_else(|| {
@@ -3377,7 +3392,7 @@ fn keysizes_object_histogram_type_and_len(
                     "failed to deserialize set payload while building keysizes histogram",
                 )
             })?;
-            Ok(Some((2, set.len())))
+            Ok(Some(HistogramEntry::new(2, set.len())))
         }
         ZSET_OBJECT_TYPE_TAG => {
             let zset = deserialize_zset_object_payload(payload).ok_or_else(|| {
@@ -3386,7 +3401,7 @@ fn keysizes_object_histogram_type_and_len(
                     "failed to deserialize zset payload while building keysizes histogram",
                 )
             })?;
-            Ok(Some((3, zset.len())))
+            Ok(Some(HistogramEntry::new(3, zset.len())))
         }
         HASH_OBJECT_TYPE_TAG => {
             let hash = deserialize_hash_object_payload(payload).ok_or_else(|| {
@@ -3395,7 +3410,7 @@ fn keysizes_object_histogram_type_and_len(
                     "failed to deserialize hash payload while building keysizes histogram",
                 )
             })?;
-            Ok(Some((4, hash.len())))
+            Ok(Some(HistogramEntry::new(4, hash.len())))
         }
         _ => Ok(None),
     }
