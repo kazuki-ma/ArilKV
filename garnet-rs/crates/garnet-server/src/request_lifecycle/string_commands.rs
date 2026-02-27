@@ -950,20 +950,26 @@ impl RequestProcessor {
             }
         };
 
-        let (lcs_len, sequence, mut matches) = lcs_sequence_and_matches(&left, &right);
+        let lcs_result = lcs_sequence_and_matches(&left, &right);
         if options.mode == LcsResponseMode::LengthOnly {
-            append_integer(response_out, lcs_len as i64);
+            append_integer(response_out, lcs_result.length as i64);
             return Ok(());
         }
         if options.mode == LcsResponseMode::Sequence {
-            append_bulk_string(response_out, &sequence);
+            append_bulk_string(response_out, &lcs_result.sequence);
             return Ok(());
         }
 
+        let mut matches = lcs_result.matches;
         if options.min_match_len > 0 {
             matches.retain(|entry| entry.length >= options.min_match_len);
         }
-        append_lcs_idx_response(response_out, &matches, lcs_len, options.with_match_len);
+        append_lcs_idx_response(
+            response_out,
+            &matches,
+            lcs_result.length,
+            options.with_match_len,
+        );
         Ok(())
     }
 
@@ -3137,7 +3143,13 @@ fn parse_lcs_options(args: &[&[u8]]) -> Result<LcsOptions, RequestExecutionError
     })
 }
 
-fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> (usize, Vec<u8>, Vec<LcsMatchSegment>) {
+struct LcsComputation {
+    length: usize,
+    sequence: Vec<u8>,
+    matches: Vec<LcsMatchSegment>,
+}
+
+fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> LcsComputation {
     let left_len = left.len();
     let right_len = right.len();
     let mut dp = vec![vec![0usize; right_len + 1]; left_len + 1];
@@ -3192,7 +3204,11 @@ fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> (usize, Vec<u8>, Vec<L
         }
     }
 
-    (dp[0][0], sequence, matches)
+    LcsComputation {
+        length: dp[0][0],
+        sequence,
+        matches,
+    }
 }
 
 fn append_resp_array_len(response_out: &mut Vec<u8>, len: usize) {
