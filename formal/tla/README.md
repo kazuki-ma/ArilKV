@@ -145,6 +145,27 @@ Conservative fixed config (expected to pass):
 ./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_fixed.cfg
 ```
 
+## Reproduce `unit/multi` blocking-timeout-in-`EXEC` hang
+
+This model maps `tests/unit/multi.tcl` test `Blocking commands ignores the timeout` directly:
+
+- `XGROUP CREATE s{t} g $ MKSTREAM`
+- `MULTI`
+- queue `BLPOP`, `BRPOP`, `BRPOPLPUSH`, `BLMOVE`, `BZPOPMIN`, `BZPOPMAX`, `XREAD`, `XREADGROUP`
+- `EXEC` expecting 8 empty replies (no blocking wait)
+
+Bug config (expected to fail with a hang counterexample):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/MultiExecBlockingTimeout.tla formal/tla/specs/MultiExecBlockingTimeout_bug.cfg
+```
+
+Fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/MultiExecBlockingTimeout.tla formal/tla/specs/MultiExecBlockingTimeout_fixed.cfg
+```
+
 ## Add new model
 
 1. Add `<Name>.tla` and `<Name>.cfg` under `formal/tla/specs/`.
