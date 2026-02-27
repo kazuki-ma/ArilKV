@@ -1151,6 +1151,12 @@ pub struct FailoverPlan {
     pub promoted_replication_offset: ReplicationOffset,
 }
 
+#[derive(Debug, Clone)]
+pub struct FailoverExecution {
+    pub plan: FailoverPlan,
+    pub updated_config: ClusterConfig,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicationSyncOutcome {
     pub plan: ReplicationSyncPlan,
@@ -1848,12 +1854,15 @@ impl ReplicationManager {
         &self,
         config: &ClusterConfig,
         failed_primary_node_id: &str,
-    ) -> Result<Option<(FailoverPlan, ClusterConfig)>, ClusterConfigError> {
+    ) -> Result<Option<FailoverExecution>, ClusterConfigError> {
         let Some(plan) = self.plan_failover(config, failed_primary_node_id) else {
             return Ok(None);
         };
         let updated = config.apply_failover_plan(&plan)?;
-        Ok(Some((plan, updated)))
+        Ok(Some(FailoverExecution {
+            plan,
+            updated_config: updated,
+        }))
     }
 }
 
@@ -1892,13 +1901,17 @@ impl FailoverCoordinator {
         }
 
         let current = config_store.load();
-        let Some((plan, updated)) =
+        let Some(failover_execution) =
             replication_manager.execute_failover(current.as_ref(), failed_primary_node_id)?
         else {
             return Ok(None);
         };
+        let FailoverExecution {
+            plan,
+            updated_config,
+        } = failover_execution;
 
-        config_store.publish(updated);
+        config_store.publish(updated_config);
         self.handled_failed_primaries
             .insert(failed_primary_node_id.to_owned());
         Ok(Some(plan))
@@ -4343,23 +4356,35 @@ mod tests {
         manager.record_replica_offset(replica_a, ReplicationOffset::new(170));
         manager.record_replica_offset(replica_b, ReplicationOffset::new(190));
 
-        let (plan, updated) = manager
+        let FailoverExecution {
+            plan,
+            updated_config,
+        } = manager
             .execute_failover(&config, "local-node")
             .unwrap()
             .expect("failover should be elected");
 
         assert_eq!(plan.promoted_worker_id, replica_b);
-        assert_eq!(updated.slot_assigned_owner(450).unwrap(), replica_b);
-        assert_eq!(updated.slot_state(450).unwrap(), SlotState::Stable);
-        assert_eq!(updated.worker(replica_b).unwrap().role, WorkerRole::Primary);
-        assert_eq!(updated.worker(replica_b).unwrap().replica_of_node_id, None);
-        assert_eq!(updated.worker(replica_b).unwrap().replication_offset, 190);
+        assert_eq!(updated_config.slot_assigned_owner(450).unwrap(), replica_b);
+        assert_eq!(updated_config.slot_state(450).unwrap(), SlotState::Stable);
         assert_eq!(
-            updated.worker(LOCAL_WORKER_ID).unwrap().role,
+            updated_config.worker(replica_b).unwrap().role,
+            WorkerRole::Primary
+        );
+        assert_eq!(
+            updated_config.worker(replica_b).unwrap().replica_of_node_id,
+            None
+        );
+        assert_eq!(
+            updated_config.worker(replica_b).unwrap().replication_offset,
+            190
+        );
+        assert_eq!(
+            updated_config.worker(LOCAL_WORKER_ID).unwrap().role,
             WorkerRole::Replica
         );
         assert_eq!(
-            updated
+            updated_config
                 .worker(LOCAL_WORKER_ID)
                 .unwrap()
                 .replica_of_node_id
