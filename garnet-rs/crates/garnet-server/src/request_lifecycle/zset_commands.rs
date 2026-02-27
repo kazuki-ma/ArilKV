@@ -805,8 +805,12 @@ impl RequestProcessor {
             matched.reverse();
         }
 
-        let selected: Vec<(&Vec<u8>, f64)> = if let Some((offset, count)) = options.limit {
-            matched.into_iter().skip(offset).take(count).collect()
+        let selected: Vec<(&Vec<u8>, f64)> = if let Some(limit) = options.limit {
+            matched
+                .into_iter()
+                .skip(limit.offset)
+                .take(limit.count)
+                .collect()
         } else {
             matched
         };
@@ -873,8 +877,12 @@ impl RequestProcessor {
             }
         }
 
-        let selected: Vec<&Vec<u8>> = if let Some((offset, count)) = limit {
-            matched.into_iter().skip(offset).take(count).collect()
+        let selected: Vec<&Vec<u8>> = if let Some(limit) = limit {
+            matched
+                .into_iter()
+                .skip(limit.offset)
+                .take(limit.count)
+                .collect()
         } else {
             matched
         };
@@ -1258,10 +1266,16 @@ enum ZrangeStoreMode {
 }
 
 #[derive(Debug, Clone, Copy)]
+struct ZsetLimit {
+    offset: usize,
+    count: usize,
+}
+
+#[derive(Debug, Clone, Copy)]
 struct ZrangeStoreOptions {
     mode: ZrangeStoreMode,
     reverse: bool,
-    limit: Option<(usize, usize)>,
+    limit: Option<ZsetLimit>,
 }
 
 fn sorted_zset_entries_by_score(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<(&Vec<u8>, f64)> {
@@ -1306,7 +1320,7 @@ fn append_zset_scan_response(
 #[derive(Clone, Copy, Debug, Default)]
 struct ZrangeByScoreOptions {
     with_scores: bool,
-    limit: Option<(usize, usize)>,
+    limit: Option<ZsetLimit>,
 }
 
 fn parse_zrange_by_score_options(
@@ -1333,10 +1347,10 @@ fn parse_zrange_by_score_options(
                 parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             let count =
                 parse_u64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-            options.limit = Some((
-                usize::try_from(offset).unwrap_or(usize::MAX),
-                usize::try_from(count).unwrap_or(usize::MAX),
-            ));
+            options.limit = Some(ZsetLimit {
+                offset: usize::try_from(offset).unwrap_or(usize::MAX),
+                count: usize::try_from(count).unwrap_or(usize::MAX),
+            });
             index += 3;
             continue;
         }
@@ -1461,7 +1475,7 @@ fn zlex_member_in_bounds(member: &[u8], min: ZlexBound<'_>, max: ZlexBound<'_>) 
 fn parse_zrangebylex_limit(
     args: &[&[u8]],
     start_index: usize,
-) -> Result<Option<(usize, usize)>, RequestExecutionError> {
+) -> Result<Option<ZsetLimit>, RequestExecutionError> {
     if args.len() == start_index {
         return Ok(None);
     }
@@ -1476,10 +1490,10 @@ fn parse_zrangebylex_limit(
         parse_u64_ascii(args[start_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
     let count =
         parse_u64_ascii(args[start_index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-    Ok(Some((
-        usize::try_from(offset).unwrap_or(usize::MAX),
-        usize::try_from(count).unwrap_or(usize::MAX),
-    )))
+    Ok(Some(ZsetLimit {
+        offset: usize::try_from(offset).unwrap_or(usize::MAX),
+        count: usize::try_from(count).unwrap_or(usize::MAX),
+    }))
 }
 
 fn parse_zset_numkeys_and_keys(
@@ -1854,10 +1868,10 @@ fn parse_zrangestore_options(
                 parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             let count =
                 parse_u64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-            limit = Some((
-                usize::try_from(offset).unwrap_or(usize::MAX),
-                usize::try_from(count).unwrap_or(usize::MAX),
-            ));
+            limit = Some(ZsetLimit {
+                offset: usize::try_from(offset).unwrap_or(usize::MAX),
+                count: usize::try_from(count).unwrap_or(usize::MAX),
+            });
             index += 3;
             continue;
         }
@@ -1872,10 +1886,14 @@ fn parse_zrangestore_options(
 
 fn apply_optional_limit(
     entries: Vec<(Vec<u8>, f64)>,
-    limit: Option<(usize, usize)>,
+    limit: Option<ZsetLimit>,
 ) -> Vec<(Vec<u8>, f64)> {
     match limit {
-        Some((offset, count)) => entries.into_iter().skip(offset).take(count).collect(),
+        Some(limit) => entries
+            .into_iter()
+            .skip(limit.offset)
+            .take(limit.count)
+            .collect(),
         None => entries,
     }
 }
