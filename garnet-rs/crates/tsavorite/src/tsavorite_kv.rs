@@ -103,6 +103,21 @@ impl From<PageManagerError> for TsavoriteKvInitError {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CheckpointFlushBarrier {
+    token: u64,
+    barrier_epoch: u64,
+}
+
+impl CheckpointFlushBarrier {
+    const fn new(token: u64, barrier_epoch: u64) -> Self {
+        Self {
+            token,
+            barrier_epoch,
+        }
+    }
+}
+
 pub struct TsavoriteKV<K, V, D = InMemoryPageDevice>
 where
     D: PageDevice,
@@ -113,7 +128,7 @@ where
     device: D,
     epoch: LightEpoch,
     checkpoint_state: CheckpointStateMachine,
-    checkpoint_wait_flush_epoch: Option<(u64, u64)>,
+    checkpoint_wait_flush_epoch: Option<CheckpointFlushBarrier>,
     _marker: PhantomData<(K, V)>,
 }
 
@@ -197,7 +212,7 @@ where
     ) -> Result<u64, CheckpointTransitionError> {
         let token = self.checkpoint_state.begin(mode)?;
         let barrier_epoch = self.epoch.bump_current_epoch();
-        self.checkpoint_wait_flush_epoch = Some((token, barrier_epoch));
+        self.checkpoint_wait_flush_epoch = Some(CheckpointFlushBarrier::new(token, barrier_epoch));
         Ok(token)
     }
 
@@ -222,17 +237,17 @@ where
         &mut self,
         token: u64,
     ) -> Result<bool, CheckpointTransitionError> {
-        let Some((expected_token, barrier_epoch)) = self.checkpoint_wait_flush_epoch else {
+        let Some(barrier) = self.checkpoint_wait_flush_epoch else {
             self.checkpoint_state.mark_wait_flush(token)?;
             return Ok(true);
         };
-        if expected_token != token {
+        if barrier.token != token {
             return Err(CheckpointTransitionError::TokenMismatch {
-                expected: expected_token,
+                expected: barrier.token,
                 actual: token,
             });
         }
-        if self.epoch.safe_to_reclaim_epoch() < barrier_epoch {
+        if self.epoch.safe_to_reclaim_epoch() < barrier.barrier_epoch {
             return Ok(false);
         }
         self.checkpoint_state.mark_wait_flush(token)?;
