@@ -1837,12 +1837,12 @@ impl RequestProcessor {
             response_out.push(b'*');
             response_out.extend_from_slice(latest.len().to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
-            for (event_name, sample, max_latency_millis) in latest {
+            for event in latest {
                 response_out.extend_from_slice(b"*4\r\n");
-                append_bulk_string(response_out, &event_name);
-                append_integer(response_out, sample.unix_seconds as i64);
-                append_integer(response_out, sample.latency_millis as i64);
-                append_integer(response_out, max_latency_millis as i64);
+                append_bulk_string(response_out, &event.event_name);
+                append_integer(response_out, event.latest_sample.unix_seconds as i64);
+                append_integer(response_out, event.latest_sample.latency_millis as i64);
+                append_integer(response_out, event.max_latency_millis as i64);
             }
             return Ok(());
         }

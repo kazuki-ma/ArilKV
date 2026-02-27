@@ -693,7 +693,7 @@ struct FunctionRegistry {
     library_function_names: HashMap<String, Vec<String>>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct LatencySample {
     pub(crate) unix_seconds: u64,
     pub(crate) latency_millis: u64,
@@ -712,6 +712,13 @@ impl LatencyRange {
             min_millis,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LatencyEvent {
+    pub(crate) event_name: Vec<u8>,
+    pub(crate) latest_sample: LatencySample,
+    pub(crate) max_latency_millis: u64,
 }
 
 #[derive(Debug, Default)]
@@ -1185,7 +1192,7 @@ impl RequestProcessor {
         state.samples.iter().copied().collect()
     }
 
-    pub(crate) fn latency_latest(&self) -> Vec<(Vec<u8>, LatencySample, u64)> {
+    pub(crate) fn latency_latest(&self) -> Vec<LatencyEvent> {
         let Ok(events) = self.latency_events.lock() else {
             return Vec::new();
         };
@@ -1198,7 +1205,13 @@ impl RequestProcessor {
         }
         ordered
             .into_iter()
-            .map(|(name, (sample, max_latency_millis))| (name, sample, max_latency_millis))
+            .map(
+                |(event_name, (latest_sample, max_latency_millis))| LatencyEvent {
+                    event_name,
+                    latest_sample,
+                    max_latency_millis,
+                },
+            )
             .collect()
     }
 
