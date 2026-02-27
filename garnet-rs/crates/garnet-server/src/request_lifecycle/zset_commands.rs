@@ -93,14 +93,12 @@ impl RequestProcessor {
         };
 
         let entries = sorted_zset_entries_by_score(&zset);
-        let Some((start_index, stop_index)) =
-            normalize_zset_index_range(entries.len(), start, stop)
-        else {
+        let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
         };
 
-        let selected = &entries[start_index..=stop_index];
+        let selected = &entries[range.start..=range.end_inclusive];
         append_zrange_score_entries(
             response_out,
             selected,
@@ -145,14 +143,12 @@ impl RequestProcessor {
 
         let mut entries = sorted_zset_entries_by_score(&zset);
         entries.reverse();
-        let Some((start_index, stop_index)) =
-            normalize_zset_index_range(entries.len(), start, stop)
-        else {
+        let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
         };
 
-        let selected = &entries[start_index..=stop_index];
+        let selected = &entries[range.start..=range.end_inclusive];
         append_zrange_score_entries(
             response_out,
             selected,
@@ -693,13 +689,11 @@ impl RequestProcessor {
         };
 
         let entries = sorted_zset_entries_by_score(&zset);
-        let Some((start_index, stop_index)) =
-            normalize_zset_index_range(entries.len(), start, stop)
-        else {
+        let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
             append_integer(response_out, 0);
             return Ok(());
         };
-        let to_remove: Vec<Vec<u8>> = entries[start_index..=stop_index]
+        let to_remove: Vec<Vec<u8>> = entries[range.start..=range.end_inclusive]
             .iter()
             .map(|(member, _score)| (*member).clone())
             .collect();
@@ -1393,7 +1387,7 @@ fn append_zrange_score_entries(
     }
 }
 
-fn normalize_zset_index_range(len: usize, start: i64, stop: i64) -> Option<(usize, usize)> {
+fn normalize_zset_index_range(len: usize, start: i64, stop: i64) -> Option<NormalizedRange> {
     if len == 0 {
         return None;
     }
@@ -1412,7 +1406,10 @@ fn normalize_zset_index_range(len: usize, start: i64, stop: i64) -> Option<(usiz
     if normalized_start > normalized_stop {
         return None;
     }
-    Some((normalized_start as usize, normalized_stop as usize))
+    Some(NormalizedRange::new(
+        normalized_start as usize,
+        normalized_stop as usize,
+    ))
 }
 
 fn parse_zscore_bound(input: &[u8]) -> Option<ZscoreBound> {
@@ -1912,12 +1909,10 @@ fn collect_zrangestore_entries(
             if options.reverse {
                 entries.reverse();
             }
-            let Some((start_index, stop_index)) =
-                normalize_zset_index_range(entries.len(), start, stop)
-            else {
+            let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
                 return Ok(Vec::new());
             };
-            entries[start_index..=stop_index]
+            entries[range.start..=range.end_inclusive]
                 .iter()
                 .map(|(member, score)| ((*member).clone(), *score))
                 .collect::<Vec<_>>()

@@ -261,10 +261,8 @@ impl RequestProcessor {
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                if let Some((start_index, end_index)) =
-                    normalize_string_range(output.len(), start, end)
-                {
-                    append_bulk_string(response_out, &output[start_index..=end_index]);
+                if let Some(range) = normalize_string_range(output.len(), start, end) {
+                    append_bulk_string(response_out, &output[range.start..=range.end_inclusive]);
                 } else {
                     append_bulk_string(response_out, b"");
                 }
@@ -479,9 +477,9 @@ impl RequestProcessor {
                 .len()
                 .checked_mul(8)
                 .ok_or(RequestExecutionError::ValueOutOfRange)?;
-            if let Some((start_bit, end_bit)) = normalize_string_range(total_bits, start, end) {
+            if let Some(range) = normalize_string_range(total_bits, start, end) {
                 let mut count = 0i64;
-                for bit_index in start_bit..=end_bit {
+                for bit_index in range.start..=range.end_inclusive {
                     let byte = value[bit_index / 8];
                     let shift = 7usize - (bit_index % 8);
                     count += i64::from((byte >> shift) & 1);
@@ -490,9 +488,8 @@ impl RequestProcessor {
             } else {
                 0
             }
-        } else if let Some((start_byte, end_byte)) = normalize_string_range(value.len(), start, end)
-        {
-            value[start_byte..=end_byte]
+        } else if let Some(range) = normalize_string_range(value.len(), start, end) {
+            value[range.start..=range.end_inclusive]
                 .iter()
                 .map(|byte| i64::from(byte.count_ones()))
                 .sum()
@@ -577,9 +574,9 @@ impl RequestProcessor {
                 .len()
                 .checked_mul(8)
                 .ok_or(RequestExecutionError::ValueOutOfRange)?;
-            if let Some((start_bit, end_bit)) = normalize_string_range(total_bits, start, end) {
+            if let Some(range) = normalize_string_range(total_bits, start, end) {
                 let mut found = None;
-                for bit_index in start_bit..=end_bit {
+                for bit_index in range.start..=range.end_inclusive {
                     let byte = value[bit_index / 8];
                     let shift = 7usize - (bit_index % 8);
                     if ((byte >> shift) & 1) == target_bit {
@@ -591,10 +588,9 @@ impl RequestProcessor {
             } else {
                 -1
             }
-        } else if let Some((start_byte, end_byte)) = normalize_string_range(value.len(), start, end)
-        {
+        } else if let Some(range) = normalize_string_range(value.len(), start, end) {
             let mut found = None;
-            for byte_index in start_byte..=end_byte {
+            for byte_index in range.start..=range.end_inclusive {
                 let byte = value[byte_index];
                 if target_bit == 1 {
                     if byte == 0 {
@@ -3669,7 +3665,7 @@ fn canonicalize_oversized_hyll_value<'a>(user_value: &'a [u8]) -> &'a [u8] {
     user_value
 }
 
-fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, usize)> {
+fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<NormalizedRange> {
     if len == 0 {
         return None;
     }
@@ -3702,7 +3698,7 @@ fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<(usize, us
         return None;
     }
 
-    Some((start_i as usize, end_i as usize))
+    Some(NormalizedRange::new(start_i as usize, end_i as usize))
 }
 
 fn object_type_name(object_type: ObjectTypeTag) -> &'static [u8] {

@@ -529,6 +529,21 @@ impl StreamId {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct NormalizedRange {
+    pub(crate) start: usize,
+    pub(crate) end_inclusive: usize,
+}
+
+impl NormalizedRange {
+    pub(crate) const fn new(start: usize, end_inclusive: usize) -> Self {
+        Self {
+            start,
+            end_inclusive,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ObjectTypeTag {
