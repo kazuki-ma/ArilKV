@@ -1163,6 +1163,12 @@ pub struct SynchronizedReplica {
     pub outcome: ReplicationSyncOutcome,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerCheckpoint {
+    pub worker_id: WorkerId,
+    pub checkpoint_id: CheckpointId,
+}
+
 pub trait ReplicationTransport {
     type Error;
 
@@ -3431,9 +3437,19 @@ mod tests {
         assert_eq!(manager.aof_tail_offset(), 450);
     }
 
+    fn worker_checkpoint(
+        worker_id: impl Into<WorkerId>,
+        checkpoint_id: impl Into<CheckpointId>,
+    ) -> WorkerCheckpoint {
+        WorkerCheckpoint {
+            worker_id: worker_id.into(),
+            checkpoint_id: checkpoint_id.into(),
+        }
+    }
+
     #[derive(Default)]
     struct MockReplicationTransport {
-        checkpoints: Vec<(u16, u64)>,
+        checkpoints: Vec<WorkerCheckpoint>,
         streams: Vec<(u16, u64)>,
         stream_result: u64,
         fail_checkpoint: bool,
@@ -3451,7 +3467,8 @@ mod tests {
             if self.fail_checkpoint {
                 return Err("checkpoint failed");
             }
-            self.checkpoints.push((worker_id, checkpoint_id));
+            self.checkpoints
+                .push(worker_checkpoint(worker_id, checkpoint_id));
             Ok(())
         }
 
@@ -3507,7 +3524,7 @@ mod tests {
             .execute_sync(4, Some(400), &mut transport)
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(transport.checkpoints, vec![(4, 9)]);
+        assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
         assert_eq!(transport.streams, vec![(4, 500)]);
         assert_eq!(manager.replica_offset(4), Some(900));
     }
@@ -3572,7 +3589,7 @@ mod tests {
             .execute_sync_for_worker(4, &mut transport)
             .expect("first sync should succeed");
         assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(transport.checkpoints, vec![(4, 9)]);
+        assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
         assert_eq!(transport.streams, vec![(4, 500)]);
 
         manager
@@ -3643,7 +3660,13 @@ mod tests {
         assert_eq!(outcomes.len(), 2);
         assert_eq!(outcomes[0].worker_id, replica_a);
         assert_eq!(outcomes[1].worker_id, replica_b);
-        assert_eq!(transport.checkpoints, vec![(replica_a, 9), (replica_b, 9)]);
+        assert_eq!(
+            transport.checkpoints,
+            vec![
+                worker_checkpoint(replica_a, 9),
+                worker_checkpoint(replica_b, 9)
+            ]
+        );
         assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
         assert_eq!(manager.replica_offset(replica_a), Some(900));
         assert_eq!(manager.replica_offset(replica_b), Some(900));
@@ -3652,7 +3675,7 @@ mod tests {
 
     #[derive(Default)]
     struct AsyncMockReplicationTransport {
-        checkpoints: Vec<(u16, u64)>,
+        checkpoints: Vec<WorkerCheckpoint>,
         streams: Vec<(u16, u64)>,
         stream_result: u64,
         fail_checkpoint: bool,
@@ -3678,7 +3701,8 @@ mod tests {
             std::future::ready(if self.fail_checkpoint {
                 Err("checkpoint failed")
             } else {
-                self.checkpoints.push((worker_id, checkpoint_id));
+                self.checkpoints
+                    .push(worker_checkpoint(worker_id, checkpoint_id));
                 Ok(())
             })
         }
@@ -3738,7 +3762,7 @@ mod tests {
             .await
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(transport.checkpoints, vec![(4, 9)]);
+        assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
         assert_eq!(transport.streams, vec![(4, 500)]);
         assert_eq!(manager.replica_offset(4), Some(900));
     }
@@ -4097,7 +4121,10 @@ mod tests {
         assert_eq!(first.len(), 2);
         assert_eq!(
             transport.checkpoints,
-            vec![(replica_a, 11), (replica_b, 11)]
+            vec![
+                worker_checkpoint(replica_a, 11),
+                worker_checkpoint(replica_b, 11)
+            ]
         );
         assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
 
@@ -4455,7 +4482,13 @@ mod tests {
             Some(replica_a)
         );
         assert_eq!(store.load().slot_assigned_owner(452).unwrap(), replica_a);
-        assert_eq!(transport.checkpoints, vec![(replica_a, 9), (replica_b, 9)]);
+        assert_eq!(
+            transport.checkpoints,
+            vec![
+                worker_checkpoint(replica_a, 9),
+                worker_checkpoint(replica_b, 9)
+            ]
+        );
         assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
 
         transport.checkpoints.clear();
@@ -4522,7 +4555,13 @@ mod tests {
             Some(replica_a)
         );
         assert_eq!(store.load().slot_assigned_owner(453).unwrap(), replica_a);
-        assert_eq!(transport.checkpoints, vec![(replica_a, 7), (replica_b, 7)]);
+        assert_eq!(
+            transport.checkpoints,
+            vec![
+                worker_checkpoint(replica_a, 7),
+                worker_checkpoint(replica_b, 7)
+            ]
+        );
         assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
     }
 
@@ -4614,7 +4653,10 @@ mod tests {
             store.load().slot_assigned_owner(455).unwrap(),
             LOCAL_WORKER_ID
         );
-        assert_eq!(transport.checkpoints, vec![(LOCAL_WORKER_ID, 5)]);
+        assert_eq!(
+            transport.checkpoints,
+            vec![worker_checkpoint(LOCAL_WORKER_ID, 5)]
+        );
         assert_eq!(transport.streams, vec![(LOCAL_WORKER_ID, 300)]);
     }
 
@@ -5288,7 +5330,7 @@ mod tests {
         );
         assert_eq!(
             replication_transport.checkpoints,
-            vec![(LOCAL_WORKER_ID, 3)]
+            vec![worker_checkpoint(LOCAL_WORKER_ID, 3)]
         );
         assert_eq!(replication_transport.streams, vec![(LOCAL_WORKER_ID, 100)]);
     }
