@@ -1157,6 +1157,12 @@ pub struct FailoverExecution {
     pub updated_config: ClusterConfig,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FailoverCandidate {
+    replication_offset: ReplicationOffset,
+    worker_id: WorkerId,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReplicationSyncOutcome {
     pub plan: ReplicationSyncPlan,
@@ -1819,7 +1825,7 @@ impl ReplicationManager {
             worker.role == WorkerRole::Primary && worker.node_id == failed_primary_node_id
         })?;
 
-        let mut best: Option<(ReplicationOffset, WorkerId)> = None;
+        let mut best: Option<FailoverCandidate> = None;
         for worker in config.workers().iter() {
             if worker.role != WorkerRole::Replica {
                 continue;
@@ -1832,21 +1838,31 @@ impl ReplicationManager {
                 .replica_offset(worker.id)
                 .unwrap_or(worker.replication_offset);
             match best {
-                None => best = Some((offset, worker.id)),
-                Some((best_offset, best_worker_id)) => {
-                    if offset > best_offset || (offset == best_offset && worker.id < best_worker_id)
+                None => {
+                    best = Some(FailoverCandidate {
+                        replication_offset: offset,
+                        worker_id: worker.id,
+                    });
+                }
+                Some(best_candidate) => {
+                    if offset > best_candidate.replication_offset
+                        || (offset == best_candidate.replication_offset
+                            && worker.id < best_candidate.worker_id)
                     {
-                        best = Some((offset, worker.id));
+                        best = Some(FailoverCandidate {
+                            replication_offset: offset,
+                            worker_id: worker.id,
+                        });
                     }
                 }
             }
         }
 
-        let (promoted_replication_offset, promoted_worker_id) = best?;
+        let best_candidate = best?;
         Some(FailoverPlan {
             failed_primary_worker_id: failed_primary.id,
-            promoted_worker_id,
-            promoted_replication_offset,
+            promoted_worker_id: best_candidate.worker_id,
+            promoted_replication_offset: best_candidate.replication_offset,
         })
     }
 
