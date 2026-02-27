@@ -95,6 +95,16 @@ fn current_client_no_touch_mode() -> bool {
     REQUEST_CLIENT_NO_TOUCH_MODE.with(Cell::get)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub(crate) struct WatchVersion(u64);
+
+impl WatchVersion {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     let mut values = HashMap::new();
     values.insert(b"appendonly".to_vec(), b"no".to_vec());
@@ -942,9 +952,9 @@ impl RequestProcessor {
         })
     }
 
-    pub fn watch_key_version(&self, key: &[u8]) -> u64 {
+    pub(crate) fn watch_key_version(&self, key: &[u8]) -> WatchVersion {
         let slot = watch_version_slot(key);
-        self.watch_versions[slot].load(Ordering::SeqCst)
+        WatchVersion::new(self.watch_versions[slot].load(Ordering::SeqCst))
     }
 
     pub(crate) fn expire_watch_key_if_needed(
@@ -968,13 +978,16 @@ impl RequestProcessor {
         Ok(Some(value.len()))
     }
 
-    pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[(RedisKey, u64)]) {
+    pub(crate) fn refresh_watched_keys_before_exec(
+        &self,
+        watched_keys: &[(RedisKey, WatchVersion)],
+    ) {
         for (key, _) in watched_keys {
             let _ = self.expire_key_if_needed(key.as_slice());
         }
     }
 
-    pub(crate) fn watch_versions_match(&self, watched_keys: &[(RedisKey, u64)]) -> bool {
+    pub(crate) fn watch_versions_match(&self, watched_keys: &[(RedisKey, WatchVersion)]) -> bool {
         watched_keys
             .iter()
             .all(|(key, expected)| self.watch_key_version(key.as_slice()) == *expected)

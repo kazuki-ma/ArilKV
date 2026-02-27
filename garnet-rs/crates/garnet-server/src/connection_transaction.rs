@@ -12,12 +12,13 @@ use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::ShardIndex;
+use crate::request_lifecycle::WatchVersion;
 
 #[derive(Default)]
 pub(crate) struct ConnectionTransactionState {
     pub(crate) in_multi: bool,
     pub(crate) queued_frames: Vec<Vec<u8>>,
-    pub(crate) watched_keys: Vec<(RedisKey, u64)>,
+    pub(crate) watched_keys: Vec<(RedisKey, WatchVersion)>,
     pub(crate) transaction_slot: Option<SlotNumber>,
     pub(crate) aborted: bool,
     pub(crate) aborted_due_to_busy_script: bool,
@@ -37,7 +38,7 @@ impl ConnectionTransactionState {
         self.watched_keys.clear();
     }
 
-    pub(crate) fn watch_key(&mut self, key: &[u8], version: u64) {
+    pub(crate) fn watch_key(&mut self, key: &[u8], version: WatchVersion) {
         if let Some((_, watched_version)) = self
             .watched_keys
             .iter_mut()

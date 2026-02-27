@@ -51,6 +51,7 @@ use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::RespProtocolVersion;
+use crate::request_lifecycle::WatchVersion;
 
 const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
@@ -2248,7 +2249,7 @@ fn resp_is_error(response: &[u8]) -> bool {
 
 fn watched_keys_dirty_or_expired(
     processor: &RequestProcessor,
-    watched_keys: &[(RedisKey, u64)],
+    watched_keys: &[(RedisKey, WatchVersion)],
 ) -> bool {
     processor.refresh_watched_keys_before_exec(watched_keys);
     !processor.watch_versions_match(watched_keys)
