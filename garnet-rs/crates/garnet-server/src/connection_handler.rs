@@ -3450,16 +3450,17 @@ fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<(Vec<u8>, usize
         return None;
     }
     cursor += 1;
-    let (count, _) = parse_resp_decimal(frame_response, cursor)?;
-    Some((key, count))
+    let parsed = parse_resp_decimal(frame_response, cursor)?;
+    Some((key, parsed.value))
 }
 
 fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<(Vec<u8>, usize)> {
     if input.get(cursor)? != &b'$' {
         return None;
     }
-    let (len, mut cursor) = parse_resp_decimal(input, cursor + 1)?;
-    let end = cursor.checked_add(len)?;
+    let parsed = parse_resp_decimal(input, cursor + 1)?;
+    let mut cursor = parsed.next_cursor;
+    let end = cursor.checked_add(parsed.value)?;
     let value = input.get(cursor..end)?.to_vec();
     cursor = end;
     if input.get(cursor..cursor + 2)? != b"\r\n" {
@@ -3469,7 +3470,13 @@ fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<(Vec<u8>, usize
     Some((value, cursor))
 }
 
-fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<(usize, usize)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ParsedDecimal {
+    value: usize,
+    next_cursor: usize,
+}
+
+fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<ParsedDecimal> {
     let mut index = cursor;
     while input.get(index)? != &b'\r' {
         if !input.get(index)?.is_ascii_digit() {
@@ -3484,7 +3491,10 @@ fn parse_resp_decimal(input: &[u8], cursor: usize) -> Option<(usize, usize)> {
         .ok()?
         .parse::<usize>()
         .ok()?;
-    Some((value, index + 2))
+    Some(ParsedDecimal {
+        value,
+        next_cursor: index + 2,
+    })
 }
 
 pub(crate) fn build_owner_thread_pool(
