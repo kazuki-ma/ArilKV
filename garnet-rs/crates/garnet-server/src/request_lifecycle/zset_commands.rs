@@ -544,8 +544,8 @@ impl RequestProcessor {
             "ZMPOP numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 1)?;
-        let (pop_max, count) = parse_zmpop_direction_and_count(args, option_start)?;
-        self.handle_zmpop_like(&keys, pop_max, count, response_out)
+        let pop_options = parse_zmpop_direction_and_count(args, option_start)?;
+        self.handle_zmpop_like(&keys, pop_options.pop_max, pop_options.count, response_out)
     }
 
     pub(super) fn handle_bzmpop(
@@ -561,8 +561,8 @@ impl RequestProcessor {
         )?;
         parse_blocking_timeout_seconds(args, 1)?;
         let (keys, option_start) = parse_zset_numkeys_and_keys(args, 2)?;
-        let (pop_max, count) = parse_zmpop_direction_and_count(args, option_start)?;
-        self.handle_zmpop_like(&keys, pop_max, count, response_out)
+        let pop_options = parse_zmpop_direction_and_count(args, option_start)?;
+        self.handle_zmpop_like(&keys, pop_options.pop_max, pop_options.count, response_out)
     }
 
     pub(super) fn handle_zrangestore(
@@ -1790,7 +1790,7 @@ fn looks_numeric_timeout_token(token: &[u8]) -> bool {
 fn parse_zmpop_direction_and_count(
     args: &[&[u8]],
     option_start: usize,
-) -> Result<(bool, usize), RequestExecutionError> {
+) -> Result<ParsedZmpopOptions, RequestExecutionError> {
     if option_start >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
@@ -1820,7 +1820,12 @@ fn parse_zmpop_direction_and_count(
         }
         usize::try_from(parsed).unwrap_or(usize::MAX)
     };
-    Ok((pop_max, count))
+    Ok(ParsedZmpopOptions { pop_max, count })
+}
+
+struct ParsedZmpopOptions {
+    pop_max: bool,
+    count: usize,
 }
 
 fn parse_zrangestore_options(
