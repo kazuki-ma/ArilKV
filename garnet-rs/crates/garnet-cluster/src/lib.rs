@@ -183,6 +183,38 @@ impl From<CheckpointId> for u64 {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct GossipTick(u64);
+
+impl GossipTick {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub fn increment(self) -> Self {
+        Self(self.0.saturating_add(1))
+    }
+}
+
+impl fmt::Display for GossipTick {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for GossipTick {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<GossipTick> for u64 {
+    fn from(value: GossipTick) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
 pub enum SlotState {
@@ -2025,14 +2057,14 @@ impl ClusterFailoverController {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GossipNode {
     pub worker_id: WorkerId,
-    pub last_gossip_tick: u64,
+    pub last_gossip_tick: GossipTick,
 }
 
 impl GossipNode {
-    pub fn new(worker_id: WorkerId, last_gossip_tick: u64) -> Self {
+    pub fn new(worker_id: WorkerId, last_gossip_tick: impl Into<GossipTick>) -> Self {
         Self {
             worker_id,
-            last_gossip_tick,
+            last_gossip_tick: last_gossip_tick.into(),
         }
     }
 }
@@ -2131,7 +2163,7 @@ pub fn run_gossip_sample_round<Selector, Attempt>(
     nodes: &mut [GossipNode],
     sample_percent: usize,
     max_random_nodes_to_poll: usize,
-    round_start_tick: u64,
+    round_start_tick: impl Into<GossipTick>,
     mut selector: Selector,
     mut attempt: Attempt,
 ) -> GossipRoundReport
@@ -2139,6 +2171,7 @@ where
     Selector: FnMut(&[GossipNode], usize) -> Vec<usize>,
     Attempt: FnMut(&mut GossipNode) -> GossipSendResult,
 {
+    let round_start_tick = round_start_tick.into();
     let mut failure_budget = calculate_gossip_failure_budget(nodes.len(), sample_percent);
     let mut report = GossipRoundReport {
         attempted_worker_ids: Vec::new(),
@@ -2406,9 +2439,10 @@ impl GossipCoordinator {
     pub fn run_round<T: GossipTransport>(
         &mut self,
         sample_percent: usize,
-        round_start_tick: u64,
+        round_start_tick: impl Into<GossipTick>,
         transport: &mut T,
     ) -> GossipRoundReport {
+        let round_start_tick = round_start_tick.into();
         let mut local_rng_state = self.rng_state;
         let max_poll = self.max_random_nodes_to_poll;
         let report = run_gossip_sample_round(
@@ -2435,9 +2469,10 @@ impl GossipCoordinator {
     pub async fn run_round_async<T: AsyncGossipTransport>(
         &mut self,
         sample_percent: usize,
-        round_start_tick: u64,
+        round_start_tick: impl Into<GossipTick>,
         transport: &mut T,
     ) -> GossipRoundReport {
+        let round_start_tick = round_start_tick.into();
         let mut failure_budget = calculate_gossip_failure_budget(self.nodes.len(), sample_percent);
         let mut report = GossipRoundReport {
             attempted_worker_ids: Vec::new(),
@@ -2494,7 +2529,7 @@ pub struct GossipEngine<T: GossipTransport> {
     coordinator: GossipCoordinator,
     transport: T,
     sample_percent: usize,
-    tick: u64,
+    tick: GossipTick,
 }
 
 impl<T: GossipTransport> GossipEngine<T> {
@@ -2502,17 +2537,17 @@ impl<T: GossipTransport> GossipEngine<T> {
         coordinator: GossipCoordinator,
         transport: T,
         sample_percent: usize,
-        initial_tick: u64,
+        initial_tick: impl Into<GossipTick>,
     ) -> Self {
         Self {
             coordinator,
             transport,
             sample_percent,
-            tick: initial_tick,
+            tick: initial_tick.into(),
         }
     }
 
-    pub fn tick(&self) -> u64 {
+    pub fn tick(&self) -> GossipTick {
         self.tick
     }
 
@@ -2521,7 +2556,7 @@ impl<T: GossipTransport> GossipEngine<T> {
     }
 
     pub fn run_once(&mut self) -> GossipRoundReport {
-        self.tick = self.tick.saturating_add(1);
+        self.tick = self.tick.increment();
         self.coordinator
             .run_round(self.sample_percent, self.tick, &mut self.transport)
     }
@@ -2540,7 +2575,7 @@ pub struct AsyncGossipEngine<T: AsyncGossipTransport> {
     coordinator: GossipCoordinator,
     transport: T,
     sample_percent: usize,
-    tick: u64,
+    tick: GossipTick,
 }
 
 impl<T: AsyncGossipTransport> AsyncGossipEngine<T> {
@@ -2548,17 +2583,17 @@ impl<T: AsyncGossipTransport> AsyncGossipEngine<T> {
         coordinator: GossipCoordinator,
         transport: T,
         sample_percent: usize,
-        initial_tick: u64,
+        initial_tick: impl Into<GossipTick>,
     ) -> Self {
         Self {
             coordinator,
             transport,
             sample_percent,
-            tick: initial_tick,
+            tick: initial_tick.into(),
         }
     }
 
-    pub fn tick(&self) -> u64 {
+    pub fn tick(&self) -> GossipTick {
         self.tick
     }
 
@@ -2571,7 +2606,7 @@ impl<T: AsyncGossipTransport> AsyncGossipEngine<T> {
     }
 
     pub async fn run_once(&mut self) -> GossipRoundReport {
-        self.tick = self.tick.saturating_add(1);
+        self.tick = self.tick.increment();
         self.coordinator
             .run_round_async(self.sample_percent, self.tick, &mut self.transport)
             .await
@@ -4777,7 +4812,7 @@ mod tests {
         let mut engine = GossipEngine::new(coordinator, transport, 100, 10);
 
         let reports = engine.run_for_rounds(2);
-        assert_eq!(engine.tick(), 12);
+        assert_eq!(engine.tick(), GossipTick::new(12));
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[0].failure_count, 0);
         assert_eq!(reports[1].failure_count, 0);
@@ -4932,7 +4967,7 @@ mod tests {
         let mut engine = AsyncGossipEngine::new(coordinator, transport, 100, 10);
 
         let reports = engine.run_for_rounds(2).await;
-        assert_eq!(engine.tick(), 12);
+        assert_eq!(engine.tick(), GossipTick::new(12));
         assert_eq!(reports.len(), 2);
         assert_eq!(reports[0].failure_count, 0);
         assert_eq!(reports[1].failure_count, 0);
