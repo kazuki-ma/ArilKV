@@ -1169,6 +1169,12 @@ pub struct WorkerCheckpoint {
     pub checkpoint_id: CheckpointId,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorkerStream {
+    pub worker_id: WorkerId,
+    pub start_offset: ReplicationOffset,
+}
+
 pub trait ReplicationTransport {
     type Error;
 
@@ -3447,10 +3453,20 @@ mod tests {
         }
     }
 
+    fn worker_stream(
+        worker_id: impl Into<WorkerId>,
+        start_offset: impl Into<ReplicationOffset>,
+    ) -> WorkerStream {
+        WorkerStream {
+            worker_id: worker_id.into(),
+            start_offset: start_offset.into(),
+        }
+    }
+
     #[derive(Default)]
     struct MockReplicationTransport {
         checkpoints: Vec<WorkerCheckpoint>,
-        streams: Vec<(u16, u64)>,
+        streams: Vec<WorkerStream>,
         stream_result: u64,
         fail_checkpoint: bool,
         fail_stream: bool,
@@ -3461,8 +3477,8 @@ mod tests {
 
         fn send_checkpoint(
             &mut self,
-            worker_id: u16,
-            checkpoint_id: u64,
+            worker_id: WorkerId,
+            checkpoint_id: CheckpointId,
         ) -> Result<(), Self::Error> {
             if self.fail_checkpoint {
                 return Err("checkpoint failed");
@@ -3474,14 +3490,14 @@ mod tests {
 
         fn stream_aof_from_offset(
             &mut self,
-            worker_id: u16,
-            start_offset: u64,
-        ) -> Result<u64, Self::Error> {
+            worker_id: WorkerId,
+            start_offset: ReplicationOffset,
+        ) -> Result<ReplicationOffset, Self::Error> {
             if self.fail_stream {
                 return Err("stream failed");
             }
-            self.streams.push((worker_id, start_offset));
-            Ok(self.stream_result)
+            self.streams.push(worker_stream(worker_id, start_offset));
+            Ok(self.stream_result.into())
         }
     }
 
@@ -3503,7 +3519,7 @@ mod tests {
             .expect("incremental sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
         assert!(transport.checkpoints.is_empty());
-        assert_eq!(transport.streams, vec![(3, 1_500)]);
+        assert_eq!(transport.streams, vec![worker_stream(3, 1_500)]);
         assert_eq!(manager.replica_offset(3), Some(1_750));
     }
 
@@ -3525,7 +3541,7 @@ mod tests {
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
-        assert_eq!(transport.streams, vec![(4, 500)]);
+        assert_eq!(transport.streams, vec![worker_stream(4, 500)]);
         assert_eq!(manager.replica_offset(4), Some(900));
     }
 
@@ -3590,7 +3606,7 @@ mod tests {
             .expect("first sync should succeed");
         assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
-        assert_eq!(transport.streams, vec![(4, 500)]);
+        assert_eq!(transport.streams, vec![worker_stream(4, 500)]);
 
         manager
             .set_aof_tail_offset(ReplicationOffset::new(940))
@@ -3604,7 +3620,7 @@ mod tests {
             .expect("second sync should succeed");
         assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
         assert!(transport.checkpoints.is_empty());
-        assert_eq!(transport.streams, vec![(4, 900)]);
+        assert_eq!(transport.streams, vec![worker_stream(4, 900)]);
         assert_eq!(manager.replica_offset(4), Some(940));
     }
 
@@ -3667,7 +3683,10 @@ mod tests {
                 worker_checkpoint(replica_b, 9)
             ]
         );
-        assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
+        assert_eq!(
+            transport.streams,
+            vec![worker_stream(replica_a, 500), worker_stream(replica_b, 500)]
+        );
         assert_eq!(manager.replica_offset(replica_a), Some(900));
         assert_eq!(manager.replica_offset(replica_b), Some(900));
         assert_eq!(manager.replica_offset(replica_other), None);
@@ -3676,7 +3695,7 @@ mod tests {
     #[derive(Default)]
     struct AsyncMockReplicationTransport {
         checkpoints: Vec<WorkerCheckpoint>,
-        streams: Vec<(u16, u64)>,
+        streams: Vec<WorkerStream>,
         stream_result: u64,
         fail_checkpoint: bool,
         fail_stream: bool,
@@ -3689,14 +3708,14 @@ mod tests {
         where
             Self: 'a;
         type StreamFut<'a>
-            = std::future::Ready<Result<u64, Self::Error>>
+            = std::future::Ready<Result<ReplicationOffset, Self::Error>>
         where
             Self: 'a;
 
         fn send_checkpoint<'a>(
             &'a mut self,
-            worker_id: u16,
-            checkpoint_id: u64,
+            worker_id: WorkerId,
+            checkpoint_id: CheckpointId,
         ) -> Self::CheckpointFut<'a> {
             std::future::ready(if self.fail_checkpoint {
                 Err("checkpoint failed")
@@ -3709,14 +3728,14 @@ mod tests {
 
         fn stream_aof_from_offset<'a>(
             &'a mut self,
-            worker_id: u16,
-            start_offset: u64,
+            worker_id: WorkerId,
+            start_offset: ReplicationOffset,
         ) -> Self::StreamFut<'a> {
             std::future::ready(if self.fail_stream {
                 Err("stream failed")
             } else {
-                self.streams.push((worker_id, start_offset));
-                Ok(self.stream_result)
+                self.streams.push(worker_stream(worker_id, start_offset));
+                Ok(self.stream_result.into())
             })
         }
     }
@@ -3740,7 +3759,7 @@ mod tests {
             .expect("incremental sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
         assert!(transport.checkpoints.is_empty());
-        assert_eq!(transport.streams, vec![(3, 1_500)]);
+        assert_eq!(transport.streams, vec![worker_stream(3, 1_500)]);
         assert_eq!(manager.replica_offset(3), Some(1_750));
     }
 
@@ -3763,7 +3782,7 @@ mod tests {
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
-        assert_eq!(transport.streams, vec![(4, 500)]);
+        assert_eq!(transport.streams, vec![worker_stream(4, 500)]);
         assert_eq!(manager.replica_offset(4), Some(900));
     }
 
@@ -4126,7 +4145,10 @@ mod tests {
                 worker_checkpoint(replica_b, 11)
             ]
         );
-        assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
+        assert_eq!(
+            transport.streams,
+            vec![worker_stream(replica_a, 700), worker_stream(replica_b, 700)]
+        );
 
         manager
             .set_aof_tail_offset(ReplicationOffset::new(960))
@@ -4145,7 +4167,10 @@ mod tests {
                 .all(|replica| replica.outcome.plan.mode == ReplicationSyncMode::Incremental)
         );
         assert!(transport.checkpoints.is_empty());
-        assert_eq!(transport.streams, vec![(replica_a, 900), (replica_b, 900)]);
+        assert_eq!(
+            transport.streams,
+            vec![worker_stream(replica_a, 900), worker_stream(replica_b, 900)]
+        );
         assert_eq!(manager.replica_offset(replica_a), Some(960));
         assert_eq!(manager.replica_offset(replica_b), Some(960));
     }
@@ -4489,7 +4514,10 @@ mod tests {
                 worker_checkpoint(replica_b, 9)
             ]
         );
-        assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
+        assert_eq!(
+            transport.streams,
+            vec![worker_stream(replica_a, 500), worker_stream(replica_b, 500)]
+        );
 
         transport.checkpoints.clear();
         transport.streams.clear();
@@ -4562,7 +4590,10 @@ mod tests {
                 worker_checkpoint(replica_b, 7)
             ]
         );
-        assert_eq!(transport.streams, vec![(replica_a, 700), (replica_b, 700)]);
+        assert_eq!(
+            transport.streams,
+            vec![worker_stream(replica_a, 700), worker_stream(replica_b, 700)]
+        );
     }
 
     #[test]
@@ -4657,7 +4688,7 @@ mod tests {
             transport.checkpoints,
             vec![worker_checkpoint(LOCAL_WORKER_ID, 5)]
         );
-        assert_eq!(transport.streams, vec![(LOCAL_WORKER_ID, 300)]);
+        assert_eq!(transport.streams, vec![worker_stream(LOCAL_WORKER_ID, 300)]);
     }
 
     #[test]
@@ -5332,7 +5363,10 @@ mod tests {
             replication_transport.checkpoints,
             vec![worker_checkpoint(LOCAL_WORKER_ID, 3)]
         );
-        assert_eq!(replication_transport.streams, vec![(LOCAL_WORKER_ID, 100)]);
+        assert_eq!(
+            replication_transport.streams,
+            vec![worker_stream(LOCAL_WORKER_ID, 100)]
+        );
     }
 
     #[tokio::test]
