@@ -3422,6 +3422,21 @@ pub(super) enum CaseSensitivity {
     Insensitive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ClassMatchResult {
+    matched: bool,
+    next_pattern_index: usize,
+}
+
+impl ClassMatchResult {
+    const fn new(matched: bool, next_pattern_index: usize) -> Self {
+        Self {
+            matched,
+            next_pattern_index,
+        }
+    }
+}
+
 pub(super) fn redis_glob_match(
     pattern: &[u8],
     text: &[u8],
@@ -3461,11 +3476,11 @@ pub(super) fn redis_glob_match(
                     continue;
                 }
                 b'[' => {
-                    if let Some((matched, next_index)) =
+                    if let Some(result) =
                         glob_match_class(pattern, pattern_index, text[text_index], case_sensitivity)
                     {
-                        if matched {
-                            pattern_index = next_index;
+                        if result.matched {
+                            pattern_index = result.next_pattern_index;
                             text_index += 1;
                             continue;
                         }
@@ -3517,7 +3532,7 @@ fn glob_match_class(
     class_open_index: usize,
     candidate: u8,
     case_sensitivity: CaseSensitivity,
-) -> Option<(bool, usize)> {
+) -> Option<ClassMatchResult> {
     let nocase = matches!(case_sensitivity, CaseSensitivity::Insensitive);
     let mut class_index = class_open_index + 1;
     let mut negate = false;
@@ -3534,7 +3549,7 @@ fn glob_match_class(
             if negate {
                 matched = !matched;
             }
-            return Some((matched, class_index));
+            return Some(ClassMatchResult::new(matched, class_index));
         }
 
         if class_ch == b'\\' && class_index + 1 < pattern.len() {
