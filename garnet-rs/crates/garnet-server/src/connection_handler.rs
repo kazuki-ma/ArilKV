@@ -300,10 +300,10 @@ fn script_contains_mutating_call(script: &[u8]) -> bool {
     lower.make_ascii_lowercase();
     let mut cursor = 0usize;
     while cursor < lower.len() {
-        let Some((marker_start, marker_len)) = next_script_call_marker(&lower, cursor) else {
+        let Some(marker) = next_script_call_marker(&lower, cursor) else {
             return false;
         };
-        cursor = marker_start + marker_len;
+        cursor = marker.position + marker.length;
         while cursor < lower.len() && lower[cursor].is_ascii_whitespace() {
             cursor += 1;
         }
@@ -339,7 +339,13 @@ fn script_contains_mutating_call(script: &[u8]) -> bool {
     false
 }
 
-fn next_script_call_marker(input: &[u8], start: usize) -> Option<(usize, usize)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ScriptCallMarker {
+    position: usize,
+    length: usize,
+}
+
+fn next_script_call_marker(input: &[u8], start: usize) -> Option<ScriptCallMarker> {
     let calls = [
         (find_bytes(input, b"redis.call", start), b"redis.call".len()),
         (
@@ -349,8 +355,13 @@ fn next_script_call_marker(input: &[u8], start: usize) -> Option<(usize, usize)>
     ];
     calls
         .into_iter()
-        .filter_map(|(position, len)| position.map(|pos| (pos, len)))
-        .min_by_key(|(pos, _)| *pos)
+        .filter_map(|(position, length)| {
+            position.map(|pos| ScriptCallMarker {
+                position: pos,
+                length,
+            })
+        })
+        .min_by_key(|marker| marker.position)
 }
 
 fn find_bytes(haystack: &[u8], needle: &[u8], start: usize) -> Option<usize> {
