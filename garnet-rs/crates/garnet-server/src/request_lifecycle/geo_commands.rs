@@ -819,12 +819,11 @@ fn execute_geo_query(
         }
     };
 
-    let (center_longitude, center_latitude) =
-        resolve_geosearch_center(&source_zset, &options.origin)?;
+    let center = resolve_geosearch_center(&source_zset, &options.origin)?;
     let mut matches = collect_geosearch_matches(
         &source_zset,
-        center_longitude,
-        center_latitude,
+        center.longitude,
+        center.latitude,
         options.shape,
     );
     if options.sort == GeoSortOrder::None
@@ -858,12 +857,15 @@ fn execute_geo_query(
 fn resolve_geosearch_center(
     zset: &BTreeMap<Vec<u8>, f64>,
     origin: &GeoSearchOrigin,
-) -> Result<(f64, f64), RequestExecutionError> {
+) -> Result<GeoCoordinates, RequestExecutionError> {
     match origin {
         GeoSearchOrigin::FromLonLat {
             longitude,
             latitude,
-        } => Ok((*longitude, *latitude)),
+        } => Ok(GeoCoordinates {
+            longitude: *longitude,
+            latitude: *latitude,
+        }),
         GeoSearchOrigin::FromMember(member) => {
             let Some(score) = zset.get(member).copied() else {
                 return Err(RequestExecutionError::NoSuchKey);
@@ -873,9 +875,17 @@ fn resolve_geosearch_center(
             };
             let longitude = decoded_score.longitude;
             let latitude = decoded_score.latitude;
-            Ok((longitude, latitude))
+            Ok(GeoCoordinates {
+                longitude,
+                latitude,
+            })
         }
     }
+}
+
+struct GeoCoordinates {
+    longitude: f64,
+    latitude: f64,
 }
 
 fn collect_geosearch_matches(
