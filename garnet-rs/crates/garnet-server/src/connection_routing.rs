@@ -12,6 +12,7 @@ use crate::command_spec::KeyAccessPattern;
 #[cfg(test)]
 use crate::command_spec::command_is_owner_routable;
 use crate::command_spec::command_key_access_pattern;
+use crate::request_lifecycle::ShardIndex;
 
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
@@ -25,7 +26,7 @@ pub(crate) fn owner_routed_shard_for_command(
     processor: &RequestProcessor,
     args: &[ArgSlice],
     command: CommandId,
-) -> Option<usize> {
+) -> Option<ShardIndex> {
     if !command_is_owner_routable(command, args.len()) {
         return None;
     }
@@ -38,9 +39,9 @@ pub(crate) fn owner_shard_for_command(
     processor: &RequestProcessor,
     args: &[ArgSlice],
     command: CommandId,
-) -> usize {
+) -> ShardIndex {
     if args.len() < 2 {
-        return 0;
+        return ShardIndex::new(0);
     }
 
     match command_key_access_pattern(command) {
@@ -48,7 +49,7 @@ pub(crate) fn owner_shard_for_command(
             let key = arg_slice_bytes(&args[1]);
             processor.string_store_shard_index(key)
         }
-        KeyAccessPattern::None => 0,
+        KeyAccessPattern::None => ShardIndex::new(0),
     }
 }
 
@@ -161,7 +162,7 @@ mod tests {
         let args = vec![ArgSlice::from_slice(b"PING").unwrap()];
         assert_eq!(
             owner_shard_for_command(&processor, &args, CommandId::Ping),
-            0
+            ShardIndex::new(0)
         );
     }
 }

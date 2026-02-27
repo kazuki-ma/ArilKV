@@ -7,7 +7,7 @@ impl RequestProcessor {
         }
 
         let mut removed = 0usize;
-        for shard_index in 0..self.string_stores.len() {
+        for shard_index in self.string_stores.indices() {
             if removed >= max_keys {
                 break;
             }
@@ -18,13 +18,13 @@ impl RequestProcessor {
 
     pub fn expire_stale_keys_in_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
         max_keys: usize,
     ) -> Result<usize, RequestExecutionError> {
         if max_keys == 0 {
             return Ok(0);
         }
-        if shard_index >= self.string_stores.len() {
+        if !self.string_stores.contains_shard(shard_index) {
             return Ok(0);
         }
         if self.string_expiration_count_for_shard(shard_index) == 0 {
@@ -253,7 +253,7 @@ impl RequestProcessor {
     pub(super) fn expire_key_if_needed_in_shard(
         &self,
         key: &[u8],
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> Result<(), RequestExecutionError> {
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return Ok(());
@@ -302,35 +302,35 @@ impl RequestProcessor {
     }
 
     #[inline]
-    pub(super) fn string_store_shard_index_for_key(&self, key: &[u8]) -> usize {
+    pub(super) fn string_store_shard_index_for_key(&self, key: &[u8]) -> ShardIndex {
         let shard_count = self.string_stores.len();
         debug_assert!(shard_count > 0);
         if shard_count == 1 {
-            return 0;
+            return ShardIndex::new(0);
         }
-        (fnv1a_hash64(key) as usize) % shard_count
+        ShardIndex::new((fnv1a_hash64(key) as usize) % shard_count)
     }
 
     #[inline]
-    pub(super) fn object_store_shard_index_for_key(&self, key: &[u8]) -> usize {
+    pub(super) fn object_store_shard_index_for_key(&self, key: &[u8]) -> ShardIndex {
         self.string_store_shard_index_for_key(key)
     }
 
     #[inline]
-    pub(super) fn string_expiration_count_for_shard(&self, shard_index: usize) -> usize {
-        debug_assert!(shard_index < self.string_expiration_counts.len());
+    pub(super) fn string_expiration_count_for_shard(&self, shard_index: ShardIndex) -> usize {
+        debug_assert!(self.string_expiration_counts.contains_shard(shard_index));
         self.string_expiration_counts[shard_index].load(Ordering::Acquire)
     }
 
     #[inline]
-    pub(super) fn increment_string_expiration_count(&self, shard_index: usize) {
-        debug_assert!(shard_index < self.string_expiration_counts.len());
+    pub(super) fn increment_string_expiration_count(&self, shard_index: ShardIndex) {
+        debug_assert!(self.string_expiration_counts.contains_shard(shard_index));
         self.string_expiration_counts[shard_index].fetch_add(1, Ordering::Release);
     }
 
     #[inline]
-    pub(super) fn decrement_string_expiration_count(&self, shard_index: usize) {
-        debug_assert!(shard_index < self.string_expiration_counts.len());
+    pub(super) fn decrement_string_expiration_count(&self, shard_index: ShardIndex) {
+        debug_assert!(self.string_expiration_counts.contains_shard(shard_index));
         let previous = self.string_expiration_counts[shard_index].fetch_sub(1, Ordering::Release);
         debug_assert!(previous > 0, "expiration count underflow");
     }
@@ -338,9 +338,9 @@ impl RequestProcessor {
     #[inline]
     pub(super) fn lock_string_store_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
-        debug_assert!(shard_index < self.string_stores.len());
+        debug_assert!(self.string_stores.contains_shard(shard_index));
         self.string_stores[shard_index]
             .lock()
             .expect("store mutex poisoned")
@@ -358,9 +358,9 @@ impl RequestProcessor {
     #[inline]
     pub(super) fn lock_object_store_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
-        debug_assert!(shard_index < self.object_stores.len());
+        debug_assert!(self.object_stores.contains_shard(shard_index));
         self.object_stores[shard_index]
             .lock()
             .expect("object store mutex poisoned")
@@ -378,9 +378,9 @@ impl RequestProcessor {
     #[inline]
     pub(super) fn lock_string_expirations_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashMap<RedisKey, ExpirationMetadata>> {
-        debug_assert!(shard_index < self.string_expirations.len());
+        debug_assert!(self.string_expirations.contains_shard(shard_index));
         self.string_expirations[shard_index]
             .lock()
             .expect("expiration mutex poisoned")
@@ -389,9 +389,9 @@ impl RequestProcessor {
     #[inline]
     pub(super) fn lock_hash_field_expirations_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>> {
-        debug_assert!(shard_index < self.hash_field_expirations.len());
+        debug_assert!(self.hash_field_expirations.contains_shard(shard_index));
         self.hash_field_expirations[shard_index]
             .lock()
             .expect("hash field expiration mutex poisoned")
@@ -400,9 +400,9 @@ impl RequestProcessor {
     #[inline]
     pub(super) fn lock_string_key_registry_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashSet<RedisKey>> {
-        debug_assert!(shard_index < self.string_key_registries.len());
+        debug_assert!(self.string_key_registries.contains_shard(shard_index));
         self.string_key_registries[shard_index]
             .lock()
             .expect("key registry mutex poisoned")
@@ -411,15 +411,15 @@ impl RequestProcessor {
     #[inline]
     pub(super) fn lock_object_key_registry_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashSet<RedisKey>> {
-        debug_assert!(shard_index < self.object_key_registries.len());
+        debug_assert!(self.object_key_registries.contains_shard(shard_index));
         self.object_key_registries[shard_index]
             .lock()
             .expect("object key registry mutex poisoned")
     }
 
-    pub(super) fn track_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
+    pub(super) fn track_string_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         let mut registry = self.lock_string_key_registry_for_shard(shard_index);
         if registry.contains(key) {
             return;
@@ -432,7 +432,7 @@ impl RequestProcessor {
         self.track_string_key_in_shard(key, shard_index);
     }
 
-    pub(super) fn untrack_string_key_in_shard(&self, key: &[u8], shard_index: usize) {
+    pub(super) fn untrack_string_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         self.lock_string_key_registry_for_shard(shard_index)
             .remove(key);
         self.clear_key_access(key);
@@ -443,12 +443,12 @@ impl RequestProcessor {
         self.untrack_string_key_in_shard(key, shard_index);
     }
 
-    pub(super) fn track_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
+    pub(super) fn track_object_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         self.lock_object_key_registry_for_shard(shard_index)
             .insert(RedisKey::from(key));
     }
 
-    pub(super) fn untrack_object_key_in_shard(&self, key: &[u8], shard_index: usize) {
+    pub(super) fn untrack_object_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         self.lock_object_key_registry_for_shard(shard_index)
             .remove(key);
         self.clear_key_access(key);
@@ -462,7 +462,7 @@ impl RequestProcessor {
     pub(super) fn set_string_expiration_metadata_in_shard(
         &self,
         key: &[u8],
-        shard_index: usize,
+        shard_index: ShardIndex,
         expiration: Option<ExpirationMetadata>,
     ) {
         let mut expirations = self.lock_string_expirations_for_shard(shard_index);
@@ -484,7 +484,7 @@ impl RequestProcessor {
     pub(super) fn set_string_expiration_deadline_in_shard(
         &self,
         key: &[u8],
-        shard_index: usize,
+        shard_index: ShardIndex,
         deadline: Option<Instant>,
     ) {
         let expiration = deadline.and_then(|deadline| {
@@ -510,7 +510,7 @@ impl RequestProcessor {
         self.set_string_expiration_deadline_in_shard(key, shard_index, deadline);
     }
 
-    pub(super) fn remove_string_key_metadata_in_shard(&self, key: &[u8], shard_index: usize) {
+    pub(super) fn remove_string_key_metadata_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         self.set_string_expiration_deadline_in_shard(key, shard_index, None);
         self.untrack_string_key_in_shard(key, shard_index);
     }
@@ -523,7 +523,7 @@ impl RequestProcessor {
     pub(super) fn set_hash_field_expiration_unix_millis_in_shard(
         &self,
         key: &[u8],
-        shard_index: usize,
+        shard_index: ShardIndex,
         field: &[u8],
         expiration_unix_millis: Option<u64>,
     ) {
@@ -583,7 +583,7 @@ impl RequestProcessor {
     pub(super) fn clear_hash_field_expirations_for_key_in_shard(
         &self,
         key: &[u8],
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) {
         self.lock_hash_field_expirations_for_shard(shard_index)
             .remove(key);
@@ -655,7 +655,7 @@ impl RequestProcessor {
     pub(super) fn string_expiration_deadline_in_shard(
         &self,
         key: &[u8],
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> Option<Instant> {
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return None;

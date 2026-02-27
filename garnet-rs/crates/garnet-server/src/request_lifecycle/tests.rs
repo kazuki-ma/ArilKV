@@ -207,7 +207,7 @@ fn arg_bytes_from_slices(args: &[ArgSlice]) -> Vec<&[u8]> {
 fn find_key_for_shard(processor: &RequestProcessor, shard: usize) -> Vec<u8> {
     for i in 0..20_000 {
         let candidate = format!("key-shard-{shard}-{i}").into_bytes();
-        if processor.string_store_shard_index_for_key(&candidate) == shard {
+        if processor.string_store_shard_index_for_key(&candidate) == ShardIndex::new(shard) {
             return candidate;
         }
     }
@@ -1278,11 +1278,11 @@ fn list_pop_commands_support_optional_count() {
         b"-ERR value is out of range, must be positive\r\n",
     );
 
-    processor.set_resp_protocol_version(3);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
     assert_command_response(&processor, "LPOP missing", b"_\r\n");
     assert_command_response(&processor, "LPOP missing 2", b"_\r\n");
     assert_command_response(&processor, "RPOP missing 2", b"_\r\n");
-    processor.set_resp_protocol_version(2);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 }
 
 #[test]
@@ -2308,7 +2308,7 @@ fn zset_commands_roundtrip_over_object_store() {
         b"*4\r\n$3\r\ntwo\r\n$1\r\n2\r\n$3\r\none\r\n$1\r\n3\r\n"
     );
 
-    processor.set_resp_protocol_version(3);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
     response.clear();
     let meta = parse_resp_command_arg_slices(&zrange_withscores, &mut args).unwrap();
     processor
@@ -2318,7 +2318,7 @@ fn zset_commands_roundtrip_over_object_store() {
         response,
         b"*2\r\n*2\r\n$3\r\ntwo\r\n$1\r\n2\r\n*2\r\n$3\r\none\r\n$1\r\n3\r\n"
     );
-    processor.set_resp_protocol_version(2);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 
     response.clear();
     let zadd_update = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n3\r\n$3\r\none\r\n";
@@ -3583,8 +3583,14 @@ fn expiration_scan_can_target_single_shard() {
     let key_shard_1 = find_key_for_shard(&processor, 1);
     let key_shard_2 = find_key_for_shard(&processor, 2);
     assert_ne!(key_shard_1, key_shard_2);
-    assert_eq!(processor.string_store_shard_index_for_key(&key_shard_1), 1);
-    assert_eq!(processor.string_store_shard_index_for_key(&key_shard_2), 2);
+    assert_eq!(
+        processor.string_store_shard_index_for_key(&key_shard_1),
+        ShardIndex::new(1)
+    );
+    assert_eq!(
+        processor.string_store_shard_index_for_key(&key_shard_2),
+        ShardIndex::new(2)
+    );
 
     let set_1 = encode_resp(&[b"SET", key_shard_1.as_slice(), b"v1", b"PX", b"10"]);
     assert_eq!(execute_frame(&processor, &set_1), b"+OK\r\n");
@@ -3592,9 +3598,24 @@ fn expiration_scan_can_target_single_shard() {
     assert_eq!(execute_frame(&processor, &set_2), b"+OK\r\n");
 
     thread::sleep(Duration::from_millis(20));
-    assert_eq!(processor.expire_stale_keys_in_shard(1, 16).unwrap(), 1);
-    assert_eq!(processor.expire_stale_keys_in_shard(1, 16).unwrap(), 0);
-    assert_eq!(processor.expire_stale_keys_in_shard(2, 16).unwrap(), 1);
+    assert_eq!(
+        processor
+            .expire_stale_keys_in_shard(ShardIndex::new(1), 16)
+            .unwrap(),
+        1
+    );
+    assert_eq!(
+        processor
+            .expire_stale_keys_in_shard(ShardIndex::new(1), 16)
+            .unwrap(),
+        0
+    );
+    assert_eq!(
+        processor
+            .expire_stale_keys_in_shard(ShardIndex::new(2), 16)
+            .unwrap(),
+        1
+    );
 }
 
 #[test]
@@ -6680,7 +6701,10 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
-    assert_eq!(processor.resp_protocol_version(), 3);
+    assert_eq!(
+        processor.resp_protocol_version(),
+        RespProtocolVersion::Resp3
+    );
 
     response.clear();
     let reset = b"*1\r\n$5\r\nRESET\r\n";
@@ -6689,7 +6713,10 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+RESET\r\n");
-    assert_eq!(processor.resp_protocol_version(), 2);
+    assert_eq!(
+        processor.resp_protocol_version(),
+        RespProtocolVersion::Resp2
+    );
 
     response.clear();
     let lolwut = b"*1\r\n$6\r\nLOLWUT\r\n";
@@ -7831,7 +7858,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
     let debug_false = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$5\r\nFALSE\r\n";
     let debug_verbatim = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$8\r\nVERBATIM\r\n";
 
-    processor.set_resp_protocol_version(2);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 
     let meta = parse_resp_command_arg_slices(debug_attrib, &mut args).unwrap();
     processor
@@ -7873,7 +7900,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .unwrap();
     assert_eq!(response, b"$25\r\nThis is a verbatim\nstring\r\n");
 
-    processor.set_resp_protocol_version(3);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_attrib, &mut args).unwrap();
@@ -8326,6 +8353,42 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR value is out of range\r\n");
+}
+
+#[test]
+fn stream_range_orders_entries_by_numeric_stream_id() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XADD", b"streamn", b"10-1", b"field", b"late"])
+        ),
+        b"$4\r\n10-1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"XADD", b"streamn", b"2-0", b"field", b"early"])
+        ),
+        b"$3\r\n2-0\r\n"
+    );
+
+    let range = execute_frame(
+        &processor,
+        &encode_resp(&[b"XRANGE", b"streamn", b"-", b"+"]),
+    );
+    let early_id = b"$3\r\n2-0\r\n";
+    let late_id = b"$4\r\n10-1\r\n";
+    let early_pos = range
+        .windows(early_id.len())
+        .position(|window| window == early_id)
+        .expect("2-0 entry should exist in XRANGE response");
+    let late_pos = range
+        .windows(late_id.len())
+        .position(|window| window == late_id)
+        .expect("10-1 entry should exist in XRANGE response");
+    assert!(early_pos < late_pos);
 }
 
 #[test]

@@ -21,7 +21,7 @@ impl RequestProcessor {
         let id = if requested_id == b"*" {
             next_auto_stream_id(&stream)
         } else {
-            requested_id.to_vec()
+            StreamId::parse(requested_id).ok_or(RequestExecutionError::SyntaxError)?
         };
 
         let mut fields = Vec::with_capacity((args.len() - 3) / 2);
@@ -33,9 +33,9 @@ impl RequestProcessor {
             index += 2;
         }
 
-        stream.entries.insert(id.clone(), fields);
+        stream.entries.insert(id, fields);
         self.save_stream_object(&key, &stream)?;
-        append_bulk_string(response_out, &id);
+        append_bulk_string(response_out, &id.encode());
         Ok(())
     }
 
@@ -57,7 +57,10 @@ impl RequestProcessor {
 
         let mut removed = 0i64;
         for id in &args[2..] {
-            if stream.entries.remove(*id).is_some() {
+            let Some(id) = StreamId::parse(id) else {
+                continue;
+            };
+            if stream.entries.remove(&id).is_some() {
                 removed += 1;
             }
         }
@@ -91,7 +94,7 @@ impl RequestProcessor {
             }
             let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
-            let id = args[4].to_vec();
+            let id = StreamId::parse(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
@@ -103,7 +106,7 @@ impl RequestProcessor {
             require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
             let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
-            let id = args[4].to_vec();
+            let id = StreamId::parse(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
@@ -131,7 +134,7 @@ impl RequestProcessor {
 
         let group = args[2].to_vec();
         let mut count = 1usize;
-        let mut key = None::<Vec<u8>>;
+        let mut key = None::<RedisKey>;
         let mut start_id = None::<Vec<u8>>;
         let mut index = 4usize;
         while index < args.len() {
@@ -162,7 +165,7 @@ impl RequestProcessor {
                 if index + 2 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                key = Some(args[index + 1].to_vec());
+                key = Some(RedisKey::from(args[index + 1]));
                 start_id = Some(args[index + 2].to_vec());
                 index += 3;
                 continue;
@@ -188,14 +191,18 @@ impl RequestProcessor {
         let last_id = stream
             .groups
             .get(&group)
-            .cloned()
-            .unwrap_or_else(|| b"0".to_vec());
-        let pivot = if start_id == b">" { last_id } else { start_id };
+            .copied()
+            .unwrap_or_else(StreamId::zero);
+        let pivot = if start_id == b">" {
+            last_id
+        } else {
+            StreamId::parse(&start_id).ok_or(RequestExecutionError::SyntaxError)?
+        };
 
-        let mut selected: Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> = Vec::new();
+        let mut selected: Vec<(StreamId, Vec<(Vec<u8>, Vec<u8>)>)> = Vec::new();
         for (id, fields) in &stream.entries {
-            if stream_id_greater(id, &pivot) {
-                selected.push((id.clone(), fields.clone()));
+            if *id > pivot {
+                selected.push((*id, fields.clone()));
                 if selected.len() >= count {
                     break;
                 }
@@ -207,22 +214,19 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let last_seen = selected
-            .last()
-            .map(|(id, _)| id.clone())
-            .unwrap_or_else(|| pivot.clone());
+        let last_seen = selected.last().map(|(id, _)| *id).unwrap_or(pivot);
         stream.groups.insert(group, last_seen);
         self.save_stream_object(&key, &stream)?;
 
         response_out.extend_from_slice(b"*1\r\n");
         response_out.extend_from_slice(b"*2\r\n");
-        append_bulk_string(response_out, &key);
+        append_bulk_string(response_out, key.as_slice());
         response_out.push(b'*');
         response_out.extend_from_slice(selected.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for (id, fields) in selected {
             response_out.extend_from_slice(b"*2\r\n");
-            append_bulk_string(response_out, &id);
+            append_bulk_string(response_out, &id.encode());
             response_out.push(b'*');
             response_out.extend_from_slice((fields.len() * 2).to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
@@ -289,7 +293,7 @@ impl RequestProcessor {
         let mut remaining = count;
         let mut stream_results = Vec::new();
         for stream_index in 0..stream_count {
-            let key = args[streams_index + stream_index].to_vec();
+            let key = RedisKey::from(args[streams_index + stream_index]);
             let raw_id = args[streams_index + stream_count + stream_index];
             let Some(stream) = self.load_stream_object(&key)? else {
                 continue;
@@ -299,11 +303,11 @@ impl RequestProcessor {
                 stream
                     .entries
                     .keys()
-                    .max_by(|lhs, rhs| compare_stream_ids(lhs, rhs))
-                    .cloned()
-                    .unwrap_or_else(|| b"0-0".to_vec())
+                    .next_back()
+                    .copied()
+                    .unwrap_or_else(StreamId::zero)
             } else {
-                raw_id.to_vec()
+                StreamId::parse(raw_id).ok_or(RequestExecutionError::SyntaxError)?
             };
 
             let per_stream_limit = if remaining == usize::MAX {
@@ -311,7 +315,7 @@ impl RequestProcessor {
             } else {
                 remaining
             };
-            let selected = collect_stream_entries_after_id(&stream, &pivot, per_stream_limit);
+            let selected = collect_stream_entries_after_id(&stream, pivot, per_stream_limit);
             if selected.is_empty() {
                 continue;
             }
@@ -334,7 +338,7 @@ impl RequestProcessor {
         response_out.extend_from_slice(b"\r\n");
         for (key, entries) in stream_results {
             response_out.extend_from_slice(b"*2\r\n");
-            append_bulk_string(response_out, &key);
+            append_bulk_string(response_out, key.as_slice());
             append_stream_entry_array(response_out, &entries);
         }
         Ok(())
@@ -437,7 +441,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
         for id_arg in &args[5..option_start] {
-            if parse_stream_id(id_arg).is_none() {
+            if StreamId::parse(id_arg).is_none() {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
@@ -460,7 +464,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                if parse_stream_id(args[index + 1]).is_none() {
+                if StreamId::parse(args[index + 1]).is_none() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 index += 2;
@@ -498,7 +502,7 @@ impl RequestProcessor {
         }
         parse_u64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let start_id = args[5];
-        if parse_stream_id(start_id).is_none() {
+        if StreamId::parse(start_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
         }
 
@@ -540,7 +544,7 @@ impl RequestProcessor {
         )?;
         let key = RedisKey::from(args[1]);
         let last_id = args[2];
-        if parse_stream_id(last_id).is_none() {
+        if StreamId::parse(last_id).is_none() {
             return Err(RequestExecutionError::SyntaxError);
         }
         let Some(stream) = self.load_stream_object(&key)? else {
@@ -563,7 +567,7 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                if parse_stream_id(args[index + 1]).is_none() {
+                if StreamId::parse(args[index + 1]).is_none() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 index += 2;
@@ -716,8 +720,7 @@ impl RequestProcessor {
             }
         };
 
-        let mut entry_ids: Vec<Vec<u8>> = stream.entries.keys().cloned().collect();
-        entry_ids.sort_by(|lhs, rhs| compare_stream_ids(lhs, rhs));
+        let entry_ids: Vec<StreamId> = stream.entries.keys().copied().collect();
 
         let mut removed = 0usize;
         match spec.strategy {
@@ -734,7 +737,7 @@ impl RequestProcessor {
             }
             XtrimStrategy::Minid(minid) => {
                 for entry_id in entry_ids {
-                    if !compare_stream_ids(&entry_id, &minid).is_lt() {
+                    if entry_id >= minid {
                         break;
                     }
                     if let Some(limit) = spec.limit {
@@ -761,49 +764,34 @@ impl RequestProcessor {
     }
 }
 
-fn next_auto_stream_id(stream: &StreamObject) -> Vec<u8> {
+fn next_auto_stream_id(stream: &StreamObject) -> StreamId {
     let now = current_unix_time_millis().unwrap_or(0);
-    let sequence = stream.entries.len() as u64;
-    format!("{now}-{sequence}").into_bytes()
-}
-
-fn stream_id_greater(lhs: &[u8], rhs: &[u8]) -> bool {
-    compare_stream_ids(lhs, rhs).is_gt()
-}
-
-fn parse_stream_id(id: &[u8]) -> Option<(u64, u64)> {
-    let text = core::str::from_utf8(id).ok()?;
-    if let Some((ms, seq)) = text.split_once('-') {
-        return Some((ms.parse::<u64>().ok()?, seq.parse::<u64>().ok()?));
+    let Some(last_id) = stream.entries.keys().next_back().copied() else {
+        return StreamId::new(now, 0);
+    };
+    if last_id.timestamp_millis() > now {
+        return StreamId::new(
+            last_id.timestamp_millis(),
+            last_id.sequence().saturating_add(1),
+        );
     }
-    Some((text.parse::<u64>().ok()?, 0))
-}
-
-fn compare_stream_ids(lhs: &[u8], rhs: &[u8]) -> core::cmp::Ordering {
-    match (parse_stream_id(lhs), parse_stream_id(rhs)) {
-        (Some(lhs_id), Some(rhs_id)) => lhs_id.cmp(&rhs_id),
-        _ => lhs.cmp(rhs),
+    if last_id.timestamp_millis() == now {
+        return StreamId::new(now, last_id.sequence().saturating_add(1));
     }
+    StreamId::new(now, 0)
 }
 
 fn collect_stream_entries_after_id(
     stream: &StreamObject,
-    pivot: &[u8],
+    pivot: StreamId,
     count: usize,
-) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
-    let mut entries: Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> = stream
-        .entries
-        .iter()
-        .map(|(id, fields)| (id.clone(), fields.clone()))
-        .collect();
-    entries.sort_by(|(lhs, _), (rhs, _)| compare_stream_ids(lhs, rhs));
-
+) -> Vec<(StreamId, Vec<(Vec<u8>, Vec<u8>)>)> {
     let mut selected = Vec::new();
-    for (id, fields) in entries {
-        if !stream_id_greater(&id, pivot) {
+    for (id, fields) in &stream.entries {
+        if *id <= pivot {
             continue;
         }
-        selected.push((id, fields));
+        selected.push((*id, fields.clone()));
         if selected.len() >= count {
             break;
         }
@@ -842,7 +830,7 @@ fn parse_stream_count_option(args: &[&[u8]]) -> Result<usize, RequestExecutionEr
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum XtrimStrategy {
     Maxlen(usize),
-    Minid(Vec<u8>),
+    Minid(StreamId),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -892,7 +880,7 @@ fn parse_xtrim_spec(args: &[&[u8]]) -> Result<XtrimSpec, RequestExecutionError> 
             usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?,
         )
     } else if ascii_eq_ignore_case(strategy_token, b"MINID") {
-        XtrimStrategy::Minid(threshold.to_vec())
+        XtrimStrategy::Minid(StreamId::parse(threshold).ok_or(RequestExecutionError::SyntaxError)?)
     } else {
         return Err(RequestExecutionError::SyntaxError);
     };
@@ -906,38 +894,53 @@ fn collect_stream_range_entries(
     upper_bound: &[u8],
     reverse: bool,
     count: usize,
-) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
-    let mut entries: Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> = stream
-        .entries
-        .iter()
-        .map(|(id, fields)| (id.clone(), fields.clone()))
-        .collect();
-    entries.sort_by(|(lhs, _), (rhs, _)| compare_stream_ids(lhs, rhs));
-    if reverse {
-        entries.reverse();
-    }
-
+) -> Vec<(StreamId, Vec<(Vec<u8>, Vec<u8>)>)> {
     let mut selected = Vec::new();
-    for (id, fields) in entries {
-        let lower_ok = if lower_bound == b"-" {
-            true
-        } else {
-            !compare_stream_ids(&id, lower_bound).is_lt()
-        };
-        if !lower_ok {
-            continue;
+    if reverse {
+        for (id, fields) in stream.entries.iter().rev() {
+            let lower_ok = if lower_bound == b"-" {
+                true
+            } else {
+                !id.compare_bytes(lower_bound).is_lt()
+            };
+            if !lower_ok {
+                continue;
+            }
+            let upper_ok = if upper_bound == b"+" {
+                true
+            } else {
+                !id.compare_bytes(upper_bound).is_gt()
+            };
+            if !upper_ok {
+                continue;
+            }
+            selected.push((*id, fields.clone()));
+            if selected.len() >= count {
+                break;
+            }
         }
-        let upper_ok = if upper_bound == b"+" {
-            true
-        } else {
-            !compare_stream_ids(&id, upper_bound).is_gt()
-        };
-        if !upper_ok {
-            continue;
-        }
-        selected.push((id, fields));
-        if selected.len() >= count {
-            break;
+    } else {
+        for (id, fields) in &stream.entries {
+            let lower_ok = if lower_bound == b"-" {
+                true
+            } else {
+                !id.compare_bytes(lower_bound).is_lt()
+            };
+            if !lower_ok {
+                continue;
+            }
+            let upper_ok = if upper_bound == b"+" {
+                true
+            } else {
+                !id.compare_bytes(upper_bound).is_gt()
+            };
+            if !upper_ok {
+                continue;
+            }
+            selected.push((*id, fields.clone()));
+            if selected.len() >= count {
+                break;
+            }
         }
     }
     selected
@@ -945,14 +948,14 @@ fn collect_stream_range_entries(
 
 fn append_stream_entry_array(
     response_out: &mut Vec<u8>,
-    entries: &[(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)],
+    entries: &[(StreamId, Vec<(Vec<u8>, Vec<u8>)>)],
 ) {
     response_out.push(b'*');
     response_out.extend_from_slice(entries.len().to_string().as_bytes());
     response_out.extend_from_slice(b"\r\n");
     for (id, fields) in entries {
         response_out.extend_from_slice(b"*2\r\n");
-        append_bulk_string(response_out, id);
+        append_bulk_string(response_out, &id.encode());
         response_out.push(b'*');
         response_out.extend_from_slice((fields.len() * 2).to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");

@@ -75,7 +75,7 @@ impl RequestProcessor {
         } else {
             None
         };
-        let resp3 = self.resp_protocol_version() == 3;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         let mut list = match self.load_list_object(&key)? {
             Some(list) => list,

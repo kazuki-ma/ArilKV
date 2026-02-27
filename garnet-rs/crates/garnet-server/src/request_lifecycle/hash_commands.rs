@@ -513,7 +513,7 @@ impl RequestProcessor {
                 self.persist_hash_after_field_expiration(&key, hash_mut)?;
             }
         }
-        let resp3 = self.resp_protocol_version() == 3;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         if args.len() == 2 {
             let Some(hash) = hash else {

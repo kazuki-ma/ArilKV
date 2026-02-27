@@ -13,6 +13,7 @@ use crate::ServerMetrics;
 use crate::build_owner_thread_pool;
 use crate::handle_connection;
 use crate::redis_replication::RedisReplicationCoordinator;
+use crate::request_lifecycle::ShardIndex;
 
 pub async fn run(config: ServerConfig, metrics: Arc<ServerMetrics>) -> io::Result<()> {
     run_with_shutdown(config, metrics, std::future::pending::<()>()).await
@@ -136,7 +137,8 @@ where
             if !expiration_processor.active_expire_enabled() {
                 continue;
             }
-            for shard_index in 0..expiration_shard_count {
+            for shard in 0..expiration_shard_count {
+                let shard_index = ShardIndex::new(shard);
                 let routed_processor = Arc::clone(&expiration_processor);
                 let _ = expiration_owner_thread_pool.execute_sync(shard_index, move || {
                     routed_processor.expire_stale_keys_in_shard(shard_index, 128)

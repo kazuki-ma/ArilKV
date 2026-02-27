@@ -3,6 +3,7 @@
 //! This is an incremental building block toward lock-free shard ownership:
 //! callers map a shard id to a stable owner thread and submit closures.
 
+use crate::request_lifecycle::ShardIndex;
 use std::sync::mpsc::Receiver;
 use std::sync::mpsc::Sender;
 use std::sync::mpsc::{self};
@@ -21,7 +22,7 @@ pub enum ShardOwnerThreadPoolError {
     InvalidWorkerCount,
     InvalidShardCount,
     InvalidShardIndex {
-        shard_index: usize,
+        shard_index: ShardIndex,
         shard_count: usize,
     },
     WorkerSpawn(std::io::Error),
@@ -39,7 +40,8 @@ impl core::fmt::Display for ShardOwnerThreadPoolError {
             } => write!(
                 f,
                 "invalid shard index {} (shard_count={})",
-                shard_index, shard_count
+                shard_index.as_usize(),
+                shard_count
             ),
             Self::WorkerSpawn(error) => write!(f, "failed to spawn owner thread: {error}"),
             Self::WorkerStopped => write!(f, "owner-thread worker stopped"),
@@ -119,28 +121,30 @@ impl ShardOwnerThreadPool {
     #[inline]
     pub fn owner_thread_for_shard(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
     ) -> Result<usize, ShardOwnerThreadPoolError> {
-        if shard_index >= self.shard_count {
+        let shard = shard_index.as_usize();
+        if shard >= self.shard_count {
             return Err(ShardOwnerThreadPoolError::InvalidShardIndex {
                 shard_index,
                 shard_count: self.shard_count,
             });
         }
-        Ok(shard_index % self.worker_count)
+        Ok(shard % self.worker_count)
     }
 
     pub fn submit<R, F>(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
         op: F,
     ) -> Result<Receiver<R>, ShardOwnerThreadPoolError>
     where
         R: Send + 'static,
         F: FnOnce() -> R + Send + 'static,
     {
+        let shard = shard_index.as_usize();
         if self.inline_execution {
-            if shard_index >= self.shard_count {
+            if shard >= self.shard_count {
                 return Err(ShardOwnerThreadPoolError::InvalidShardIndex {
                     shard_index,
                     shard_count: self.shard_count,
@@ -164,7 +168,7 @@ impl ShardOwnerThreadPool {
 
     pub fn execute_sync<R, F>(
         &self,
-        shard_index: usize,
+        shard_index: ShardIndex,
         op: F,
     ) -> Result<R, ShardOwnerThreadPoolError>
     where
@@ -213,20 +217,24 @@ mod tests {
     #[test]
     fn owner_thread_mapping_is_stable_and_modulo_based() {
         let pool = ShardOwnerThreadPool::new(4, 16).unwrap();
-        assert_eq!(pool.owner_thread_for_shard(0).unwrap(), 0);
-        assert_eq!(pool.owner_thread_for_shard(1).unwrap(), 1);
-        assert_eq!(pool.owner_thread_for_shard(2).unwrap(), 2);
-        assert_eq!(pool.owner_thread_for_shard(3).unwrap(), 3);
-        assert_eq!(pool.owner_thread_for_shard(4).unwrap(), 0);
-        assert_eq!(pool.owner_thread_for_shard(15).unwrap(), 3);
+        assert_eq!(pool.owner_thread_for_shard(ShardIndex::new(0)).unwrap(), 0);
+        assert_eq!(pool.owner_thread_for_shard(ShardIndex::new(1)).unwrap(), 1);
+        assert_eq!(pool.owner_thread_for_shard(ShardIndex::new(2)).unwrap(), 2);
+        assert_eq!(pool.owner_thread_for_shard(ShardIndex::new(3)).unwrap(), 3);
+        assert_eq!(pool.owner_thread_for_shard(ShardIndex::new(4)).unwrap(), 0);
+        assert_eq!(pool.owner_thread_for_shard(ShardIndex::new(15)).unwrap(), 3);
     }
 
     #[test]
     fn same_shard_jobs_run_on_same_owner_thread() {
         let pool = ShardOwnerThreadPool::new(4, 16).unwrap();
-        let expected = pool.execute_sync(7, || thread::current().id()).unwrap();
+        let expected = pool
+            .execute_sync(ShardIndex::new(7), || thread::current().id())
+            .unwrap();
         for _ in 0..32 {
-            let observed = pool.execute_sync(7, || thread::current().id()).unwrap();
+            let observed = pool
+                .execute_sync(ShardIndex::new(7), || thread::current().id())
+                .unwrap();
             assert_eq!(observed, expected);
         }
     }
@@ -236,13 +244,13 @@ mod tests {
         let pool = ShardOwnerThreadPool::new(2, 2).unwrap();
         let start = Instant::now();
         let slow_a = pool
-            .submit(0, || {
+            .submit(ShardIndex::new(0), || {
                 thread::sleep(Duration::from_millis(150));
                 1u8
             })
             .unwrap();
         let slow_b = pool
-            .submit(1, || {
+            .submit(ShardIndex::new(1), || {
                 thread::sleep(Duration::from_millis(150));
                 1u8
             })
@@ -260,9 +268,10 @@ mod tests {
     fn pool_is_shareable_across_threads() {
         let pool = Arc::new(ShardOwnerThreadPool::new(2, 4).unwrap());
         let pool_clone = Arc::clone(&pool);
-        let worker = thread::spawn(move || pool_clone.execute_sync(3, || 7u8).unwrap());
+        let worker =
+            thread::spawn(move || pool_clone.execute_sync(ShardIndex::new(3), || 7u8).unwrap());
         assert_eq!(worker.join().unwrap(), 7);
-        assert_eq!(pool.execute_sync(3, || 9u8).unwrap(), 9);
+        assert_eq!(pool.execute_sync(ShardIndex::new(3), || 9u8).unwrap(), 9);
     }
 
     #[test]
@@ -270,7 +279,9 @@ mod tests {
         let pool = ShardOwnerThreadPool::new_inline(4).unwrap();
         assert!(pool.is_inline_execution());
         let caller = thread::current().id();
-        let observed = pool.execute_sync(1, || thread::current().id()).unwrap();
+        let observed = pool
+            .execute_sync(ShardIndex::new(1), || thread::current().id())
+            .unwrap();
         assert_eq!(caller, observed);
     }
 }

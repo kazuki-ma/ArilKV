@@ -345,11 +345,10 @@ impl RequestProcessor {
             return Ok(());
         }
         require_exact_arity(args, 2, "HELLO", "HELLO [2|3]")?;
-        let version = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        if version != 2 && version != 3 {
-            return Err(RequestExecutionError::SyntaxError);
-        }
-        self.set_resp_protocol_version(version as usize);
+        let raw_version = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let version =
+            RespProtocolVersion::from_u64(raw_version).ok_or(RequestExecutionError::SyntaxError)?;
+        self.set_resp_protocol_version(version);
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -871,7 +870,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "RESET", "RESET")?;
-        self.set_resp_protocol_version(2);
+        self.set_resp_protocol_version(RespProtocolVersion::Resp2);
         append_simple_string(response_out, b"RESET");
         Ok(())
     }
@@ -1036,7 +1035,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"PROTOCOL") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG PROTOCOL <subcommand>")?;
             let protocol_subcommand = args[2];
-            let resp3 = self.resp_protocol_version() == 3;
+            let resp3 = self.resp_protocol_version().is_resp3();
             if ascii_eq_ignore_case(protocol_subcommand, b"ATTRIB") {
                 if resp3 {
                     response_out.extend_from_slice(b"|1\r\n");
@@ -2628,7 +2627,7 @@ impl RequestProcessor {
             }
         }
 
-        for shard_index in 0..self.string_store_shard_count() {
+        for shard_index in self.string_expiration_counts.indices() {
             self.lock_string_expirations_for_shard(shard_index).clear();
             self.lock_hash_field_expirations_for_shard(shard_index)
                 .clear();

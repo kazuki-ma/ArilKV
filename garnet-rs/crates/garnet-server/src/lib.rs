@@ -70,6 +70,7 @@ pub use request_lifecycle::MigrationValue;
 pub use request_lifecycle::RequestExecutionError;
 pub use request_lifecycle::RequestProcessor;
 pub use request_lifecycle::RequestProcessorInitError;
+pub use request_lifecycle::ShardIndex;
 pub use request_lifecycle::StringValue;
 pub use server_runtime::run;
 pub use server_runtime::run_listener_with_shutdown;

@@ -50,6 +50,7 @@ use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::ClientUnblockMode;
 use crate::request_lifecycle::RedisKey;
+use crate::request_lifecycle::RespProtocolVersion;
 
 const DEFAULT_OWNER_THREAD_COUNT: usize = 1;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
@@ -404,7 +405,7 @@ struct ClientConnectionState {
     tracking_mode: ClientTrackingMode,
     no_evict: bool,
     no_touch: bool,
-    resp_protocol_version: usize,
+    resp_protocol_version: RespProtocolVersion,
 }
 
 impl Default for ClientConnectionState {
@@ -414,7 +415,7 @@ impl Default for ClientConnectionState {
             tracking_mode: ClientTrackingMode::Off,
             no_evict: false,
             no_touch: false,
-            resp_protocol_version: 2,
+            resp_protocol_version: RespProtocolVersion::Resp2,
         }
     }
 }
@@ -3025,12 +3026,13 @@ fn maybe_update_client_resp_protocol_version_after_hello(
         return;
     };
     // SAFETY: args reference the currently parsed frame bytes.
-    let Some(version) = parse_u64_ascii(arg_slice_bytes(version_arg)) else {
+    let Some(raw_version) = parse_u64_ascii(arg_slice_bytes(version_arg)) else {
         return;
     };
-    if version == 2 || version == 3 {
-        client_state.resp_protocol_version = version as usize;
-    }
+    let Some(version) = RespProtocolVersion::from_u64(raw_version) else {
+        return;
+    };
+    client_state.resp_protocol_version = version;
 }
 
 fn finalize_client_command(

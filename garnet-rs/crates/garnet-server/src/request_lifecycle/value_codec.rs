@@ -3,6 +3,7 @@ use std::collections::BTreeSet;
 use std::mem::size_of;
 
 use super::ObjectTypeTag;
+use super::StreamId;
 use super::StreamObject;
 
 const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
@@ -302,8 +303,9 @@ pub(super) fn serialize_stream_object_payload(stream: &StreamObject) -> Vec<u8> 
     let mut encoded = Vec::new();
     encoded.extend_from_slice(&(stream.entries.len() as u32).to_le_bytes());
     for (id, fields) in &stream.entries {
-        encoded.extend_from_slice(&(id.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(id);
+        let encoded_id = id.encode();
+        encoded.extend_from_slice(&(encoded_id.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(&encoded_id);
         encoded.extend_from_slice(&(fields.len() as u32).to_le_bytes());
         for (field, value) in fields {
             encoded.extend_from_slice(&(field.len() as u32).to_le_bytes());
@@ -314,10 +316,11 @@ pub(super) fn serialize_stream_object_payload(stream: &StreamObject) -> Vec<u8> 
     }
     encoded.extend_from_slice(&(stream.groups.len() as u32).to_le_bytes());
     for (group, last_id) in &stream.groups {
+        let encoded_last_id = last_id.encode();
         encoded.extend_from_slice(&(group.len() as u32).to_le_bytes());
         encoded.extend_from_slice(group);
-        encoded.extend_from_slice(&(last_id.len() as u32).to_le_bytes());
-        encoded.extend_from_slice(last_id);
+        encoded.extend_from_slice(&(encoded_last_id.len() as u32).to_le_bytes());
+        encoded.extend_from_slice(&encoded_last_id);
     }
     encoded
 }
@@ -345,7 +348,8 @@ pub(super) fn deserialize_stream_object_payload(encoded: &[u8]) -> Option<Stream
     let entry_count = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
     let mut entries = BTreeMap::new();
     for _ in 0..entry_count {
-        let id = take_bytes(encoded, &mut cursor)?;
+        let encoded_id = take_bytes(encoded, &mut cursor)?;
+        let id = StreamId::parse(&encoded_id)?;
         let field_count = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
         let mut fields = Vec::with_capacity(field_count);
         for _ in 0..field_count {
@@ -360,7 +364,8 @@ pub(super) fn deserialize_stream_object_payload(encoded: &[u8]) -> Option<Stream
     let mut groups = BTreeMap::new();
     for _ in 0..group_count {
         let group = take_bytes(encoded, &mut cursor)?;
-        let last_id = take_bytes(encoded, &mut cursor)?;
+        let encoded_last_id = take_bytes(encoded, &mut cursor)?;
+        let last_id = StreamId::parse(&encoded_last_id)?;
         groups.insert(group, last_id);
     }
 

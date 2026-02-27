@@ -11,6 +11,7 @@ use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
 use crate::request_lifecycle::RedisKey;
+use crate::request_lifecycle::ShardIndex;
 
 #[derive(Default)]
 pub(crate) struct ConnectionTransactionState {
@@ -96,7 +97,8 @@ pub(crate) fn execute_transaction_queue(
     transaction.aborted = false;
     transaction.aborted_due_to_busy_script = false;
 
-    let owner_shard = transaction_owner_shard(processor, &queued, max_resp_arguments).unwrap_or(0);
+    let owner_shard = transaction_owner_shard(processor, &queued, max_resp_arguments)
+        .unwrap_or(ShardIndex::new(0));
     let queued_len = queued.len();
     let routed_processor = Arc::clone(processor);
     let (items, pending_replication_transition) = owner_thread_pool
@@ -138,7 +140,7 @@ fn transaction_owner_shard(
     processor: &Arc<RequestProcessor>,
     queued: &[Vec<u8>],
     max_resp_arguments: usize,
-) -> Option<usize> {
+) -> Option<ShardIndex> {
     let frame = queued.first()?;
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     match parse_resp_command_arg_slices_dynamic(frame, &mut args, max_resp_arguments) {

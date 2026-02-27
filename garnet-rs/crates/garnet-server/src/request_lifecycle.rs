@@ -19,6 +19,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
+use std::sync::atomic::AtomicU8;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -372,6 +373,162 @@ impl From<RedisKey> for ItemKey {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct ShardIndex(usize);
+
+impl ShardIndex {
+    pub const fn new(raw: usize) -> Self {
+        Self(raw)
+    }
+
+    pub const fn as_usize(self) -> usize {
+        self.0
+    }
+}
+
+impl From<ShardIndex> for usize {
+    fn from(value: ShardIndex) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub(crate) struct PerShard<T>(Vec<T>);
+
+impl<T> PerShard<T> {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, T> {
+        self.0.iter()
+    }
+
+    pub(crate) fn contains_shard(&self, shard_index: ShardIndex) -> bool {
+        shard_index.as_usize() < self.0.len()
+    }
+
+    pub(crate) fn indices(&self) -> impl Iterator<Item = ShardIndex> + '_ {
+        (0..self.len()).map(ShardIndex::new)
+    }
+}
+
+impl<T> From<Vec<T>> for PerShard<T> {
+    fn from(value: Vec<T>) -> Self {
+        Self(value)
+    }
+}
+
+impl<T> std::ops::Index<ShardIndex> for PerShard<T> {
+    type Output = T;
+
+    fn index(&self, index: ShardIndex) -> &Self::Output {
+        &self.0[index.as_usize()]
+    }
+}
+
+impl<T> std::ops::IndexMut<ShardIndex> for PerShard<T> {
+    fn index_mut(&mut self, index: ShardIndex) -> &mut Self::Output {
+        &mut self.0[index.as_usize()]
+    }
+}
+
+impl<'a, T> IntoIterator for &'a PerShard<T> {
+    type Item = &'a T;
+    type IntoIter = std::slice::Iter<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter()
+    }
+}
+
+impl<'a, T> IntoIterator for &'a mut PerShard<T> {
+    type Item = &'a mut T;
+    type IntoIter = std::slice::IterMut<'a, T>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.0.iter_mut()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[repr(u8)]
+pub(crate) enum RespProtocolVersion {
+    #[default]
+    Resp2 = 2,
+    Resp3 = 3,
+}
+
+impl RespProtocolVersion {
+    pub(crate) const fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            2 => Some(Self::Resp2),
+            3 => Some(Self::Resp3),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn from_u64(value: u64) -> Option<Self> {
+        let value = u8::try_from(value).ok()?;
+        Self::from_u8(value)
+    }
+
+    pub(crate) const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    pub(crate) const fn is_resp3(self) -> bool {
+        matches!(self, Self::Resp3)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct StreamId {
+    timestamp_millis: u64,
+    sequence: u64,
+}
+
+impl StreamId {
+    pub(crate) const fn new(timestamp_millis: u64, sequence: u64) -> Self {
+        Self {
+            timestamp_millis,
+            sequence,
+        }
+    }
+
+    pub(crate) const fn zero() -> Self {
+        Self::new(0, 0)
+    }
+
+    pub(crate) fn parse(id: &[u8]) -> Option<Self> {
+        let text = core::str::from_utf8(id).ok()?;
+        if let Some((ms, seq)) = text.split_once('-') {
+            return Some(Self::new(ms.parse::<u64>().ok()?, seq.parse::<u64>().ok()?));
+        }
+        Some(Self::new(text.parse::<u64>().ok()?, 0))
+    }
+
+    pub(crate) fn encode(self) -> Vec<u8> {
+        format!("{}-{}", self.timestamp_millis, self.sequence).into_bytes()
+    }
+
+    pub(crate) fn compare_bytes(self, rhs: &[u8]) -> core::cmp::Ordering {
+        match Self::parse(rhs) {
+            Some(rhs_id) => self.cmp(&rhs_id),
+            None => self.encode().as_slice().cmp(rhs),
+        }
+    }
+
+    pub(crate) const fn timestamp_millis(self) -> u64 {
+        self.timestamp_millis
+    }
+
+    pub(crate) const fn sequence(self) -> u64 {
+        self.sequence
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[repr(u8)]
 pub enum ObjectTypeTag {
@@ -464,8 +621,8 @@ pub struct MigrationEntry {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct StreamObject {
-    entries: BTreeMap<Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>>,
-    groups: BTreeMap<Vec<u8>, Vec<u8>>,
+    entries: BTreeMap<StreamId, Vec<(Vec<u8>, Vec<u8>)>>,
+    groups: BTreeMap<Vec<u8>, StreamId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -518,14 +675,14 @@ pub(crate) enum ClientUnblockMode {
 }
 
 pub struct RequestProcessor {
-    string_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    object_stores: Vec<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    string_expirations: Vec<OrderedMutex<HashMap<RedisKey, ExpirationMetadata>>>,
+    string_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
+    object_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
+    string_expirations: PerShard<OrderedMutex<HashMap<RedisKey, ExpirationMetadata>>>,
     hash_field_expirations:
-        Vec<OrderedMutex<HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>>>,
-    string_expiration_counts: Vec<AtomicUsize>,
-    string_key_registries: Vec<OrderedMutex<HashSet<RedisKey>>>,
-    object_key_registries: Vec<OrderedMutex<HashSet<RedisKey>>>,
+        PerShard<OrderedMutex<HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>>>,
+    string_expiration_counts: PerShard<AtomicUsize>,
+    string_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
+    object_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
     watch_versions: Vec<AtomicU64>,
     blocking_wait_queues: Mutex<HashMap<RedisKey, VecDeque<ClientId>>>,
     pending_client_unblocks: Mutex<HashMap<ClientId, ClientUnblockMode>>,
@@ -536,7 +693,7 @@ pub struct RequestProcessor {
     expired_keys_active: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
     rdb_changes_since_last_save: AtomicU64,
-    resp_protocol_version: AtomicUsize,
+    resp_protocol_version: AtomicU8,
     interop_force_resp3_zset_pairs: bool,
     blocked_clients: AtomicU64,
     connected_clients: AtomicU64,
@@ -695,13 +852,13 @@ impl RequestProcessor {
             ));
         }
         Ok(Self {
-            string_stores,
-            object_stores,
-            string_expirations,
-            hash_field_expirations,
-            string_expiration_counts,
-            string_key_registries,
-            object_key_registries,
+            string_stores: string_stores.into(),
+            object_stores: object_stores.into(),
+            string_expirations: string_expirations.into(),
+            hash_field_expirations: hash_field_expirations.into(),
+            string_expiration_counts: string_expiration_counts.into(),
+            string_key_registries: string_key_registries.into(),
+            object_key_registries: object_key_registries.into(),
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
@@ -714,7 +871,7 @@ impl RequestProcessor {
             expired_keys_active: AtomicU64::new(0),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
             rdb_changes_since_last_save: AtomicU64::new(0),
-            resp_protocol_version: AtomicUsize::new(2),
+            resp_protocol_version: AtomicU8::new(RespProtocolVersion::Resp2.as_u8()),
             interop_force_resp3_zset_pairs: interop_force_resp3_zset_pairs_from_env(),
             blocked_clients: AtomicU64::new(0),
             connected_clients: AtomicU64::new(0),
@@ -793,16 +950,18 @@ impl RequestProcessor {
             .all(|(key, expected)| self.watch_key_version(key.as_slice()) == *expected)
     }
 
-    pub(super) fn set_resp_protocol_version(&self, version: usize) {
-        self.resp_protocol_version.store(version, Ordering::Release);
+    pub(super) fn set_resp_protocol_version(&self, version: RespProtocolVersion) {
+        self.resp_protocol_version
+            .store(version.as_u8(), Ordering::Release);
     }
 
-    pub(super) fn resp_protocol_version(&self) -> usize {
-        self.resp_protocol_version.load(Ordering::Acquire)
+    pub(super) fn resp_protocol_version(&self) -> RespProtocolVersion {
+        RespProtocolVersion::from_u8(self.resp_protocol_version.load(Ordering::Acquire))
+            .unwrap_or(RespProtocolVersion::Resp2)
     }
 
     pub(super) fn emit_resp3_zset_pairs(&self) -> bool {
-        self.resp_protocol_version() == 3 || self.interop_force_resp3_zset_pairs
+        self.resp_protocol_version().is_resp3() || self.interop_force_resp3_zset_pairs
     }
 
     pub(crate) fn blocked_clients(&self) -> u64 {
@@ -1511,7 +1670,7 @@ impl RequestProcessor {
     }
 
     #[inline]
-    pub fn string_store_shard_index(&self, key: &[u8]) -> usize {
+    pub fn string_store_shard_index(&self, key: &[u8]) -> ShardIndex {
         self.string_store_shard_index_for_key(key)
     }
 
