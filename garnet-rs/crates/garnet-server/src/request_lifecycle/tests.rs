@@ -8105,6 +8105,14 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
+    let xgroup_create_mkstream = b"*6\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$7\r\nstream3\r\n$3\r\ngmk\r\n$1\r\n$\r\n$8\r\nMKSTREAM\r\n";
+    let meta = parse_resp_command_arg_slices(xgroup_create_mkstream, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
     let xreadgroup = b"*9\r\n$10\r\nXREADGROUP\r\n$5\r\nGROUP\r\n$2\r\ng1\r\n$8\r\nconsumer\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n$7\r\nSTREAMS\r\n$7\r\nstream1\r\n$1\r\n>\r\n";
     let meta = parse_resp_command_arg_slices(xreadgroup, &mut args).unwrap();
     processor

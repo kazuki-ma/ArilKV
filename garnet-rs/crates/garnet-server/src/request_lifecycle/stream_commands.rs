@@ -1,6 +1,21 @@
 use super::*;
 
 impl RequestProcessor {
+    fn parse_xgroup_id_arg(
+        &self,
+        id_arg: &[u8],
+        stream: &StreamObject,
+    ) -> Result<StreamId, RequestExecutionError> {
+        if id_arg == b"$" {
+            return Ok(stream
+                .entries
+                .last_key_value()
+                .map(|(id, _)| *id)
+                .unwrap_or_else(StreamId::zero));
+        }
+        StreamId::parse(id_arg).ok_or(RequestExecutionError::SyntaxError)
+    }
+
     pub(super) fn handle_xadd(
         &self,
         args: &[&[u8]],
@@ -94,8 +109,8 @@ impl RequestProcessor {
             }
             let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
-            let id = StreamId::parse(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
+            let id = self.parse_xgroup_id_arg(args[4], &stream)?;
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
             append_simple_string(response_out, b"OK");
@@ -106,8 +121,8 @@ impl RequestProcessor {
             require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
             let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
-            let id = StreamId::parse(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
+            let id = self.parse_xgroup_id_arg(args[4], &stream)?;
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
             append_simple_string(response_out, b"OK");
