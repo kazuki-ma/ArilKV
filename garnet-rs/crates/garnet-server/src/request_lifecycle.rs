@@ -677,6 +677,21 @@ pub(crate) struct LatencySample {
     pub(crate) latency_millis: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LatencyRange {
+    pub(crate) max_millis: u64,
+    pub(crate) min_millis: u64,
+}
+
+impl LatencyRange {
+    pub(crate) const fn new(max_millis: u64, min_millis: u64) -> Self {
+        Self {
+            max_millis,
+            min_millis,
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 struct LatencyEventState {
     samples: VecDeque<LatencySample>,
@@ -1165,7 +1180,7 @@ impl RequestProcessor {
             .collect()
     }
 
-    pub(crate) fn latency_graph_range(&self, event_name: &[u8]) -> Option<(u64, u64)> {
+    pub(crate) fn latency_graph_range(&self, event_name: &[u8]) -> Option<LatencyRange> {
         let normalized = normalize_ascii_lower(event_name);
         let Ok(events) = self.latency_events.lock() else {
             return None;
@@ -1176,7 +1191,7 @@ impl RequestProcessor {
             .iter()
             .map(|sample| sample.latency_millis)
             .min()?;
-        Some((state.max_latency_millis, min_latency))
+        Some(LatencyRange::new(state.max_latency_millis, min_latency))
     }
 
     pub(crate) fn reset_latency_events(&self, event_names: Option<&[Vec<u8>]>) -> usize {

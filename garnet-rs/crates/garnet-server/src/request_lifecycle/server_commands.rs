@@ -1881,7 +1881,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GRAPH") {
             require_exact_arity(args, 3, "LATENCY", "LATENCY GRAPH event")?;
-            let Some((high, low)) = self.latency_graph_range(args[2]) else {
+            let Some(range) = self.latency_graph_range(args[2]) else {
                 append_bulk_string(response_out, b"");
                 return Ok(());
             };
@@ -1892,8 +1892,8 @@ impl RequestProcessor {
             let graph = format!(
                 "{} - high {} ms, low {} ms\r\n",
                 String::from_utf8_lossy(&normalized_event),
-                high,
-                low
+                range.max_millis,
+                range.min_millis
             );
             append_bulk_string(response_out, graph.as_bytes());
             return Ok(());
