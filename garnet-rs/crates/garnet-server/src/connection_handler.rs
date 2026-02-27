@@ -131,7 +131,13 @@ enum BitfieldSign {
     Unsigned,
 }
 
-fn parse_bitfield_encoding_for_replication(token: &[u8]) -> Option<(BitfieldSign, usize)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct BitfieldEncodingSpec {
+    sign: BitfieldSign,
+    bits: usize,
+}
+
+fn parse_bitfield_encoding_for_replication(token: &[u8]) -> Option<BitfieldEncodingSpec> {
     if token.len() < 2 {
         return None;
     }
@@ -145,7 +151,7 @@ fn parse_bitfield_encoding_for_replication(token: &[u8]) -> Option<(BitfieldSign
         BitfieldSign::Signed => (1..=64).contains(&bits),
         BitfieldSign::Unsigned => (1..=63).contains(&bits),
     };
-    valid.then_some((sign, bits))
+    valid.then_some(BitfieldEncodingSpec { sign, bits })
 }
 
 fn parse_bitfield_offset_for_replication(token: &[u8], bits: usize) -> Option<usize> {
@@ -192,7 +198,9 @@ fn bitfield_single_set_mutated_for_replication(
     if args.len() != 6 || !ascii_eq_ignore_case(arg_slice_bytes(args.get(2)?), b"SET") {
         return None;
     }
-    let (sign, bits) = parse_bitfield_encoding_for_replication(arg_slice_bytes(args.get(3)?))?;
+    let encoding = parse_bitfield_encoding_for_replication(arg_slice_bytes(args.get(3)?))?;
+    let sign = encoding.sign;
+    let bits = encoding.bits;
     let offset = parse_bitfield_offset_for_replication(arg_slice_bytes(args.get(4)?), bits)?;
     let input_value = parse_i64_ascii_bytes(arg_slice_bytes(args.get(5)?))?;
     let old_value = parse_resp_single_integer_array(frame_response)?;
