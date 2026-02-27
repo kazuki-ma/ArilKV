@@ -6,27 +6,65 @@ use crate::LogicalAddress;
 use crate::RecordInfo;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[repr(transparent)]
+pub struct SessionUserData(u8);
+
+impl SessionUserData {
+    pub const fn empty() -> Self {
+        Self(0)
+    }
+
+    pub const fn from_bits(bits: u8) -> Self {
+        Self(bits)
+    }
+
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+
+    pub const fn contains(self, flags: Self) -> bool {
+        (self.0 & flags.0) == flags.0
+    }
+
+    pub fn insert(&mut self, flags: Self) {
+        self.0 |= flags.0;
+    }
+}
+
+impl From<u8> for SessionUserData {
+    fn from(value: u8) -> Self {
+        Self::from_bits(value)
+    }
+}
+
+impl From<SessionUserData> for u8 {
+    fn from(value: SessionUserData) -> Self {
+        value.bits()
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReadInfo {
     pub logical_address: LogicalAddress,
-    pub user_data: u8,
+    pub user_data: SessionUserData,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UpsertInfo {
     pub logical_address: LogicalAddress,
-    pub user_data: u8,
+    pub user_data: SessionUserData,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RmwInfo {
     pub logical_address: LogicalAddress,
-    pub user_data: u8,
+    pub user_data: SessionUserData,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeleteInfo {
     pub logical_address: LogicalAddress,
-    pub user_data: u8,
+    pub user_data: SessionUserData,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -182,7 +220,7 @@ mod tests {
         ) -> bool {
             *dst = *src + *input;
             *output = *dst;
-            upsert_info.user_data = 1;
+            upsert_info.user_data = SessionUserData::from_bits(1);
             record_info.set_dirty();
             true
         }
@@ -199,7 +237,7 @@ mod tests {
         ) -> bool {
             *dst = *src + *input + 10;
             *output = *dst;
-            upsert_info.user_data = 2;
+            upsert_info.user_data = SessionUserData::from_bits(2);
             record_info.set_modified(true);
             true
         }
@@ -215,7 +253,7 @@ mod tests {
         ) -> bool {
             *value += *input;
             *output = *value;
-            rmw_info.user_data = 3;
+            rmw_info.user_data = SessionUserData::from_bits(3);
             record_info.set_dirty();
             true
         }
@@ -232,7 +270,7 @@ mod tests {
         ) -> bool {
             *new_value = *old_value + *input + 100;
             *output = *new_value;
-            rmw_info.user_data = 4;
+            rmw_info.user_data = SessionUserData::from_bits(4);
             record_info.set_modified(true);
             true
         }
@@ -245,7 +283,7 @@ mod tests {
             record_info: &mut RecordInfo,
         ) -> bool {
             *value = 0;
-            delete_info.user_data = 5;
+            delete_info.user_data = SessionUserData::from_bits(5);
             record_info.set_tombstone();
             true
         }
@@ -258,7 +296,7 @@ mod tests {
             record_info: &mut RecordInfo,
         ) -> bool {
             *value = 0;
-            delete_info.user_data = 6;
+            delete_info.user_data = SessionUserData::from_bits(6);
             record_info.set_tombstone();
             true
         }
@@ -302,7 +340,7 @@ mod tests {
             &mut record_info
         ));
         assert_eq!(dst, 13);
-        assert_eq!(upsert_info.user_data, 1);
+        assert_eq!(upsert_info.user_data.bits(), 1);
         assert!(record_info.dirty());
 
         record_info.clear_dirty();
@@ -316,7 +354,7 @@ mod tests {
             &mut record_info
         ));
         assert_eq!(dst, 23);
-        assert_eq!(upsert_info.user_data, 2);
+        assert_eq!(upsert_info.user_data.bits(), 2);
         assert!(record_info.modified());
 
         assert!(functions.in_place_updater(
@@ -328,7 +366,7 @@ mod tests {
             &mut record_info
         ));
         assert_eq!(dst, 26);
-        assert_eq!(rmw_info.user_data, 3);
+        assert_eq!(rmw_info.user_data.bits(), 3);
 
         assert!(functions.copy_updater(
             &key,
@@ -340,16 +378,16 @@ mod tests {
             &mut record_info
         ));
         assert_eq!(dst, 113);
-        assert_eq!(rmw_info.user_data, 4);
+        assert_eq!(rmw_info.user_data.bits(), 4);
 
         assert!(functions.single_deleter(&key, &mut dst, &mut delete_info, &mut record_info));
         assert_eq!(dst, 0);
-        assert_eq!(delete_info.user_data, 5);
+        assert_eq!(delete_info.user_data.bits(), 5);
         assert!(record_info.tombstone());
 
         record_info.clear_tombstone();
         assert!(functions.concurrent_deleter(&key, &mut dst, &mut delete_info, &mut record_info));
-        assert_eq!(delete_info.user_data, 6);
+        assert_eq!(delete_info.user_data.bits(), 6);
         assert!(record_info.tombstone());
     }
 }

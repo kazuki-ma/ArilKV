@@ -321,7 +321,7 @@ fn writers_toggle_record_has_expiration_from_upsert_user_data() {
     ));
     assert!(record_info.has_expiration());
 
-    info.user_data = 0;
+    info.user_data = SessionUserData::empty();
     assert!(functions.concurrent_writer(
         &key,
         &input,

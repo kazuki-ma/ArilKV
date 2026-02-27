@@ -32,11 +32,12 @@ use tsavorite::DeleteOperationStatus;
 use tsavorite::ReadInfo;
 use tsavorite::ReadOperationStatus;
 use tsavorite::RmwOperationStatus;
+use tsavorite::SessionUserData;
 use tsavorite::TsavoriteKV;
 use tsavorite::TsavoriteKvInitError;
 use tsavorite::UpsertInfo;
 
-const UPSERT_USER_DATA_HAS_EXPIRATION: u8 = 0x1;
+const UPSERT_USER_DATA_HAS_EXPIRATION: SessionUserData = SessionUserData::from_bits(0x1);
 const HASH_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Hash;
 const LIST_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::List;
 const SET_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Set;

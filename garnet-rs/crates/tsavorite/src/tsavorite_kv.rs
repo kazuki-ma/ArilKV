@@ -684,7 +684,7 @@ mod tests {
                     &mut output,
                     &ReadInfo {
                         logical_address: LogicalAddress(0),
-                        user_data: 0,
+                        user_data: crate::SessionUserData::empty(),
                     },
                 )
                 .unwrap();
@@ -724,7 +724,7 @@ mod tests {
                     &mut output,
                     &ReadInfo {
                         logical_address: LogicalAddress(0),
-                        user_data: 0,
+                        user_data: crate::SessionUserData::empty(),
                     },
                 )
                 .unwrap();
@@ -826,7 +826,7 @@ mod tests {
                             &mut output,
                             &ReadInfo {
                                 logical_address: LogicalAddress(0),
-                                user_data: 0,
+                                user_data: crate::SessionUserData::empty(),
                             },
                         )
                         .unwrap();
@@ -851,7 +851,7 @@ mod tests {
                     &mut output,
                     &ReadInfo {
                         logical_address: LogicalAddress(0),
-                        user_data: 0,
+                        user_data: crate::SessionUserData::empty(),
                     },
                 )
                 .unwrap();

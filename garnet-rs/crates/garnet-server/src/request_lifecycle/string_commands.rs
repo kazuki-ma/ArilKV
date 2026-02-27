@@ -1137,7 +1137,9 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let mut upsert_info = UpsertInfo::default();
         if expiration_unix_millis.is_some() {
-            upsert_info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+            upsert_info
+                .user_data
+                .insert(UPSERT_USER_DATA_HAS_EXPIRATION);
         }
         let stored_value = encode_stored_value(value, expiration_unix_millis);
         let mut output = Vec::new();
@@ -1197,7 +1199,9 @@ impl RequestProcessor {
 
         let mut upsert_info = UpsertInfo::default();
         if expiration_unix_millis.is_some() {
-            upsert_info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+            upsert_info
+                .user_data
+                .insert(UPSERT_USER_DATA_HAS_EXPIRATION);
         }
         let stored_value = encode_stored_value(&current_value, expiration_unix_millis);
         let mut upsert_output = Vec::new();
@@ -1316,7 +1320,9 @@ impl RequestProcessor {
 
         let mut upsert_info = UpsertInfo::default();
         if expiration_unix_millis.is_some() {
-            upsert_info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+            upsert_info
+                .user_data
+                .insert(UPSERT_USER_DATA_HAS_EXPIRATION);
         }
         let stored_value = encode_stored_value(&updated_text, expiration_unix_millis);
         let mut upsert_output = Vec::new();
@@ -1417,7 +1423,7 @@ impl RequestProcessor {
             effective_expiration.map(|e| e.unix_millis.as_u64()),
         );
         if effective_expiration.is_some() {
-            info.user_data |= UPSERT_USER_DATA_HAS_EXPIRATION;
+            info.user_data.insert(UPSERT_USER_DATA_HAS_EXPIRATION);
         }
         if let Err(error) = session.upsert(&key, &stored_value, &mut output, &mut info) {
             if let Some(fallback_user_value) =

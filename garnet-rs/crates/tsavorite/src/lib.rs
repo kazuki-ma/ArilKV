@@ -129,6 +129,7 @@ pub use session_functions::DeleteInfo;
 pub use session_functions::ISessionFunctions;
 pub use session_functions::ReadInfo;
 pub use session_functions::RmwInfo;
+pub use session_functions::SessionUserData;
 pub use session_functions::UpsertInfo;
 pub use session_functions::WriteReason;
 pub use tsavorite_kv::TsavoriteKV;

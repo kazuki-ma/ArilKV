@@ -82,7 +82,10 @@ impl ISessionFunctions for KvSessionFunctions {
     ) -> bool {
         *dst = input.clone();
         *output = dst.clone();
-        if (upsert_info.user_data & UPSERT_USER_DATA_HAS_EXPIRATION) != 0 {
+        if upsert_info
+            .user_data
+            .contains(UPSERT_USER_DATA_HAS_EXPIRATION)
+        {
             record_info.set_has_expiration();
         } else {
             record_info.clear_has_expiration();
@@ -102,7 +105,10 @@ impl ISessionFunctions for KvSessionFunctions {
     ) -> bool {
         *dst = input.clone();
         *output = dst.clone();
-        if (upsert_info.user_data & UPSERT_USER_DATA_HAS_EXPIRATION) != 0 {
+        if upsert_info
+            .user_data
+            .contains(UPSERT_USER_DATA_HAS_EXPIRATION)
+        {
             record_info.set_has_expiration();
         } else {
             record_info.clear_has_expiration();
