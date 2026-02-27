@@ -1226,7 +1226,7 @@ impl RequestProcessor {
             if !(string_exists || object_exists) {
                 continue;
             }
-            if redis_glob_match(pattern, key.as_slice(), false, 0) {
+            if redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
                 matched.push(key);
             }
         }
@@ -1363,7 +1363,7 @@ impl RequestProcessor {
             }
 
             if let Some(pattern) = pattern {
-                if !redis_glob_match(pattern, key.as_slice(), false, 0) {
+                if !redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
                     continue;
                 }
             }
@@ -1463,7 +1463,7 @@ impl RequestProcessor {
             }
         } else if ascii_eq_ignore_case(args[3], b"PATTERN") {
             for entry in &entries {
-                if redis_glob_match(args[4], entry, true, 0) {
+                if redis_glob_match(args[4], entry, CaseSensitivity::Insensitive, 0) {
                     filtered.push(entry);
                 }
             }
@@ -2548,7 +2548,7 @@ impl RequestProcessor {
                         continue;
                     }
                     let is_match = if has_glob {
-                        redis_glob_match(pattern, key, true, 0)
+                        redis_glob_match(pattern, key, CaseSensitivity::Insensitive, 0)
                     } else {
                         pattern.eq_ignore_ascii_case(key)
                     };
@@ -3401,7 +3401,18 @@ fn keysizes_object_histogram_type_and_len(
     }
 }
 
-pub(super) fn redis_glob_match(pattern: &[u8], text: &[u8], nocase: bool, _nesting: usize) -> bool {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum CaseSensitivity {
+    Sensitive,
+    Insensitive,
+}
+
+pub(super) fn redis_glob_match(
+    pattern: &[u8],
+    text: &[u8],
+    case_sensitivity: CaseSensitivity,
+    _nesting: usize,
+) -> bool {
     // Guard against pathological wildcard patterns that can trigger excessive backtracking.
     // Redis keyspace regression tests rely on this returning quickly instead of hanging.
     const MAX_MATCH_WORK: usize = 1_000_000;
@@ -3436,14 +3447,14 @@ pub(super) fn redis_glob_match(pattern: &[u8], text: &[u8], nocase: bool, _nesti
                 }
                 b'[' => {
                     if let Some((matched, next_index)) =
-                        glob_match_class(pattern, pattern_index, text[text_index], nocase)
+                        glob_match_class(pattern, pattern_index, text[text_index], case_sensitivity)
                     {
                         if matched {
                             pattern_index = next_index;
                             text_index += 1;
                             continue;
                         }
-                    } else if bytes_eq(b'[', text[text_index], nocase) {
+                    } else if bytes_eq(b'[', text[text_index], case_sensitivity) {
                         pattern_index += 1;
                         text_index += 1;
                         continue;
@@ -3451,14 +3462,14 @@ pub(super) fn redis_glob_match(pattern: &[u8], text: &[u8], nocase: bool, _nesti
                 }
                 b'\\' => {
                     let literal_index = (pattern_index + 1).min(pattern.len() - 1);
-                    if bytes_eq(pattern[literal_index], text[text_index], nocase) {
+                    if bytes_eq(pattern[literal_index], text[text_index], case_sensitivity) {
                         pattern_index = literal_index + 1;
                         text_index += 1;
                         continue;
                     }
                 }
                 pattern_ch => {
-                    if bytes_eq(pattern_ch, text[text_index], nocase) {
+                    if bytes_eq(pattern_ch, text[text_index], case_sensitivity) {
                         pattern_index += 1;
                         text_index += 1;
                         continue;
@@ -3490,8 +3501,9 @@ fn glob_match_class(
     pattern: &[u8],
     class_open_index: usize,
     candidate: u8,
-    nocase: bool,
+    case_sensitivity: CaseSensitivity,
 ) -> Option<(bool, usize)> {
+    let nocase = matches!(case_sensitivity, CaseSensitivity::Insensitive);
     let mut class_index = class_open_index + 1;
     let mut negate = false;
     if class_index < pattern.len() && pattern[class_index] == b'^' {
@@ -3512,7 +3524,7 @@ fn glob_match_class(
 
         if class_ch == b'\\' && class_index + 1 < pattern.len() {
             class_index += 1;
-            if bytes_eq(pattern[class_index], candidate, nocase) {
+            if bytes_eq(pattern[class_index], candidate, case_sensitivity) {
                 matched = true;
             }
             class_index += 1;
@@ -3541,7 +3553,7 @@ fn glob_match_class(
             continue;
         }
 
-        if bytes_eq(class_ch, candidate, nocase) {
+        if bytes_eq(class_ch, candidate, case_sensitivity) {
             matched = true;
         }
         class_index += 1;
@@ -3551,11 +3563,10 @@ fn glob_match_class(
 }
 
 #[inline]
-fn bytes_eq(left: u8, right: u8, nocase: bool) -> bool {
-    if nocase {
-        left.eq_ignore_ascii_case(&right)
-    } else {
-        left == right
+fn bytes_eq(left: u8, right: u8, case_sensitivity: CaseSensitivity) -> bool {
+    match case_sensitivity {
+        CaseSensitivity::Insensitive => left.eq_ignore_ascii_case(&right),
+        CaseSensitivity::Sensitive => left == right,
     }
 }
 
@@ -3586,21 +3597,62 @@ fn append_resp3_verbatim_string(response_out: &mut Vec<u8>, format: &[u8], value
 
 #[cfg(test)]
 mod tests {
+    use super::CaseSensitivity;
     use super::redis_glob_match;
 
     #[test]
     fn redis_glob_match_supports_star_and_question() {
-        assert!(redis_glob_match(b"foo*", b"foobar", false, 0));
-        assert!(redis_glob_match(b"f?o", b"foo", false, 0));
-        assert!(!redis_glob_match(b"foo?", b"foo", false, 0));
+        assert!(redis_glob_match(
+            b"foo*",
+            b"foobar",
+            CaseSensitivity::Sensitive,
+            0
+        ));
+        assert!(redis_glob_match(
+            b"f?o",
+            b"foo",
+            CaseSensitivity::Sensitive,
+            0
+        ));
+        assert!(!redis_glob_match(
+            b"foo?",
+            b"foo",
+            CaseSensitivity::Sensitive,
+            0
+        ));
     }
 
     #[test]
     fn redis_glob_match_supports_character_classes_and_escapes() {
-        assert!(redis_glob_match(b"f[oa]o", b"foo", false, 0));
-        assert!(redis_glob_match(b"f[a-z]o", b"fbo", false, 0));
-        assert!(redis_glob_match(b"f[^x]o", b"foo", false, 0));
-        assert!(!redis_glob_match(b"f[^o]o", b"foo", false, 0));
-        assert!(redis_glob_match(b"foo\\*", b"foo*", false, 0));
+        assert!(redis_glob_match(
+            b"f[oa]o",
+            b"foo",
+            CaseSensitivity::Sensitive,
+            0
+        ));
+        assert!(redis_glob_match(
+            b"f[a-z]o",
+            b"fbo",
+            CaseSensitivity::Sensitive,
+            0
+        ));
+        assert!(redis_glob_match(
+            b"f[^x]o",
+            b"foo",
+            CaseSensitivity::Sensitive,
+            0
+        ));
+        assert!(!redis_glob_match(
+            b"f[^o]o",
+            b"foo",
+            CaseSensitivity::Sensitive,
+            0
+        ));
+        assert!(redis_glob_match(
+            b"foo\\*",
+            b"foo*",
+            CaseSensitivity::Sensitive,
+            0
+        ));
     }
 }

@@ -909,7 +909,12 @@ impl RequestProcessor {
             .filter(|name| {
                 library_name_pattern
                     .map(|pattern| {
-                        super::server_commands::redis_glob_match(pattern, name.as_bytes(), false, 0)
+                        super::server_commands::redis_glob_match(
+                            pattern,
+                            name.as_bytes(),
+                            super::server_commands::CaseSensitivity::Sensitive,
+                            0,
+                        )
                     })
                     .unwrap_or(true)
             })

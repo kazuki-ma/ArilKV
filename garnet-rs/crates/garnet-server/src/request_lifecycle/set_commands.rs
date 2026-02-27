@@ -136,7 +136,12 @@ impl RequestProcessor {
         let mut matched = Vec::new();
         for member in &set {
             if let Some(pattern) = scan_options.pattern {
-                if !super::server_commands::redis_glob_match(pattern, member, false, 0) {
+                if !super::server_commands::redis_glob_match(
+                    pattern,
+                    member,
+                    super::server_commands::CaseSensitivity::Sensitive,
+                    0,
+                ) {
                     continue;
                 }
             }
