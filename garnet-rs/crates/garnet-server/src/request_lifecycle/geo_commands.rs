@@ -228,10 +228,12 @@ impl RequestProcessor {
                 append_null_bulk_string(response_out);
                 continue;
             };
-            let Some((longitude, latitude)) = decode_geo_score(*score) else {
+            let Some(decoded_score) = decode_geo_score(*score) else {
                 append_null_bulk_string(response_out);
                 continue;
             };
+            let longitude = decoded_score.longitude;
+            let latitude = decoded_score.latitude;
 
             response_out.extend_from_slice(b"*2\r\n");
             let longitude_text = format_geo_coordinate(longitude);
@@ -276,14 +278,18 @@ impl RequestProcessor {
             return Ok(());
         };
 
-        let Some((lon_a, lat_a)) = decode_geo_score(score_a) else {
+        let Some(decoded_score_a) = decode_geo_score(score_a) else {
             append_null_bulk_string(response_out);
             return Ok(());
         };
-        let Some((lon_b, lat_b)) = decode_geo_score(score_b) else {
+        let Some(decoded_score_b) = decode_geo_score(score_b) else {
             append_null_bulk_string(response_out);
             return Ok(());
         };
+        let lon_a = decoded_score_a.longitude;
+        let lat_a = decoded_score_a.latitude;
+        let lon_b = decoded_score_b.longitude;
+        let lat_b = decoded_score_b.latitude;
 
         let meters = geo_distance_meters(lon_a, lat_a, lon_b, lat_b);
         let unit_value = meters / unit_to_meters;
@@ -308,10 +314,12 @@ impl RequestProcessor {
                 append_null_bulk_string(response_out);
                 continue;
             };
-            let Some((longitude, latitude)) = decode_geo_score(*score) else {
+            let Some(decoded_score) = decode_geo_score(*score) else {
                 append_null_bulk_string(response_out);
                 continue;
             };
+            let longitude = decoded_score.longitude;
+            let latitude = decoded_score.latitude;
             let geohash = encode_standard_geohash(longitude, latitude);
             append_bulk_string(response_out, &geohash);
         }
@@ -850,9 +858,11 @@ fn resolve_geosearch_center(
             let Some(score) = zset.get(member).copied() else {
                 return Err(RequestExecutionError::NoSuchKey);
             };
-            let Some((longitude, latitude)) = decode_geo_score(score) else {
+            let Some(decoded_score) = decode_geo_score(score) else {
                 return Err(RequestExecutionError::NoSuchKey);
             };
+            let longitude = decoded_score.longitude;
+            let latitude = decoded_score.latitude;
             Ok((longitude, latitude))
         }
     }
@@ -881,9 +891,11 @@ fn collect_geosearch_matches(
     });
 
     for (member, score) in entries {
-        let Some((longitude, latitude)) = decode_geo_score(score) else {
+        let Some(decoded_score) = decode_geo_score(score) else {
             continue;
         };
+        let longitude = decoded_score.longitude;
+        let latitude = decoded_score.latitude;
         let distance_meters =
             geo_distance_meters(center_longitude, center_latitude, longitude, latitude);
         let in_shape = match shape {
@@ -1077,7 +1089,12 @@ fn encode_geo_score(longitude: f64, latitude: f64) -> f64 {
     packed as f64
 }
 
-fn decode_geo_score(score: f64) -> Option<(f64, f64)> {
+struct DecodedGeoScore {
+    longitude: f64,
+    latitude: f64,
+}
+
+fn decode_geo_score(score: f64) -> Option<DecodedGeoScore> {
     if !score.is_finite() || score < 0.0 || score > GEO_SCORE_MAX as f64 {
         return None;
     }
@@ -1090,7 +1107,10 @@ fn decode_geo_score(score: f64) -> Option<(f64, f64)> {
     let lon_bits = (separated >> 32) as u32;
     let longitude = decode_geo_component(lon_bits, GEO_LONGITUDE_MIN, GEO_LONGITUDE_MAX);
     let latitude = decode_geo_component(lat_bits, GEO_LATITUDE_MIN, GEO_LATITUDE_MAX);
-    Some((longitude, latitude))
+    Some(DecodedGeoScore {
+        longitude,
+        latitude,
+    })
 }
 
 fn encode_geo_component(value: f64, min: f64, max: f64) -> u32 {
