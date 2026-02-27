@@ -61,6 +61,21 @@ impl core::fmt::Display for OverflowBucketAllocatorError {
 
 impl std::error::Error for OverflowBucketAllocatorError {}
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct OverflowPageLocation {
+    page_index: usize,
+    slot_index: usize,
+}
+
+impl OverflowPageLocation {
+    const fn new(page_index: usize, slot_index: usize) -> Self {
+        Self {
+            page_index,
+            slot_index,
+        }
+    }
+}
+
 /// Fixed-page overflow allocator.
 ///
 /// Logical address 0 is reserved as "no overflow bucket".
@@ -100,11 +115,11 @@ impl OverflowBucketAllocator {
         &self,
         logical_address: u64,
     ) -> Result<OverflowBucketHandle, OverflowBucketAllocatorError> {
-        let (page_index, slot) = logical_address_to_page_slot(logical_address)?;
+        let location = logical_address_to_page_location(logical_address)?;
         let page = {
             let pages = self.pages.read().expect("overflow page lock poisoned");
             pages
-                .get(page_index)
+                .get(location.page_index)
                 .cloned()
                 .ok_or(OverflowBucketAllocatorError::InvalidLogicalAddress { logical_address })?
         };
@@ -112,7 +127,7 @@ impl OverflowBucketAllocator {
         Ok(OverflowBucketHandle {
             logical_address,
             page,
-            slot,
+            slot: location.slot_index,
         })
     }
 
@@ -139,16 +154,16 @@ impl OverflowBucketAllocator {
         &self,
         logical_address: u64,
     ) -> Result<(), OverflowBucketAllocatorError> {
-        let (page_index, _) = logical_address_to_page_slot(logical_address)?;
+        let location = logical_address_to_page_location(logical_address)?;
         {
             let pages = self.pages.read().expect("overflow page lock poisoned");
-            if page_index < pages.len() {
+            if location.page_index < pages.len() {
                 return Ok(());
             }
         }
 
         let mut pages = self.pages.write().expect("overflow page lock poisoned");
-        while page_index >= pages.len() {
+        while location.page_index >= pages.len() {
             pages.push(new_overflow_page());
         }
 
@@ -162,9 +177,9 @@ impl Default for OverflowBucketAllocator {
     }
 }
 
-fn logical_address_to_page_slot(
+fn logical_address_to_page_location(
     logical_address: u64,
-) -> Result<(usize, usize), OverflowBucketAllocatorError> {
+) -> Result<OverflowPageLocation, OverflowBucketAllocatorError> {
     if logical_address == 0 {
         return Err(OverflowBucketAllocatorError::InvalidLogicalAddress { logical_address });
     }
@@ -172,8 +187,8 @@ fn logical_address_to_page_slot(
     let logical_usize = usize::try_from(logical_address)
         .map_err(|_| OverflowBucketAllocatorError::LogicalAddressOutOfRange { logical_address })?;
     let page_index = logical_usize >> OVERFLOW_PAGE_SIZE_BITS;
-    let slot = logical_usize & (OVERFLOW_PAGE_SIZE - 1);
-    Ok((page_index, slot))
+    let slot_index = logical_usize & (OVERFLOW_PAGE_SIZE - 1);
+    Ok(OverflowPageLocation::new(page_index, slot_index))
 }
 
 fn new_overflow_page() -> Arc<[HashBucket]> {
