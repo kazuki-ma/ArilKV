@@ -111,6 +111,11 @@ struct MaterializedRecord {
     allocated_size: usize,
 }
 
+struct ChainRecordMatch {
+    address: LogicalAddress,
+    record: MaterializedRecord,
+}
+
 pub fn delete<F>(
     context: &mut DeleteOperationContext<'_>,
     functions: &F,
@@ -132,7 +137,7 @@ where
         return Ok(DeleteOperationStatus::NotFound);
     }
 
-    let (matched_address, matched_record) = match find_matching_record_in_chain(
+    let record_match = match find_matching_record_in_chain(
         context.page_manager,
         context.pointers.begin_address(),
         functions,
@@ -142,6 +147,8 @@ where
         Some(found) => found,
         None => return Ok(DeleteOperationStatus::NotFound),
     };
+    let matched_address = record_match.address;
+    let matched_record = record_match.record;
 
     if matched_record.record_info.is_closed() {
         return Ok(DeleteOperationStatus::RetryLater);
@@ -212,14 +219,17 @@ fn find_matching_record_in_chain<F>(
     functions: &F,
     key: &F::Key,
     mut current_address: LogicalAddress,
-) -> Result<Option<(LogicalAddress, MaterializedRecord)>, DeleteOperationError>
+) -> Result<Option<ChainRecordMatch>, DeleteOperationError>
 where
     F: HybridLogDeleteAdapter,
 {
     while current_address != LogicalAddress(0) && current_address >= begin_address {
         let record = materialize_record_at(page_manager, current_address)?;
         if functions.record_key_equals(key, &record.key_bytes) {
-            return Ok(Some((current_address, record)));
+            return Ok(Some(ChainRecordMatch {
+                address: current_address,
+                record,
+            }));
         }
         current_address = record.record_info.previous_address();
     }
