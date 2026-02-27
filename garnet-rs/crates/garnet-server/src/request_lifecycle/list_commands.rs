@@ -571,13 +571,14 @@ impl RequestProcessor {
             "LMPOP",
             "LMPOP numkeys key [key ...] LEFT|RIGHT [COUNT count]",
         )?;
-        let (keys, option_start) = parse_list_numkeys_and_keys(args, 1)?;
-        if option_start >= args.len() {
+        let parsed_keys = parse_list_numkeys_and_keys(args, 1)?;
+        if parsed_keys.option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let side = parse_list_side(args[option_start]).ok_or(RequestExecutionError::SyntaxError)?;
-        let count = parse_list_count_option(args, option_start + 1)?;
-        self.handle_lmpop_like(&keys, side, count, response_out)
+        let side = parse_list_side(args[parsed_keys.option_start])
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        let count = parse_list_count_option(args, parsed_keys.option_start + 1)?;
+        self.handle_lmpop_like(&parsed_keys.keys, side, count, response_out)
     }
 
     pub(super) fn handle_blmpop(
@@ -592,13 +593,14 @@ impl RequestProcessor {
             "BLMPOP timeout numkeys key [key ...] LEFT|RIGHT [COUNT count]",
         )?;
         parse_blocking_timeout_seconds(args, 1)?;
-        let (keys, option_start) = parse_list_numkeys_and_keys(args, 2)?;
-        if option_start >= args.len() {
+        let parsed_keys = parse_list_numkeys_and_keys(args, 2)?;
+        if parsed_keys.option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let side = parse_list_side(args[option_start]).ok_or(RequestExecutionError::SyntaxError)?;
-        let count = parse_list_count_option(args, option_start + 1)?;
-        self.handle_lmpop_like(&keys, side, count, response_out)
+        let side = parse_list_side(args[parsed_keys.option_start])
+            .ok_or(RequestExecutionError::SyntaxError)?;
+        let count = parse_list_count_option(args, parsed_keys.option_start + 1)?;
+        self.handle_lmpop_like(&parsed_keys.keys, side, count, response_out)
     }
 
     pub(super) fn handle_blpop(
@@ -887,10 +889,15 @@ fn push_list_side(list: &mut Vec<Vec<u8>>, side: ListSide, value: Vec<u8>) {
     }
 }
 
+struct ParsedListKeys {
+    keys: Vec<Vec<u8>>,
+    option_start: usize,
+}
+
 fn parse_list_numkeys_and_keys(
     args: &[&[u8]],
     numkeys_index: usize,
-) -> Result<(Vec<Vec<u8>>, usize), RequestExecutionError> {
+) -> Result<ParsedListKeys, RequestExecutionError> {
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
     }
@@ -912,7 +919,10 @@ fn parse_list_numkeys_and_keys(
         .iter()
         .map(|key| key.to_vec())
         .collect();
-    Ok((keys, key_end))
+    Ok(ParsedListKeys {
+        keys,
+        option_start: key_end,
+    })
 }
 
 fn parse_list_count_option(
