@@ -135,7 +135,9 @@ impl RequestProcessor {
         ensure_min_arity(args, 5, "GEOADD", GEOADD_USAGE)?;
 
         let key = RedisKey::from(args[1]);
-        let (options, mut index) = parse_geoadd_options(args, 2)?;
+        let parsed_options = parse_geoadd_options(args, 2)?;
+        let options = parsed_options.options;
+        let mut index = parsed_options.next_index;
 
         let remaining = args.len().saturating_sub(index);
         if remaining == 0 {
@@ -501,7 +503,7 @@ impl RequestProcessor {
 fn parse_geoadd_options(
     args: &[&[u8]],
     mut index: usize,
-) -> Result<(GeoAddOptions, usize), RequestExecutionError> {
+) -> Result<ParsedGeoAddOptions, RequestExecutionError> {
     let mut options = GeoAddOptions::default();
     while index < args.len() {
         let token = args[index];
@@ -531,7 +533,15 @@ fn parse_geoadd_options(
         }
         break;
     }
-    Ok((options, index))
+    Ok(ParsedGeoAddOptions {
+        options,
+        next_index: index,
+    })
+}
+
+struct ParsedGeoAddOptions {
+    options: GeoAddOptions,
+    next_index: usize,
 }
 
 fn geo_coordinates_in_range(longitude: f64, latitude: f64) -> bool {
