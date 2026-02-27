@@ -298,8 +298,8 @@ fn materialize_record_at(
     logical: LogicalAddress,
 ) -> Result<MaterializedRecord, UpsertOperationError> {
     let page_space = page_manager.address_space();
-    let (_, page_offset) = page_space.decode(logical);
-    let page_offset = page_offset as usize;
+    let decoded = page_space.decode(logical);
+    let page_offset = decoded.page_offset as usize;
     let available = page_manager.page_size() - page_offset;
     let source = page_manager.read_at(logical, available)?;
     let layout = parse_record_layout(source)?;
@@ -362,8 +362,9 @@ fn reserve_tail_space(
         let old_tail = pointers.advance_tail_by(allocated_size as u64);
         let logical = LogicalAddress(old_tail);
         let space = page_manager.address_space();
-        let (page_index, page_offset) = space.decode(logical);
-        let page_offset = page_offset as usize;
+        let decoded = space.decode(logical);
+        let page_index = decoded.page_index;
+        let page_offset = decoded.page_offset as usize;
 
         if page_offset + allocated_size <= page_manager.page_size() {
             if !page_manager.is_page_allocated(page_index) {

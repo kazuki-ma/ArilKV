@@ -25,6 +25,12 @@ pub struct PageAddressSpace {
     page_offset_mask: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DecodedAddress {
+    pub page_index: u64,
+    pub page_offset: u64,
+}
+
 impl PageAddressSpace {
     pub fn new(page_size_bits: u8) -> Result<Self, PageManagerError> {
         if !(1..=30).contains(&page_size_bits) {
@@ -75,9 +81,12 @@ impl PageAddressSpace {
     }
 
     #[inline]
-    pub fn decode(self, logical_address: LogicalAddress) -> (u64, u64) {
+    pub fn decode(self, logical_address: LogicalAddress) -> DecodedAddress {
         let raw = logical_address.raw();
-        (raw >> self.page_size_bits, raw & self.page_offset_mask)
+        DecodedAddress {
+            page_index: raw >> self.page_size_bits,
+            page_offset: raw & self.page_offset_mask,
+        }
     }
 
     #[inline]
@@ -416,7 +425,13 @@ mod tests {
         let address = space.encode(42, 123).unwrap();
 
         assert_eq!(address.raw(), (42 << 12) | 123);
-        assert_eq!(space.decode(address), (42, 123));
+        assert_eq!(
+            space.decode(address),
+            DecodedAddress {
+                page_index: 42,
+                page_offset: 123,
+            }
+        );
     }
 
     #[test]

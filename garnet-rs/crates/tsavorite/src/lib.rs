@@ -72,6 +72,7 @@ pub use hash_index::HashIndex;
 pub use hash_index::HashIndexError;
 pub use hash_index::HashLocation;
 pub use hash_index::TEMP_INVALID_ADDRESS;
+pub use hybrid_log::DecodedAddress;
 pub use hybrid_log::InMemoryPageDevice;
 pub use hybrid_log::LogAddressPointers;
 pub use hybrid_log::LogAddressPointersSnapshot;

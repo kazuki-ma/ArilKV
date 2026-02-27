@@ -14,6 +14,7 @@ pub use page_io::PageDevice;
 pub use page_io::PageIoError;
 pub use page_io::flush_page_to_device;
 pub use page_io::load_page_from_device;
+pub use page_manager::DecodedAddress;
 pub use page_manager::LogicalAddress;
 pub use page_manager::Page;
 pub use page_manager::PageAddressSpace;

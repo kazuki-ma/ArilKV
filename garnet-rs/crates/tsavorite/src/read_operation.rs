@@ -160,8 +160,8 @@ fn materialize_record_at<D: PageDevice>(
 ) -> Result<MaterializedRecord, ReadOperationError> {
     let logical = LogicalAddress(logical_address);
     let page_space = context.page_manager.address_space();
-    let (_, page_offset) = page_space.decode(logical);
-    let page_offset = page_offset as usize;
+    let decoded = page_space.decode(logical);
+    let page_offset = decoded.page_offset as usize;
 
     let head = context.pointers.head_address();
     let begin = context.pointers.begin_address();
