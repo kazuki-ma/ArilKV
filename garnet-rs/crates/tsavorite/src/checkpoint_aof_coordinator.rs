@@ -1,9 +1,11 @@
 //! Coordination between checkpoint lifecycle and AOF replay windows.
 
+use crate::aof_log::AofOffset;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RecoveryPlan {
     pub durable_checkpoint_id: u64,
-    pub replay_from_aof_offset: u64,
+    pub replay_from_aof_offset: AofOffset,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -54,13 +56,13 @@ impl std::error::Error for CheckpointAofCoordinatorError {}
 struct ActiveCheckpoint {
     checkpoint_id: u64,
     checkpoint_token: CheckpointToken,
-    aof_begin_offset: u64,
+    aof_begin_offset: AofOffset,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CheckpointAofCoordinator {
     durable_checkpoint_id: u64,
-    replay_from_aof_offset: u64,
+    replay_from_aof_offset: AofOffset,
     active: Option<ActiveCheckpoint>,
     next_checkpoint_id: u64,
 }
@@ -75,7 +77,7 @@ impl CheckpointAofCoordinator {
     pub fn new() -> Self {
         Self {
             durable_checkpoint_id: 0,
-            replay_from_aof_offset: 0,
+            replay_from_aof_offset: AofOffset::new(0),
             active: None,
             next_checkpoint_id: 1,
         }
@@ -84,7 +86,7 @@ impl CheckpointAofCoordinator {
     pub fn begin_checkpoint(
         &mut self,
         checkpoint_token: CheckpointToken,
-        aof_begin_offset: u64,
+        aof_begin_offset: AofOffset,
     ) -> Result<u64, CheckpointAofCoordinatorError> {
         if let Some(active) = self.active {
             return Err(CheckpointAofCoordinatorError::Busy {
@@ -105,7 +107,7 @@ impl CheckpointAofCoordinator {
     pub fn complete_checkpoint(
         &mut self,
         checkpoint_token: CheckpointToken,
-        aof_tail_offset: u64,
+        aof_tail_offset: AofOffset,
     ) -> Result<RecoveryPlan, CheckpointAofCoordinatorError> {
         let active = self
             .active
@@ -144,7 +146,7 @@ impl CheckpointAofCoordinator {
         self.active.map(|checkpoint| checkpoint.checkpoint_id)
     }
 
-    pub fn active_aof_begin_offset(&self) -> Option<u64> {
+    pub fn active_aof_begin_offset(&self) -> Option<AofOffset> {
         self.active.map(|checkpoint| checkpoint.aof_begin_offset)
     }
 
@@ -164,20 +166,23 @@ mod tests {
     fn completed_checkpoint_updates_recovery_plan() {
         let mut coordinator = CheckpointAofCoordinator::new();
         let checkpoint_id = coordinator
-            .begin_checkpoint(CheckpointToken::new(10), 128)
+            .begin_checkpoint(CheckpointToken::new(10), AofOffset::new(128))
             .unwrap();
         assert_eq!(checkpoint_id, 1);
         assert_eq!(coordinator.active_checkpoint_id(), Some(1));
-        assert_eq!(coordinator.active_aof_begin_offset(), Some(128));
+        assert_eq!(
+            coordinator.active_aof_begin_offset(),
+            Some(AofOffset::new(128))
+        );
 
         let plan = coordinator
-            .complete_checkpoint(CheckpointToken::new(10), 512)
+            .complete_checkpoint(CheckpointToken::new(10), AofOffset::new(512))
             .unwrap();
         assert_eq!(
             plan,
             RecoveryPlan {
                 durable_checkpoint_id: 1,
-                replay_from_aof_offset: 512,
+                replay_from_aof_offset: AofOffset::new(512),
             }
         );
         assert_eq!(coordinator.active_checkpoint_id(), None);
@@ -187,11 +192,11 @@ mod tests {
     fn begin_fails_when_another_checkpoint_is_active() {
         let mut coordinator = CheckpointAofCoordinator::new();
         let checkpoint_id = coordinator
-            .begin_checkpoint(CheckpointToken::new(10), 64)
+            .begin_checkpoint(CheckpointToken::new(10), AofOffset::new(64))
             .unwrap();
         assert_eq!(checkpoint_id, 1);
         assert!(matches!(
-            coordinator.begin_checkpoint(CheckpointToken::new(11), 65),
+            coordinator.begin_checkpoint(CheckpointToken::new(11), AofOffset::new(65)),
             Err(CheckpointAofCoordinatorError::Busy {
                 active_checkpoint_id
             }) if active_checkpoint_id == 1
@@ -202,10 +207,10 @@ mod tests {
     fn token_mismatch_is_rejected_on_complete_and_abort() {
         let mut coordinator = CheckpointAofCoordinator::new();
         coordinator
-            .begin_checkpoint(CheckpointToken::new(10), 64)
+            .begin_checkpoint(CheckpointToken::new(10), AofOffset::new(64))
             .unwrap();
         assert!(matches!(
-            coordinator.complete_checkpoint(CheckpointToken::new(11), 128),
+            coordinator.complete_checkpoint(CheckpointToken::new(11), AofOffset::new(128)),
             Err(CheckpointAofCoordinatorError::TokenMismatch {
                 expected,
                 actual
@@ -224,13 +229,13 @@ mod tests {
     fn abort_keeps_previous_recovery_plan() {
         let mut coordinator = CheckpointAofCoordinator::new();
         coordinator
-            .begin_checkpoint(CheckpointToken::new(10), 64)
+            .begin_checkpoint(CheckpointToken::new(10), AofOffset::new(64))
             .unwrap();
         coordinator
-            .complete_checkpoint(CheckpointToken::new(10), 100)
+            .complete_checkpoint(CheckpointToken::new(10), AofOffset::new(100))
             .unwrap();
         let checkpoint_id = coordinator
-            .begin_checkpoint(CheckpointToken::new(20), 101)
+            .begin_checkpoint(CheckpointToken::new(20), AofOffset::new(101))
             .unwrap();
         assert_eq!(checkpoint_id, 2);
         coordinator
@@ -240,7 +245,7 @@ mod tests {
             coordinator.recovery_plan(),
             RecoveryPlan {
                 durable_checkpoint_id: 1,
-                replay_from_aof_offset: 100,
+                replay_from_aof_offset: AofOffset::new(100),
             }
         );
     }

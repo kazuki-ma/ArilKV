@@ -17,6 +17,7 @@ pub mod session_functions;
 pub mod tsavorite_kv;
 pub mod upsert_operation;
 
+pub use aof_log::AofOffset;
 pub use aof_log::AofReader;
 pub use aof_log::AofWriter;
 pub use aof_log::AofWriterConfig;

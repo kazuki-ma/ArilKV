@@ -11,6 +11,28 @@ use std::path::Path;
 
 const AOF_LENGTH_PREFIX_SIZE: usize = core::mem::size_of::<u32>();
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct AofOffset(u64);
+
+impl AofOffset {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
+impl From<AofOffset> for u64 {
+    fn from(value: AofOffset) -> Self {
+        value.0
+    }
+}
+
+impl From<u64> for AofOffset {
+    fn from(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AofWriterConfig {
     pub flush_every_ops: usize,
@@ -75,8 +97,8 @@ impl AofWriter {
         self.pending_ops
     }
 
-    pub fn current_offset(&mut self) -> io::Result<u64> {
-        self.file.seek(SeekFrom::End(0))
+    pub fn current_offset(&mut self) -> io::Result<AofOffset> {
+        self.file.seek(SeekFrom::End(0)).map(AofOffset::new)
     }
 }
 
@@ -128,11 +150,11 @@ fn read_one_record(file: &mut File) -> io::Result<Option<Vec<u8>>> {
 pub fn compact_aof_file<P: AsRef<Path>, Q: AsRef<Path>>(
     source_path: P,
     destination_path: Q,
-    replay_from_offset: u64,
+    replay_from_offset: AofOffset,
 ) -> io::Result<u64> {
     let mut source = OpenOptions::new().read(true).open(source_path)?;
     let source_len = source.metadata()?.len();
-    let start = replay_from_offset.min(source_len);
+    let start = u64::from(replay_from_offset).min(source_len);
     source.seek(SeekFrom::Start(start))?;
 
     let mut destination = OpenOptions::new()
@@ -202,7 +224,7 @@ mod tests {
         writer.append_operation(b"AAA").unwrap();
         writer.append_operation(b"BBBB").unwrap();
         let offset = writer.current_offset().unwrap();
-        assert_eq!(offset, (4 + 3 + 4 + 4) as u64);
+        assert_eq!(offset, AofOffset::new((4 + 3 + 4 + 4) as u64));
 
         let _ = fs::remove_file(path);
     }
@@ -233,7 +255,7 @@ mod tests {
         writer.append_operation(b"SET b 2").unwrap();
         writer.sync_all().unwrap();
 
-        let second_offset = (4 + b"SET a 1".len()) as u64;
+        let second_offset = AofOffset::new((4 + b"SET a 1".len()) as u64);
         let copied = compact_aof_file(&source, &compacted, second_offset).unwrap();
         assert_eq!(copied, (4 + b"SET b 2".len()) as u64);
 
