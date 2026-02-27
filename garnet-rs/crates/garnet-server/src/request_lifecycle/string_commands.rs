@@ -120,15 +120,22 @@ const PFDEBUG_HELP_LINES: [&[u8]; 11] = [
 #[derive(Clone, Debug)]
 struct PfSetState {
     registers: [u8; PFDEBUG_REGISTER_COUNT],
-    is_dense: bool,
+    encoding: HllEncoding,
     cache_dirty: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum HllEncoding {
+    #[default]
+    Sparse,
+    Dense,
 }
 
 impl Default for PfSetState {
     fn default() -> Self {
         Self {
             registers: [0u8; PFDEBUG_REGISTER_COUNT],
-            is_dense: false,
+            encoding: HllEncoding::Sparse,
             cache_dirty: false,
         }
     }
@@ -1972,13 +1979,13 @@ impl RequestProcessor {
         };
         if changed == 1 {
             state.cache_dirty = args.len() > 2;
-            if !state.is_dense
+            if state.encoding != HllEncoding::Dense
                 && pf_should_promote_to_dense(
                     pf_non_zero_register_count(&state.registers),
                     pf_sparse_max_bytes(self),
                 )
             {
-                state.is_dense = true;
+                state.encoding = HllEncoding::Dense;
             }
             self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
         }
@@ -2032,13 +2039,13 @@ impl RequestProcessor {
             }
         }
         merged.cache_dirty = true;
-        if !merged.is_dense
+        if merged.encoding != HllEncoding::Dense
             && pf_should_promote_to_dense(
                 pf_non_zero_register_count(&merged.registers),
                 pf_sparse_max_bytes(self),
             )
         {
-            merged.is_dense = true;
+            merged.encoding = HllEncoding::Dense;
         }
         self.upsert_string_value_for_migration(&destination, &encode_pf_set(&merged), None)?;
         append_simple_string(response_out, b"OK");
@@ -2066,7 +2073,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG ENCODING key")?;
             let key = RedisKey::from(args[2]);
             let encoding = if load_pf_set_for_key(self, &key)?
-                .map(|state| state.is_dense)
+                .map(|state| state.encoding == HllEncoding::Dense)
                 .unwrap_or(false)
             {
                 b"dense".as_slice()
@@ -2080,7 +2087,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG TODENSE key")?;
             let key = RedisKey::from(args[2]);
             let mut state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
-            state.is_dense = true;
+            state.encoding = HllEncoding::Dense;
             self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -3475,7 +3482,7 @@ fn load_pf_set_for_key(
 }
 
 fn encode_pf_set(state: &PfSetState) -> Vec<u8> {
-    let prefix = if state.is_dense {
+    let prefix = if state.encoding == HllEncoding::Dense {
         PF_STRING_PREFIX_DENSE
     } else {
         PF_STRING_PREFIX_SPARSE
@@ -3490,10 +3497,10 @@ fn encode_pf_set(state: &PfSetState) -> Vec<u8> {
 
 fn decode_pf_set(raw: &[u8]) -> Result<PfSetState, RequestExecutionError> {
     if let Some(tail) = raw.strip_prefix(PF_STRING_PREFIX_DENSE) {
-        return decode_pf_set_tail(tail, true);
+        return decode_pf_set_tail(tail, HllEncoding::Dense);
     }
     if let Some(tail) = raw.strip_prefix(PF_STRING_PREFIX_SPARSE) {
-        return decode_pf_set_tail(tail, false);
+        return decode_pf_set_tail(tail, HllEncoding::Sparse);
     }
     if raw.starts_with(PF_REDIS_HLL_PREFIX) {
         return Err(RequestExecutionError::InvalidObject);
@@ -3501,7 +3508,10 @@ fn decode_pf_set(raw: &[u8]) -> Result<PfSetState, RequestExecutionError> {
     Err(RequestExecutionError::WrongType)
 }
 
-fn decode_pf_set_tail(tail: &[u8], is_dense: bool) -> Result<PfSetState, RequestExecutionError> {
+fn decode_pf_set_tail(
+    tail: &[u8],
+    encoding: HllEncoding,
+) -> Result<PfSetState, RequestExecutionError> {
     if tail.len() != 2 + PFDEBUG_REGISTER_COUNT {
         return Err(RequestExecutionError::InvalidObject);
     }
@@ -3510,7 +3520,7 @@ fn decode_pf_set_tail(tail: &[u8], is_dense: bool) -> Result<PfSetState, Request
     registers.copy_from_slice(&tail[2..]);
     Ok(PfSetState {
         registers,
-        is_dense,
+        encoding,
         cache_dirty,
     })
 }
@@ -3530,7 +3540,7 @@ fn pf_sparse_max_bytes(processor: &RequestProcessor) -> usize {
 pub(super) fn string_value_len_for_keysizes(processor: &RequestProcessor, value: &[u8]) -> usize {
     if let Ok(pf_state) = decode_pf_set(value) {
         let sparse_max_bytes = pf_sparse_max_bytes(processor);
-        if pf_state.is_dense {
+        if pf_state.encoding == HllEncoding::Dense {
             return sparse_max_bytes.saturating_add(1);
         }
         return pf_sparse_pseudo_length(pf_non_zero_register_count(&pf_state.registers));
