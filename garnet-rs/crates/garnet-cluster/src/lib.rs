@@ -780,15 +780,31 @@ fn should_prefer_incoming_slot(
 ) -> bool {
     let local_claim = slot_claim_key(local_config, local_slot);
     let incoming_claim = slot_claim_key(incoming_config, incoming_slot);
-    incoming_claim.0 > local_claim.0
-        || (incoming_claim.0 == local_claim.0 && incoming_claim.1 < local_claim.1)
+    incoming_claim.config_epoch > local_claim.config_epoch
+        || (incoming_claim.config_epoch == local_claim.config_epoch
+            && incoming_claim.node_id < local_claim.node_id)
 }
 
-fn slot_claim_key(config: &ClusterConfig, slot: HashSlot) -> (ConfigEpoch, &str) {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct SlotClaimKey<'a> {
+    config_epoch: ConfigEpoch,
+    node_id: &'a str,
+}
+
+impl<'a> SlotClaimKey<'a> {
+    const fn new(config_epoch: ConfigEpoch, node_id: &'a str) -> Self {
+        Self {
+            config_epoch,
+            node_id,
+        }
+    }
+}
+
+fn slot_claim_key(config: &ClusterConfig, slot: HashSlot) -> SlotClaimKey<'_> {
     config
         .worker(slot.assigned_worker_id())
-        .map(|worker| (worker.config_epoch, worker.node_id.as_str()))
-        .unwrap_or((ConfigEpoch::new(0), ""))
+        .map(|worker| SlotClaimKey::new(worker.config_epoch, worker.node_id.as_str()))
+        .unwrap_or(SlotClaimKey::new(ConfigEpoch::new(0), ""))
 }
 
 const CLUSTER_CONFIG_SNAPSHOT_MAGIC: [u8; 4] = *b"GCFG";
