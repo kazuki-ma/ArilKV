@@ -3385,11 +3385,11 @@ fn resolve_sort_lookup_value(
     pattern: &[u8],
     element: &[u8],
 ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
-    let (key_pattern, hash_field_pattern) = split_sort_pattern(pattern);
-    let key = substitute_sort_wildcard(key_pattern, element);
+    let split_pattern = split_sort_pattern(pattern);
+    let key = substitute_sort_wildcard(split_pattern.key_pattern, element);
     processor.expire_key_if_needed(&key)?;
 
-    if let Some(field_pattern) = hash_field_pattern {
+    if let Some(field_pattern) = split_pattern.hash_field_pattern {
         let field = substitute_sort_wildcard(field_pattern, element);
         return processor.hash_get_field_for_sort_lookup(&key, &field);
     }
@@ -3397,15 +3397,26 @@ fn resolve_sort_lookup_value(
     Ok(processor.read_string_value(&key)?)
 }
 
-fn split_sort_pattern(pattern: &[u8]) -> (&[u8], Option<&[u8]>) {
+struct SortPatternSplit<'a> {
+    key_pattern: &'a [u8],
+    hash_field_pattern: Option<&'a [u8]>,
+}
+
+fn split_sort_pattern(pattern: &[u8]) -> SortPatternSplit<'_> {
     let mut index = 0usize;
     while index + 1 < pattern.len() {
         if pattern[index] == b'-' && pattern[index + 1] == b'>' {
-            return (&pattern[..index], Some(&pattern[index + 2..]));
+            return SortPatternSplit {
+                key_pattern: &pattern[..index],
+                hash_field_pattern: Some(&pattern[index + 2..]),
+            };
         }
         index += 1;
     }
-    (pattern, None)
+    SortPatternSplit {
+        key_pattern: pattern,
+        hash_field_pattern: None,
+    }
 }
 
 fn substitute_sort_wildcard(pattern: &[u8], element: &[u8]) -> Vec<u8> {
