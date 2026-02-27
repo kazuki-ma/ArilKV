@@ -3199,10 +3199,10 @@ fn replication_frame_for_command(
         ]));
     }
     if matches!(command, CommandId::Lmpop | CommandId::Blmpop) {
-        let (key, popped_count) = parse_lmpop_replication_meta(frame_response)?;
+        let meta = parse_lmpop_replication_meta(frame_response)?;
         let pop_command = lmpop_pop_command(command, args)?;
-        let count = popped_count.to_string().into_bytes();
-        return Some(encode_resp_frame(&[pop_command.to_vec(), key, count]));
+        let count = meta.popped_count.to_string().into_bytes();
+        return Some(encode_resp_frame(&[pop_command.to_vec(), meta.key, count]));
     }
     Some(original_frame.to_vec())
 }
@@ -3461,7 +3461,12 @@ fn lmpop_pop_command(command: CommandId, args: &[ArgSlice]) -> Option<&'static [
     }
 }
 
-fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<(Vec<u8>, usize)> {
+struct LmpopReplicationMeta {
+    key: Vec<u8>,
+    popped_count: usize,
+}
+
+fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<LmpopReplicationMeta> {
     if frame_response == b"*-1\r\n" {
         return None;
     }
@@ -3472,18 +3477,27 @@ fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<(Vec<u8>, usize
     }
     cursor += 4;
 
-    let (key, next_cursor) = parse_resp_bulk_string(frame_response, cursor)?;
-    cursor = next_cursor;
+    let bulk_key = parse_resp_bulk_string(frame_response, cursor)?;
+    let key = bulk_key.value;
+    cursor = bulk_key.next_cursor;
 
     if frame_response.get(cursor)? != &b'*' {
         return None;
     }
     cursor += 1;
     let parsed = parse_resp_decimal(frame_response, cursor)?;
-    Some((key, parsed.value))
+    Some(LmpopReplicationMeta {
+        key,
+        popped_count: parsed.value,
+    })
 }
 
-fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<(Vec<u8>, usize)> {
+struct ParsedBulkString {
+    value: Vec<u8>,
+    next_cursor: usize,
+}
+
+fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<ParsedBulkString> {
     if input.get(cursor)? != &b'$' {
         return None;
     }
@@ -3496,7 +3510,10 @@ fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<(Vec<u8>, usize
         return None;
     }
     cursor += 2;
-    Some((value, cursor))
+    Some(ParsedBulkString {
+        value,
+        next_cursor: cursor,
+    })
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
