@@ -2972,15 +2972,29 @@ fn encode_bitfield_value(value: i64, encoding: BitfieldEncoding) -> u64 {
     (value as u64) & bitfield_mask(bits)
 }
 
-fn bitfield_bounds(encoding: BitfieldEncoding) -> (i128, i128) {
+struct BitfieldBounds {
+    min: i128,
+    max: i128,
+}
+
+fn bitfield_bounds(encoding: BitfieldEncoding) -> BitfieldBounds {
     let bits = usize::from(encoding.bits);
     match encoding.signedness {
-        BitfieldSignedness::Unsigned => (0, (1i128 << bits) - 1),
+        BitfieldSignedness::Unsigned => BitfieldBounds {
+            min: 0,
+            max: (1i128 << bits) - 1,
+        },
         BitfieldSignedness::Signed => {
             if bits == 64 {
-                (i64::MIN as i128, i64::MAX as i128)
+                BitfieldBounds {
+                    min: i64::MIN as i128,
+                    max: i64::MAX as i128,
+                }
             } else {
-                (-(1i128 << (bits - 1)), (1i128 << (bits - 1)) - 1)
+                BitfieldBounds {
+                    min: -(1i128 << (bits - 1)),
+                    max: (1i128 << (bits - 1)) - 1,
+                }
             }
         }
     }
@@ -2996,8 +3010,8 @@ fn apply_bitfield_incrby(
     let current_value = i128::from(decode_bitfield_raw(raw, encoding));
     let increment_value = i128::from(increment);
     let target = current_value + increment_value;
-    let (min, max) = bitfield_bounds(encoding);
-    if target >= min && target <= max {
+    let bounds = bitfield_bounds(encoding);
+    if target >= bounds.min && target <= bounds.max {
         let result = target as i64;
         return Ok(BitfieldIncrOutcome::Value {
             raw: encode_bitfield_value(result, encoding),
@@ -3015,7 +3029,11 @@ fn apply_bitfield_incrby(
             })
         }
         BitfieldOverflowMode::Sat => {
-            let saturated = if target < min { min } else { max } as i64;
+            let saturated = if target < bounds.min {
+                bounds.min
+            } else {
+                bounds.max
+            } as i64;
             Ok(BitfieldIncrOutcome::Value {
                 raw: encode_bitfield_value(saturated, encoding),
                 value: saturated,
@@ -3031,8 +3049,8 @@ fn apply_bitfield_set(
     overflow_mode: BitfieldOverflowMode,
 ) -> BitfieldSetOutcome {
     let target = i128::from(value);
-    let (min, max) = bitfield_bounds(encoding);
-    if target >= min && target <= max {
+    let bounds = bitfield_bounds(encoding);
+    if target >= bounds.min && target <= bounds.max {
         return BitfieldSetOutcome::Value {
             raw: encode_bitfield_value(value, encoding),
         };
@@ -3043,7 +3061,11 @@ fn apply_bitfield_set(
             raw: encode_bitfield_value(value, encoding),
         },
         BitfieldOverflowMode::Sat => {
-            let saturated = if target < min { min } else { max } as i64;
+            let saturated = if target < bounds.min {
+                bounds.min
+            } else {
+                bounds.max
+            } as i64;
             BitfieldSetOutcome::Value {
                 raw: encode_bitfield_value(saturated, encoding),
             }
