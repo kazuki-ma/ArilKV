@@ -124,22 +124,27 @@ fn parse_resp_single_integer_array(frame: &[u8]) -> Option<i64> {
     parse_i64_ascii_bytes(&frame[5..frame.len().saturating_sub(2)])
 }
 
-fn parse_bitfield_encoding_for_replication(token: &[u8]) -> Option<(bool, usize)> {
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum BitfieldSign {
+    Signed,
+    Unsigned,
+}
+
+fn parse_bitfield_encoding_for_replication(token: &[u8]) -> Option<(BitfieldSign, usize)> {
     if token.len() < 2 {
         return None;
     }
-    let signed = match token[0].to_ascii_uppercase() {
-        b'I' => true,
-        b'U' => false,
+    let sign = match token[0].to_ascii_uppercase() {
+        b'I' => BitfieldSign::Signed,
+        b'U' => BitfieldSign::Unsigned,
         _ => return None,
     };
     let bits = usize::try_from(parse_i64_ascii_bytes(&token[1..])?).ok()?;
-    let valid = if signed {
-        (1..=64).contains(&bits)
-    } else {
-        (1..=63).contains(&bits)
+    let valid = match sign {
+        BitfieldSign::Signed => (1..=64).contains(&bits),
+        BitfieldSign::Unsigned => (1..=63).contains(&bits),
     };
-    valid.then_some((signed, bits))
+    valid.then_some((sign, bits))
 }
 
 fn parse_bitfield_offset_for_replication(token: &[u8], bits: usize) -> Option<usize> {
@@ -159,13 +164,17 @@ fn parse_bitfield_offset_for_replication(token: &[u8], bits: usize) -> Option<us
     }
 }
 
-fn bitfield_wrap_set_value_for_replication(value: i64, signed: bool, bits: usize) -> Option<i64> {
+fn bitfield_wrap_set_value_for_replication(
+    value: i64,
+    sign: BitfieldSign,
+    bits: usize,
+) -> Option<i64> {
     let modulus = 1i128.checked_shl(bits as u32)?;
     let mut raw = i128::from(value) % modulus;
     if raw < 0 {
         raw += modulus;
     }
-    if signed {
+    if matches!(sign, BitfieldSign::Signed) {
         let sign_bit = 1i128.checked_shl((bits.checked_sub(1)?) as u32)?;
         if raw >= sign_bit {
             raw -= modulus;
@@ -182,11 +191,11 @@ fn bitfield_single_set_mutated_for_replication(
     if args.len() != 6 || !ascii_eq_ignore_case(arg_slice_bytes(args.get(2)?), b"SET") {
         return None;
     }
-    let (signed, bits) = parse_bitfield_encoding_for_replication(arg_slice_bytes(args.get(3)?))?;
+    let (sign, bits) = parse_bitfield_encoding_for_replication(arg_slice_bytes(args.get(3)?))?;
     let offset = parse_bitfield_offset_for_replication(arg_slice_bytes(args.get(4)?), bits)?;
     let input_value = parse_i64_ascii_bytes(arg_slice_bytes(args.get(5)?))?;
     let old_value = parse_resp_single_integer_array(frame_response)?;
-    let wrapped_value = bitfield_wrap_set_value_for_replication(input_value, signed, bits)?;
+    let wrapped_value = bitfield_wrap_set_value_for_replication(input_value, sign, bits)?;
     let required_bits = offset.checked_add(bits)?;
     let required_bytes = required_bits.checked_add(7)?.checked_div(8)?;
     let length_changed = pre_string_len.unwrap_or(0) < required_bytes;
