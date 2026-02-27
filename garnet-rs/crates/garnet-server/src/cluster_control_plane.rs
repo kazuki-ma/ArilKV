@@ -150,10 +150,28 @@ impl<E> From<ClusterManagerFailoverMigrationError<E>> for ClusteredServerRunErro
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct MigrationPeerIds {
+    target_worker_id_in_source: WorkerId,
+    source_worker_id_in_target: WorkerId,
+}
+
+impl MigrationPeerIds {
+    const fn new(
+        target_worker_id_in_source: WorkerId,
+        source_worker_id_in_target: WorkerId,
+    ) -> Self {
+        Self {
+            target_worker_id_in_source,
+            source_worker_id_in_target,
+        }
+    }
+}
+
 fn resolve_migration_peer_ids(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
-) -> Result<(WorkerId, WorkerId), LiveSlotMigrationError> {
+) -> Result<MigrationPeerIds, LiveSlotMigrationError> {
     let source_snapshot = source_store.load();
     let target_snapshot = target_store.load();
     let source_local_node_id = source_snapshot.local_worker()?.node_id.clone();
@@ -171,21 +189,28 @@ fn resolve_migration_peer_ids(
         .find(|worker| worker.node_id == source_local_node_id)
         .map(|worker| worker.id)
         .ok_or_else(|| LiveSlotMigrationError::MissingTargetPeerNode(source_local_node_id))?;
-    Ok((target_worker_id_in_source, source_worker_id_in_target))
+    Ok(MigrationPeerIds::new(
+        target_worker_id_in_source,
+        source_worker_id_in_target,
+    ))
 }
 
 pub fn detect_live_slot_migration_slots(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
 ) -> Result<Vec<SlotNumber>, LiveSlotMigrationError> {
-    let (target_worker_id_in_source, source_worker_id_in_target) =
-        resolve_migration_peer_ids(source_store, target_store)?;
+    let peer_ids = resolve_migration_peer_ids(source_store, target_store)?;
     let source_snapshot = source_store.load();
     let target_snapshot = target_store.load();
-    let source_migrating = source_snapshot
-        .slots_assigned_to_worker_in_state(target_worker_id_in_source, SlotState::Migrating)?;
+    let source_migrating = source_snapshot.slots_assigned_to_worker_in_state(
+        peer_ids.target_worker_id_in_source,
+        SlotState::Migrating,
+    )?;
     let target_importing: HashSet<SlotNumber> = target_snapshot
-        .slots_assigned_to_worker_in_state(source_worker_id_in_target, SlotState::Importing)?
+        .slots_assigned_to_worker_in_state(
+            peer_ids.source_worker_id_in_target,
+            SlotState::Importing,
+        )?
         .into_iter()
         .collect();
     Ok(source_migrating
@@ -209,19 +234,18 @@ pub fn execute_live_slot_migration_step(
         });
     }
 
-    let (target_worker_id_in_source, source_worker_id_in_target) =
-        resolve_migration_peer_ids(source_store, target_store)?;
+    let peer_ids = resolve_migration_peer_ids(source_store, target_store)?;
     let source_migrating = source_store
         .load()
         .as_ref()
         .clone()
-        .begin_slot_migration_to(slot, target_worker_id_in_source)?;
+        .begin_slot_migration_to(slot, peer_ids.target_worker_id_in_source)?;
     source_store.publish(source_migrating);
     let target_importing = target_store
         .load()
         .as_ref()
         .clone()
-        .begin_slot_import_from(slot, source_worker_id_in_target)?;
+        .begin_slot_import_from(slot, peer_ids.source_worker_id_in_target)?;
     target_store.publish(target_importing);
 
     let moved = source_processor.migrate_slot_to(target_processor, slot, max_keys, true)?;
@@ -232,7 +256,7 @@ pub fn execute_live_slot_migration_step(
             .load()
             .as_ref()
             .clone()
-            .finalize_slot_migration(slot, target_worker_id_in_source)?;
+            .finalize_slot_migration(slot, peer_ids.target_worker_id_in_source)?;
         source_store.publish(source_finalized);
         let target_finalized = target_store
             .load()
