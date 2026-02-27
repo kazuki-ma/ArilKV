@@ -1157,6 +1157,12 @@ pub struct ReplicationSyncOutcome {
     pub streamed_until_offset: ReplicationOffset,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SynchronizedReplica {
+    pub worker_id: WorkerId,
+    pub outcome: ReplicationSyncOutcome,
+}
+
 pub trait ReplicationTransport {
     type Error;
 
@@ -1707,11 +1713,11 @@ impl ReplicationManager {
         config: &ClusterConfig,
         primary_node_id: &str,
         transport: &mut T,
-    ) -> Result<Vec<(WorkerId, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
+    ) -> Result<Vec<SynchronizedReplica>, ReplicationSyncError<T::Error>> {
         let mut outcomes = Vec::new();
         for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
             let outcome = self.execute_sync_for_worker(worker_id, transport)?;
-            outcomes.push((worker_id, outcome));
+            outcomes.push(SynchronizedReplica { worker_id, outcome });
         }
         Ok(outcomes)
     }
@@ -1759,13 +1765,13 @@ impl ReplicationManager {
         config: &ClusterConfig,
         primary_node_id: &str,
         transport: &mut T,
-    ) -> Result<Vec<(WorkerId, ReplicationSyncOutcome)>, ReplicationSyncError<T::Error>> {
+    ) -> Result<Vec<SynchronizedReplica>, ReplicationSyncError<T::Error>> {
         let mut outcomes = Vec::new();
         for worker_id in self.replica_worker_ids_for_primary(config, primary_node_id) {
             let outcome = self
                 .execute_sync_for_worker_async(worker_id, transport)
                 .await?;
-            outcomes.push((worker_id, outcome));
+            outcomes.push(SynchronizedReplica { worker_id, outcome });
         }
         Ok(outcomes)
     }
@@ -1906,14 +1912,14 @@ impl<E: std::error::Error + 'static> std::error::Error for FailoverControllerErr
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverControllerOutcome {
-    pub synchronized_replicas: Vec<(WorkerId, ReplicationSyncOutcome)>,
+    pub synchronized_replicas: Vec<SynchronizedReplica>,
     pub failover_plan: Option<FailoverPlan>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverExecutionRecord {
     pub failed_worker_id: WorkerId,
-    pub synchronized_replicas: Vec<(WorkerId, ReplicationSyncOutcome)>,
+    pub synchronized_replicas: Vec<SynchronizedReplica>,
     pub plan: FailoverPlan,
 }
 
@@ -3635,8 +3641,8 @@ mod tests {
             .expect("matching replicas should sync");
 
         assert_eq!(outcomes.len(), 2);
-        assert_eq!(outcomes[0].0, replica_a);
-        assert_eq!(outcomes[1].0, replica_b);
+        assert_eq!(outcomes[0].worker_id, replica_a);
+        assert_eq!(outcomes[1].worker_id, replica_b);
         assert_eq!(transport.checkpoints, vec![(replica_a, 9), (replica_b, 9)]);
         assert_eq!(transport.streams, vec![(replica_a, 500), (replica_b, 500)]);
         assert_eq!(manager.replica_offset(replica_a), Some(900));
@@ -4109,7 +4115,7 @@ mod tests {
         assert!(
             second
                 .iter()
-                .all(|(_, outcome)| outcome.plan.mode == ReplicationSyncMode::Incremental)
+                .all(|replica| replica.outcome.plan.mode == ReplicationSyncMode::Incremental)
         );
         assert!(transport.checkpoints.is_empty());
         assert_eq!(transport.streams, vec![(replica_a, 900), (replica_b, 900)]);
