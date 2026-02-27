@@ -36,6 +36,7 @@ pub use delete_operation::DeleteOperationError;
 pub use delete_operation::DeleteOperationStatus;
 pub use delete_operation::HybridLogDeleteAdapter;
 pub use delete_operation::delete;
+pub use epoch::Epoch;
 pub use epoch::EpochEntry;
 pub use epoch::EpochGuard;
 pub use epoch::LightEpoch;

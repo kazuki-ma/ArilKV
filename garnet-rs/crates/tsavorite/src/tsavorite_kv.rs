@@ -3,6 +3,7 @@
 //! This wraps hash-index + hybrid-log operation modules into a single store/session API.
 
 use crate::DeleteInfo;
+use crate::Epoch;
 use crate::HashIndex;
 use crate::HashIndexError;
 use crate::HybridLogDeleteAdapter;
@@ -106,11 +107,11 @@ impl From<PageManagerError> for TsavoriteKvInitError {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct CheckpointFlushBarrier {
     token: u64,
-    barrier_epoch: u64,
+    barrier_epoch: Epoch,
 }
 
 impl CheckpointFlushBarrier {
-    const fn new(token: u64, barrier_epoch: u64) -> Self {
+    const fn new(token: u64, barrier_epoch: Epoch) -> Self {
         Self {
             token,
             barrier_epoch,
@@ -196,7 +197,7 @@ where
     }
 
     #[inline]
-    pub fn bump_epoch(&self) -> u64 {
+    pub fn bump_epoch(&self) -> Epoch {
         self.epoch.bump_current_epoch()
     }
 

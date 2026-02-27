@@ -18,6 +18,34 @@ thread_local! {
     static PIN_STATE: RefCell<HashMap<usize, PinState>> = RefCell::new(HashMap::new());
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct Epoch(u64);
+
+impl Epoch {
+    const ZERO: Self = Self(0);
+
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+
+    pub const fn saturating_sub(self, rhs: u64) -> Self {
+        Self(self.0.saturating_sub(rhs))
+    }
+}
+
+impl From<u64> for Epoch {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<Epoch> for u64 {
+    fn from(value: Epoch) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PinState {
     slot: usize,
@@ -25,7 +53,7 @@ struct PinState {
 }
 
 struct EpochAction {
-    trigger_epoch: u64,
+    trigger_epoch: Epoch,
     action: Box<dyn FnOnce() + Send + 'static>,
 }
 
@@ -85,14 +113,14 @@ impl LightEpoch {
 
     /// Returns current global epoch.
     #[inline]
-    pub fn current_epoch(&self) -> u64 {
-        self.current_epoch.load(Ordering::Acquire)
+    pub fn current_epoch(&self) -> Epoch {
+        Epoch::from(self.current_epoch.load(Ordering::Acquire))
     }
 
     /// Returns latest epoch considered safe to reclaim.
     #[inline]
-    pub fn safe_to_reclaim_epoch(&self) -> u64 {
-        self.safe_to_reclaim_epoch.load(Ordering::Acquire)
+    pub fn safe_to_reclaim_epoch(&self) -> Epoch {
+        Epoch::from(self.safe_to_reclaim_epoch.load(Ordering::Acquire))
     }
 
     /// Pins the current thread in epoch protection scope.
@@ -117,7 +145,7 @@ impl LightEpoch {
 
         self.table[slot]
             .local_current_epoch
-            .store(epoch, Ordering::Release);
+            .store(u64::from(epoch), Ordering::Release);
 
         if !self.is_drain_list_empty() {
             self.drain(epoch);
@@ -130,8 +158,8 @@ impl LightEpoch {
     }
 
     /// Increments current epoch and updates reclamation/drain state.
-    pub fn bump_current_epoch(&self) -> u64 {
-        let next_epoch = self.current_epoch.fetch_add(1, Ordering::AcqRel) + 1;
+    pub fn bump_current_epoch(&self) -> Epoch {
+        let next_epoch = Epoch::from(self.current_epoch.fetch_add(1, Ordering::AcqRel) + 1);
         self.drain(next_epoch);
         next_epoch
     }
@@ -212,23 +240,23 @@ impl LightEpoch {
         });
     }
 
-    fn compute_new_safe_to_reclaim_epoch(&self, current_epoch: u64) -> u64 {
+    fn compute_new_safe_to_reclaim_epoch(&self, current_epoch: Epoch) -> Epoch {
         let mut oldest_ongoing = current_epoch;
 
         for entry in &self.table {
-            let entry_epoch = entry.local_current_epoch.load(Ordering::Acquire);
-            if entry_epoch != 0 && entry_epoch < oldest_ongoing {
+            let entry_epoch = Epoch::from(entry.local_current_epoch.load(Ordering::Acquire));
+            if entry_epoch != Epoch::ZERO && entry_epoch < oldest_ongoing {
                 oldest_ongoing = entry_epoch;
             }
         }
 
         let safe_epoch = oldest_ongoing.saturating_sub(1);
         self.safe_to_reclaim_epoch
-            .store(safe_epoch, Ordering::Release);
+            .store(u64::from(safe_epoch), Ordering::Release);
         safe_epoch
     }
 
-    fn drain(&self, next_epoch: u64) {
+    fn drain(&self, next_epoch: Epoch) {
         let safe_epoch = self.compute_new_safe_to_reclaim_epoch(next_epoch);
 
         let mut runnable = Vec::new();
