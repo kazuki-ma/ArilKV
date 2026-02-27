@@ -1423,22 +1423,22 @@ pub(crate) async fn handle_connection(
                         )
                         .await
                         {
-                            Ok((frame_response, should_replicate)) => {
+                            Ok(blocking_outcome) => {
                                 wait_for_blocking_progress = blocked_before > 0
                                     && command_may_wake_blocking_waiters(command);
                                 maybe_update_client_resp_protocol_version_after_hello(
                                     command,
                                     &args[..argument_count],
-                                    &frame_response,
+                                    &blocking_outcome.frame_response,
                                     &mut client_state,
                                 );
-                                responses.extend_from_slice(&frame_response);
-                                if should_replicate {
+                                responses.extend_from_slice(&blocking_outcome.frame_response);
+                                if blocking_outcome.should_replicate {
                                     replication_frame = replication_frame_for_command(
                                         &processor,
                                         command,
                                         &args[..argument_count],
-                                        &frame_response,
+                                        &blocking_outcome.frame_response,
                                         frame,
                                     );
                                 }
@@ -1640,7 +1640,7 @@ async fn execute_blocking_frame_on_owner_thread(
     client_no_touch: bool,
     client_id: ClientId,
     stream: &mut TcpStream,
-) -> Result<(Vec<u8>, bool), OwnerThreadExecutionError> {
+) -> Result<BlockingExecutionOutcome, OwnerThreadExecutionError> {
     // TLA+ mapping (`formal/tla/specs/BlockingDisconnectLeak.tla`):
     // - ACTIVE: client has no wait-queue registration.
     // - BLOCKED: `register_blocking_wait` + `set_client_blocked(true)` applied.
@@ -1658,14 +1658,20 @@ async fn execute_blocking_frame_on_owner_thread(
             if blocked {
                 clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
             }
-            return Ok((blocking_empty_response_for_command(command).to_vec(), false));
+            return Ok(BlockingExecutionOutcome {
+                frame_response: blocking_empty_response_for_command(command).to_vec(),
+                should_replicate: false,
+            });
         }
         if is_blocking_command(command) && blocking_client_disconnected(stream).await {
             // `Disconnect(c)` branch: if we were blocked, this must clear all wait-queue state.
             if blocked {
                 clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
             }
-            return Ok((blocking_empty_response_for_command(command).to_vec(), false));
+            return Ok(BlockingExecutionOutcome {
+                frame_response: blocking_empty_response_for_command(command).to_vec(),
+                should_replicate: false,
+            });
         }
 
         if blocked {
@@ -1679,7 +1685,10 @@ async fn execute_blocking_frame_on_owner_thread(
                         b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
                     }
                 };
-                return Ok((response, false));
+                return Ok(BlockingExecutionOutcome {
+                    frame_response: response,
+                    should_replicate: false,
+                });
             }
         }
 
@@ -1695,7 +1704,10 @@ async fn execute_blocking_frame_on_owner_thread(
                 let now = Instant::now();
                 if now >= deadline_time {
                     clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
-                    return Ok((blocking_empty_response_for_command(command).to_vec(), false));
+                    return Ok(BlockingExecutionOutcome {
+                        frame_response: blocking_empty_response_for_command(command).to_vec(),
+                        should_replicate: false,
+                    });
                 }
                 let remaining = deadline_time.duration_since(now);
                 sleep(std::cmp::min(
@@ -1750,7 +1762,10 @@ async fn execute_blocking_frame_on_owner_thread(
             if blocked {
                 clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
             }
-            return Ok((frame_response, should_replicate));
+            return Ok(BlockingExecutionOutcome {
+                frame_response,
+                should_replicate,
+            });
         }
 
         if !blocked {
@@ -1764,7 +1779,10 @@ async fn execute_blocking_frame_on_owner_thread(
             let now = Instant::now();
             if now >= deadline_time {
                 clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
-                return Ok((frame_response, should_replicate));
+                return Ok(BlockingExecutionOutcome {
+                    frame_response,
+                    should_replicate,
+                });
             }
 
             let remaining = deadline_time.duration_since(now);
@@ -1775,6 +1793,11 @@ async fn execute_blocking_frame_on_owner_thread(
             yield_now().await;
         }
     }
+}
+
+struct BlockingExecutionOutcome {
+    frame_response: Vec<u8>,
+    should_replicate: bool,
 }
 
 fn clear_blocking_client_state(
