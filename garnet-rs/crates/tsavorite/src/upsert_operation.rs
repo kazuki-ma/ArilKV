@@ -112,6 +112,11 @@ struct MaterializedRecord {
     allocated_size: usize,
 }
 
+struct ChainRecordMatch {
+    address: LogicalAddress,
+    record: MaterializedRecord,
+}
+
 pub fn upsert<F>(
     context: &mut UpsertOperationContext<'_>,
     functions: &F,
@@ -135,13 +140,15 @@ where
         previous_address = entry_address(head_entry.word);
 
         if previous_address != LogicalAddress(0) {
-            if let Some((address, record)) = find_matching_record_in_chain(
+            if let Some(record_match) = find_matching_record_in_chain(
                 context.page_manager,
                 context.pointers.begin_address(),
                 functions,
                 key,
                 previous_address,
             )? {
+                let address = record_match.address;
+                let record = record_match.record;
                 if !record.record_info.tombstone() && !record.record_info.invalid() {
                     matched_address = Some(address);
                     matched_record = Some(record);
@@ -279,14 +286,17 @@ fn find_matching_record_in_chain<F>(
     functions: &F,
     key: &F::Key,
     mut current_address: LogicalAddress,
-) -> Result<Option<(LogicalAddress, MaterializedRecord)>, UpsertOperationError>
+) -> Result<Option<ChainRecordMatch>, UpsertOperationError>
 where
     F: HybridLogUpsertAdapter,
 {
     while current_address != LogicalAddress(0) && current_address >= begin_address {
         let record = materialize_record_at(page_manager, current_address)?;
         if functions.record_key_equals(key, &record.key_bytes) {
-            return Ok(Some((current_address, record)));
+            return Ok(Some(ChainRecordMatch {
+                address: current_address,
+                record,
+            }));
         }
         current_address = record.record_info.previous_address();
     }
