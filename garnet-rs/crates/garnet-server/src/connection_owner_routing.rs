@@ -24,10 +24,22 @@ pub(crate) enum OwnerThreadExecutionError {
     OwnerThreadUnavailable,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ArgSpan {
+    offset: usize,
+    length: usize,
+}
+
+impl ArgSpan {
+    const fn new(offset: usize, length: usize) -> Self {
+        Self { offset, length }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct OwnedFrameArgs {
     frame: Vec<u8>,
-    arg_offsets_and_lengths: Vec<(usize, usize)>,
+    arg_spans: Vec<ArgSpan>,
 }
 
 #[inline]
@@ -43,23 +55,19 @@ fn map_routed_owner_error(error: RoutedExecutionError) -> OwnerThreadExecutionEr
 fn parse_owned_frame_args(
     owned_args: &OwnedFrameArgs,
 ) -> Result<Vec<ArgSlice>, RoutedExecutionError> {
-    if owned_args.arg_offsets_and_lengths.is_empty() {
+    if owned_args.arg_spans.is_empty() {
         return Err(RoutedExecutionError::Protocol);
     }
 
-    let mut args = vec![ArgSlice::EMPTY; owned_args.arg_offsets_and_lengths.len()];
-    for (index, (offset, len)) in owned_args
-        .arg_offsets_and_lengths
-        .iter()
-        .copied()
-        .enumerate()
-    {
-        let end = offset
-            .checked_add(len)
+    let mut args = vec![ArgSlice::EMPTY; owned_args.arg_spans.len()];
+    for (index, span) in owned_args.arg_spans.iter().copied().enumerate() {
+        let end = span
+            .offset
+            .checked_add(span.length)
             .ok_or(RoutedExecutionError::Protocol)?;
         let slice = owned_args
             .frame
-            .get(offset..end)
+            .get(span.offset..end)
             .ok_or(RoutedExecutionError::Protocol)?;
         args[index] = ArgSlice::from_slice(slice).map_err(|_| RoutedExecutionError::Protocol)?;
     }
@@ -77,7 +85,7 @@ pub(crate) fn capture_owned_frame_args(
 
     let frame_start = frame.as_ptr() as usize;
     let frame_end = frame_start + frame.len();
-    let mut arg_offsets_and_lengths = Vec::with_capacity(args.len());
+    let mut arg_spans = Vec::with_capacity(args.len());
     for arg in args {
         let arg_ptr = arg.as_ptr() as usize;
         let arg_len = arg.len();
@@ -87,12 +95,12 @@ pub(crate) fn capture_owned_frame_args(
         if arg_ptr < frame_start || arg_ptr > frame_end || arg_end > frame_end {
             return Err(RoutedExecutionError::Protocol);
         }
-        arg_offsets_and_lengths.push((arg_ptr - frame_start, arg_len));
+        arg_spans.push(ArgSpan::new(arg_ptr - frame_start, arg_len));
     }
 
     Ok(OwnedFrameArgs {
         frame: frame.to_vec(),
-        arg_offsets_and_lengths,
+        arg_spans,
     })
 }
 
