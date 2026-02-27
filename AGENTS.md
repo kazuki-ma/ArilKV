@@ -74,6 +74,10 @@ Commit the generated compatibility matrix files when status changes:
 - `docs/compatibility/redis-command-maturity-summary.md`
 - `docs/compatibility/compatibility-report.md`
 
+When a compatibility artifact changes, commit it in the same commit as the
+related code change (do not carry compatibility-report-only drift across
+multiple subsequent code commits).
+
 ## Implementation Reference Policy
 
 For future command implementation work, use this source-of-truth order:

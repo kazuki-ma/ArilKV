@@ -30,7 +30,7 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `PASS_WITH_KNOWN_GAPS` | mode=full; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=520; err=0; timeout=1; ignore=89; failed_tests=1; expected_failed_tests=1; unexpected_failed_tests=0  |
+| `redis_runtest_full_external` | `PASS_WITH_KNOWN_GAPS` | mode=full; tsavorite_pages=16384; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=520; err=0; timeout=1; ignore=89; failed_tests=1; expected_failed_tests=1; unexpected_failed_tests=0  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
