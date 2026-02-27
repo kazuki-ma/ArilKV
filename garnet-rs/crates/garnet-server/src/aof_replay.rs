@@ -63,6 +63,7 @@ mod tests {
     use tsavorite::AofWriter;
     use tsavorite::AofWriterConfig;
     use tsavorite::CheckpointAofCoordinator;
+    use tsavorite::CheckpointToken;
     use tsavorite::compact_aof_file;
 
     fn temp_path(suffix: &str) -> std::path::PathBuf {
@@ -142,7 +143,7 @@ mod tests {
         let mut writer =
             AofWriter::open(&source_aof, AofWriterConfig { flush_every_ops: 1 }).unwrap();
         let mut coordinator = CheckpointAofCoordinator::new();
-        let checkpoint_token = 77u64;
+        let checkpoint_token = CheckpointToken::new(77);
         let begin_offset = writer.current_offset().unwrap();
         coordinator
             .begin_checkpoint(checkpoint_token, begin_offset)

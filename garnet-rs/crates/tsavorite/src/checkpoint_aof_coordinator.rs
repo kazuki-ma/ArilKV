@@ -6,10 +6,25 @@ pub struct RecoveryPlan {
     pub replay_from_aof_offset: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub struct CheckpointToken(u64);
+
+impl CheckpointToken {
+    pub const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CheckpointAofCoordinatorError {
-    Busy { active_checkpoint_id: u64 },
-    TokenMismatch { expected: u64, actual: u64 },
+    Busy {
+        active_checkpoint_id: u64,
+    },
+    TokenMismatch {
+        expected: CheckpointToken,
+        actual: CheckpointToken,
+    },
     NoActiveCheckpoint,
 }
 
@@ -26,7 +41,7 @@ impl core::fmt::Display for CheckpointAofCoordinatorError {
             Self::TokenMismatch { expected, actual } => write!(
                 f,
                 "checkpoint token mismatch: expected {}, got {}",
-                expected, actual
+                expected.0, actual.0
             ),
             Self::NoActiveCheckpoint => write!(f, "no active checkpoint"),
         }
@@ -38,7 +53,7 @@ impl std::error::Error for CheckpointAofCoordinatorError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ActiveCheckpoint {
     checkpoint_id: u64,
-    checkpoint_token: u64,
+    checkpoint_token: CheckpointToken,
     aof_begin_offset: u64,
 }
 
@@ -68,7 +83,7 @@ impl CheckpointAofCoordinator {
 
     pub fn begin_checkpoint(
         &mut self,
-        checkpoint_token: u64,
+        checkpoint_token: CheckpointToken,
         aof_begin_offset: u64,
     ) -> Result<u64, CheckpointAofCoordinatorError> {
         if let Some(active) = self.active {
@@ -89,7 +104,7 @@ impl CheckpointAofCoordinator {
 
     pub fn complete_checkpoint(
         &mut self,
-        checkpoint_token: u64,
+        checkpoint_token: CheckpointToken,
         aof_tail_offset: u64,
     ) -> Result<RecoveryPlan, CheckpointAofCoordinatorError> {
         let active = self
@@ -110,7 +125,7 @@ impl CheckpointAofCoordinator {
 
     pub fn abort_checkpoint(
         &mut self,
-        checkpoint_token: u64,
+        checkpoint_token: CheckpointToken,
     ) -> Result<(), CheckpointAofCoordinatorError> {
         let active = self
             .active
@@ -148,12 +163,16 @@ mod tests {
     #[test]
     fn completed_checkpoint_updates_recovery_plan() {
         let mut coordinator = CheckpointAofCoordinator::new();
-        let checkpoint_id = coordinator.begin_checkpoint(10, 128).unwrap();
+        let checkpoint_id = coordinator
+            .begin_checkpoint(CheckpointToken::new(10), 128)
+            .unwrap();
         assert_eq!(checkpoint_id, 1);
         assert_eq!(coordinator.active_checkpoint_id(), Some(1));
         assert_eq!(coordinator.active_aof_begin_offset(), Some(128));
 
-        let plan = coordinator.complete_checkpoint(10, 512).unwrap();
+        let plan = coordinator
+            .complete_checkpoint(CheckpointToken::new(10), 512)
+            .unwrap();
         assert_eq!(
             plan,
             RecoveryPlan {
@@ -167,10 +186,12 @@ mod tests {
     #[test]
     fn begin_fails_when_another_checkpoint_is_active() {
         let mut coordinator = CheckpointAofCoordinator::new();
-        let checkpoint_id = coordinator.begin_checkpoint(10, 64).unwrap();
+        let checkpoint_id = coordinator
+            .begin_checkpoint(CheckpointToken::new(10), 64)
+            .unwrap();
         assert_eq!(checkpoint_id, 1);
         assert!(matches!(
-            coordinator.begin_checkpoint(11, 65),
+            coordinator.begin_checkpoint(CheckpointToken::new(11), 65),
             Err(CheckpointAofCoordinatorError::Busy {
                 active_checkpoint_id
             }) if active_checkpoint_id == 1
@@ -180,31 +201,41 @@ mod tests {
     #[test]
     fn token_mismatch_is_rejected_on_complete_and_abort() {
         let mut coordinator = CheckpointAofCoordinator::new();
-        coordinator.begin_checkpoint(10, 64).unwrap();
+        coordinator
+            .begin_checkpoint(CheckpointToken::new(10), 64)
+            .unwrap();
         assert!(matches!(
-            coordinator.complete_checkpoint(11, 128),
+            coordinator.complete_checkpoint(CheckpointToken::new(11), 128),
             Err(CheckpointAofCoordinatorError::TokenMismatch {
                 expected,
                 actual
-            }) if expected == 10 && actual == 11
+            }) if expected == CheckpointToken::new(10) && actual == CheckpointToken::new(11)
         ));
         assert!(matches!(
-            coordinator.abort_checkpoint(11),
+            coordinator.abort_checkpoint(CheckpointToken::new(11)),
             Err(CheckpointAofCoordinatorError::TokenMismatch {
                 expected,
                 actual
-            }) if expected == 10 && actual == 11
+            }) if expected == CheckpointToken::new(10) && actual == CheckpointToken::new(11)
         ));
     }
 
     #[test]
     fn abort_keeps_previous_recovery_plan() {
         let mut coordinator = CheckpointAofCoordinator::new();
-        coordinator.begin_checkpoint(10, 64).unwrap();
-        coordinator.complete_checkpoint(10, 100).unwrap();
-        let checkpoint_id = coordinator.begin_checkpoint(20, 101).unwrap();
+        coordinator
+            .begin_checkpoint(CheckpointToken::new(10), 64)
+            .unwrap();
+        coordinator
+            .complete_checkpoint(CheckpointToken::new(10), 100)
+            .unwrap();
+        let checkpoint_id = coordinator
+            .begin_checkpoint(CheckpointToken::new(20), 101)
+            .unwrap();
         assert_eq!(checkpoint_id, 2);
-        coordinator.abort_checkpoint(20).unwrap();
+        coordinator
+            .abort_checkpoint(CheckpointToken::new(20))
+            .unwrap();
         assert_eq!(
             coordinator.recovery_plan(),
             RecoveryPlan {

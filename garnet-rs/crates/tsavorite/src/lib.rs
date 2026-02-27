@@ -23,6 +23,7 @@ pub use aof_log::AofWriterConfig;
 pub use aof_log::compact_aof_file;
 pub use checkpoint_aof_coordinator::CheckpointAofCoordinator;
 pub use checkpoint_aof_coordinator::CheckpointAofCoordinatorError;
+pub use checkpoint_aof_coordinator::CheckpointToken;
 pub use checkpoint_aof_coordinator::RecoveryPlan;
 pub use checkpoint_state_machine::CheckpointMode;
 pub use checkpoint_state_machine::CheckpointPhase;
