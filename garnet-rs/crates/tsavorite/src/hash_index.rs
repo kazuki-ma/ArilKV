@@ -48,6 +48,12 @@ pub struct HashEntryLocation {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BucketEntryMatch {
+    slot: usize,
+    word: PackedEntryWord,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashIndexError {
     InvalidSizeBits { size_bits: u8 },
     InvalidTentativeEntry(HashBucketEntryError),
@@ -201,7 +207,7 @@ impl HashIndex {
         let mut cursor = BucketCursor::Primary(primary_bucket);
 
         loop {
-            if let Some((slot, word)) = self.find_tag_slot_and_word_in_bucket(
+            if let Some(entry_match) = self.find_tag_slot_and_word_in_bucket(
                 cursor.bucket(),
                 location.tag,
                 Ordering::Acquire,
@@ -209,8 +215,8 @@ impl HashIndex {
                 return Some(HashEntryLocation {
                     bucket_index: location.bucket_index,
                     overflow_bucket_address: cursor.overflow_bucket_address(),
-                    slot,
-                    word,
+                    slot: entry_match.slot,
+                    word: entry_match.word,
                 });
             }
 
@@ -554,7 +560,7 @@ impl HashIndex {
         bucket: &HashBucket,
         tag: u16,
         ordering: Ordering,
-    ) -> Option<(usize, PackedEntryWord)> {
+    ) -> Option<BucketEntryMatch> {
         for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
             let entry = bucket
                 .entry(slot)
@@ -567,7 +573,7 @@ impl HashIndex {
             if HashBucketEntry::tag_from_word(word) == tag
                 && !HashBucketEntry::tentative_from_word(word)
             {
-                return Some((slot, word));
+                return Some(BucketEntryMatch { slot, word });
             }
         }
         None
