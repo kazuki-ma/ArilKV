@@ -1492,14 +1492,15 @@ impl RequestProcessor {
         response_out.extend_from_slice((args.len() - 2).to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for token in &args[2..] {
-            let Some((name, subcommand)) = split_command_token(token) else {
+            let Some(command_token) = split_command_token(token) else {
                 response_out.extend_from_slice(b"*0\r\n");
                 continue;
             };
-            let command_id = command_id_from_name(name);
-            let subcommand_known =
-                subcommand.is_some_and(|value| command_subcommand_known(name, value));
-            if command_id.is_none() || (subcommand.is_some() && !subcommand_known) {
+            let command_id = command_id_from_name(command_token.name);
+            let subcommand_known = command_token
+                .subcommand
+                .is_some_and(|value| command_subcommand_known(command_token.name, value));
+            if command_id.is_none() || (command_token.subcommand.is_some() && !subcommand_known) {
                 response_out.extend_from_slice(b"*0\r\n");
                 continue;
             }
@@ -1513,7 +1514,7 @@ impl RequestProcessor {
                     b"readonly".as_slice()
                 });
                 arity = command_arity_for_command_info(id);
-                if command_has_movablekeys(id, subcommand) {
+                if command_has_movablekeys(id, command_token.subcommand) {
                     flags.push(b"movablekeys");
                 }
             }
@@ -3187,7 +3188,12 @@ fn command_root_name(entry: &[u8]) -> &[u8] {
     &entry[..separator]
 }
 
-fn split_command_token(token: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
+struct CommandTokenParts<'a> {
+    name: &'a [u8],
+    subcommand: Option<&'a [u8]>,
+}
+
+fn split_command_token(token: &[u8]) -> Option<CommandTokenParts<'_>> {
     let mut sections = token.split(|byte| *byte == b'|');
     let name = sections.next()?;
     if name.is_empty() {
@@ -3197,16 +3203,17 @@ fn split_command_token(token: &[u8]) -> Option<(&[u8], Option<&[u8]>)> {
     if sections.next().is_some() {
         return None;
     }
-    Some((name, subcommand))
+    Some(CommandTokenParts { name, subcommand })
 }
 
 fn command_subcommand_known(command: &[u8], subcommand: &[u8]) -> bool {
     COMMAND_LIST_EXTRA_NAMES.iter().any(|entry| {
-        let Some((entry_command, entry_subcommand)) = split_command_token(entry) else {
+        let Some(entry_command) = split_command_token(entry) else {
             return false;
         };
-        entry_subcommand.is_some_and(|value| {
-            ascii_eq_ignore_case(entry_command, command) && ascii_eq_ignore_case(value, subcommand)
+        entry_command.subcommand.is_some_and(|value| {
+            ascii_eq_ignore_case(entry_command.name, command)
+                && ascii_eq_ignore_case(value, subcommand)
         })
     })
 }
