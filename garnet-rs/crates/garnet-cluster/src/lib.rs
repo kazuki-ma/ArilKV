@@ -4906,14 +4906,14 @@ mod tests {
 
     #[derive(Default)]
     struct MockTransport {
-        fail_on_worker: Option<u16>,
-        calls: Vec<u16>,
+        fail_on_worker: Option<WorkerId>,
+        calls: Vec<WorkerId>,
     }
 
     impl GossipTransport for MockTransport {
         type Error = ();
 
-        fn try_gossip(&mut self, worker_id: u16) -> Result<(), Self::Error> {
+        fn try_gossip(&mut self, worker_id: WorkerId) -> Result<(), Self::Error> {
             self.calls.push(worker_id);
             if self.fail_on_worker == Some(worker_id) {
                 Err(())
@@ -4943,12 +4943,12 @@ mod tests {
         ];
         let mut coordinator = GossipCoordinator::new(nodes, 3);
         let mut transport = MockTransport {
-            fail_on_worker: Some(20),
+            fail_on_worker: Some(WorkerId::new(20)),
             calls: Vec::new(),
         };
 
         let report = coordinator.run_round(100, 100, &mut transport);
-        assert!(report.attempted_worker_ids.contains(&20));
+        assert!(report.attempted_worker_ids.contains(&WorkerId::new(20)));
         assert!(report.failure_count >= 1);
         assert!(report.success_count >= 1);
     }
@@ -4981,13 +4981,13 @@ mod tests {
         let mut engine = GossipEngine::new(coordinator, transport, 100, 0);
         let _ = engine.run_once();
 
-        assert_eq!(engine.transport().calls, vec![1]);
+        assert_eq!(engine.transport().calls, vec![WorkerId::new(1)]);
     }
 
     #[derive(Default)]
     struct AsyncMockTransport {
-        fail_on_worker: Option<u16>,
-        calls: Vec<u16>,
+        fail_on_worker: Option<WorkerId>,
+        calls: Vec<WorkerId>,
     }
 
     impl AsyncGossipTransport for AsyncMockTransport {
@@ -4997,7 +4997,7 @@ mod tests {
         where
             Self: 'a;
 
-        fn try_gossip<'a>(&'a mut self, worker_id: u16) -> Self::Fut<'a> {
+        fn try_gossip<'a>(&'a mut self, worker_id: WorkerId) -> Self::Fut<'a> {
             self.calls.push(worker_id);
             std::future::ready(if self.fail_on_worker == Some(worker_id) {
                 Err(())
@@ -5016,12 +5016,12 @@ mod tests {
         ];
         let mut coordinator = GossipCoordinator::new(nodes, 3);
         let mut transport = AsyncMockTransport {
-            fail_on_worker: Some(20),
+            fail_on_worker: Some(WorkerId::new(20)),
             calls: Vec::new(),
         };
 
         let report = coordinator.run_round_async(100, 100, &mut transport).await;
-        assert!(report.attempted_worker_ids.contains(&20));
+        assert!(report.attempted_worker_ids.contains(&WorkerId::new(20)));
         assert!(report.failure_count >= 1);
         assert!(report.success_count >= 1);
     }
