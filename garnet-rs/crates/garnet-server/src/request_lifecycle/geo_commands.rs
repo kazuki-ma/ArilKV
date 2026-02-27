@@ -31,9 +31,16 @@ const STANDARD_GEOHASH_BITS: u32 = STANDARD_GEOHASH_STEP * 2;
 
 #[derive(Default)]
 struct GeoAddOptions {
-    nx: bool,
-    xx: bool,
+    mode: GeoAddMode,
     ch: bool,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum GeoAddMode {
+    #[default]
+    Any,
+    Nx,
+    Xx,
 }
 
 #[derive(Clone)]
@@ -164,13 +171,16 @@ impl RequestProcessor {
             let member = args[index + 2];
             let previous = zset.get(member).copied();
 
-            if options.nx && previous.is_some() {
-                index += 3;
-                continue;
-            }
-            if options.xx && previous.is_none() {
-                index += 3;
-                continue;
+            match options.mode {
+                GeoAddMode::Nx if previous.is_some() => {
+                    index += 3;
+                    continue;
+                }
+                GeoAddMode::Xx if previous.is_none() => {
+                    index += 3;
+                    continue;
+                }
+                _ => {}
             }
 
             let score = encode_geo_score(longitude, latitude);
@@ -488,12 +498,18 @@ fn parse_geoadd_options(
     while index < args.len() {
         let token = args[index];
         if ascii_eq_ignore_case(token, b"NX") {
-            options.nx = true;
+            if options.mode == GeoAddMode::Xx {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.mode = GeoAddMode::Nx;
             index += 1;
             continue;
         }
         if ascii_eq_ignore_case(token, b"XX") {
-            options.xx = true;
+            if options.mode == GeoAddMode::Nx {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.mode = GeoAddMode::Xx;
             index += 1;
             continue;
         }
@@ -506,9 +522,6 @@ fn parse_geoadd_options(
             return Err(RequestExecutionError::SyntaxError);
         }
         break;
-    }
-    if options.nx && options.xx {
-        return Err(RequestExecutionError::SyntaxError);
     }
     Ok((options, index))
 }
