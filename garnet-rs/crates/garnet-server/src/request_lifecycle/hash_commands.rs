@@ -649,11 +649,10 @@ impl RequestProcessor {
         )?;
 
         let key = RedisKey::from(args[1]);
-        let (expiration_unix_millis, fields_index, expire_if_past_immediately) =
-            parse_hsetex_options(args)?;
+        let expire_options = parse_hsetex_options(args)?;
         let field_values = parse_hash_fields_with_values(
             args,
-            fields_index,
+            expire_options.fields_index,
             "HSETEX",
             "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
         )?;
@@ -670,11 +669,15 @@ impl RequestProcessor {
             if hash.insert((*field).to_vec(), (*value).to_vec()).is_none() {
                 inserted += 1;
             }
-            self.set_hash_field_expiration_unix_millis(&key, field, expiration_unix_millis);
+            self.set_hash_field_expiration_unix_millis(
+                &key,
+                field,
+                expire_options.expiration_unix_millis,
+            );
         }
 
-        if expire_if_past_immediately {
-            if let Some(expiration) = expiration_unix_millis {
+        if expire_options.expire_if_past_immediately {
+            if let Some(expiration) = expire_options.expiration_unix_millis {
                 if expiration
                     <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
                 {
@@ -704,11 +707,10 @@ impl RequestProcessor {
             "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
         )?;
         let key = RedisKey::from(args[1]);
-        let (expiration_unix_millis, fields_index, expire_if_past_immediately) =
-            parse_hgetex_options(args)?;
+        let expire_options = parse_hgetex_options(args)?;
         let fields = parse_hash_fields(
             args,
-            fields_index,
+            expire_options.fields_index,
             "HGETEX",
             "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
         )?;
@@ -739,14 +741,18 @@ impl RequestProcessor {
 
         for field in &fields {
             if hash.contains_key(*field) {
-                self.set_hash_field_expiration_unix_millis(&key, field, expiration_unix_millis);
+                self.set_hash_field_expiration_unix_millis(
+                    &key,
+                    field,
+                    expire_options.expiration_unix_millis,
+                );
             } else {
                 self.set_hash_field_expiration_unix_millis(&key, field, None);
             }
         }
 
-        if expire_if_past_immediately {
-            if let Some(expiration) = expiration_unix_millis {
+        if expire_options.expire_if_past_immediately {
+            if let Some(expiration) = expire_options.expiration_unix_millis {
                 if expiration
                     <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
                 {
@@ -755,7 +761,7 @@ impl RequestProcessor {
             }
         }
 
-        if lazy_expired || expiration_unix_millis.is_some() {
+        if lazy_expired || expire_options.expiration_unix_millis.is_some() {
             self.persist_hash_after_field_expiration(&key, &hash)?;
         }
         Ok(())
@@ -1302,9 +1308,7 @@ fn looks_like_signed_integer(input: &[u8]) -> bool {
     index < input.len() && input[index..].iter().all(u8::is_ascii_digit)
 }
 
-fn parse_hsetex_options(
-    args: &[&[u8]],
-) -> Result<(Option<u64>, usize, bool), RequestExecutionError> {
+fn parse_hsetex_options(args: &[&[u8]]) -> Result<ParsedHashExpireOptions, RequestExecutionError> {
     if args.len() < 5 {
         return Err(RequestExecutionError::WrongArity {
             command: "HSETEX",
@@ -1312,7 +1316,11 @@ fn parse_hsetex_options(
         });
     }
     if ascii_eq_ignore_case(args[2], b"FIELDS") {
-        return Ok((None, 2, false));
+        return Ok(ParsedHashExpireOptions {
+            expiration_unix_millis: None,
+            fields_index: 2,
+            expire_if_past_immediately: false,
+        });
     }
     if args.len() < 7 {
         return Err(RequestExecutionError::WrongArity {
@@ -1343,12 +1351,14 @@ fn parse_hsetex_options(
     if !ascii_eq_ignore_case(args[4], b"FIELDS") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    Ok((Some(expiration_unix_millis), 4, expire_if_past_immediately))
+    Ok(ParsedHashExpireOptions {
+        expiration_unix_millis: Some(expiration_unix_millis),
+        fields_index: 4,
+        expire_if_past_immediately,
+    })
 }
 
-fn parse_hgetex_options(
-    args: &[&[u8]],
-) -> Result<(Option<u64>, usize, bool), RequestExecutionError> {
+fn parse_hgetex_options(args: &[&[u8]]) -> Result<ParsedHashExpireOptions, RequestExecutionError> {
     if args.len() < 4 {
         return Err(RequestExecutionError::WrongArity {
             command: "HGETEX",
@@ -1356,7 +1366,11 @@ fn parse_hgetex_options(
         });
     }
     if ascii_eq_ignore_case(args[2], b"FIELDS") {
-        return Ok((None, 2, false));
+        return Ok(ParsedHashExpireOptions {
+            expiration_unix_millis: None,
+            fields_index: 2,
+            expire_if_past_immediately: false,
+        });
     }
     if args.len() < 6 {
         return Err(RequestExecutionError::WrongArity {
@@ -1387,7 +1401,17 @@ fn parse_hgetex_options(
     if !ascii_eq_ignore_case(args[4], b"FIELDS") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    Ok((Some(expiration_unix_millis), 4, expire_if_past_immediately))
+    Ok(ParsedHashExpireOptions {
+        expiration_unix_millis: Some(expiration_unix_millis),
+        fields_index: 4,
+        expire_if_past_immediately,
+    })
+}
+
+struct ParsedHashExpireOptions {
+    expiration_unix_millis: Option<u64>,
+    fields_index: usize,
+    expire_if_past_immediately: bool,
 }
 
 fn parse_hash_fields<'a>(
