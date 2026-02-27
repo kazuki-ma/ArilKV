@@ -1958,6 +1958,12 @@ pub struct FailoverControllerOutcome {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FailedWorkerOutcome {
+    pub failed_worker_id: WorkerId,
+    pub outcome: FailoverControllerOutcome,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FailoverExecutionRecord {
     pub failed_worker_id: WorkerId,
     pub synchronized_replicas: Vec<SynchronizedReplica>,
@@ -2057,7 +2063,7 @@ impl ClusterFailoverController {
         replication_manager: &mut ReplicationManager,
         failed_worker_ids: &[WorkerId],
         transport: &mut T,
-    ) -> Result<Vec<(WorkerId, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
+    ) -> Result<Vec<FailedWorkerOutcome>, FailoverControllerError<T::Error>> {
         let mut failed_primaries = Vec::new();
         {
             let snapshot = config_store.load();
@@ -2077,7 +2083,10 @@ impl ClusterFailoverController {
             let outcome =
                 self.handle_failed_primary(config_store, replication_manager, &node_id, transport)?;
             if outcome.failover_plan.is_some() || !outcome.synchronized_replicas.is_empty() {
-                outcomes.push((worker_id, outcome));
+                outcomes.push(FailedWorkerOutcome {
+                    failed_worker_id: worker_id,
+                    outcome,
+                });
             }
         }
         Ok(outcomes)
@@ -2089,7 +2098,7 @@ impl ClusterFailoverController {
         replication_manager: &mut ReplicationManager,
         failed_worker_ids: &[WorkerId],
         transport: &mut T,
-    ) -> Result<Vec<(WorkerId, FailoverControllerOutcome)>, FailoverControllerError<T::Error>> {
+    ) -> Result<Vec<FailedWorkerOutcome>, FailoverControllerError<T::Error>> {
         let mut failed_primaries = Vec::new();
         {
             let snapshot = config_store.load();
@@ -2110,7 +2119,10 @@ impl ClusterFailoverController {
                 .handle_failed_primary_async(config_store, replication_manager, &node_id, transport)
                 .await?;
             if outcome.failover_plan.is_some() || !outcome.synchronized_replicas.is_empty() {
-                outcomes.push((worker_id, outcome));
+                outcomes.push(FailedWorkerOutcome {
+                    failed_worker_id: worker_id,
+                    outcome,
+                });
             }
         }
         Ok(outcomes)
@@ -2887,7 +2899,11 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
                     replication_transport,
                 )
                 .await?;
-            for (failed_worker_id, outcome) in outcomes {
+            for failed_worker_outcome in outcomes {
+                let FailedWorkerOutcome {
+                    failed_worker_id,
+                    outcome,
+                } = failed_worker_outcome;
                 if let Some(plan) = outcome.failover_plan {
                     failover_records.push(FailoverExecutionRecord {
                         failed_worker_id,
@@ -4673,14 +4689,14 @@ mod tests {
             )
             .unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].0, failed_primary_id);
+        assert_eq!(outcomes[0].failed_worker_id, failed_primary_id);
         assert_eq!(
             store.load().slot_assigned_owner(454).unwrap(),
             LOCAL_WORKER_ID
         );
         assert_eq!(
             outcomes[0]
-                .1
+                .outcome
                 .failover_plan
                 .as_ref()
                 .map(|plan| plan.promoted_worker_id),
@@ -4720,7 +4736,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(outcomes.len(), 1);
-        assert_eq!(outcomes[0].0, failed_primary_id);
+        assert_eq!(outcomes[0].failed_worker_id, failed_primary_id);
         assert_eq!(
             store.load().slot_assigned_owner(455).unwrap(),
             LOCAL_WORKER_ID
