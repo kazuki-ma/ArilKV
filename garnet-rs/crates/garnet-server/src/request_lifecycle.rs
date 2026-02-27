@@ -105,6 +105,18 @@ impl WatchVersion {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct WatchedKey {
+    pub(crate) key: RedisKey,
+    pub(crate) version: WatchVersion,
+}
+
+impl WatchedKey {
+    pub(crate) const fn new(key: RedisKey, version: WatchVersion) -> Self {
+        Self { key, version }
+    }
+}
+
 fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     let mut values = HashMap::new();
     values.insert(b"appendonly".to_vec(), b"no".to_vec());
@@ -978,19 +990,16 @@ impl RequestProcessor {
         Ok(Some(value.len()))
     }
 
-    pub(crate) fn refresh_watched_keys_before_exec(
-        &self,
-        watched_keys: &[(RedisKey, WatchVersion)],
-    ) {
-        for (key, _) in watched_keys {
-            let _ = self.expire_key_if_needed(key.as_slice());
+    pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[WatchedKey]) {
+        for watched in watched_keys {
+            let _ = self.expire_key_if_needed(watched.key.as_slice());
         }
     }
 
-    pub(crate) fn watch_versions_match(&self, watched_keys: &[(RedisKey, WatchVersion)]) -> bool {
+    pub(crate) fn watch_versions_match(&self, watched_keys: &[WatchedKey]) -> bool {
         watched_keys
             .iter()
-            .all(|(key, expected)| self.watch_key_version(key.as_slice()) == *expected)
+            .all(|watched| self.watch_key_version(watched.key.as_slice()) == watched.version)
     }
 
     pub(super) fn set_resp_protocol_version(&self, version: RespProtocolVersion) {

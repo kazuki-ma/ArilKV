@@ -13,12 +13,13 @@ use crate::dispatch_from_arg_slices;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::ShardIndex;
 use crate::request_lifecycle::WatchVersion;
+use crate::request_lifecycle::WatchedKey;
 
 #[derive(Default)]
 pub(crate) struct ConnectionTransactionState {
     pub(crate) in_multi: bool,
     pub(crate) queued_frames: Vec<Vec<u8>>,
-    pub(crate) watched_keys: Vec<(RedisKey, WatchVersion)>,
+    pub(crate) watched_keys: Vec<WatchedKey>,
     pub(crate) transaction_slot: Option<SlotNumber>,
     pub(crate) aborted: bool,
     pub(crate) aborted_due_to_busy_script: bool,
@@ -39,15 +40,16 @@ impl ConnectionTransactionState {
     }
 
     pub(crate) fn watch_key(&mut self, key: &[u8], version: WatchVersion) {
-        if let Some((_, watched_version)) = self
+        if let Some(watched) = self
             .watched_keys
             .iter_mut()
-            .find(|(watched_key, _)| watched_key.as_slice() == key)
+            .find(|watched| watched.key.as_slice() == key)
         {
-            *watched_version = version;
+            watched.version = version;
             return;
         }
-        self.watched_keys.push((RedisKey::from(key), version));
+        self.watched_keys
+            .push(WatchedKey::new(RedisKey::from(key), version));
     }
 
     pub(crate) fn set_transaction_slot_or_abort(&mut self, slot: SlotNumber) -> bool {
