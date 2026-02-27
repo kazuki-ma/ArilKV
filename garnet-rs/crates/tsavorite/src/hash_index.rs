@@ -7,6 +7,7 @@ use crate::hash_bucket::HashBucket;
 use crate::hash_bucket_entry::ADDRESS_MASK;
 use crate::hash_bucket_entry::HashBucketEntry;
 use crate::hash_bucket_entry::HashBucketEntryError;
+use crate::hash_bucket_entry::PackedEntryWord;
 use crate::hybrid_log::LogicalAddress;
 use crate::overflow_bucket_allocator::OverflowBucketAllocator;
 use crate::overflow_bucket_allocator::OverflowBucketAllocatorError;
@@ -43,7 +44,7 @@ pub struct HashEntryLocation {
     pub bucket_index: u64,
     pub overflow_bucket_address: Option<u64>,
     pub slot: usize,
-    pub word: u64,
+    pub word: PackedEntryWord,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -529,7 +530,7 @@ impl HashIndex {
         bucket: &HashBucket,
         tag: u16,
         ordering: Ordering,
-    ) -> Option<u64> {
+    ) -> Option<PackedEntryWord> {
         for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
             let entry = bucket
                 .entry(slot)
@@ -553,7 +554,7 @@ impl HashIndex {
         bucket: &HashBucket,
         tag: u16,
         ordering: Ordering,
-    ) -> Option<(usize, u64)> {
+    ) -> Option<(usize, PackedEntryWord)> {
         for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
             let entry = bucket
                 .entry(slot)

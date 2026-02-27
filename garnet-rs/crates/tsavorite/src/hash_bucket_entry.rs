@@ -24,6 +24,34 @@ pub const PENDING_BIT_MASK: u64 = 1u64 << PENDING_BIT_SHIFT;
 pub const TENTATIVE_BIT_SHIFT: u32 = 63;
 pub const TENTATIVE_BIT_MASK: u64 = 1u64 << TENTATIVE_BIT_SHIFT;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
+pub struct PackedEntryWord(u64);
+
+impl PackedEntryWord {
+    pub const fn new(raw: u64) -> Self {
+        Self(raw)
+    }
+}
+
+impl core::fmt::Display for PackedEntryWord {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+impl From<u64> for PackedEntryWord {
+    fn from(value: u64) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<PackedEntryWord> for u64 {
+    fn from(value: PackedEntryWord) -> Self {
+        value.0
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashBucketEntryError {
     TagOutOfRange {
@@ -67,7 +95,7 @@ pub struct HashBucketEntry {
 }
 
 impl HashBucketEntry {
-    pub const EMPTY_WORD: u64 = 0;
+    pub const EMPTY_WORD: PackedEntryWord = PackedEntryWord::new(0);
 
     #[inline]
     pub const fn max_tag() -> u16 {
@@ -84,7 +112,7 @@ impl HashBucketEntry {
         address: LogicalAddress,
         tentative: bool,
         pending: bool,
-    ) -> Result<u64, HashBucketEntryError> {
+    ) -> Result<PackedEntryWord, HashBucketEntryError> {
         if u64::from(tag) > TAG_MASK {
             return Err(HashBucketEntryError::TagOutOfRange {
                 tag,
@@ -108,39 +136,39 @@ impl HashBucketEntry {
             word |= PENDING_BIT_MASK;
         }
 
-        Ok(word)
+        Ok(PackedEntryWord::new(word))
     }
 
     #[inline]
-    pub const fn address_from_word(word: u64) -> LogicalAddress {
-        LogicalAddress(word & ADDRESS_MASK)
+    pub const fn address_from_word(word: PackedEntryWord) -> LogicalAddress {
+        LogicalAddress(word.0 & ADDRESS_MASK)
     }
 
     #[inline]
-    pub const fn tag_from_word(word: u64) -> u16 {
-        ((word & TAG_POSITION_MASK) >> TAG_SHIFT) as u16
+    pub const fn tag_from_word(word: PackedEntryWord) -> u16 {
+        ((word.0 & TAG_POSITION_MASK) >> TAG_SHIFT) as u16
     }
 
     #[inline]
-    pub const fn tentative_from_word(word: u64) -> bool {
-        (word & TENTATIVE_BIT_MASK) != 0
+    pub const fn tentative_from_word(word: PackedEntryWord) -> bool {
+        (word.0 & TENTATIVE_BIT_MASK) != 0
     }
 
     #[inline]
-    pub const fn pending_from_word(word: u64) -> bool {
-        (word & PENDING_BIT_MASK) != 0
+    pub const fn pending_from_word(word: PackedEntryWord) -> bool {
+        (word.0 & PENDING_BIT_MASK) != 0
     }
 
     #[inline]
-    pub const fn read_cache_from_word(word: u64) -> bool {
-        (word & READ_CACHE_BIT_MASK) != 0
+    pub const fn read_cache_from_word(word: PackedEntryWord) -> bool {
+        (word.0 & READ_CACHE_BIT_MASK) != 0
     }
 
     #[inline]
     pub const fn with_address(
-        word: u64,
+        word: PackedEntryWord,
         address: LogicalAddress,
-    ) -> Result<u64, HashBucketEntryError> {
+    ) -> Result<PackedEntryWord, HashBucketEntryError> {
         if address.raw() > ADDRESS_MASK {
             return Err(HashBucketEntryError::AddressOutOfRange {
                 address,
@@ -148,24 +176,26 @@ impl HashBucketEntry {
             });
         }
 
-        Ok((word & !ADDRESS_MASK) | (address.raw() & ADDRESS_MASK))
+        Ok(PackedEntryWord::new(
+            (word.0 & !ADDRESS_MASK) | (address.raw() & ADDRESS_MASK),
+        ))
     }
 
     #[inline]
-    pub const fn with_tentative(word: u64, tentative: bool) -> u64 {
+    pub const fn with_tentative(word: PackedEntryWord, tentative: bool) -> PackedEntryWord {
         if tentative {
-            word | TENTATIVE_BIT_MASK
+            PackedEntryWord::new(word.0 | TENTATIVE_BIT_MASK)
         } else {
-            word & !TENTATIVE_BIT_MASK
+            PackedEntryWord::new(word.0 & !TENTATIVE_BIT_MASK)
         }
     }
 
     #[inline]
-    pub const fn with_pending(word: u64, pending: bool) -> u64 {
+    pub const fn with_pending(word: PackedEntryWord, pending: bool) -> PackedEntryWord {
         if pending {
-            word | PENDING_BIT_MASK
+            PackedEntryWord::new(word.0 | PENDING_BIT_MASK)
         } else {
-            word & !PENDING_BIT_MASK
+            PackedEntryWord::new(word.0 & !PENDING_BIT_MASK)
         }
     }
 
@@ -178,49 +208,52 @@ impl HashBucketEntry {
     ) -> Result<Self, HashBucketEntryError> {
         let word = Self::pack(tag, address, tentative, pending)?;
         Ok(Self {
-            word: AtomicU64::new(word),
+            word: AtomicU64::new(u64::from(word)),
         })
     }
 
     #[inline]
-    pub const fn from_packed(word: u64) -> Self {
+    pub const fn from_packed(word: PackedEntryWord) -> Self {
         Self {
-            word: AtomicU64::new(word),
+            word: AtomicU64::new(word.0),
         }
     }
 
     #[inline]
-    pub fn load(&self, ordering: Ordering) -> u64 {
-        self.word.load(ordering)
+    pub fn load(&self, ordering: Ordering) -> PackedEntryWord {
+        PackedEntryWord::new(self.word.load(ordering))
     }
 
     #[inline]
-    pub fn store(&self, word: u64, ordering: Ordering) {
-        self.word.store(word, ordering);
+    pub fn store(&self, word: PackedEntryWord, ordering: Ordering) {
+        self.word.store(u64::from(word), ordering);
     }
 
     #[inline]
     pub fn compare_exchange_word(
         &self,
-        current: u64,
-        new: u64,
+        current: PackedEntryWord,
+        new: PackedEntryWord,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<u64, u64> {
-        self.word.compare_exchange(current, new, success, failure)
+    ) -> Result<PackedEntryWord, PackedEntryWord> {
+        self.word
+            .compare_exchange(u64::from(current), u64::from(new), success, failure)
+            .map(PackedEntryWord::new)
+            .map_err(PackedEntryWord::new)
     }
 
     #[inline]
     pub fn compare_exchange_parts(
         &self,
-        current: u64,
+        current: PackedEntryWord,
         tag: u16,
         address: LogicalAddress,
         tentative: bool,
         pending: bool,
         success: Ordering,
         failure: Ordering,
-    ) -> Result<u64, HashBucketEntryCasError> {
+    ) -> Result<PackedEntryWord, HashBucketEntryCasError> {
         let new = Self::pack(tag, address, tentative, pending)
             .map_err(HashBucketEntryCasError::InvalidNewWord)?;
 
@@ -268,7 +301,7 @@ impl Default for HashBucketEntry {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashBucketEntryCasError {
     InvalidNewWord(HashBucketEntryError),
-    CompareExchangeFailed(u64),
+    CompareExchangeFailed(PackedEntryWord),
 }
 
 impl core::fmt::Display for HashBucketEntryCasError {
@@ -279,7 +312,7 @@ impl core::fmt::Display for HashBucketEntryCasError {
                 write!(
                     f,
                     "compare_exchange failed; observed current word {}",
-                    actual
+                    u64::from(*actual)
                 )
             }
         }

@@ -56,6 +56,7 @@ pub use hash_bucket_entry::HashBucketEntryCasError;
 pub use hash_bucket_entry::HashBucketEntryError;
 pub use hash_bucket_entry::PENDING_BIT_MASK;
 pub use hash_bucket_entry::PENDING_BIT_SHIFT;
+pub use hash_bucket_entry::PackedEntryWord;
 pub use hash_bucket_entry::READ_CACHE_BIT_MASK;
 pub use hash_bucket_entry::READ_CACHE_BIT_SHIFT;
 pub use hash_bucket_entry::TAG_BITS;

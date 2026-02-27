@@ -269,8 +269,8 @@ where
     Ok(UpsertOperationStatus::Inserted)
 }
 
-fn entry_address(word: u64) -> LogicalAddress {
-    LogicalAddress(word & crate::ADDRESS_MASK)
+fn entry_address(word: crate::PackedEntryWord) -> LogicalAddress {
+    crate::HashBucketEntry::address_from_word(word)
 }
 
 fn find_matching_record_in_chain<F>(
