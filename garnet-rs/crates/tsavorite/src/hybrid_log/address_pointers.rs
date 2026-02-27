@@ -5,15 +5,17 @@
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
+use crate::hybrid_log::LogicalAddress;
+
 /// Immutable snapshot of hybrid-log region pointers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LogAddressPointersSnapshot {
-    pub tail_address: u64,
-    pub read_only_address: u64,
-    pub safe_read_only_address: u64,
-    pub head_address: u64,
-    pub safe_head_address: u64,
-    pub begin_address: u64,
+    pub tail_address: LogicalAddress,
+    pub read_only_address: LogicalAddress,
+    pub safe_read_only_address: LogicalAddress,
+    pub head_address: LogicalAddress,
+    pub safe_head_address: LogicalAddress,
+    pub begin_address: LogicalAddress,
 }
 
 /// Atomic pointer set partitioning the logical hybrid-log address space.
@@ -29,14 +31,14 @@ pub struct LogAddressPointers {
 
 impl LogAddressPointers {
     /// Creates a pointer set initialized at a single logical address.
-    pub fn new(initial_address: u64) -> Self {
+    pub fn new(initial_address: LogicalAddress) -> Self {
         Self {
-            tail_address: AtomicU64::new(initial_address),
-            read_only_address: AtomicU64::new(initial_address),
-            safe_read_only_address: AtomicU64::new(initial_address),
-            head_address: AtomicU64::new(initial_address),
-            safe_head_address: AtomicU64::new(initial_address),
-            begin_address: AtomicU64::new(initial_address),
+            tail_address: AtomicU64::new(initial_address.raw()),
+            read_only_address: AtomicU64::new(initial_address.raw()),
+            safe_read_only_address: AtomicU64::new(initial_address.raw()),
+            head_address: AtomicU64::new(initial_address.raw()),
+            safe_head_address: AtomicU64::new(initial_address.raw()),
+            begin_address: AtomicU64::new(initial_address.raw()),
         }
     }
 
@@ -53,81 +55,81 @@ impl LogAddressPointers {
     }
 
     #[inline]
-    pub fn tail_address(&self) -> u64 {
-        self.tail_address.load(Ordering::Acquire)
+    pub fn tail_address(&self) -> LogicalAddress {
+        LogicalAddress(self.tail_address.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn read_only_address(&self) -> u64 {
-        self.read_only_address.load(Ordering::Acquire)
+    pub fn read_only_address(&self) -> LogicalAddress {
+        LogicalAddress(self.read_only_address.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn safe_read_only_address(&self) -> u64 {
-        self.safe_read_only_address.load(Ordering::Acquire)
+    pub fn safe_read_only_address(&self) -> LogicalAddress {
+        LogicalAddress(self.safe_read_only_address.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn head_address(&self) -> u64 {
-        self.head_address.load(Ordering::Acquire)
+    pub fn head_address(&self) -> LogicalAddress {
+        LogicalAddress(self.head_address.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn safe_head_address(&self) -> u64 {
-        self.safe_head_address.load(Ordering::Acquire)
+    pub fn safe_head_address(&self) -> LogicalAddress {
+        LogicalAddress(self.safe_head_address.load(Ordering::Acquire))
     }
 
     #[inline]
-    pub fn begin_address(&self) -> u64 {
-        self.begin_address.load(Ordering::Acquire)
+    pub fn begin_address(&self) -> LogicalAddress {
+        LogicalAddress(self.begin_address.load(Ordering::Acquire))
     }
 
     /// Monotonically advances tail address and returns old value.
     #[inline]
-    pub fn advance_tail_by(&self, delta: u64) -> u64 {
-        self.tail_address.fetch_add(delta, Ordering::AcqRel)
+    pub fn advance_tail_by(&self, delta: u64) -> LogicalAddress {
+        LogicalAddress(self.tail_address.fetch_add(delta, Ordering::AcqRel))
     }
 
     /// Attempts to move tail address to `new_address` if it is greater than current value.
     #[inline]
-    pub fn shift_tail_address(&self, new_address: u64) -> bool {
-        monotonic_update(&self.tail_address, new_address)
+    pub fn shift_tail_address(&self, new_address: LogicalAddress) -> bool {
+        monotonic_update(&self.tail_address, new_address.raw())
     }
 
     /// Attempts to move read-only address to `new_address` if it is greater than current value.
     #[inline]
-    pub fn shift_read_only_address(&self, new_address: u64) -> bool {
-        monotonic_update(&self.read_only_address, new_address)
+    pub fn shift_read_only_address(&self, new_address: LogicalAddress) -> bool {
+        monotonic_update(&self.read_only_address, new_address.raw())
     }
 
     /// Attempts to move safe read-only address to `new_address` if it is greater than current value.
     #[inline]
-    pub fn shift_safe_read_only_address(&self, new_address: u64) -> bool {
-        monotonic_update(&self.safe_read_only_address, new_address)
+    pub fn shift_safe_read_only_address(&self, new_address: LogicalAddress) -> bool {
+        monotonic_update(&self.safe_read_only_address, new_address.raw())
     }
 
     /// Attempts to move head address to `new_address` if it is greater than current value.
     #[inline]
-    pub fn shift_head_address(&self, new_address: u64) -> bool {
-        monotonic_update(&self.head_address, new_address)
+    pub fn shift_head_address(&self, new_address: LogicalAddress) -> bool {
+        monotonic_update(&self.head_address, new_address.raw())
     }
 
     /// Attempts to move safe head address to `new_address` if it is greater than current value.
     #[inline]
-    pub fn shift_safe_head_address(&self, new_address: u64) -> bool {
-        monotonic_update(&self.safe_head_address, new_address)
+    pub fn shift_safe_head_address(&self, new_address: LogicalAddress) -> bool {
+        monotonic_update(&self.safe_head_address, new_address.raw())
     }
 
     /// Attempts to move begin address to `new_address` if it is greater than current value.
     #[inline]
-    pub fn shift_begin_address(&self, new_address: u64) -> bool {
-        monotonic_update(&self.begin_address, new_address)
+    pub fn shift_begin_address(&self, new_address: LogicalAddress) -> bool {
+        monotonic_update(&self.begin_address, new_address.raw())
     }
 }
 
 impl Default for LogAddressPointers {
     fn default() -> Self {
-        Self::new(0)
+        Self::new(LogicalAddress(0))
     }
 }
 
@@ -148,50 +150,50 @@ mod tests {
 
     #[test]
     fn pointers_start_from_initial_address() {
-        let pointers = LogAddressPointers::new(64);
+        let pointers = LogAddressPointers::new(LogicalAddress(64));
         let snapshot = pointers.snapshot();
 
-        assert_eq!(snapshot.tail_address, 64);
-        assert_eq!(snapshot.read_only_address, 64);
-        assert_eq!(snapshot.safe_read_only_address, 64);
-        assert_eq!(snapshot.head_address, 64);
-        assert_eq!(snapshot.safe_head_address, 64);
-        assert_eq!(snapshot.begin_address, 64);
+        assert_eq!(snapshot.tail_address, LogicalAddress(64));
+        assert_eq!(snapshot.read_only_address, LogicalAddress(64));
+        assert_eq!(snapshot.safe_read_only_address, LogicalAddress(64));
+        assert_eq!(snapshot.head_address, LogicalAddress(64));
+        assert_eq!(snapshot.safe_head_address, LogicalAddress(64));
+        assert_eq!(snapshot.begin_address, LogicalAddress(64));
     }
 
     #[test]
     fn monotonic_shifts_do_not_move_backwards() {
-        let pointers = LogAddressPointers::new(100);
-        assert!(pointers.shift_read_only_address(120));
-        assert!(!pointers.shift_read_only_address(110));
-        assert_eq!(pointers.read_only_address(), 120);
+        let pointers = LogAddressPointers::new(LogicalAddress(100));
+        assert!(pointers.shift_read_only_address(LogicalAddress(120)));
+        assert!(!pointers.shift_read_only_address(LogicalAddress(110)));
+        assert_eq!(pointers.read_only_address(), LogicalAddress(120));
     }
 
     #[test]
     fn tail_fetch_add_advances_monotonically() {
-        let pointers = LogAddressPointers::new(256);
+        let pointers = LogAddressPointers::new(LogicalAddress(256));
         let old = pointers.advance_tail_by(32);
 
-        assert_eq!(old, 256);
-        assert_eq!(pointers.tail_address(), 288);
+        assert_eq!(old, LogicalAddress(256));
+        assert_eq!(pointers.tail_address(), LogicalAddress(288));
     }
 
     #[test]
     fn independent_pointer_updates_are_visible_in_snapshot() {
-        let pointers = LogAddressPointers::new(0);
-        pointers.shift_begin_address(64);
-        pointers.shift_head_address(128);
-        pointers.shift_safe_head_address(192);
-        pointers.shift_read_only_address(224);
-        pointers.shift_safe_read_only_address(256);
-        pointers.shift_tail_address(320);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_begin_address(LogicalAddress(64));
+        pointers.shift_head_address(LogicalAddress(128));
+        pointers.shift_safe_head_address(LogicalAddress(192));
+        pointers.shift_read_only_address(LogicalAddress(224));
+        pointers.shift_safe_read_only_address(LogicalAddress(256));
+        pointers.shift_tail_address(LogicalAddress(320));
 
         let snapshot = pointers.snapshot();
-        assert_eq!(snapshot.begin_address, 64);
-        assert_eq!(snapshot.head_address, 128);
-        assert_eq!(snapshot.safe_head_address, 192);
-        assert_eq!(snapshot.read_only_address, 224);
-        assert_eq!(snapshot.safe_read_only_address, 256);
-        assert_eq!(snapshot.tail_address, 320);
+        assert_eq!(snapshot.begin_address, LogicalAddress(64));
+        assert_eq!(snapshot.head_address, LogicalAddress(128));
+        assert_eq!(snapshot.safe_head_address, LogicalAddress(192));
+        assert_eq!(snapshot.read_only_address, LogicalAddress(224));
+        assert_eq!(snapshot.safe_read_only_address, LogicalAddress(256));
+        assert_eq!(snapshot.tail_address, LogicalAddress(320));
     }
 }

@@ -127,13 +127,13 @@ where
 {
     let key_bytes = functions.key_to_record_bytes(key);
     let maybe_head_entry = context.hash_index.find_tag_entry(key_hash);
-    let mut previous_address = 0u64;
+    let mut previous_address = LogicalAddress(0);
     let mut matched_address = None;
     let mut matched_record = None;
 
     if let Some(head_entry) = maybe_head_entry {
         previous_address = entry_address(head_entry.word);
-        if previous_address != 0 {
+        if previous_address != LogicalAddress(0) {
             if let Some((address, record)) = find_matching_record_in_chain(
                 context.page_manager,
                 context.pointers.begin_address(),
@@ -176,7 +176,7 @@ where
                 if new_value_bytes.len() == record.value_bytes.len() {
                     rewrite_record(
                         context.page_manager,
-                        LogicalAddress(address),
+                        address,
                         &key_bytes,
                         &new_value_bytes,
                         updated_record_info,
@@ -268,22 +268,22 @@ where
     Ok(RmwOperationStatus::Inserted)
 }
 
-fn entry_address(word: u64) -> u64 {
-    word & crate::ADDRESS_MASK
+fn entry_address(word: u64) -> LogicalAddress {
+    LogicalAddress(word & crate::ADDRESS_MASK)
 }
 
 fn find_matching_record_in_chain<F>(
     page_manager: &mut PageManager,
-    begin_address: u64,
+    begin_address: LogicalAddress,
     functions: &F,
     key: &F::Key,
-    mut current_address: u64,
-) -> Result<Option<(u64, MaterializedRecord)>, RmwOperationError>
+    mut current_address: LogicalAddress,
+) -> Result<Option<(LogicalAddress, MaterializedRecord)>, RmwOperationError>
 where
     F: HybridLogRmwAdapter,
 {
-    while current_address != 0 && current_address >= begin_address {
-        let record = materialize_record_at(page_manager, LogicalAddress(current_address))?;
+    while current_address != LogicalAddress(0) && current_address >= begin_address {
+        let record = materialize_record_at(page_manager, current_address)?;
         if functions.record_key_equals(key, &record.key_bytes) {
             return Ok(Some((current_address, record)));
         }
@@ -335,7 +335,7 @@ fn append_record(
     key_bytes: &[u8],
     value_bytes: &[u8],
     record_info: RecordInfo,
-) -> Result<u64, RmwOperationError> {
+) -> Result<LogicalAddress, RmwOperationError> {
     let layout = RecordLayout::for_payload_lengths(key_bytes.len(), value_bytes.len())?;
     let allocated_size = layout.allocated_size;
     if allocated_size > page_manager.page_size() {
@@ -349,7 +349,7 @@ fn append_record(
     write_record(&mut record, record_info, key_bytes, value_bytes)?;
     let address = reserve_tail_space(page_manager, pointers, allocated_size)?;
     page_manager.write_at(address, &record)?;
-    Ok(address.raw())
+    Ok(address)
 }
 
 fn reserve_tail_space(
@@ -359,7 +359,7 @@ fn reserve_tail_space(
 ) -> Result<LogicalAddress, RmwOperationError> {
     loop {
         let old_tail = pointers.advance_tail_by(allocated_size as u64);
-        let logical = LogicalAddress(old_tail);
+        let logical = old_tail;
         let space = page_manager.address_space();
         let decoded = space.decode(logical);
         let page_index = decoded.page_index;
@@ -374,7 +374,7 @@ fn reserve_tail_space(
 
         let next_page = page_index + 1;
         let next_page_start = next_page << space.page_size_bits();
-        pointers.shift_tail_address(next_page_start);
+        pointers.shift_tail_address(LogicalAddress(next_page_start));
         if !page_manager.is_page_allocated(next_page) {
             page_manager.allocate_page(next_page)?;
         }
@@ -582,7 +582,7 @@ mod tests {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 8).unwrap();
         page_manager.allocate_page(0).unwrap();
-        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
 
         let key_hash = (31u64 << crate::HASH_TAG_SHIFT) | 0;
         seed_record(
@@ -594,8 +594,8 @@ mod tests {
             b"aaa",
         );
 
-        pointers.shift_safe_read_only_address(0);
-        pointers.shift_read_only_address(128);
+        pointers.shift_safe_read_only_address(LogicalAddress(0));
+        pointers.shift_read_only_address(LogicalAddress(128));
 
         let functions = ByteRmwFunctions;
         let mut rmw_info = RmwInfo::default();
@@ -628,7 +628,7 @@ mod tests {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 8).unwrap();
         page_manager.allocate_page(0).unwrap();
-        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
 
         let key_hash = (32u64 << crate::HASH_TAG_SHIFT) | 0;
         seed_record(
@@ -639,8 +639,8 @@ mod tests {
             b"key",
             b"aaa",
         );
-        pointers.shift_read_only_address(0);
-        pointers.shift_safe_read_only_address(0);
+        pointers.shift_read_only_address(LogicalAddress(0));
+        pointers.shift_safe_read_only_address(LogicalAddress(0));
 
         let before = hash_index.find_tag_address(key_hash).unwrap();
 
@@ -676,7 +676,7 @@ mod tests {
         let hash_index = HashIndex::with_size_bits(2).unwrap();
         let mut page_manager = PageManager::new(8, 8).unwrap();
         page_manager.allocate_page(0).unwrap();
-        let pointers = LogAddressPointers::new(crate::RECORD_ALIGNMENT as u64);
+        let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
 
         let key_hash = (33u64 << crate::HASH_TAG_SHIFT) | 0;
         seed_record(
@@ -687,8 +687,8 @@ mod tests {
             b"key",
             b"aaa",
         );
-        pointers.shift_safe_read_only_address(64);
-        pointers.shift_read_only_address(128);
+        pointers.shift_safe_read_only_address(LogicalAddress(64));
+        pointers.shift_read_only_address(LogicalAddress(128));
 
         let before = hash_index.find_tag_address(key_hash).unwrap();
 

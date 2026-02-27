@@ -7,6 +7,7 @@ use crate::hash_bucket::HashBucket;
 use crate::hash_bucket_entry::ADDRESS_MASK;
 use crate::hash_bucket_entry::HashBucketEntry;
 use crate::hash_bucket_entry::HashBucketEntryError;
+use crate::hybrid_log::LogicalAddress;
 use crate::overflow_bucket_allocator::OverflowBucketAllocator;
 use crate::overflow_bucket_allocator::OverflowBucketAllocatorError;
 use crate::overflow_bucket_allocator::OverflowBucketHandle;
@@ -15,7 +16,7 @@ use core::sync::atomic::Ordering;
 pub const HASH_TAG_BITS: u32 = 14;
 pub const HASH_TAG_SHIFT: u32 = 64 - HASH_TAG_BITS;
 pub const HASH_TAG_MASK: u64 = (1u64 << HASH_TAG_BITS) - 1;
-pub const TEMP_INVALID_ADDRESS: u64 = 1;
+pub const TEMP_INVALID_ADDRESS: LogicalAddress = LogicalAddress(1);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct HashLocation {
@@ -171,7 +172,7 @@ impl HashIndex {
     }
 
     /// Finds the address currently stored for a matching tag.
-    pub fn find_tag_address(&self, hash: u64) -> Option<u64> {
+    pub fn find_tag_address(&self, hash: u64) -> Option<LogicalAddress> {
         let location = self.locate_hash(hash);
         let primary_bucket = self.bucket(location.bucket_index)?;
         let mut cursor = BucketCursor::Primary(primary_bucket);
@@ -225,7 +226,7 @@ impl HashIndex {
     pub fn compare_exchange_entry_address(
         &self,
         location: &HashEntryLocation,
-        new_address: u64,
+        new_address: LogicalAddress,
     ) -> Result<bool, HashIndexError> {
         let desired_word = HashBucketEntry::with_address(location.word, new_address)
             .map_err(HashIndexError::InvalidTentativeEntry)?;
@@ -275,7 +276,7 @@ impl HashIndex {
     pub fn find_or_create_tag(
         &self,
         hash: u64,
-        begin_address: u64,
+        begin_address: LogicalAddress,
     ) -> Result<FindOrCreateTagResult, HashIndexError> {
         let location = self.locate_hash(hash);
         let primary_bucket = self
@@ -575,7 +576,7 @@ impl HashIndex {
         &self,
         bucket: &HashBucket,
         tag: u16,
-        begin_address: u64,
+        begin_address: LogicalAddress,
         ordering: Ordering,
     ) -> FindTagOrFreeSlot {
         let mut free_slot = None;
@@ -709,7 +710,7 @@ mod tests {
         let hash = (17u64 << HASH_TAG_SHIFT) | 1;
 
         let bucket = index.bucket_mut(1).unwrap();
-        let word = HashBucketEntry::pack(17, 1234, false, false).unwrap();
+        let word = HashBucketEntry::pack(17, LogicalAddress(1234), false, false).unwrap();
         bucket.entry(0).unwrap().store(word, Ordering::Release);
 
         assert_eq!(index.find_tag(hash), Some(0));
@@ -721,7 +722,7 @@ mod tests {
         let hash = (23u64 << HASH_TAG_SHIFT) | 2;
 
         let bucket = index.bucket_mut(2).unwrap();
-        let word = HashBucketEntry::pack(23, 5678, true, false).unwrap();
+        let word = HashBucketEntry::pack(23, LogicalAddress(5678), true, false).unwrap();
         bucket.entry(0).unwrap().store(word, Ordering::Release);
 
         assert_eq!(index.find_tag(hash), None);
@@ -732,13 +733,13 @@ mod tests {
         let index = HashIndex::with_size_bits(2).unwrap();
         let hash = (71u64 << HASH_TAG_SHIFT) | 1;
 
-        let created = index.find_or_create_tag(hash, 0).unwrap();
+        let created = index.find_or_create_tag(hash, LogicalAddress(0)).unwrap();
         assert_eq!(created.bucket_index, 1);
         assert_eq!(created.overflow_bucket_address, None);
         assert_eq!(created.status, FindOrCreateTagStatus::Created);
         assert_eq!(index.find_tag(hash), Some(created.slot));
 
-        let found = index.find_or_create_tag(hash, 0).unwrap();
+        let found = index.find_or_create_tag(hash, LogicalAddress(0)).unwrap();
         assert_eq!(found.bucket_index, 1);
         assert_eq!(found.overflow_bucket_address, None);
         assert_eq!(found.slot, created.slot);
@@ -754,23 +755,27 @@ mod tests {
             if slot == 2 {
                 continue;
             }
-            let live_word =
-                HashBucketEntry::pack((slot + 10) as u16, (1000 + slot) as u64, false, false)
-                    .unwrap();
+            let live_word = HashBucketEntry::pack(
+                (slot + 10) as u16,
+                LogicalAddress((1000 + slot) as u64),
+                false,
+                false,
+            )
+            .unwrap();
             bucket
                 .entry(slot)
                 .unwrap()
                 .store(live_word, Ordering::Release);
         }
 
-        let stale_word = HashBucketEntry::pack(1, 20, false, false).unwrap();
+        let stale_word = HashBucketEntry::pack(1, LogicalAddress(20), false, false).unwrap();
         bucket
             .entry(2)
             .unwrap()
             .store(stale_word, Ordering::Release);
 
         let hash = (42u64 << HASH_TAG_SHIFT) | 3;
-        let created = index.find_or_create_tag(hash, 100).unwrap();
+        let created = index.find_or_create_tag(hash, LogicalAddress(100)).unwrap();
 
         assert_eq!(created.slot, 2);
         assert_eq!(created.overflow_bucket_address, None);
@@ -784,15 +789,19 @@ mod tests {
         {
             let bucket = index.bucket_mut(0).unwrap();
             for slot in 0..HASH_BUCKET_DATA_ENTRY_COUNT {
-                let word =
-                    HashBucketEntry::pack((slot + 1) as u16, (1000 + slot) as u64, false, false)
-                        .unwrap();
+                let word = HashBucketEntry::pack(
+                    (slot + 1) as u16,
+                    LogicalAddress((1000 + slot) as u64),
+                    false,
+                    false,
+                )
+                .unwrap();
                 bucket.entry(slot).unwrap().store(word, Ordering::Release);
             }
         }
 
         let hash = (999u64 << HASH_TAG_SHIFT) | 0;
-        let created = index.find_or_create_tag(hash, 0).unwrap();
+        let created = index.find_or_create_tag(hash, LogicalAddress(0)).unwrap();
 
         assert_eq!(created.bucket_index, 0);
         assert_eq!(created.status, FindOrCreateTagStatus::Created);
@@ -814,7 +823,7 @@ mod tests {
         for _ in 0..8 {
             let index = Arc::clone(&index);
             handles.push(thread::spawn(move || {
-                index.find_or_create_tag(hash, 0).unwrap()
+                index.find_or_create_tag(hash, LogicalAddress(0)).unwrap()
             }));
         }
 
@@ -844,7 +853,7 @@ mod tests {
             let index = Arc::clone(&index);
             handles.push(thread::spawn(move || {
                 let hash = ((tag as u64) << HASH_TAG_SHIFT) | 0;
-                index.find_or_create_tag(hash, 0).unwrap()
+                index.find_or_create_tag(hash, LogicalAddress(0)).unwrap()
             }));
         }
 
@@ -882,7 +891,7 @@ mod tests {
     fn compare_exchange_entry_address_updates_tag_head() {
         let index = HashIndex::with_size_bits(2).unwrap();
         let hash = (88u64 << HASH_TAG_SHIFT) | 1;
-        let created = index.find_or_create_tag(hash, 0).unwrap();
+        let created = index.find_or_create_tag(hash, LogicalAddress(0)).unwrap();
 
         let entry = index.find_tag_entry(hash).unwrap();
         assert_eq!(entry.slot, created.slot);
@@ -891,8 +900,10 @@ mod tests {
             TEMP_INVALID_ADDRESS
         );
 
-        let updated = index.compare_exchange_entry_address(&entry, 1234).unwrap();
+        let updated = index
+            .compare_exchange_entry_address(&entry, LogicalAddress(1234))
+            .unwrap();
         assert!(updated);
-        assert_eq!(index.find_tag_address(hash), Some(1234));
+        assert_eq!(index.find_tag_address(hash), Some(LogicalAddress(1234)));
     }
 }

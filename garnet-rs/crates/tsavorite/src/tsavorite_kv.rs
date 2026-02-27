@@ -23,6 +23,7 @@ use crate::delete_operation::DeleteOperationStatus;
 use crate::hybrid_log::InMemoryPageDevice;
 use crate::hybrid_log::LogAddressPointers;
 use crate::hybrid_log::LogAddressPointersSnapshot;
+use crate::hybrid_log::LogicalAddress;
 use crate::hybrid_log::PageDevice;
 use crate::hybrid_log::PageManager;
 use crate::hybrid_log::PageManagerError;
@@ -47,7 +48,7 @@ pub struct TsavoriteKvConfig {
     pub hash_index_size_bits: u8,
     pub page_size_bits: u8,
     pub max_in_memory_pages: usize,
-    pub initial_logical_address: u64,
+    pub initial_logical_address: LogicalAddress,
 }
 
 impl Default for TsavoriteKvConfig {
@@ -56,7 +57,7 @@ impl Default for TsavoriteKvConfig {
             hash_index_size_bits: 10,
             page_size_bits: 12,
             max_in_memory_pages: 64,
-            initial_logical_address: crate::RECORD_ALIGNMENT as u64,
+            initial_logical_address: LogicalAddress(crate::RECORD_ALIGNMENT as u64),
         }
     }
 }
@@ -66,7 +67,7 @@ pub enum TsavoriteKvInitError {
     HashIndex(HashIndexError),
     PageManager(PageManagerError),
     InvalidInitialAddress {
-        initial_logical_address: u64,
+        initial_logical_address: LogicalAddress,
         record_alignment: usize,
     },
 }
@@ -138,8 +139,8 @@ where
         page_manager: PageManager,
         device: D,
     ) -> Result<Self, TsavoriteKvInitError> {
-        if config.initial_logical_address == 0
-            || config.initial_logical_address % (crate::RECORD_ALIGNMENT as u64) != 0
+        if config.initial_logical_address == LogicalAddress(0)
+            || config.initial_logical_address.raw() % (crate::RECORD_ALIGNMENT as u64) != 0
         {
             return Err(TsavoriteKvInitError::InvalidInitialAddress {
                 initial_logical_address: config.initial_logical_address,
@@ -261,12 +262,12 @@ where
     }
 
     #[inline]
-    pub fn shift_read_only_address(&self, new_read_only_address: u64) -> bool {
+    pub fn shift_read_only_address(&self, new_read_only_address: LogicalAddress) -> bool {
         self.pointers.shift_read_only_address(new_read_only_address)
     }
 
     #[inline]
-    pub fn shift_safe_read_only_address(&self, new_safe_read_only_address: u64) -> bool {
+    pub fn shift_safe_read_only_address(&self, new_safe_read_only_address: LogicalAddress) -> bool {
         self.pointers
             .shift_safe_read_only_address(new_safe_read_only_address)
     }
@@ -274,7 +275,7 @@ where
     #[inline]
     pub fn shift_head_address_and_evict(
         &mut self,
-        new_head_address: u64,
+        new_head_address: LogicalAddress,
     ) -> Result<Vec<u64>, PageResidencyError> {
         shift_head_address_and_evict(
             &mut self.page_manager,
@@ -623,14 +624,14 @@ mod tests {
             hash_index_size_bits: 3,
             page_size_bits: 8,
             max_in_memory_pages: 16,
-            initial_logical_address: crate::RECORD_ALIGNMENT as u64,
+            initial_logical_address: LogicalAddress(crate::RECORD_ALIGNMENT as u64),
         }
     }
 
     #[test]
     fn rejects_invalid_initial_address() {
         let config = TsavoriteKvConfig {
-            initial_logical_address: 0,
+            initial_logical_address: LogicalAddress(0),
             ..test_config()
         };
         let err = TsavoriteKV::<Vec<u8>, Vec<u8>>::new(config).err().unwrap();
@@ -667,7 +668,7 @@ mod tests {
                     &Vec::new(),
                     &mut output,
                     &ReadInfo {
-                        logical_address: 0,
+                        logical_address: LogicalAddress(0),
                         user_data: 0,
                     },
                 )
@@ -707,7 +708,7 @@ mod tests {
                     &Vec::new(),
                     &mut output,
                     &ReadInfo {
-                        logical_address: 0,
+                        logical_address: LogicalAddress(0),
                         user_data: 0,
                     },
                 )
@@ -737,7 +738,9 @@ mod tests {
             .find_tag_address(key_hash)
             .expect("seeded key address");
         let _ = store.shift_safe_read_only_address(address);
-        assert!(store.shift_read_only_address(address + crate::RECORD_ALIGNMENT as u64));
+        assert!(store.shift_read_only_address(LogicalAddress(
+            address.raw() + crate::RECORD_ALIGNMENT as u64
+        )));
 
         {
             let mut session = store.session(&functions);
@@ -807,7 +810,7 @@ mod tests {
                             &Vec::new(),
                             &mut output,
                             &ReadInfo {
-                                logical_address: 0,
+                                logical_address: LogicalAddress(0),
                                 user_data: 0,
                             },
                         )
@@ -832,7 +835,7 @@ mod tests {
                     &Vec::new(),
                     &mut output,
                     &ReadInfo {
-                        logical_address: 0,
+                        logical_address: LogicalAddress(0),
                         user_data: 0,
                     },
                 )

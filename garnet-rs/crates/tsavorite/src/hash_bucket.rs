@@ -6,6 +6,7 @@ use crate::hash_bucket_entry::ADDRESS_BITS;
 use crate::hash_bucket_entry::ADDRESS_MASK;
 use crate::hash_bucket_entry::HashBucketEntry;
 use crate::hash_bucket_entry::HashBucketEntryError;
+use crate::hybrid_log::LogicalAddress;
 use core::array;
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
@@ -89,8 +90,8 @@ impl HashBucket {
     ) -> Result<(), HashBucketEntryError> {
         if address > ADDRESS_MASK {
             return Err(HashBucketEntryError::AddressOutOfRange {
-                address,
-                max_address: ADDRESS_MASK,
+                address: LogicalAddress(address),
+                max_address: LogicalAddress(ADDRESS_MASK),
             });
         }
 
@@ -315,12 +316,12 @@ mod tests {
     fn entries_are_mutable_via_atomic_words() {
         let bucket = HashBucket::default();
         let entry = bucket.entry(0).unwrap();
-        let new_word = HashBucketEntry::pack(42, 99, true, false).unwrap();
+        let new_word = HashBucketEntry::pack(42, LogicalAddress(99), true, false).unwrap();
 
         entry.store(new_word, Ordering::Release);
 
         assert_eq!(entry.tag(Ordering::Acquire), 42);
-        assert_eq!(entry.address(Ordering::Acquire), 99);
+        assert_eq!(entry.address(Ordering::Acquire), LogicalAddress(99));
         assert!(entry.tentative(Ordering::Acquire));
         assert!(!entry.pending(Ordering::Acquire));
     }

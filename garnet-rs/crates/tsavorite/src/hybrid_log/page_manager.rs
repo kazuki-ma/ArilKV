@@ -17,6 +17,12 @@ impl LogicalAddress {
     }
 }
 
+impl core::fmt::Display for LogicalAddress {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Page/offset encoding configuration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PageAddressSpace {

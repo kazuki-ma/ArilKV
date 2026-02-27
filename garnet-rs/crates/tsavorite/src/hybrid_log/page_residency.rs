@@ -22,8 +22,8 @@ pub enum PageResidencyError {
     PageManager(PageManagerError),
     PageIo(PageIoError),
     NonMonotonicHeadShift {
-        current_head_address: u64,
-        new_head_address: u64,
+        current_head_address: LogicalAddress,
+        new_head_address: LogicalAddress,
     },
     NoEvictablePage {
         requested_page_index: u64,
@@ -72,7 +72,7 @@ pub fn shift_head_address_and_evict<D: PageDevice>(
     page_manager: &mut PageManager,
     pointers: &LogAddressPointers,
     device: &D,
-    new_head_address: u64,
+    new_head_address: LogicalAddress,
 ) -> Result<Vec<u64>, PageResidencyError> {
     let current_head_address = pointers.head_address();
     if new_head_address < current_head_address {
@@ -85,7 +85,7 @@ pub fn shift_head_address_and_evict<D: PageDevice>(
     pointers.shift_safe_head_address(new_head_address);
 
     let address_space = page_manager.address_space();
-    let new_head_page = new_head_address >> address_space.page_size_bits();
+    let new_head_page = address_space.page_index(new_head_address);
     let allocated = page_manager.allocated_page_indices();
     let mut evicted = Vec::new();
 
@@ -115,7 +115,7 @@ where
     D: PageDevice,
     F: FnOnce(&[u8]),
 {
-    let status = if address.raw() < pointers.head_address() {
+    let status = if address < pointers.head_address() {
         ensure_page_resident_for_read(page_manager, device, address)?;
         ReadPathStatus::LoadedFromDisk
     } else {
@@ -201,27 +201,33 @@ mod tests {
         page_manager.write_at(addr0, &[1, 2, 3, 4]).unwrap();
         page_manager.write_at(addr1, &[5, 6, 7, 8]).unwrap();
 
-        let pointers = LogAddressPointers::new(0);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
         let device = InMemoryPageDevice::new(page_manager.page_size());
 
-        let evicted =
-            shift_head_address_and_evict(&mut page_manager, &pointers, &device, 2u64 << 8).unwrap();
+        let evicted = shift_head_address_and_evict(
+            &mut page_manager,
+            &pointers,
+            &device,
+            LogicalAddress(2u64 << 8),
+        )
+        .unwrap();
 
         assert_eq!(evicted, vec![0, 1]);
         assert_eq!(page_manager.allocated_page_indices(), vec![2]);
-        assert_eq!(pointers.head_address(), 2u64 << 8);
-        assert_eq!(pointers.safe_head_address(), 2u64 << 8);
+        assert_eq!(pointers.head_address(), LogicalAddress(2u64 << 8));
+        assert_eq!(pointers.safe_head_address(), LogicalAddress(2u64 << 8));
         assert_eq!(device.page_count(), 2);
     }
 
     #[test]
     fn shift_head_rejects_backwards_move() {
         let mut page_manager = PageManager::new(8, 2).unwrap();
-        let pointers = LogAddressPointers::new(1u64 << 8);
+        let pointers = LogAddressPointers::new(LogicalAddress(1u64 << 8));
         let device = InMemoryPageDevice::new(page_manager.page_size());
 
         let err =
-            shift_head_address_and_evict(&mut page_manager, &pointers, &device, 64).unwrap_err();
+            shift_head_address_and_evict(&mut page_manager, &pointers, &device, LogicalAddress(64))
+                .unwrap_err();
         assert!(matches!(
             err,
             PageResidencyError::NonMonotonicHeadShift { .. }
@@ -240,8 +246,8 @@ mod tests {
         flush_page_to_device(&mut page_manager, &device, 0).unwrap();
         page_manager.evict_page(0).unwrap();
 
-        let pointers = LogAddressPointers::new(0);
-        pointers.shift_head_address(1u64 << 8);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_head_address(LogicalAddress(1u64 << 8));
 
         let mut captured = Vec::new();
         let status =
@@ -271,8 +277,8 @@ mod tests {
         let page1_addr = page_manager.address_space().encode(1, 0).unwrap();
         page_manager.write_at(page1_addr, &[1]).unwrap();
 
-        let pointers = LogAddressPointers::new(0);
-        pointers.shift_head_address(1u64 << 8);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_head_address(LogicalAddress(1u64 << 8));
 
         let mut captured = Vec::new();
         let status =
@@ -295,8 +301,8 @@ mod tests {
         let address = page_manager.address_space().encode(1, 6).unwrap();
         page_manager.write_at(address, &[40, 41]).unwrap();
 
-        let pointers = LogAddressPointers::new(0);
-        pointers.shift_head_address(1u64 << 8);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_head_address(LogicalAddress(1u64 << 8));
         let device = InMemoryPageDevice::new(page_manager.page_size());
 
         let mut captured = Vec::new();

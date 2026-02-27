@@ -62,7 +62,7 @@ impl TailAllocator {
     pub fn new(
         page_size_bits: u8,
         max_in_memory_pages: usize,
-        begin_address: u64,
+        begin_address: LogicalAddress,
     ) -> Result<Self, TailAllocatorError> {
         let mut page_manager = PageManager::new(page_size_bits, max_in_memory_pages)
             .map_err(TailAllocatorError::PageManager)?;
@@ -70,7 +70,7 @@ impl TailAllocator {
         let page_size = page_manager.page_size();
         let page_size_mask = (page_size as u64) - 1;
 
-        let begin_page = begin_address >> page_size_bits;
+        let begin_page = begin_address.raw() >> page_size_bits;
         if !page_manager.is_page_allocated(begin_page) {
             page_manager
                 .allocate_page(begin_page)
@@ -107,7 +107,7 @@ impl TailAllocator {
     }
 
     #[inline]
-    pub fn tail_address(&self) -> u64 {
+    pub fn tail_address(&self) -> LogicalAddress {
         self.pointers.tail_address()
     }
 
@@ -126,14 +126,14 @@ impl TailAllocator {
         }
 
         let old_tail = self.pointers.advance_tail_by(record_size as u64);
-        let old_page = old_tail >> self.page_size_bits;
-        let old_offset = old_tail & self.page_size_mask;
+        let old_page = old_tail.raw() >> self.page_size_bits;
+        let old_offset = old_tail.raw() & self.page_size_mask;
         let end_offset = old_offset + record_size as u64;
 
         if end_offset <= self.page_size as u64 {
-            return self.ensure_page_allocated(old_page).map(|status| {
-                status.unwrap_or(TailAllocationStatus::Success(LogicalAddress(old_tail)))
-            });
+            return self
+                .ensure_page_allocated(old_page)
+                .map(|status| status.unwrap_or(TailAllocationStatus::Success(old_tail)));
         }
 
         // This reservation crossed page boundary; only one thread should handle page-turn setup.
@@ -174,7 +174,7 @@ impl TailAllocator {
     ) -> Result<TailAllocationStatus, TailAllocatorError> {
         let next_page = old_page + 1;
         let next_page_start = next_page << self.page_size_bits;
-        let desired_tail = next_page_start + record_size as u64;
+        let desired_tail = LogicalAddress(next_page_start + record_size as u64);
 
         // If another thread already advanced tail beyond this point, retry from fresh state.
         if !self.pointers.shift_tail_address(desired_tail)
@@ -222,7 +222,7 @@ mod tests {
 
     #[test]
     fn allocates_within_single_page() {
-        let allocator = TailAllocator::new(8, 4, 0).unwrap();
+        let allocator = TailAllocator::new(8, 4, LogicalAddress(0)).unwrap();
 
         let first = allocator.try_allocate(16).unwrap();
         let second = allocator.try_allocate(32).unwrap();
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn page_turn_seals_old_page_and_allocates_next_page() {
-        let allocator = TailAllocator::new(8, 4, 0).unwrap();
+        let allocator = TailAllocator::new(8, 4, LogicalAddress(0)).unwrap();
 
         assert_eq!(
             allocator.try_allocate(250).unwrap(),
@@ -247,7 +247,7 @@ mod tests {
 
     #[test]
     fn returns_retry_later_when_buffer_full_on_page_turn() {
-        let allocator = TailAllocator::new(8, 1, 0).unwrap();
+        let allocator = TailAllocator::new(8, 1, LogicalAddress(0)).unwrap();
 
         assert_eq!(
             allocator.try_allocate(250).unwrap(),
@@ -262,7 +262,7 @@ mod tests {
 
     #[test]
     fn rejects_invalid_sizes() {
-        let allocator = TailAllocator::new(8, 2, 0).unwrap();
+        let allocator = TailAllocator::new(8, 2, LogicalAddress(0)).unwrap();
 
         let err = allocator.try_allocate(0).unwrap_err();
         assert_eq!(err, TailAllocatorError::InvalidRecordSize);
@@ -273,7 +273,7 @@ mod tests {
 
     #[test]
     fn allocates_many_records_without_overlap() {
-        let allocator = TailAllocator::new(8, 96, 0).unwrap();
+        let allocator = TailAllocator::new(8, 96, LogicalAddress(0)).unwrap();
         let record_size = 48usize;
         let mut addresses = Vec::new();
 
@@ -300,7 +300,7 @@ mod tests {
 
     #[test]
     fn concurrent_allocation_stress_produces_unique_addresses() {
-        let allocator = Arc::new(TailAllocator::new(8, 256, 0).unwrap());
+        let allocator = Arc::new(TailAllocator::new(8, 256, LogicalAddress(0)).unwrap());
         let thread_count = 4usize;
         let per_thread_successes = 200usize;
         let record_size = 16usize;

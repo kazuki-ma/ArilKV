@@ -215,7 +215,8 @@ mod tests {
         let addr = allocator.allocate().unwrap();
 
         let handle = allocator.get(addr).unwrap();
-        let entry_word = HashBucketEntry::pack(12, 345, false, false).unwrap();
+        let entry_word =
+            HashBucketEntry::pack(12, crate::LogicalAddress(345), false, false).unwrap();
         handle
             .bucket()
             .entry(0)

@@ -4,6 +4,8 @@
 
 use core::mem::size_of;
 
+use crate::LogicalAddress;
+
 pub const RECORD_INFO_LENGTH: usize = size_of::<u64>();
 
 pub const PREVIOUS_ADDRESS_BITS: u32 = 48;
@@ -69,15 +71,15 @@ impl RecordInfo {
 
     /// Returns previous logical address (lower 48 bits).
     #[inline]
-    pub const fn previous_address(self) -> u64 {
-        self.word & PREVIOUS_ADDRESS_MASK
+    pub const fn previous_address(self) -> LogicalAddress {
+        LogicalAddress(self.word & PREVIOUS_ADDRESS_MASK)
     }
 
     /// Sets previous logical address (masked to lower 48 bits).
     #[inline]
-    pub fn set_previous_address(&mut self, previous_address: u64) {
+    pub fn set_previous_address(&mut self, previous_address: LogicalAddress) {
         self.word =
-            (self.word & !PREVIOUS_ADDRESS_MASK) | (previous_address & PREVIOUS_ADDRESS_MASK);
+            (self.word & !PREVIOUS_ADDRESS_MASK) | (previous_address.raw() & PREVIOUS_ADDRESS_MASK);
     }
 
     #[inline]
@@ -268,7 +270,7 @@ impl RecordInfo {
 
     /// Initializes this record as sealed+invalid and updates chaining metadata.
     #[inline]
-    pub fn write_info(&mut self, in_new_version: bool, previous_address: u64) {
+    pub fn write_info(&mut self, in_new_version: bool, previous_address: LogicalAddress) {
         self.initialize_to_sealed_and_invalid();
         self.set_previous_address(previous_address);
         if in_new_version {
@@ -290,19 +292,22 @@ mod tests {
     #[test]
     fn previous_address_uses_lower_48_bits() {
         let mut info = RecordInfo::default();
-        info.set_previous_address(u64::MAX);
-        assert_eq!(info.previous_address(), PREVIOUS_ADDRESS_MASK);
+        info.set_previous_address(LogicalAddress(u64::MAX));
+        assert_eq!(
+            info.previous_address(),
+            LogicalAddress(PREVIOUS_ADDRESS_MASK)
+        );
     }
 
     #[test]
     fn write_info_initializes_sealed_invalid_and_previous_address() {
         let mut info = RecordInfo::default();
-        info.write_info(true, 0x1234_5678_9abc_def0);
+        info.write_info(true, LogicalAddress(0x1234_5678_9abc_def0));
 
         assert!(info.is_sealed());
         assert!(info.invalid());
         assert!(info.is_in_new_version());
-        assert_eq!(info.previous_address(), 0x5678_9abc_def0);
+        assert_eq!(info.previous_address(), LogicalAddress(0x5678_9abc_def0));
     }
 
     #[test]

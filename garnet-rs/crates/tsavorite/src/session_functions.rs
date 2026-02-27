@@ -2,29 +2,30 @@
 //!
 //! See [Doc 10 Section 2] for callback roles and operation-phase semantics.
 
+use crate::LogicalAddress;
 use crate::RecordInfo;
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct ReadInfo {
-    pub logical_address: u64,
+    pub logical_address: LogicalAddress,
     pub user_data: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UpsertInfo {
-    pub logical_address: u64,
+    pub logical_address: LogicalAddress,
     pub user_data: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct RmwInfo {
-    pub logical_address: u64,
+    pub logical_address: LogicalAddress,
     pub user_data: u8,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DeleteInfo {
-    pub logical_address: u64,
+    pub logical_address: LogicalAddress,
     pub user_data: u8,
 }
 

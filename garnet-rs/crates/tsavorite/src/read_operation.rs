@@ -110,7 +110,7 @@ where
         None => return Ok(ReadOperationStatus::NotFound),
     };
 
-    while current_address != 0 {
+    while current_address != LogicalAddress(0) {
         if current_address < context.pointers.begin_address() {
             return Ok(ReadOperationStatus::NotFound);
         }
@@ -156,9 +156,9 @@ where
 
 fn materialize_record_at<D: PageDevice>(
     context: &mut ReadOperationContext<'_, D>,
-    logical_address: u64,
+    logical_address: LogicalAddress,
 ) -> Result<MaterializedRecord, ReadOperationError> {
-    let logical = LogicalAddress(logical_address);
+    let logical = logical_address;
     let page_space = context.page_manager.address_space();
     let decoded = page_space.decode(logical);
     let page_offset = decoded.page_offset as usize;
@@ -349,14 +349,16 @@ mod tests {
             .write_at(logical_address, &record_buffer[..layout.allocated_size])
             .unwrap();
 
-        let result = hash_index.find_or_create_tag(key_hash, 0).unwrap();
-        set_hash_entry_address(hash_index, result, logical_address.raw());
+        let result = hash_index
+            .find_or_create_tag(key_hash, LogicalAddress(0))
+            .unwrap();
+        set_hash_entry_address(hash_index, result, logical_address);
     }
 
     fn set_hash_entry_address(
         hash_index: &HashIndex,
         result: FindOrCreateTagResult,
-        logical_address: u64,
+        logical_address: LogicalAddress,
     ) {
         match result.overflow_bucket_address {
             Some(overflow_address) => {
@@ -403,7 +405,7 @@ mod tests {
             info,
         );
 
-        let pointers = LogAddressPointers::new(0);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
         let device = InMemoryPageDevice::new(page_manager.page_size());
         let functions = ByteSessionFunctions::default();
         let key = b"foo".to_vec();
@@ -455,8 +457,8 @@ mod tests {
             info,
         );
 
-        let pointers = LogAddressPointers::new(0);
-        pointers.shift_safe_read_only_address(1u64 << 8);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_safe_read_only_address(LogicalAddress(1u64 << 8));
 
         let device = InMemoryPageDevice::new(page_manager.page_size());
         let functions = ByteSessionFunctions::default();
@@ -513,9 +515,9 @@ mod tests {
         flush_page_to_device(&mut page_manager, &device, 0).unwrap();
         page_manager.evict_page(0).unwrap();
 
-        let pointers = LogAddressPointers::new(0);
-        pointers.shift_head_address(1u64 << 8);
-        pointers.shift_safe_read_only_address(1u64 << 8);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
+        pointers.shift_head_address(LogicalAddress(1u64 << 8));
+        pointers.shift_safe_read_only_address(LogicalAddress(1u64 << 8));
 
         let functions = ByteSessionFunctions::default();
         let key = b"foo".to_vec();
@@ -567,7 +569,7 @@ mod tests {
             info,
         );
 
-        let pointers = LogAddressPointers::new(0);
+        let pointers = LogAddressPointers::new(LogicalAddress(0));
         let device = InMemoryPageDevice::new(page_manager.page_size());
         let functions = ByteSessionFunctions::default();
         let key = b"foo".to_vec();

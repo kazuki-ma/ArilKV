@@ -208,7 +208,7 @@ fn test_config() -> TsavoriteKvConfig {
         hash_index_size_bits: 6,
         page_size_bits: 10,
         max_in_memory_pages: 64,
-        initial_logical_address: tsavorite::RECORD_ALIGNMENT as u64,
+        initial_logical_address: tsavorite::LogicalAddress(tsavorite::RECORD_ALIGNMENT as u64),
     }
 }
 

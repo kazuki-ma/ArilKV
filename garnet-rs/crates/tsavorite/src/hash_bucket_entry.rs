@@ -5,6 +5,8 @@
 use core::sync::atomic::AtomicU64;
 use core::sync::atomic::Ordering;
 
+use crate::LogicalAddress;
+
 pub const ADDRESS_BITS: u32 = 48;
 pub const ADDRESS_MASK: u64 = (1u64 << ADDRESS_BITS) - 1;
 
@@ -24,8 +26,14 @@ pub const TENTATIVE_BIT_MASK: u64 = 1u64 << TENTATIVE_BIT_SHIFT;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HashBucketEntryError {
-    TagOutOfRange { tag: u16, max_tag: u16 },
-    AddressOutOfRange { address: u64, max_address: u64 },
+    TagOutOfRange {
+        tag: u16,
+        max_tag: u16,
+    },
+    AddressOutOfRange {
+        address: LogicalAddress,
+        max_address: LogicalAddress,
+    },
 }
 
 impl core::fmt::Display for HashBucketEntryError {
@@ -67,13 +75,13 @@ impl HashBucketEntry {
     }
 
     #[inline]
-    pub const fn max_address() -> u64 {
-        ADDRESS_MASK
+    pub const fn max_address() -> LogicalAddress {
+        LogicalAddress(ADDRESS_MASK)
     }
 
     pub fn pack(
         tag: u16,
-        address: u64,
+        address: LogicalAddress,
         tentative: bool,
         pending: bool,
     ) -> Result<u64, HashBucketEntryError> {
@@ -84,14 +92,14 @@ impl HashBucketEntry {
             });
         }
 
-        if address > ADDRESS_MASK {
+        if address.raw() > ADDRESS_MASK {
             return Err(HashBucketEntryError::AddressOutOfRange {
                 address,
                 max_address: Self::max_address(),
             });
         }
 
-        let mut word = (address & ADDRESS_MASK) | ((u64::from(tag) & TAG_MASK) << TAG_SHIFT);
+        let mut word = (address.raw() & ADDRESS_MASK) | ((u64::from(tag) & TAG_MASK) << TAG_SHIFT);
 
         if tentative {
             word |= TENTATIVE_BIT_MASK;
@@ -104,8 +112,8 @@ impl HashBucketEntry {
     }
 
     #[inline]
-    pub const fn address_from_word(word: u64) -> u64 {
-        word & ADDRESS_MASK
+    pub const fn address_from_word(word: u64) -> LogicalAddress {
+        LogicalAddress(word & ADDRESS_MASK)
     }
 
     #[inline]
@@ -129,15 +137,18 @@ impl HashBucketEntry {
     }
 
     #[inline]
-    pub const fn with_address(word: u64, address: u64) -> Result<u64, HashBucketEntryError> {
-        if address > ADDRESS_MASK {
+    pub const fn with_address(
+        word: u64,
+        address: LogicalAddress,
+    ) -> Result<u64, HashBucketEntryError> {
+        if address.raw() > ADDRESS_MASK {
             return Err(HashBucketEntryError::AddressOutOfRange {
                 address,
                 max_address: Self::max_address(),
             });
         }
 
-        Ok((word & !ADDRESS_MASK) | (address & ADDRESS_MASK))
+        Ok((word & !ADDRESS_MASK) | (address.raw() & ADDRESS_MASK))
     }
 
     #[inline]
@@ -161,7 +172,7 @@ impl HashBucketEntry {
     #[inline]
     pub fn from_parts(
         tag: u16,
-        address: u64,
+        address: LogicalAddress,
         tentative: bool,
         pending: bool,
     ) -> Result<Self, HashBucketEntryError> {
@@ -204,7 +215,7 @@ impl HashBucketEntry {
         &self,
         current: u64,
         tag: u16,
-        address: u64,
+        address: LogicalAddress,
         tentative: bool,
         pending: bool,
         success: Ordering,
@@ -218,7 +229,7 @@ impl HashBucketEntry {
     }
 
     #[inline]
-    pub fn address(&self, ordering: Ordering) -> u64 {
+    pub fn address(&self, ordering: Ordering) -> LogicalAddress {
         Self::address_from_word(self.load(ordering))
     }
 
@@ -289,17 +300,21 @@ mod tests {
 
     #[test]
     fn pack_and_unpack_roundtrip() {
-        let word = HashBucketEntry::pack(0x1234, 0x0000_abcd_ef12, true, true).unwrap();
+        let word =
+            HashBucketEntry::pack(0x1234, LogicalAddress(0x0000_abcd_ef12), true, true).unwrap();
 
         assert_eq!(HashBucketEntry::tag_from_word(word), 0x1234);
-        assert_eq!(HashBucketEntry::address_from_word(word), 0x0000_abcd_ef12);
+        assert_eq!(
+            HashBucketEntry::address_from_word(word),
+            LogicalAddress(0x0000_abcd_ef12)
+        );
         assert!(HashBucketEntry::tentative_from_word(word));
         assert!(HashBucketEntry::pending_from_word(word));
     }
 
     #[test]
     fn read_cache_is_part_of_address() {
-        let address = READ_CACHE_BIT_MASK | 0x0123;
+        let address = LogicalAddress(READ_CACHE_BIT_MASK | 0x0123);
         let word = HashBucketEntry::pack(7, address, false, false).unwrap();
 
         assert_eq!(HashBucketEntry::address_from_word(word), address);
@@ -308,14 +323,14 @@ mod tests {
 
     #[test]
     fn compare_exchange_parts_updates_entry() {
-        let entry = HashBucketEntry::from_parts(1, 10, false, false).unwrap();
+        let entry = HashBucketEntry::from_parts(1, LogicalAddress(10), false, false).unwrap();
         let current = entry.load(Ordering::Acquire);
 
         entry
             .compare_exchange_parts(
                 current,
                 2,
-                20,
+                LogicalAddress(20),
                 true,
                 true,
                 Ordering::AcqRel,
@@ -324,7 +339,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(entry.tag(Ordering::Acquire), 2);
-        assert_eq!(entry.address(Ordering::Acquire), 20);
+        assert_eq!(entry.address(Ordering::Acquire), LogicalAddress(20));
         assert!(entry.tentative(Ordering::Acquire));
         assert!(entry.pending(Ordering::Acquire));
     }
@@ -333,14 +348,15 @@ mod tests {
     fn reject_out_of_range_inputs() {
         let err = HashBucketEntry::pack(
             (HashBucketEntry::max_tag() as u32 + 1) as u16,
-            0,
+            LogicalAddress(0),
             false,
             false,
         )
         .unwrap_err();
         assert!(matches!(err, HashBucketEntryError::TagOutOfRange { .. }));
 
-        let err = HashBucketEntry::pack(0, ADDRESS_MASK + 1, false, false).unwrap_err();
+        let err =
+            HashBucketEntry::pack(0, LogicalAddress(ADDRESS_MASK + 1), false, false).unwrap_err();
         assert!(matches!(
             err,
             HashBucketEntryError::AddressOutOfRange { .. }
