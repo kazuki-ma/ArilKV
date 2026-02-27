@@ -114,6 +114,11 @@ struct FunctionExecutionFlags {
     allow_stale: bool,
 }
 
+struct ResolvedFunctionTarget {
+    library_source: Vec<u8>,
+    flags: FunctionExecutionFlags,
+}
+
 enum FunctionRegistrationCollectError {
     Timeout,
     Compile(String),
@@ -591,21 +596,21 @@ impl RequestProcessor {
             return Err(RequestExecutionError::ScriptingDisabled);
         }
         let function_name = args[1];
-        let (library_source, function_flags) = self.resolve_function_target(function_name)?;
+        let function_target = self.resolve_function_target(function_name)?;
         let key_start = 3;
         let key_end = key_start + key_count;
-        let mutability = if function_flags.read_only {
+        let mutability = if function_target.flags.read_only {
             ScriptMutability::ReadOnly
         } else {
             ScriptMutability::ReadWrite
         };
         self.execute_lua_function(
-            &library_source,
+            &function_target.library_source,
             function_name,
             &args[key_start..key_end],
             &args[key_end..],
             mutability,
-            function_flags.allow_oom,
+            function_target.flags.allow_oom,
             "fcall",
             response_out,
         );
@@ -626,19 +631,19 @@ impl RequestProcessor {
             return Err(RequestExecutionError::ScriptingDisabled);
         }
         let function_name = args[1];
-        let (library_source, function_flags) = self.resolve_function_target(function_name)?;
-        if !function_flags.read_only {
+        let function_target = self.resolve_function_target(function_name)?;
+        if !function_target.flags.read_only {
             return Err(RequestExecutionError::FunctionNotReadOnly);
         }
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_function(
-            &library_source,
+            &function_target.library_source,
             function_name,
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadOnly,
-            function_flags.allow_oom,
+            function_target.flags.allow_oom,
             "fcall_ro",
             response_out,
         );
@@ -1227,7 +1232,7 @@ impl RequestProcessor {
     fn resolve_function_target(
         &self,
         function_name: &[u8],
-    ) -> Result<(Vec<u8>, FunctionExecutionFlags), RequestExecutionError> {
+    ) -> Result<ResolvedFunctionTarget, RequestExecutionError> {
         let function_name_text =
             std::str::from_utf8(function_name).map_err(|_| RequestExecutionError::SyntaxError)?;
         let normalized_function_name = function_name_text.to_ascii_lowercase();
@@ -1245,14 +1250,14 @@ impl RequestProcessor {
             .library_sources
             .get(&descriptor.library_name)
             .ok_or(RequestExecutionError::FunctionNotFound)?;
-        Ok((
-            source.clone(),
-            FunctionExecutionFlags {
+        Ok(ResolvedFunctionTarget {
+            library_source: source.clone(),
+            flags: FunctionExecutionFlags {
                 read_only: descriptor.read_only,
                 allow_oom: descriptor.allow_oom,
                 allow_stale: descriptor.allow_stale,
             },
-        ))
+        })
     }
 
     fn execute_lua_script(
