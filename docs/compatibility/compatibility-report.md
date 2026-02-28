@@ -24,19 +24,19 @@
 
 - Probe script exit code: `0`
 - Cases: `3`
-- PASS: `2`
+- PASS: `0`
 - PASS_WITH_KNOWN_GAPS: `0`
-- FAIL: `1`
+- FAIL: `3`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; exit_code=143; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=638; err=31; timeout=0; ignore=130; failed_tests=31; expected_failed_tests=0; unexpected_failed_tests=31  |
-| `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
-| `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=360; ok=697; err=129; timeout=0; ignore=138; failed_tests=129; expected_failed_tests=0; unexpected_failed_tests=129  |
+| `redis_cli_type_probe` | `FAIL` | redis-cli TYPE probe failed  |
+| `redis_cli_scripting_probe` | `FAIL` | unexpected_eval_output  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `31`
+- Failed tests extracted from runtest log: `129`
 
 | Test |
 |---|
@@ -64,13 +64,111 @@
 | `Test that client pause starts at the end of a transaction in tests/unit/pause.tcl` |
 | `Test the randomkey command will not cause the server to get into an infinite loop during the client pause write in tests/unit/pause.tcl` |
 | `CLIENT UNBLOCK is not allow to unblock client blocked by CLIENT PAUSE in tests/unit/pause.tcl` |
-| `Pub/Sub PING on RESP2 in tests/unit/pubsub.tcl` |
-| `PUBLISH/SUBSCRIBE basics in tests/unit/pubsub.tcl` |
-| `PUBLISH/SUBSCRIBE with two clients in tests/unit/pubsub.tcl` |
-| `SUBSCRIBE to one channel more than once in tests/unit/pubsub.tcl` |
-| `UNSUBSCRIBE from non-subscribed channels in tests/unit/pubsub.tcl` |
-| `PUBLISH/PSUBSCRIBE basics in tests/unit/pubsub.tcl` |
-| `PUBLISH/PSUBSCRIBE with two clients in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: we receive keyspace notifications in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: we receive keyevent notifications in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: we can receive both kind of events in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: we are able to mask events in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: general events test in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: list events test in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: set events test in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: zset events test in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: hash events test (listpackex) in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: hash events test (hashtable) in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: stream events test in tests/unit/pubsub.tcl` |
+| `Keyspace notifications:FXX/FNX with HSETEX cmd in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: expired events (triggered expire) in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: expired events (background expire) in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: evicted events in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: test CONFIG GET/SET of event flags in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: new key test in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: overwritten events - string to string in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: type_changed events - hash to string in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: both overwritten and type_changed events in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: configuration flags work correctly in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: RESTORE REPLACE different type - restore, overwritten and type_changed events in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: SET on existing string key - overwritten event in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: setKey on existing different type key - overwritten and type_changed events in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: overwritten and type_changed events for RENAME and COPY commands in tests/unit/pubsub.tcl` |
+| `Keyspace notifications: overwritten and type_changed for *STORE* commands in tests/unit/pubsub.tcl` |
+| `unsubscribe inside multi, and publish to self in tests/unit/pubsub.tcl` |
+| `query buffer resized correctly in tests/unit/querybuf.tcl` |
+| `query buffer resized correctly when not idle in tests/unit/querybuf.tcl` |
+| `query buffer resized correctly with fat argv in tests/unit/querybuf.tcl` |
+| `Client executes small argv commands using reusable query buffer in tests/unit/querybuf.tcl` |
+| `QUIT returns OK in tests/unit/quit.tcl` |
+| `Pipelined commands after QUIT must not be executed in tests/unit/quit.tcl` |
+| `Pipelined commands after QUIT that exceed read buffer size in tests/unit/quit.tcl` |
+| `verify reply buffer limits in tests/unit/replybufsize.tcl` |
+| `{standalone} SCAN unknown type in tests/unit/scan.tcl` |
+| `{standalone} SCAN with expired keys in tests/unit/scan.tcl` |
+| `{standalone} SCAN with expired keys with TYPE filter and PATTERN filter in tests/unit/scan.tcl` |
+| `{standalone} HSCAN with encoding listpack in tests/unit/scan.tcl` |
+| `{standalone} HSCAN with large value listpack in tests/unit/scan.tcl` |
+| `{standalone} HSCAN with encoding hashtable in tests/unit/scan.tcl` |
+| `{standalone} HSCAN with large value hashtable in tests/unit/scan.tcl` |
+| `{standalone} HSCAN with NOVALUES in tests/unit/scan.tcl` |
+| `{standalone} SCAN regression test for issue #4906 in tests/unit/scan.tcl` |
+| `EVAL - Return _G in tests/unit/scripting.tcl` |
+| `EVAL - Return table with a metatable that raise error in tests/unit/scripting.tcl` |
+| `EVAL - Return table with a metatable that call redis in tests/unit/scripting.tcl` |
+| `EVAL - Redis multi bulk -> Lua type conversion in tests/unit/scripting.tcl` |
+| `EVAL - Scripts do not block on waitaof in tests/unit/scripting.tcl` |
+| `EVAL - Scripts do not block on XREADGROUP with BLOCK option -- non empty stream in tests/unit/scripting.tcl` |
+| `EVAL - No arguments to redis.call/pcall is considered an error in tests/unit/scripting.tcl` |
+| `EVAL - redis.call variant raises a Lua error on Redis cmd error (1) in tests/unit/scripting.tcl` |
+| `EVAL - redis.call variant raises a Lua error on Redis cmd error (1) in tests/unit/scripting.tcl` |
+| `EVAL - Test table unpack with invalid indexes in tests/unit/scripting.tcl` |
+| `EVAL - JSON numeric decoding in tests/unit/scripting.tcl` |
+| `EVAL - JSON string decoding in tests/unit/scripting.tcl` |
+| `EVAL - JSON empty array decoding in tests/unit/scripting.tcl` |
+| `EVAL - JSON empty array decoding after element removal in tests/unit/scripting.tcl` |
+| `EVAL - cjson array metatable modification should be readonly in tests/unit/scripting.tcl` |
+| `EVAL - JSON smoke test in tests/unit/scripting.tcl` |
+| `EVAL - cmsgpack can pack double? in tests/unit/scripting.tcl` |
+| `EVAL - cmsgpack can pack negative int64? in tests/unit/scripting.tcl` |
+| `EVAL - cmsgpack pack/unpack smoke test in tests/unit/scripting.tcl` |
+| `EVAL - cmsgpack can pack and unpack circular references? in tests/unit/scripting.tcl` |
+| `EVAL - Numerical sanity check from bitop in tests/unit/scripting.tcl` |
+| `EVAL - Verify minimal bitop functionality in tests/unit/scripting.tcl` |
+| `EVAL - Able to parse trailing comments in tests/unit/scripting.tcl` |
+| `EVAL_RO - Successful case in tests/unit/scripting.tcl` |
+| `EVAL_RO - Cannot run write commands in tests/unit/scripting.tcl` |
+| `redis.sha1hex() implementation in tests/unit/scripting.tcl` |
+| `Measures elapsed time os.clock() in tests/unit/scripting.tcl` |
+| `Prohibit dangerous lua methods in sandbox in tests/unit/scripting.tcl` |
+| `Verify execution of prohibit dangerous Lua methods will fail in tests/unit/scripting.tcl` |
+| `Globals protection reading an undeclared global variable in tests/unit/scripting.tcl` |
+| `Globals protection setting an undeclared global* in tests/unit/scripting.tcl` |
+| `lua bit.tohex bug in tests/unit/scripting.tcl` |
+| `Test an example script DECR_IF_GT in tests/unit/scripting.tcl` |
+| `EVAL does not leak in the Lua stack in tests/unit/scripting.tcl` |
+| `Call Redis command with many args from Lua (issue #1764) in tests/unit/scripting.tcl` |
+| `Number conversion precision test (issue #1118) in tests/unit/scripting.tcl` |
+| `String containing number precision test (regression of issue #1118) in tests/unit/scripting.tcl` |
+| `Verify negative arg count is error instead of crash (issue #1842) in tests/unit/scripting.tcl` |
+| `Scripts can handle commands with incorrect arity in tests/unit/scripting.tcl` |
+| `Correct handling of reused argv (issue #1939) in tests/unit/scripting.tcl` |
+| `Functions in the Redis namespace are able to report errors in tests/unit/scripting.tcl` |
+| `CLUSTER RESET can not be invoke from within a script in tests/unit/scripting.tcl` |
+| `Script with RESP3 map in tests/unit/scripting.tcl` |
+| `Script return recursive object in tests/unit/scripting.tcl` |
+| `Script check unpack with massive arguments in tests/unit/scripting.tcl` |
+| `Script read key with expiration set in tests/unit/scripting.tcl` |
+| `Script del key with expiration set in tests/unit/scripting.tcl` |
+| `Script ACL check in tests/unit/scripting.tcl` |
+| `Binary code loading failed in tests/unit/scripting.tcl` |
+| `Try trick global protection 1 in tests/unit/scripting.tcl` |
+| `Try trick global protection 2 in tests/unit/scripting.tcl` |
+| `Try trick global protection 3 in tests/unit/scripting.tcl` |
+| `Try trick global protection 4 in tests/unit/scripting.tcl` |
+| `Try trick readonly table on redis table in tests/unit/scripting.tcl` |
+| `Try trick readonly table on json table in tests/unit/scripting.tcl` |
+| `Try trick readonly table on cmsgpack table in tests/unit/scripting.tcl` |
+| `Try trick readonly table on bit table in tests/unit/scripting.tcl` |
+| `Try trick readonly table on basic types metatable in tests/unit/scripting.tcl` |
+| `Test loadfile are not available in tests/unit/scripting.tcl` |
+| `Test dofile are not available in tests/unit/scripting.tcl` |
+| `Test print are not available in tests/unit/scripting.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

@@ -475,6 +475,7 @@ async fn process_upstream_frame(
         command_id,
         frame,
         false,
+        None,
     ) {
         Ok(_) => {}
         Err(OwnerThreadExecutionError::Request(error)) => {

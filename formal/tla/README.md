@@ -180,6 +180,37 @@ Fixed config (expected to pass):
 ./tools/tla/run_tlc.sh formal/tla/specs/MultiExecBlockingTimeout.tla formal/tla/specs/MultiExecBlockingTimeout_fixed.cfg
 ```
 
+## Reproduce `unit/other` PIPELINING stresser timeout
+
+This model maps `tests/unit/other.tcl` test `PIPELINING stresser (also a regression for the old epoll bug)` directly from runtime code flow:
+
+- `connection_handler::handle_connection`:
+  - read-and-drain from socket into `receive_buffer`
+  - inline parse path (`InvalidArrayPrefix` -> `parse_inline_frame`)
+  - per-frame execute and buffered response write
+- `request_lifecycle::handle_set` / `handle_get`:
+  - `SET` success/error response and key visibility
+  - `GET` bulk/null response shape
+
+- batch `SET key:i value` + `GET key:i` writes
+- single `flush`
+- read loop behavior from Tcl as-is:
+  - first `gets` line is consumed but not validated (SET reply line)
+  - second `gets` line is treated as `GET` length line
+  - if that line is `$-1`, `read -1` blocks (hang/timeout)
+
+Nominal config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/PipelineStresserTimeout.tla formal/tla/specs/PipelineStresserTimeout_nominal.cfg
+```
+
+Reproduction config (expected to fail with counterexample):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/PipelineStresserTimeout.tla formal/tla/specs/PipelineStresserTimeout_repro.cfg
+```
+
 ## Add new model
 
 1. Add `<Name>.tla` and `<Name>.cfg` under `formal/tla/specs/`.

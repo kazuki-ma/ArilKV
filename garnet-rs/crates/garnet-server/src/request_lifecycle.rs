@@ -67,6 +67,7 @@ const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
 
 thread_local! {
     static REQUEST_CLIENT_NO_TOUCH_MODE: Cell<bool> = const { Cell::new(false) };
+    static REQUEST_CLIENT_ID: Cell<Option<ClientId>> = const { Cell::new(None) };
 }
 
 struct ClientNoTouchScope {
@@ -91,9 +92,36 @@ impl Drop for ClientNoTouchScope {
     }
 }
 
+struct RequestClientIdScope {
+    previous: Option<ClientId>,
+}
+
+impl RequestClientIdScope {
+    #[inline]
+    fn enter(client_id: Option<ClientId>) -> Self {
+        let previous = REQUEST_CLIENT_ID.with(|state| {
+            let previous = state.get();
+            state.set(client_id);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for RequestClientIdScope {
+    fn drop(&mut self) {
+        REQUEST_CLIENT_ID.with(|state| state.set(self.previous));
+    }
+}
+
 #[inline]
 fn current_client_no_touch_mode() -> bool {
     REQUEST_CLIENT_NO_TOUCH_MODE.with(Cell::get)
+}
+
+#[inline]
+fn current_request_client_id() -> Option<ClientId> {
+    REQUEST_CLIENT_ID.with(Cell::get)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -733,6 +761,15 @@ struct LatencyEventState {
     max_latency_millis: u64,
 }
 
+#[derive(Debug, Default)]
+struct PubSubState {
+    channel_subscribers: HashMap<Vec<u8>, HashSet<ClientId>>,
+    pattern_subscribers: HashMap<Vec<u8>, HashSet<ClientId>>,
+    client_channels: HashMap<ClientId, HashSet<Vec<u8>>>,
+    client_patterns: HashMap<ClientId, HashSet<Vec<u8>>>,
+    pending_messages: HashMap<ClientId, VecDeque<Vec<u8>>>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientUnblockMode {
     Timeout,
@@ -769,6 +806,7 @@ pub struct RequestProcessor {
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
+    pubsub_state: Mutex<PubSubState>,
     moved_keysizes_by_db: Mutex<HashMap<usize, HashMap<RedisKey, MovedKeysizesEntry>>>,
     key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
     key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
@@ -947,6 +985,7 @@ impl RequestProcessor {
             command_calls: Mutex::new(HashMap::new()),
             command_failed_calls: Mutex::new(HashMap::new()),
             latency_events: Mutex::new(HashMap::new()),
+            pubsub_state: Mutex::new(PubSubState::default()),
             moved_keysizes_by_db: Mutex::new(HashMap::new()),
             key_lru_access_millis: Mutex::new(HashMap::new()),
             key_lfu_frequency: Mutex::new(HashMap::new()),
@@ -1035,6 +1074,267 @@ impl RequestProcessor {
 
     pub(crate) fn set_connected_clients(&self, count: u64) {
         self.connected_clients.store(count, Ordering::Release);
+    }
+
+    pub(crate) fn register_pubsub_client(&self, client_id: ClientId) {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return;
+        };
+        state.pending_messages.entry(client_id).or_default();
+    }
+
+    pub(crate) fn unregister_pubsub_client(&self, client_id: ClientId) {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return;
+        };
+        if let Some(channels) = state.client_channels.remove(&client_id) {
+            for channel in channels {
+                if let Some(subscribers) = state.channel_subscribers.get_mut(&channel) {
+                    subscribers.remove(&client_id);
+                    if subscribers.is_empty() {
+                        state.channel_subscribers.remove(&channel);
+                    }
+                }
+            }
+        }
+        if let Some(patterns) = state.client_patterns.remove(&client_id) {
+            for pattern in patterns {
+                if let Some(subscribers) = state.pattern_subscribers.get_mut(&pattern) {
+                    subscribers.remove(&client_id);
+                    if subscribers.is_empty() {
+                        state.pattern_subscribers.remove(&pattern);
+                    }
+                }
+            }
+        }
+        let _ = state.pending_messages.remove(&client_id);
+    }
+
+    pub(crate) fn pubsub_subscription_count(&self, client_id: ClientId) -> usize {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return 0;
+        };
+        pubsub_total_subscriptions_for_client(&state, client_id)
+    }
+
+    pub(crate) fn pubsub_subscribe_channels(
+        &self,
+        client_id: ClientId,
+        channels: &[&[u8]],
+    ) -> Vec<(Vec<u8>, usize)> {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        state.pending_messages.entry(client_id).or_default();
+        let mut acks = Vec::with_capacity(channels.len());
+        for channel in channels {
+            let channel_vec = (*channel).to_vec();
+            let inserted = state
+                .client_channels
+                .entry(client_id)
+                .or_default()
+                .insert(channel_vec.clone());
+            if inserted {
+                state
+                    .channel_subscribers
+                    .entry(channel_vec.clone())
+                    .or_default()
+                    .insert(client_id);
+            }
+            acks.push((
+                channel_vec,
+                pubsub_total_subscriptions_for_client(&state, client_id),
+            ));
+        }
+        acks
+    }
+
+    pub(crate) fn pubsub_subscribe_patterns(
+        &self,
+        client_id: ClientId,
+        patterns: &[&[u8]],
+    ) -> Vec<(Vec<u8>, usize)> {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        state.pending_messages.entry(client_id).or_default();
+        let mut acks = Vec::with_capacity(patterns.len());
+        for pattern in patterns {
+            let pattern_vec = (*pattern).to_vec();
+            let inserted = state
+                .client_patterns
+                .entry(client_id)
+                .or_default()
+                .insert(pattern_vec.clone());
+            if inserted {
+                state
+                    .pattern_subscribers
+                    .entry(pattern_vec.clone())
+                    .or_default()
+                    .insert(client_id);
+            }
+            acks.push((
+                pattern_vec,
+                pubsub_total_subscriptions_for_client(&state, client_id),
+            ));
+        }
+        acks
+    }
+
+    pub(crate) fn pubsub_unsubscribe_channels(
+        &self,
+        client_id: ClientId,
+        channels: &[&[u8]],
+    ) -> Vec<(Option<Vec<u8>>, usize)> {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        let targets =
+            collect_pubsub_unsubscribe_targets(state.client_channels.get(&client_id), channels);
+        if targets.is_empty() {
+            return vec![(None, 0)];
+        }
+
+        let mut acks = Vec::with_capacity(targets.len());
+        for target in targets {
+            let removed =
+                remove_pubsub_client_subscription(&mut state.client_channels, client_id, &target);
+            if removed {
+                remove_pubsub_subscriber(&mut state.channel_subscribers, &target, client_id);
+            }
+            acks.push((
+                Some(target),
+                pubsub_total_subscriptions_for_client(&state, client_id),
+            ));
+        }
+        acks
+    }
+
+    pub(crate) fn pubsub_unsubscribe_patterns(
+        &self,
+        client_id: ClientId,
+        patterns: &[&[u8]],
+    ) -> Vec<(Option<Vec<u8>>, usize)> {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        let targets =
+            collect_pubsub_unsubscribe_targets(state.client_patterns.get(&client_id), patterns);
+        if targets.is_empty() {
+            return vec![(None, 0)];
+        }
+
+        let mut acks = Vec::with_capacity(targets.len());
+        for target in targets {
+            let removed =
+                remove_pubsub_client_subscription(&mut state.client_patterns, client_id, &target);
+            if removed {
+                remove_pubsub_subscriber(&mut state.pattern_subscribers, &target, client_id);
+            }
+            acks.push((
+                Some(target),
+                pubsub_total_subscriptions_for_client(&state, client_id),
+            ));
+        }
+        acks
+    }
+
+    pub(crate) fn pubsub_publish(&self, channel: &[u8], message: &[u8]) -> i64 {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return 0;
+        };
+        let channel_targets = collect_pubsub_channel_targets(&state, channel);
+        let pattern_targets = collect_pubsub_pattern_targets(&state, channel);
+        let channel_delivery_count = channel_targets.len();
+        let pattern_delivery_count = pattern_targets.len();
+        let total_delivery_count = channel_delivery_count.saturating_add(pattern_delivery_count);
+        if total_delivery_count == 0 {
+            return 0;
+        }
+
+        let message_frame = encode_pubsub_message_frame(b"message", None, channel, message);
+        for target in channel_targets {
+            state
+                .pending_messages
+                .entry(target)
+                .or_default()
+                .push_back(message_frame.clone());
+        }
+
+        for (target, pattern) in pattern_targets {
+            let frame = encode_pubsub_message_frame(b"pmessage", Some(&pattern), channel, message);
+            state
+                .pending_messages
+                .entry(target)
+                .or_default()
+                .push_back(frame);
+        }
+
+        saturating_usize_to_i64(total_delivery_count)
+    }
+
+    pub(crate) fn pubsub_numsub(&self, channels: &[&[u8]]) -> Vec<(Vec<u8>, usize)> {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return channels
+                .iter()
+                .map(|channel| ((*channel).to_vec(), 0usize))
+                .collect();
+        };
+        channels
+            .iter()
+            .map(|channel| {
+                (
+                    (*channel).to_vec(),
+                    state
+                        .channel_subscribers
+                        .get(*channel)
+                        .map_or(0, HashSet::len),
+                )
+            })
+            .collect()
+    }
+
+    pub(crate) fn pubsub_numpat(&self) -> usize {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return 0;
+        };
+        state.pattern_subscribers.len()
+    }
+
+    pub(crate) fn pubsub_channels(&self, pattern: Option<&[u8]>) -> Vec<Vec<u8>> {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        let mut channels = state
+            .channel_subscribers
+            .keys()
+            .filter(|channel| match pattern {
+                Some(pattern) => self::server_commands::redis_glob_match(
+                    pattern,
+                    channel.as_slice(),
+                    self::server_commands::CaseSensitivity::Sensitive,
+                    0,
+                ),
+                None => true,
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        channels.sort();
+        channels
+    }
+
+    pub(crate) fn take_pending_pubsub_messages(&self, client_id: ClientId) -> Vec<Vec<u8>> {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return Vec::new();
+        };
+        let Some(messages) = state.pending_messages.get_mut(&client_id) else {
+            return Vec::new();
+        };
+        let mut drained = Vec::with_capacity(messages.len());
+        while let Some(message) = messages.pop_front() {
+            drained.push(message);
+        }
+        drained
     }
 
     pub(super) fn connected_clients(&self) -> u64 {
@@ -1761,7 +2061,18 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
         client_no_touch: bool,
     ) -> Result<(), RequestExecutionError> {
+        self.execute_with_client_context(args, response_out, client_no_touch, None)
+    }
+
+    pub(crate) fn execute_with_client_context(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+    ) -> Result<(), RequestExecutionError> {
         let _scope = ClientNoTouchScope::enter(client_no_touch);
+        let _client_scope = RequestClientIdScope::enter(client_id);
         self.execute(args, response_out)
     }
 
@@ -2047,6 +2358,123 @@ impl RequestProcessor {
             | CommandId::Unknown => Err(RequestExecutionError::UnknownCommand),
         }
     }
+}
+
+fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientId) -> usize {
+    let channels = state
+        .client_channels
+        .get(&client_id)
+        .map_or(0, HashSet::len);
+    let patterns = state
+        .client_patterns
+        .get(&client_id)
+        .map_or(0, HashSet::len);
+    channels.saturating_add(patterns)
+}
+
+fn collect_pubsub_unsubscribe_targets(
+    existing_subscriptions: Option<&HashSet<Vec<u8>>>,
+    requested_targets: &[&[u8]],
+) -> Vec<Vec<u8>> {
+    if requested_targets.is_empty() {
+        let mut targets = existing_subscriptions
+            .map(|subscriptions| subscriptions.iter().cloned().collect::<Vec<_>>())
+            .unwrap_or_default();
+        targets.sort();
+        return targets;
+    }
+    requested_targets
+        .iter()
+        .map(|target| (*target).to_vec())
+        .collect()
+}
+
+fn remove_pubsub_client_subscription(
+    client_subscriptions: &mut HashMap<ClientId, HashSet<Vec<u8>>>,
+    client_id: ClientId,
+    target: &[u8],
+) -> bool {
+    let removed = if let Some(subscriptions) = client_subscriptions.get_mut(&client_id) {
+        subscriptions.remove(target)
+    } else {
+        false
+    };
+
+    if matches!(
+        client_subscriptions.get(&client_id),
+        Some(subscriptions) if subscriptions.is_empty()
+    ) {
+        client_subscriptions.remove(&client_id);
+    }
+
+    removed
+}
+
+fn remove_pubsub_subscriber(
+    subscriber_index: &mut HashMap<Vec<u8>, HashSet<ClientId>>,
+    target: &[u8],
+    client_id: ClientId,
+) {
+    if let Some(subscribers) = subscriber_index.get_mut(target) {
+        subscribers.remove(&client_id);
+        if subscribers.is_empty() {
+            subscriber_index.remove(target);
+        }
+    }
+}
+
+fn collect_pubsub_channel_targets(state: &PubSubState, channel: &[u8]) -> Vec<ClientId> {
+    state
+        .channel_subscribers
+        .get(channel)
+        .map(|subscribers| subscribers.iter().copied().collect::<Vec<_>>())
+        .unwrap_or_default()
+}
+
+fn collect_pubsub_pattern_targets(state: &PubSubState, channel: &[u8]) -> Vec<(ClientId, Vec<u8>)> {
+    let mut pattern_targets = Vec::new();
+    for (pattern, subscribers) in &state.pattern_subscribers {
+        if self::server_commands::redis_glob_match(
+            pattern,
+            channel,
+            self::server_commands::CaseSensitivity::Sensitive,
+            0,
+        ) {
+            for subscriber in subscribers {
+                pattern_targets.push((*subscriber, pattern.clone()));
+            }
+        }
+    }
+    pattern_targets
+}
+
+fn saturating_usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
+}
+
+fn encode_pubsub_message_frame(
+    kind: &[u8],
+    pattern: Option<&[u8]>,
+    channel: &[u8],
+    payload: &[u8],
+) -> Vec<u8> {
+    let mut frame = Vec::new();
+    match pattern {
+        Some(pattern) => {
+            frame.extend_from_slice(b"*4\r\n");
+            append_bulk_string(&mut frame, kind);
+            append_bulk_string(&mut frame, pattern);
+            append_bulk_string(&mut frame, channel);
+            append_bulk_string(&mut frame, payload);
+        }
+        None => {
+            frame.extend_from_slice(b"*3\r\n");
+            append_bulk_string(&mut frame, kind);
+            append_bulk_string(&mut frame, channel);
+            append_bulk_string(&mut frame, payload);
+        }
+    }
+    frame
 }
 
 #[inline]

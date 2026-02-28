@@ -508,6 +508,7 @@ pub(crate) async fn handle_connection(
         processor: &processor,
         client_id,
     };
+    processor.register_pubsub_client(client_id);
     let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
         .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
@@ -540,7 +541,12 @@ pub(crate) async fn handle_connection(
                 }
             }
         }
+        for message in processor.take_pending_pubsub_messages(client_id) {
+            stream.write_all(&message).await?;
+            metrics.add_client_output_bytes(client_id, message.len() as u64);
+        }
         // TLA+ : ServerProcessOne (queue intake stage)
+        // Moves a flushed request burst from socket into the per-connection receive buffer.
         // Read at least once (await), then drain any immediately-available bytes via try_read.
         // This reduces read-side wakeups/syscall count under small pipelined requests.
         let bytes_read = match tokio::time::timeout(
@@ -1415,6 +1421,7 @@ pub(crate) async fn handle_connection(
                             0
                         };
                         // TLA+ : ServerProcessOne
+                        // Executes one parsed request frame and appends its reply to the buffered response stream.
                         match execute_blocking_frame_on_owner_thread(
                             &processor,
                             &metrics,
@@ -1553,6 +1560,7 @@ pub(crate) async fn handle_connection(
 
         if !responses.is_empty() {
             // TLA+ : ServerProcessOne (reply publication)
+            // Makes command replies visible to the client-side read loop.
             stream.write_all(&responses).await?;
         }
         if disconnect_after_write {
@@ -1613,13 +1621,19 @@ async fn execute_frame_on_owner_thread_async(
     command: CommandId,
     frame: &[u8],
     client_no_touch: bool,
+    client_id: Option<ClientId>,
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
     if command_is_scripting_family(command) {
         let owned_args =
             capture_owned_frame_args(frame, args).map_err(map_routed_error_to_owner)?;
         let task_processor = Arc::clone(processor);
         let result = tokio::task::spawn_blocking(move || {
-            execute_owned_frame_args_via_processor(&task_processor, &owned_args, client_no_touch)
+            execute_owned_frame_args_via_processor(
+                &task_processor,
+                &owned_args,
+                client_no_touch,
+                client_id,
+            )
         })
         .await
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?;
@@ -1633,6 +1647,7 @@ async fn execute_frame_on_owner_thread_async(
         command,
         frame,
         client_no_touch,
+        client_id,
     )
 }
 
@@ -1736,6 +1751,7 @@ async fn execute_blocking_frame_on_owner_thread(
             command,
             frame,
             client_no_touch,
+            Some(client_id),
         )
         .await
         {
@@ -3121,6 +3137,9 @@ fn finalize_client_command(
             }
         };
     }
+    if command_forces_reply_when_client_reply_off(command) {
+        suppress_response = false;
+    }
 
     if suppress_response {
         responses.truncate(response_mark);
@@ -3134,6 +3153,18 @@ fn finalize_client_command(
     metrics.add_client_commands_processed(client_id, applied_commands);
 
     outcome.disconnect_after_reply
+}
+
+fn command_forces_reply_when_client_reply_off(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Subscribe
+            | CommandId::Psubscribe
+            | CommandId::Ssubscribe
+            | CommandId::Unsubscribe
+            | CommandId::Punsubscribe
+            | CommandId::Sunsubscribe
+    )
 }
 
 fn command_execution_delta(processor: &RequestProcessor, before: u64, command: CommandId) -> u64 {
@@ -3841,6 +3872,7 @@ struct ConnectionLifecycle<'a> {
 
 impl Drop for ConnectionLifecycle<'_> {
     fn drop(&mut self) {
+        self.processor.unregister_pubsub_client(self.client_id);
         self.metrics.unregister_client(self.client_id);
         self.metrics
             .active_connections

@@ -176,6 +176,7 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::WrongType);
                 }
                 // TLA+ : ClientReadLenNullBulkHang
+                // Pipeline stresser read loop hangs if a pipelined GET observes NULL bulk.
                 append_null_bulk_string(response_out);
                 Ok(())
             }
@@ -1474,6 +1475,7 @@ impl RequestProcessor {
         self.record_key_access(&key, true);
 
         // TLA+ : ServerProcessSetApply
+        // This ACK is emitted only after the write path and metadata updates complete.
         append_simple_string(response_out, b"OK");
         Ok(())
     }

@@ -195,6 +195,52 @@ fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
     response
 }
 
+fn execute_frame_with_client(
+    processor: &RequestProcessor,
+    frame: &[u8],
+    client_id: ClientId,
+    client_no_touch: bool,
+) -> Vec<u8> {
+    let mut args = [ArgSlice::EMPTY; 16];
+    let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+    let mut response = Vec::new();
+    processor
+        .execute_with_client_context(
+            &args[..meta.argument_count],
+            &mut response,
+            client_no_touch,
+            Some(client_id),
+        )
+        .unwrap();
+    response
+}
+
+fn execute_command_line_with_client(
+    processor: &RequestProcessor,
+    command_line: &str,
+    client_id: ClientId,
+) -> Vec<u8> {
+    let parts = command_line
+        .split_whitespace()
+        .map(str::as_bytes)
+        .collect::<Vec<_>>();
+    let frame = encode_resp(&parts);
+    execute_frame_with_client(processor, &frame, client_id, false)
+}
+
+fn assert_client_command_response(
+    processor: &RequestProcessor,
+    command_line: &str,
+    client_id: ClientId,
+    expected: &[u8],
+) {
+    let actual = execute_command_line_with_client(processor, command_line, client_id);
+    assert_eq!(
+        actual, expected,
+        "unexpected response for {command_line:?} on client {client_id}"
+    );
+}
+
 fn arg_bytes_from_slices(args: &[ArgSlice]) -> Vec<&[u8]> {
     let mut out = Vec::with_capacity(args.len());
     for arg in args {
@@ -7369,6 +7415,139 @@ fn pubsub_commands_cover_minimal_ack_and_introspection_shapes() {
 }
 
 #[test]
+fn pubsub_subscribe_publish_and_pattern_delivery_use_stateful_client_context() {
+    let processor = RequestProcessor::new().unwrap();
+    let client1 = ClientId::new(1);
+    let client2 = ClientId::new(2);
+
+    processor.register_pubsub_client(client1);
+    processor.register_pubsub_client(client2);
+
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE chan1 chan1 chan1",
+        client1,
+        b"*3\r\n$9\r\nsubscribe\r\n$5\r\nchan1\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$5\r\nchan1\r\n:1\r\n*3\r\n$9\r\nsubscribe\r\n$5\r\nchan1\r\n:1\r\n",
+    );
+    assert_command_response(&processor, "PUBLISH chan1 hello", b":1\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client1),
+        vec![b"*3\r\n$7\r\nmessage\r\n$5\r\nchan1\r\n$5\r\nhello\r\n".to_vec()]
+    );
+
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE chan1",
+        client2,
+        b"*3\r\n$9\r\nsubscribe\r\n$5\r\nchan1\r\n:1\r\n",
+    );
+    assert_command_response(&processor, "PUBLISH chan1 world", b":2\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client1),
+        vec![b"*3\r\n$7\r\nmessage\r\n$5\r\nchan1\r\n$5\r\nworld\r\n".to_vec()]
+    );
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client2),
+        vec![b"*3\r\n$7\r\nmessage\r\n$5\r\nchan1\r\n$5\r\nworld\r\n".to_vec()]
+    );
+
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE chan.*",
+        client1,
+        b"*3\r\n$10\r\npsubscribe\r\n$6\r\nchan.*\r\n:2\r\n",
+    );
+    assert_command_response(&processor, "PUBLISH chan.foo hello", b":1\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client1),
+        vec![b"*4\r\n$8\r\npmessage\r\n$6\r\nchan.*\r\n$8\r\nchan.foo\r\n$5\r\nhello\r\n".to_vec()]
+    );
+}
+
+#[test]
+fn pubsub_unsubscribe_non_subscribed_targets_keep_zero_subscription_count() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(9);
+    processor.register_pubsub_client(client);
+
+    assert_client_command_response(
+        &processor,
+        "UNSUBSCRIBE foo bar quux",
+        client,
+        b"*3\r\n$11\r\nunsubscribe\r\n$3\r\nfoo\r\n:0\r\n*3\r\n$11\r\nunsubscribe\r\n$3\r\nbar\r\n:0\r\n*3\r\n$11\r\nunsubscribe\r\n$4\r\nquux\r\n:0\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PUNSUBSCRIBE foo.* bar.* quux.*",
+        client,
+        b"*3\r\n$12\r\npunsubscribe\r\n$5\r\nfoo.*\r\n:0\r\n*3\r\n$12\r\npunsubscribe\r\n$5\r\nbar.*\r\n:0\r\n*3\r\n$12\r\npunsubscribe\r\n$6\r\nquux.*\r\n:0\r\n",
+    );
+}
+
+#[test]
+fn pubsub_ping_uses_resp2_pubsub_array_shape_while_client_is_subscribed() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(42);
+    processor.register_pubsub_client(client);
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE somechannel",
+        client,
+        b"*3\r\n$9\r\nsubscribe\r\n$11\r\nsomechannel\r\n:1\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PING",
+        client,
+        b"*2\r\n$4\r\npong\r\n$0\r\n\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PING foo",
+        client,
+        b"*2\r\n$4\r\npong\r\n$3\r\nfoo\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "UNSUBSCRIBE somechannel",
+        client,
+        b"*3\r\n$11\r\nunsubscribe\r\n$11\r\nsomechannel\r\n:0\r\n",
+    );
+    assert_client_command_response(&processor, "PING", client, b"+PONG\r\n");
+}
+
+#[test]
+fn pubsub_numpat_counts_unique_patterns_across_clients() {
+    let processor = RequestProcessor::new().unwrap();
+    let client1 = ClientId::new(70);
+    let client2 = ClientId::new(71);
+    processor.register_pubsub_client(client1);
+    processor.register_pubsub_client(client2);
+
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE foo*",
+        client1,
+        b"*3\r\n$10\r\npsubscribe\r\n$4\r\nfoo*\r\n:1\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE foo* bar*",
+        client2,
+        b"*3\r\n$10\r\npsubscribe\r\n$4\r\nfoo*\r\n:1\r\n*3\r\n$10\r\npsubscribe\r\n$4\r\nbar*\r\n:2\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE baz*",
+        client1,
+        b"*3\r\n$10\r\npsubscribe\r\n$4\r\nbaz*\r\n:2\r\n",
+    );
+    assert_command_response(&processor, "PUBSUB NUMPAT", b":3\r\n");
+}
+
+#[test]
 fn geoadd_supports_basic_options_and_validation_paths() {
     let processor = RequestProcessor::new().unwrap();
 
@@ -9477,6 +9656,16 @@ fn config_set_port_accepts_current_value_and_rejects_port_changes() {
         &processor,
         "CONFIG SET port not-a-port",
         b"-ERR value is not an integer or out of range\r\n",
+    );
+}
+
+#[test]
+fn config_set_notify_keyspace_events_returns_unsupported_error() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events KEA",
+        b"-ERR CONFIG SET failed (possibly related to argument 'notify-keyspace-events') - keyspace notifications are not supported\r\n",
     );
 }
 

@@ -317,6 +317,17 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 1, 2, "PING", "PING [message]")?;
+        if self.resp_protocol_version() == RespProtocolVersion::Resp2 {
+            if let Some(client_id) = super::current_request_client_id() {
+                if self.pubsub_subscription_count(client_id) > 0 {
+                    response_out.extend_from_slice(b"*2\r\n");
+                    append_bulk_string(response_out, b"pong");
+                    let payload = if args.len() == 1 { b"" } else { args[1] };
+                    append_bulk_string(response_out, payload);
+                    return Ok(());
+                }
+            }
+        }
         if args.len() == 1 {
             append_simple_string(response_out, b"PONG");
             return Ok(());
@@ -2146,6 +2157,11 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SUBSCRIBE", "SUBSCRIBE channel [channel ...]")?;
+        if let Some(client_id) = super::current_request_client_id() {
+            let acks = self.pubsub_subscribe_channels(client_id, &args[1..]);
+            append_subscription_ack_entries(response_out, b"subscribe", &acks);
+            return Ok(());
+        }
         append_subscription_acks(response_out, &args[1..], b"subscribe");
         Ok(())
     }
@@ -2156,6 +2172,11 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PSUBSCRIBE", "PSUBSCRIBE pattern [pattern ...]")?;
+        if let Some(client_id) = super::current_request_client_id() {
+            let acks = self.pubsub_subscribe_patterns(client_id, &args[1..]);
+            append_subscription_ack_entries(response_out, b"psubscribe", &acks);
+            return Ok(());
+        }
         append_subscription_acks(response_out, &args[1..], b"psubscribe");
         Ok(())
     }
@@ -2186,6 +2207,11 @@ impl RequestProcessor {
             "UNSUBSCRIBE",
             "UNSUBSCRIBE [channel [channel ...]]",
         )?;
+        if let Some(client_id) = super::current_request_client_id() {
+            let acks = self.pubsub_unsubscribe_channels(client_id, &args[1..]);
+            append_unsubscribe_ack_entries(response_out, b"unsubscribe", &acks);
+            return Ok(());
+        }
         append_unsubscribe_acks(response_out, &args[1..], b"unsubscribe");
         Ok(())
     }
@@ -2201,6 +2227,11 @@ impl RequestProcessor {
             "PUNSUBSCRIBE",
             "PUNSUBSCRIBE [pattern [pattern ...]]",
         )?;
+        if let Some(client_id) = super::current_request_client_id() {
+            let acks = self.pubsub_unsubscribe_patterns(client_id, &args[1..]);
+            append_unsubscribe_ack_entries(response_out, b"punsubscribe", &acks);
+            return Ok(());
+        }
         append_unsubscribe_acks(response_out, &args[1..], b"punsubscribe");
         Ok(())
     }
@@ -2226,7 +2257,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "PUBLISH", "PUBLISH channel message")?;
-        append_integer(response_out, 0);
+        let recipients = self.pubsub_publish(args[1], args[2]);
+        append_integer(response_out, recipients);
         Ok(())
     }
 
@@ -2256,23 +2288,41 @@ impl RequestProcessor {
             || ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS")
         {
             ensure_ranged_arity(args, 2, 3, "PUBSUB", "PUBSUB CHANNELS [pattern]")?;
-            response_out.extend_from_slice(b"*0\r\n");
+            let channels = if ascii_eq_ignore_case(subcommand, b"SHARDCHANNELS") {
+                Vec::new()
+            } else {
+                self.pubsub_channels(args.get(2).copied())
+            };
+            response_out.extend_from_slice(format!("*{}\r\n", channels.len()).as_bytes());
+            for channel in channels {
+                append_bulk_string(response_out, &channel);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"NUMPAT") {
             require_exact_arity(args, 2, "PUBSUB", "PUBSUB NUMPAT")?;
-            append_integer(response_out, 0);
+            append_integer(
+                response_out,
+                i64::try_from(self.pubsub_numpat()).unwrap_or(i64::MAX),
+            );
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"NUMSUB")
             || ascii_eq_ignore_case(subcommand, b"SHARDNUMSUB")
         {
             ensure_min_arity(args, 2, "PUBSUB", "PUBSUB NUMSUB [channel [channel ...]]")?;
-            let pair_count = args.len().saturating_sub(2);
-            response_out.extend_from_slice(format!("*{}\r\n", pair_count * 2).as_bytes());
-            for channel in &args[2..] {
-                append_bulk_string(response_out, channel);
-                append_integer(response_out, 0);
+            let subscribers = if ascii_eq_ignore_case(subcommand, b"SHARDNUMSUB") {
+                args[2..]
+                    .iter()
+                    .map(|channel| ((*channel).to_vec(), 0usize))
+                    .collect::<Vec<_>>()
+            } else {
+                self.pubsub_numsub(&args[2..])
+            };
+            response_out.extend_from_slice(format!("*{}\r\n", subscribers.len() * 2).as_bytes());
+            for (channel, count) in subscribers {
+                append_bulk_string(response_out, &channel);
+                append_integer(response_out, i64::try_from(count).unwrap_or(i64::MAX));
             }
             return Ok(());
         }
@@ -2412,6 +2462,13 @@ impl RequestProcessor {
                         );
                         return Ok(());
                     }
+                }
+                if parameter == b"notify-keyspace-events" {
+                    append_error(
+                        response_out,
+                        b"ERR CONFIG SET failed (possibly related to argument 'notify-keyspace-events') - keyspace notifications are not supported",
+                    );
+                    return Ok(());
                 }
                 if parameter == b"port" {
                     let parsed_port =
@@ -2978,6 +3035,16 @@ fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind:
     }
 }
 
+fn append_subscription_ack_entries(
+    response_out: &mut Vec<u8>,
+    kind: &[u8],
+    entries: &[(Vec<u8>, usize)],
+) {
+    for (channel, count) in entries {
+        append_pubsub_ack(response_out, kind, Some(channel), *count);
+    }
+}
+
 fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: &[u8]) {
     if targets.is_empty() {
         append_pubsub_ack(response_out, kind, None, 0);
@@ -2986,6 +3053,16 @@ fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: 
     for (index, &channel) in targets.iter().enumerate() {
         let remaining = targets.len().saturating_sub(index + 1);
         append_pubsub_ack(response_out, kind, Some(channel), remaining);
+    }
+}
+
+fn append_unsubscribe_ack_entries(
+    response_out: &mut Vec<u8>,
+    kind: &[u8],
+    entries: &[(Option<Vec<u8>>, usize)],
+) {
+    for (channel, count) in entries {
+        append_pubsub_ack(response_out, kind, channel.as_deref(), *count);
     }
 }
 

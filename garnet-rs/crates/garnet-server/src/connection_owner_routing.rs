@@ -3,6 +3,7 @@ use garnet_common::ArgSlice;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
 use std::sync::Arc;
 
+use crate::ClientId;
 use crate::CommandId;
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
@@ -108,12 +109,13 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     processor: &RequestProcessor,
     owned_args: &OwnedFrameArgs,
     client_no_touch: bool,
+    client_id: Option<ClientId>,
 ) -> Result<Vec<u8>, RoutedExecutionError> {
     let args = parse_owned_frame_args(owned_args)?;
 
     let mut response = Vec::new();
     processor
-        .execute_with_client_no_touch(&args, &mut response, client_no_touch)
+        .execute_with_client_context(&args, &mut response, client_no_touch, client_id)
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -125,11 +127,12 @@ pub(crate) fn execute_frame_on_owner_thread(
     command: CommandId,
     frame: &[u8],
     client_no_touch: bool,
+    client_id: Option<ClientId>,
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
     if owner_thread_pool.is_inline_execution() {
         let mut response = Vec::new();
         processor
-            .execute_with_client_no_touch(args, &mut response, client_no_touch)
+            .execute_with_client_context(args, &mut response, client_no_touch, client_id)
             .map_err(OwnerThreadExecutionError::Request)?;
         return Ok(response);
     }
@@ -139,7 +142,12 @@ pub(crate) fn execute_frame_on_owner_thread(
     let routed_processor = Arc::clone(processor);
     owner_thread_pool
         .execute_sync(shard_index, move || {
-            execute_owned_frame_args_via_processor(&routed_processor, &owned_args, client_no_touch)
+            execute_owned_frame_args_via_processor(
+                &routed_processor,
+                &owned_args,
+                client_no_touch,
+                client_id,
+            )
         })
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?
         .map_err(map_routed_owner_error)
