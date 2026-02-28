@@ -44,6 +44,10 @@ This file defines default collaboration and execution rules for repository work,
 - Use temporary/partial steps only when they are technically necessary, and record explicit rationale plus follow-up TODO.
 - Avoid casual "for now" / "first" staging language unless there is a concrete technical dependency that enforces staged delivery.
 - Avoid `impl`/`.as_`-style conversion helpers in internal APIs; use them only at true boundaries (serialization and external I/O), and keep internal APIs unified on concrete domain types.
+- Prefer explicit, step-by-step control flow over dense chained combinators when code is on a critical path or has branching behavior.
+- Break complex expressions into named intermediate variables/helpers when that improves intent readability; do not compress multiple semantic steps into one expression.
+- Keep parse/validate/state-mutation/response-emission phases separated when practical, so behavior can be reasoned about locally.
+- If readability and micro-optimization conflict and no benchmark evidence exists, choose readability first and optimize later with measurement.
 - For performance-sensitive work: make the implementation clean first; once a path is proven performance-critical, keep the code readable/beautiful first, then optimize with measurement-backed changes.
 - Spending more time to reach a robust implementation is preferred over fast-but-fragile patches.
 
