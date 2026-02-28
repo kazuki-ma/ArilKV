@@ -1,3 +1,7 @@
+// TLA+ model linkage:
+// - formal/tla/specs/PipelineStresserTimeout.tla
+// - formal/tla/specs/BlockingDisconnectLeak.tla
+// - formal/tla/specs/LinkedBlmoveChainResidue.tla
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
@@ -536,6 +540,7 @@ pub(crate) async fn handle_connection(
                 }
             }
         }
+        // TLA+ : ServerProcessOne (queue intake stage)
         // Read at least once (await), then drain any immediately-available bytes via try_read.
         // This reduces read-side wakeups/syscall count under small pipelined requests.
         let bytes_read = match tokio::time::timeout(
@@ -1409,6 +1414,7 @@ pub(crate) async fn handle_connection(
                         } else {
                             0
                         };
+                        // TLA+ : ServerProcessOne
                         match execute_blocking_frame_on_owner_thread(
                             &processor,
                             &metrics,
@@ -1546,6 +1552,7 @@ pub(crate) async fn handle_connection(
         }
 
         if !responses.is_empty() {
+            // TLA+ : ServerProcessOne (reply publication)
             stream.write_all(&responses).await?;
         }
         if disconnect_after_write {

@@ -1,3 +1,5 @@
+// TLA+ model linkage:
+// - formal/tla/specs/PipelineStresserTimeout.tla
 use super::*;
 use tsavorite::RmwInfo;
 use tsavorite::RmwOperationError;
@@ -173,6 +175,7 @@ impl RequestProcessor {
                 if self.object_key_exists(&key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
+                // TLA+ : ClientReadLenNullBulkHang
                 append_null_bulk_string(response_out);
                 Ok(())
             }
@@ -1470,6 +1473,7 @@ impl RequestProcessor {
         self.bump_watch_version(&key);
         self.record_key_access(&key, true);
 
+        // TLA+ : ServerProcessSetApply
         append_simple_string(response_out, b"OK");
         Ok(())
     }
