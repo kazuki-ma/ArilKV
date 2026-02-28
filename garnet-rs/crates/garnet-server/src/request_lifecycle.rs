@@ -66,62 +66,50 @@ const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
 
 thread_local! {
-    static REQUEST_CLIENT_NO_TOUCH_MODE: Cell<bool> = const { Cell::new(false) };
-    static REQUEST_CLIENT_ID: Cell<Option<ClientId>> = const { Cell::new(None) };
+    static REQUEST_EXECUTION_CONTEXT: Cell<RequestExecutionContext> = const {
+        Cell::new(RequestExecutionContext {
+            client_no_touch: false,
+            client_id: None,
+        })
+    };
 }
 
-struct ClientNoTouchScope {
-    previous: bool,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RequestExecutionContext {
+    client_no_touch: bool,
+    client_id: Option<ClientId>,
 }
 
-impl ClientNoTouchScope {
+struct RequestExecutionContextScope {
+    previous: RequestExecutionContext,
+}
+
+impl RequestExecutionContextScope {
     #[inline]
-    fn enter(enabled: bool) -> Self {
-        let previous = REQUEST_CLIENT_NO_TOUCH_MODE.with(|state| {
+    fn enter(context: RequestExecutionContext) -> Self {
+        let previous = REQUEST_EXECUTION_CONTEXT.with(|state| {
             let previous = state.get();
-            state.set(enabled);
+            state.set(context);
             previous
         });
         Self { previous }
     }
 }
 
-impl Drop for ClientNoTouchScope {
+impl Drop for RequestExecutionContextScope {
     fn drop(&mut self) {
-        REQUEST_CLIENT_NO_TOUCH_MODE.with(|state| state.set(self.previous));
-    }
-}
-
-struct RequestClientIdScope {
-    previous: Option<ClientId>,
-}
-
-impl RequestClientIdScope {
-    #[inline]
-    fn enter(client_id: Option<ClientId>) -> Self {
-        let previous = REQUEST_CLIENT_ID.with(|state| {
-            let previous = state.get();
-            state.set(client_id);
-            previous
-        });
-        Self { previous }
-    }
-}
-
-impl Drop for RequestClientIdScope {
-    fn drop(&mut self) {
-        REQUEST_CLIENT_ID.with(|state| state.set(self.previous));
+        REQUEST_EXECUTION_CONTEXT.with(|state| state.set(self.previous));
     }
 }
 
 #[inline]
 fn current_client_no_touch_mode() -> bool {
-    REQUEST_CLIENT_NO_TOUCH_MODE.with(Cell::get)
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().client_no_touch)
 }
 
 #[inline]
 fn current_request_client_id() -> Option<ClientId> {
-    REQUEST_CLIENT_ID.with(Cell::get)
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().client_id)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2070,8 +2058,10 @@ impl RequestProcessor {
         client_no_touch: bool,
         client_id: Option<ClientId>,
     ) -> Result<(), RequestExecutionError> {
-        let _scope = ClientNoTouchScope::enter(client_no_touch);
-        let _client_scope = RequestClientIdScope::enter(client_id);
+        let _scope = RequestExecutionContextScope::enter(RequestExecutionContext {
+            client_no_touch,
+            client_id,
+        });
         self.execute(args, response_out)
     }
 
