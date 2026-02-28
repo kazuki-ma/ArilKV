@@ -526,25 +526,8 @@ pub(crate) async fn handle_connection(
         if metrics.is_client_killed(client_id) {
             return Ok(());
         }
-        if let Some(receiver) = monitor_receiver.as_mut() {
-            loop {
-                match receiver.try_recv() {
-                    Ok(event) => {
-                        stream.write_all(&event).await?;
-                    }
-                    Err(broadcast::error::TryRecvError::Empty) => break,
-                    Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
-                    Err(broadcast::error::TryRecvError::Closed) => {
-                        monitor_receiver = None;
-                        break;
-                    }
-                }
-            }
-        }
-        for message in processor.take_pending_pubsub_messages(client_id) {
-            stream.write_all(&message).await?;
-            metrics.add_client_output_bytes(client_id, message.len() as u64);
-        }
+        flush_monitor_events(&mut stream, &mut monitor_receiver).await?;
+        flush_pending_pubsub_messages(&mut stream, &processor, &metrics, client_id).await?;
         // TLA+ : ServerProcessOne (queue intake stage)
         // Moves a flushed request burst from socket into the per-connection receive buffer.
         // Read at least once (await), then drain any immediately-available bytes via try_read.
@@ -1602,6 +1585,39 @@ async fn read_and_drain_available(
     }
 
     Ok(total)
+}
+
+async fn flush_monitor_events(
+    stream: &mut TcpStream,
+    monitor_receiver: &mut Option<broadcast::Receiver<Vec<u8>>>,
+) -> io::Result<()> {
+    let Some(receiver) = monitor_receiver.as_mut() else {
+        return Ok(());
+    };
+    loop {
+        match receiver.try_recv() {
+            Ok(event) => stream.write_all(&event).await?,
+            Err(broadcast::error::TryRecvError::Empty) => return Ok(()),
+            Err(broadcast::error::TryRecvError::Lagged(_)) => continue,
+            Err(broadcast::error::TryRecvError::Closed) => {
+                *monitor_receiver = None;
+                return Ok(());
+            }
+        }
+    }
+}
+
+async fn flush_pending_pubsub_messages(
+    stream: &mut TcpStream,
+    processor: &RequestProcessor,
+    metrics: &ServerMetrics,
+    client_id: ClientId,
+) -> io::Result<()> {
+    for message in processor.take_pending_pubsub_messages(client_id) {
+        stream.write_all(&message).await?;
+        metrics.add_client_output_bytes(client_id, message.len() as u64);
+    }
+    Ok(())
 }
 
 #[inline]
