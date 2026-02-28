@@ -48,6 +48,9 @@ This file defines default collaboration and execution rules for repository work,
 - Break complex expressions into named intermediate variables/helpers when that improves intent readability; do not compress multiple semantic steps into one expression.
 - Keep parse/validate/state-mutation/response-emission phases separated when practical, so behavior can be reasoned about locally.
 - If readability and micro-optimization conflict and no benchmark evidence exists, choose readability first and optimize later with measurement.
+- "Code cleanliness" is judged by post-change readability of the whole code path, not by keeping a local patch minimal.
+- Do not optimize for a small or pretty-looking diff if it leaves the resulting code path dirty, inconsistent, or non-beautiful.
+- If better final readability requires broader edits, do the needed refactor up front; otherwise record explicit follow-up TODOs and do not silently leave structural debt.
 - For performance-sensitive work: make the implementation clean first; once a path is proven performance-critical, keep the code readable/beautiful first, then optimize with measurement-backed changes.
 - Spending more time to reach a robust implementation is preferred over fast-but-fragile patches.
 
