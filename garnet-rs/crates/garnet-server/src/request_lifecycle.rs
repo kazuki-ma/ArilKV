@@ -771,6 +771,12 @@ struct PubSubState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PubSubTargetKind {
+    Channel,
+    Pattern,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClientUnblockMode {
     Timeout,
     Error,
@@ -1087,26 +1093,8 @@ impl RequestProcessor {
         let Ok(mut state) = self.pubsub_state.lock() else {
             return;
         };
-        if let Some(channels) = state.client_channels.remove(&client_id) {
-            for channel in channels {
-                if let Some(subscribers) = state.channel_subscribers.get_mut(&channel) {
-                    subscribers.remove(&client_id);
-                    if subscribers.is_empty() {
-                        state.channel_subscribers.remove(&channel);
-                    }
-                }
-            }
-        }
-        if let Some(patterns) = state.client_patterns.remove(&client_id) {
-            for pattern in patterns {
-                if let Some(subscribers) = state.pattern_subscribers.get_mut(&pattern) {
-                    subscribers.remove(&client_id);
-                    if subscribers.is_empty() {
-                        state.pattern_subscribers.remove(&pattern);
-                    }
-                }
-            }
-        }
+        remove_all_pubsub_client_subscriptions(&mut state, client_id, PubSubTargetKind::Channel);
+        remove_all_pubsub_client_subscriptions(&mut state, client_id, PubSubTargetKind::Pattern);
         let _ = state.pending_messages.remove(&client_id);
     }
 
@@ -1122,31 +1110,7 @@ impl RequestProcessor {
         client_id: ClientId,
         channels: &[&[u8]],
     ) -> Vec<(Vec<u8>, usize)> {
-        let Ok(mut state) = self.pubsub_state.lock() else {
-            return Vec::new();
-        };
-        state.pending_messages.entry(client_id).or_default();
-        let mut acks = Vec::with_capacity(channels.len());
-        for channel in channels {
-            let channel_vec = (*channel).to_vec();
-            let inserted = state
-                .client_channels
-                .entry(client_id)
-                .or_default()
-                .insert(channel_vec.clone());
-            if inserted {
-                state
-                    .channel_subscribers
-                    .entry(channel_vec.clone())
-                    .or_default()
-                    .insert(client_id);
-            }
-            acks.push((
-                channel_vec,
-                pubsub_total_subscriptions_for_client(&state, client_id),
-            ));
-        }
-        acks
+        self.pubsub_subscribe_targets(client_id, channels, PubSubTargetKind::Channel)
     }
 
     pub(crate) fn pubsub_subscribe_patterns(
@@ -1154,27 +1118,54 @@ impl RequestProcessor {
         client_id: ClientId,
         patterns: &[&[u8]],
     ) -> Vec<(Vec<u8>, usize)> {
+        self.pubsub_subscribe_targets(client_id, patterns, PubSubTargetKind::Pattern)
+    }
+
+    fn pubsub_subscribe_targets(
+        &self,
+        client_id: ClientId,
+        targets: &[&[u8]],
+        target_kind: PubSubTargetKind,
+    ) -> Vec<(Vec<u8>, usize)> {
         let Ok(mut state) = self.pubsub_state.lock() else {
             return Vec::new();
         };
         state.pending_messages.entry(client_id).or_default();
-        let mut acks = Vec::with_capacity(patterns.len());
-        for pattern in patterns {
-            let pattern_vec = (*pattern).to_vec();
-            let inserted = state
-                .client_patterns
-                .entry(client_id)
-                .or_default()
-                .insert(pattern_vec.clone());
-            if inserted {
-                state
-                    .pattern_subscribers
-                    .entry(pattern_vec.clone())
+        let mut acks = Vec::with_capacity(targets.len());
+        for target in targets {
+            let target_vec = (*target).to_vec();
+            let inserted = match target_kind {
+                PubSubTargetKind::Channel => state
+                    .client_channels
+                    .entry(client_id)
                     .or_default()
-                    .insert(client_id);
+                    .insert(target_vec.clone()),
+                PubSubTargetKind::Pattern => state
+                    .client_patterns
+                    .entry(client_id)
+                    .or_default()
+                    .insert(target_vec.clone()),
+            };
+            if inserted {
+                match target_kind {
+                    PubSubTargetKind::Channel => {
+                        state
+                            .channel_subscribers
+                            .entry(target_vec.clone())
+                            .or_default()
+                            .insert(client_id);
+                    }
+                    PubSubTargetKind::Pattern => {
+                        state
+                            .pattern_subscribers
+                            .entry(target_vec.clone())
+                            .or_default()
+                            .insert(client_id);
+                    }
+                }
             }
             acks.push((
-                pattern_vec,
+                target_vec,
                 pubsub_total_subscriptions_for_client(&state, client_id),
             ));
         }
@@ -1186,28 +1177,7 @@ impl RequestProcessor {
         client_id: ClientId,
         channels: &[&[u8]],
     ) -> Vec<(Option<Vec<u8>>, usize)> {
-        let Ok(mut state) = self.pubsub_state.lock() else {
-            return Vec::new();
-        };
-        let targets =
-            collect_pubsub_unsubscribe_targets(state.client_channels.get(&client_id), channels);
-        if targets.is_empty() {
-            return vec![(None, 0)];
-        }
-
-        let mut acks = Vec::with_capacity(targets.len());
-        for target in targets {
-            let removed =
-                remove_pubsub_client_subscription(&mut state.client_channels, client_id, &target);
-            if removed {
-                remove_pubsub_subscriber(&mut state.channel_subscribers, &target, client_id);
-            }
-            acks.push((
-                Some(target),
-                pubsub_total_subscriptions_for_client(&state, client_id),
-            ));
-        }
-        acks
+        self.pubsub_unsubscribe_targets(client_id, channels, PubSubTargetKind::Channel)
     }
 
     pub(crate) fn pubsub_unsubscribe_patterns(
@@ -1215,21 +1185,50 @@ impl RequestProcessor {
         client_id: ClientId,
         patterns: &[&[u8]],
     ) -> Vec<(Option<Vec<u8>>, usize)> {
+        self.pubsub_unsubscribe_targets(client_id, patterns, PubSubTargetKind::Pattern)
+    }
+
+    fn pubsub_unsubscribe_targets(
+        &self,
+        client_id: ClientId,
+        targets: &[&[u8]],
+        target_kind: PubSubTargetKind,
+    ) -> Vec<(Option<Vec<u8>>, usize)> {
         let Ok(mut state) = self.pubsub_state.lock() else {
             return Vec::new();
         };
-        let targets =
-            collect_pubsub_unsubscribe_targets(state.client_patterns.get(&client_id), patterns);
+        let existing_subscriptions = match target_kind {
+            PubSubTargetKind::Channel => state.client_channels.get(&client_id),
+            PubSubTargetKind::Pattern => state.client_patterns.get(&client_id),
+        };
+        let targets = collect_pubsub_unsubscribe_targets(existing_subscriptions, targets);
         if targets.is_empty() {
             return vec![(None, 0)];
         }
 
         let mut acks = Vec::with_capacity(targets.len());
         for target in targets {
-            let removed =
-                remove_pubsub_client_subscription(&mut state.client_patterns, client_id, &target);
+            let removed = match target_kind {
+                PubSubTargetKind::Channel => remove_pubsub_client_subscription(
+                    &mut state.client_channels,
+                    client_id,
+                    &target,
+                ),
+                PubSubTargetKind::Pattern => remove_pubsub_client_subscription(
+                    &mut state.client_patterns,
+                    client_id,
+                    &target,
+                ),
+            };
             if removed {
-                remove_pubsub_subscriber(&mut state.pattern_subscribers, &target, client_id);
+                match target_kind {
+                    PubSubTargetKind::Channel => {
+                        remove_pubsub_subscriber(&mut state.channel_subscribers, &target, client_id)
+                    }
+                    PubSubTargetKind::Pattern => {
+                        remove_pubsub_subscriber(&mut state.pattern_subscribers, &target, client_id)
+                    }
+                }
             }
             acks.push((
                 Some(target),
@@ -2370,6 +2369,30 @@ fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientI
         .get(&client_id)
         .map_or(0, HashSet::len);
     channels.saturating_add(patterns)
+}
+
+fn remove_all_pubsub_client_subscriptions(
+    state: &mut PubSubState,
+    client_id: ClientId,
+    target_kind: PubSubTargetKind,
+) {
+    let targets = match target_kind {
+        PubSubTargetKind::Channel => state.client_channels.remove(&client_id),
+        PubSubTargetKind::Pattern => state.client_patterns.remove(&client_id),
+    };
+    let Some(targets) = targets else {
+        return;
+    };
+    for target in targets {
+        match target_kind {
+            PubSubTargetKind::Channel => {
+                remove_pubsub_subscriber(&mut state.channel_subscribers, &target, client_id)
+            }
+            PubSubTargetKind::Pattern => {
+                remove_pubsub_subscriber(&mut state.pattern_subscribers, &target, client_id)
+            }
+        }
+    }
 }
 
 fn collect_pubsub_unsubscribe_targets(

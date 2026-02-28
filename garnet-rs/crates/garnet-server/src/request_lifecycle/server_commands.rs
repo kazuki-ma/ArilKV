@@ -2301,10 +2301,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"NUMPAT") {
             require_exact_arity(args, 2, "PUBSUB", "PUBSUB NUMPAT")?;
-            append_integer(
-                response_out,
-                i64::try_from(self.pubsub_numpat()).unwrap_or(i64::MAX),
-            );
+            append_integer(response_out, saturating_usize_to_i64(self.pubsub_numpat()));
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"NUMSUB")
@@ -2322,7 +2319,7 @@ impl RequestProcessor {
             response_out.extend_from_slice(format!("*{}\r\n", subscribers.len() * 2).as_bytes());
             for (channel, count) in subscribers {
                 append_bulk_string(response_out, &channel);
-                append_integer(response_out, i64::try_from(count).unwrap_or(i64::MAX));
+                append_integer(response_out, saturating_usize_to_i64(count));
             }
             return Ok(());
         }
@@ -3078,7 +3075,12 @@ fn append_pubsub_ack(
         Some(channel) => append_bulk_string(response_out, channel),
         None => append_null_bulk_string(response_out),
     }
-    append_integer(response_out, count as i64);
+    append_integer(response_out, saturating_usize_to_i64(count));
+}
+
+#[inline]
+fn saturating_usize_to_i64(value: usize) -> i64 {
+    i64::try_from(value).unwrap_or(i64::MAX)
 }
 
 fn object_encoding_name(
