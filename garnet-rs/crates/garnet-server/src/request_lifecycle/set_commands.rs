@@ -9,14 +9,80 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut set = self.load_set_object(&key)?.unwrap_or_default();
         let mut inserted = 0i64;
-        for member in &args[2..] {
-            if set.insert(member.to_vec()) {
-                inserted += 1;
+
+        match self.load_set_object_payload(&key)? {
+            None => {
+                if let Some((range, inserted_count)) = try_build_contiguous_i64_range(&args[2..]) {
+                    self.save_contiguous_i64_range_set_object(&key, range)?;
+                    inserted = inserted_count as i64;
+                } else {
+                    let mut set = BTreeSet::new();
+                    for member in &args[2..] {
+                        if set.insert((*member).to_vec()) {
+                            inserted += 1;
+                        }
+                    }
+                    self.save_set_object(&key, &set)?;
+                }
+            }
+            Some(DecodedSetObjectPayload::Members(mut set)) => {
+                for member in &args[2..] {
+                    if set.insert((*member).to_vec()) {
+                        inserted += 1;
+                    }
+                }
+                self.save_set_object(&key, &set)?;
+            }
+            Some(DecodedSetObjectPayload::ContiguousI64Range(mut range)) => {
+                let mut fallback_set: Option<BTreeSet<Vec<u8>>> = None;
+
+                for member in &args[2..] {
+                    if let Some(set) = fallback_set.as_mut() {
+                        if set.insert((*member).to_vec()) {
+                            inserted += 1;
+                        }
+                        continue;
+                    }
+
+                    let Some(value) = parse_canonical_i64_member(member) else {
+                        let mut set = materialize_contiguous_i64_range_set(range);
+                        if set.insert((*member).to_vec()) {
+                            inserted += 1;
+                        }
+                        fallback_set = Some(set);
+                        continue;
+                    };
+
+                    if range.contains(value) {
+                        continue;
+                    }
+                    if range.can_extend_left_with(value) {
+                        range.extend_left();
+                        inserted += 1;
+                        continue;
+                    }
+                    if range.can_extend_right_with(value) {
+                        range.extend_right();
+                        inserted += 1;
+                        continue;
+                    }
+
+                    let mut set = materialize_contiguous_i64_range_set(range);
+                    if set.insert((*member).to_vec()) {
+                        inserted += 1;
+                    }
+                    fallback_set = Some(set);
+                }
+
+                if let Some(set) = fallback_set {
+                    self.save_set_object(&key, &set)?;
+                } else {
+                    self.save_contiguous_i64_range_set_object(&key, range)?;
+                }
             }
         }
-        self.save_set_object(&key, &set)?;
+
         append_integer(response_out, inserted);
         Ok(())
     }
@@ -610,6 +676,29 @@ fn compute_sdiff(
     }
 
     Ok(diff)
+}
+
+fn try_build_contiguous_i64_range(members: &[&[u8]]) -> Option<(ContiguousI64RangeSet, usize)> {
+    let mut unique_values = BTreeSet::new();
+    for member in members {
+        unique_values.insert(parse_canonical_i64_member(member)?);
+    }
+    let start = *unique_values.first()?;
+    let end = *unique_values.last()?;
+    let span = i128::from(end) - i128::from(start) + 1;
+    let unique_len = unique_values.len();
+    if usize::try_from(span).ok()? != unique_len {
+        return None;
+    }
+    Some((ContiguousI64RangeSet::new(start, end)?, unique_len))
+}
+
+fn parse_canonical_i64_member(member: &[u8]) -> Option<i64> {
+    let value = parse_i64_ascii(member)?;
+    if value.to_string().as_bytes() != member {
+        return None;
+    }
+    Some(value)
 }
 
 fn store_set_result(

@@ -7,6 +7,7 @@ use super::StreamId;
 use super::StreamObject;
 
 const VALUE_EXPIRATION_PREFIX_LEN: usize = size_of::<u64>();
+const SET_CONTIGUOUS_I64_RANGE_MAGIC: [u8; 4] = *b"SRNG";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct DecodedStoredValue<'a> {
@@ -23,6 +24,55 @@ pub(super) struct DecodedObjectValue {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct EncodedObjectValue {
     bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct ContiguousI64RangeSet {
+    start: i64,
+    end: i64,
+}
+
+impl ContiguousI64RangeSet {
+    pub(super) fn new(start: i64, end: i64) -> Option<Self> {
+        if start > end {
+            return None;
+        }
+        Some(Self { start, end })
+    }
+
+    pub(super) fn start(self) -> i64 {
+        self.start
+    }
+
+    pub(super) fn end(self) -> i64 {
+        self.end
+    }
+
+    pub(super) fn contains(self, value: i64) -> bool {
+        value >= self.start && value <= self.end
+    }
+
+    pub(super) fn can_extend_left_with(self, value: i64) -> bool {
+        self.start.checked_sub(1).is_some_and(|left| left == value)
+    }
+
+    pub(super) fn can_extend_right_with(self, value: i64) -> bool {
+        self.end.checked_add(1).is_some_and(|right| right == value)
+    }
+
+    pub(super) fn extend_left(&mut self) {
+        self.start -= 1;
+    }
+
+    pub(super) fn extend_right(&mut self) {
+        self.end += 1;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DecodedSetObjectPayload {
+    Members(BTreeSet<Vec<u8>>),
+    ContiguousI64Range(ContiguousI64RangeSet),
 }
 
 impl EncodedObjectValue {
@@ -218,7 +268,43 @@ pub(super) fn serialize_set_object_payload(set: &BTreeSet<Vec<u8>>) -> Vec<u8> {
     encoded
 }
 
+pub(super) fn serialize_contiguous_i64_range_set_payload(range: ContiguousI64RangeSet) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(
+        SET_CONTIGUOUS_I64_RANGE_MAGIC.len() + size_of::<i64>() + size_of::<i64>(),
+    );
+    encoded.extend_from_slice(&SET_CONTIGUOUS_I64_RANGE_MAGIC);
+    encoded.extend_from_slice(&range.start().to_le_bytes());
+    encoded.extend_from_slice(&range.end().to_le_bytes());
+    encoded
+}
+
+pub(super) fn materialize_contiguous_i64_range_set(
+    range: ContiguousI64RangeSet,
+) -> BTreeSet<Vec<u8>> {
+    let mut set = BTreeSet::new();
+    for value in range.start()..=range.end() {
+        set.insert(value.to_string().into_bytes());
+    }
+    set
+}
+
+pub(super) fn decode_set_object_payload(encoded: &[u8]) -> Option<DecodedSetObjectPayload> {
+    if let Some(range) = deserialize_contiguous_i64_range_set_payload(encoded) {
+        return Some(DecodedSetObjectPayload::ContiguousI64Range(range));
+    }
+    deserialize_legacy_set_object_payload(encoded).map(DecodedSetObjectPayload::Members)
+}
+
 pub(super) fn deserialize_set_object_payload(encoded: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
+    match decode_set_object_payload(encoded)? {
+        DecodedSetObjectPayload::Members(set) => Some(set),
+        DecodedSetObjectPayload::ContiguousI64Range(range) => {
+            Some(materialize_contiguous_i64_range_set(range))
+        }
+    }
+}
+
+fn deserialize_legacy_set_object_payload(encoded: &[u8]) -> Option<BTreeSet<Vec<u8>>> {
     let mut cursor = 0usize;
 
     fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
@@ -244,6 +330,26 @@ pub(super) fn deserialize_set_object_payload(encoded: &[u8]) -> Option<BTreeSet<
         return None;
     }
     Some(set)
+}
+
+fn deserialize_contiguous_i64_range_set_payload(encoded: &[u8]) -> Option<ContiguousI64RangeSet> {
+    let expected_len = SET_CONTIGUOUS_I64_RANGE_MAGIC.len() + size_of::<i64>() + size_of::<i64>();
+    if encoded.len() != expected_len {
+        return None;
+    }
+    if !encoded.starts_with(&SET_CONTIGUOUS_I64_RANGE_MAGIC) {
+        return None;
+    }
+    let mut start_bytes = [0u8; size_of::<i64>()];
+    let mut end_bytes = [0u8; size_of::<i64>()];
+    let start_offset = SET_CONTIGUOUS_I64_RANGE_MAGIC.len();
+    let end_offset = start_offset + size_of::<i64>();
+    start_bytes.copy_from_slice(&encoded[start_offset..end_offset]);
+    end_bytes.copy_from_slice(&encoded[end_offset..expected_len]);
+    ContiguousI64RangeSet::new(
+        i64::from_le_bytes(start_bytes),
+        i64::from_le_bytes(end_bytes),
+    )
 }
 
 pub(super) fn serialize_zset_object_payload(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<u8> {

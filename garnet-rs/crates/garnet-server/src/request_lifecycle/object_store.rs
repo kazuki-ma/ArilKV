@@ -146,6 +146,22 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<BTreeSet<Vec<u8>>>, RequestExecutionError> {
+        let payload = match self.load_set_object_payload(key)? {
+            Some(payload) => payload,
+            None => return Ok(None),
+        };
+        match payload {
+            DecodedSetObjectPayload::Members(set) => Ok(Some(set)),
+            DecodedSetObjectPayload::ContiguousI64Range(range) => {
+                Ok(Some(materialize_contiguous_i64_range_set(range)))
+            }
+        }
+    }
+
+    pub(super) fn load_set_object_payload(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<DecodedSetObjectPayload>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
@@ -159,9 +175,14 @@ impl RequestProcessor {
         if object.object_type != SET_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_set_object_payload(&object.payload)
+        decode_set_object_payload(&object.payload)
             .map(Some)
-            .ok_or_else(|| storage_failure("load_set_object", "failed to deserialize set payload"))
+            .ok_or_else(|| {
+                storage_failure(
+                    "load_set_object_payload",
+                    "failed to deserialize set payload",
+                )
+            })
     }
 
     pub(super) fn save_set_object(
@@ -170,6 +191,15 @@ impl RequestProcessor {
         set: &BTreeSet<Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_set_object_payload(set);
+        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
+    }
+
+    pub(super) fn save_contiguous_i64_range_set_object(
+        &self,
+        key: &[u8],
+        range: ContiguousI64RangeSet,
+    ) -> Result<(), RequestExecutionError> {
+        let payload = serialize_contiguous_i64_range_set_payload(range);
         self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
 

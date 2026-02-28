@@ -25,22 +25,52 @@
 - Probe script exit code: `0`
 - Cases: `3`
 - PASS: `2`
-- PASS_WITH_KNOWN_GAPS: `1`
-- FAIL: `0`
+- PASS_WITH_KNOWN_GAPS: `0`
+- FAIL: `1`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `PASS_WITH_KNOWN_GAPS` | mode=full; tsavorite_pages=16384; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=600; ok=520; err=0; timeout=1; ignore=89; failed_tests=1; expected_failed_tests=1; unexpected_failed_tests=0  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; exit_code=143; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=638; err=31; timeout=0; ignore=130; failed_tests=31; expected_failed_tests=0; unexpected_failed_tests=31  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `1`
+- Failed tests extracted from runtest log: `31`
 
 | Test |
 |---|
-| `LATENCY of expire events are correctly collected` |
+| `UNLINK can reclaim memory in background in tests/unit/lazyfree.tcl` |
+| `FLUSHDB ASYNC can reclaim memory in background in tests/unit/lazyfree.tcl` |
+| `lazy free a stream with all types of metadata in tests/unit/lazyfree.tcl` |
+| `lazy free a stream with deleted cgroup in tests/unit/lazyfree.tcl` |
+| `FLUSHALL SYNC optimized to run in bg as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Run consecutive blocking FLUSHALL ASYNC successfully in tests/unit/lazyfree.tcl` |
+| `FLUSHALL SYNC in MULTI not optimized to run as blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Client closed in the middle of blocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Pending commands in querybuf processed once unblocking FLUSHALL ASYNC in tests/unit/lazyfree.tcl` |
+| `Test old pause-all takes precedence over new pause-write (less restrictive) in tests/unit/pause.tcl` |
+| `Test new pause time is smaller than old one, then old time preserved in tests/unit/pause.tcl` |
+| `Test write commands are paused by RO in tests/unit/pause.tcl` |
+| `Test special commands are paused by RO in tests/unit/pause.tcl` |
+| `Test write multi-execs are blocked by pause RO in tests/unit/pause.tcl` |
+| `Test scripts are blocked by pause RO in tests/unit/pause.tcl` |
+| `Test RO scripts are not blocked by pause RO in tests/unit/pause.tcl` |
+| `Test read-only scripts in multi-exec are not blocked by pause RO in tests/unit/pause.tcl` |
+| `Test write scripts in multi-exec are blocked by pause RO in tests/unit/pause.tcl` |
+| `Test may-replicate commands are rejected in RO scripts in tests/unit/pause.tcl` |
+| `Test multiple clients can be queued up and unblocked in tests/unit/pause.tcl` |
+| `Test both active and passive expires are skipped during client pause in tests/unit/pause.tcl` |
+| `Test that client pause starts at the end of a transaction in tests/unit/pause.tcl` |
+| `Test the randomkey command will not cause the server to get into an infinite loop during the client pause write in tests/unit/pause.tcl` |
+| `CLIENT UNBLOCK is not allow to unblock client blocked by CLIENT PAUSE in tests/unit/pause.tcl` |
+| `Pub/Sub PING on RESP2 in tests/unit/pubsub.tcl` |
+| `PUBLISH/SUBSCRIBE basics in tests/unit/pubsub.tcl` |
+| `PUBLISH/SUBSCRIBE with two clients in tests/unit/pubsub.tcl` |
+| `SUBSCRIBE to one channel more than once in tests/unit/pubsub.tcl` |
+| `UNSUBSCRIBE from non-subscribed channels in tests/unit/pubsub.tcl` |
+| `PUBLISH/PSUBSCRIBE basics in tests/unit/pubsub.tcl` |
+| `PUBLISH/PSUBSCRIBE with two clients in tests/unit/pubsub.tcl` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

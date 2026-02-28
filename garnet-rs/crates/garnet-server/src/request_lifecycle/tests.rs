@@ -1929,6 +1929,65 @@ fn set_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn sadd_uses_contiguous_range_encoding_for_canonical_integer_sequences() {
+    let processor = RequestProcessor::new().unwrap();
+
+    for value in 0..200 {
+        let response = execute_frame(
+            &processor,
+            &encode_resp(&[b"SADD", b"numbers", value.to_string().as_bytes()]),
+        );
+        assert_eq!(response, b":1\r\n");
+    }
+
+    let object = processor.object_read(b"numbers").unwrap().unwrap();
+    assert_eq!(object.object_type, ObjectTypeTag::Set);
+    assert!(matches!(
+        decode_set_object_payload(&object.payload),
+        Some(DecodedSetObjectPayload::ContiguousI64Range(range))
+            if range.start() == 0 && range.end() == 199
+    ));
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SCARD", b"numbers"])),
+        b":200\r\n"
+    );
+}
+
+#[test]
+fn sadd_falls_back_from_contiguous_range_encoding_for_non_canonical_members() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"numbers", b"1"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"numbers", b"2"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"numbers", b"01"])),
+        b":1\r\n"
+    );
+
+    let object = processor.object_read(b"numbers").unwrap().unwrap();
+    assert!(matches!(
+        decode_set_object_payload(&object.payload),
+        Some(DecodedSetObjectPayload::Members(_))
+    ));
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SISMEMBER", b"numbers", b"1"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SISMEMBER", b"numbers", b"01"])),
+        b":1\r\n"
+    );
+}
+
+#[test]
 fn additional_set_commands_cover_common_redis_semantics() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 20];
