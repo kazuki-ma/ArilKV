@@ -47,6 +47,15 @@ This file defines default collaboration and execution rules for repository work,
 - For performance-sensitive work: make the implementation clean first; once a path is proven performance-critical, keep the code readable/beautiful first, then optimize with measurement-backed changes.
 - Spending more time to reach a robust implementation is preferred over fast-but-fragile patches.
 
+## TLA+ Annotation Policy
+
+- Some critical concurrency/command paths are formally modeled with TLA+.
+- For files that implement a modeled path:
+  - add a file-level comment indicating the related TLA+ model/spec.
+  - annotate each modeled critical section with exact action labels:
+    - `// TLA+ : <ActionName>`
+- Keep action labels in code comments synchronized with names in `formal/tla/specs/*.tla`.
+
 ## Required Validation (Default)
 
 - Core test gate:

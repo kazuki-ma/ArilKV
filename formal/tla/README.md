@@ -36,6 +36,20 @@ Notes:
 ./tools/tla/run_tlc.sh formal/tla/specs/OwnerThreadKV.tla formal/tla/specs/OwnerThreadKV.cfg
 ```
 
+## Modeling Rule (Repro First)
+
+- First goal is **reproduction** of the currently running failing test trace.
+- Do **not** split into `bug` / `fixed` model variants until a concrete causal path is confirmed by TLC traces.
+- After the cause is identified, add `*_bug.cfg` and `*_fixed.cfg` as a second step.
+
+## Source Annotation Rule
+
+When a Rust code path is backed by a TLA+ model:
+
+- Add a file-level comment identifying the related model/spec.
+- Add comments on each critical section with the exact TLA+ action label:
+  - `// TLA+ : <ActionName>`
+
 The script stores TLC metadata under:
 
 - `${TMPDIR:-/tmp}/garnet-tla/<timestamp-pid>/`
