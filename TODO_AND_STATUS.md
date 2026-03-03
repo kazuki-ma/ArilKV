@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 515
+> **Current Iteration**: 518
 
 ---
 
@@ -514,6 +514,8 @@
 | 11.358 | Add CONFIG SET validation for common parameters | DONE | — | Validates maxmemory-policy (8 policies), loglevel (4 levels), hz (1-500), appendfsync (3 modes), boolean params (12), and numeric params (14). 370 lib tests. Commit: `2f4e3e54f0`. |
 | 11.359 | Add XPENDING IDLE filter support | DONE | — | XPENDING accepts optional IDLE min-idle-time parameter (Redis 6.2+ syntax). Value validated but not used for filtering. 371 lib tests. Commit: `bc8af5494d`. |
 | 11.360 | Fix remaining UnknownCommand errors in subcommand handlers | DONE | 11.352 | PFDEBUG, SCRIPT, XINFO: UnknownCommand → UnknownSubcommand. SCRIPT FLUSH invalid mode → SyntaxError. 371 lib tests. Commit: `b1346bced0`. |
+| 11.361 | RESP3 map/set types for FUNCTION LIST and FUNCTION STATS | DONE | — | Library entries use map, function entries use map, flags use set in RESP3. STATS uses maps for top-level, running_script, engines, and engine details. 372 lib tests. Commit: `d837004bc3`. |
+| 11.362 | Fix COMMAND handler unknown subcommand error type | DONE | 11.360 | Changed COMMAND fallback from SyntaxError to UnknownSubcommand. 372 lib tests. Commit: `342541a64a`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1271,3 +1273,6 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 513 | 2026-03-03 | 11.358 | DONE | CONFIG SET validation for common parameters. 370 lib tests. Commit: `2f4e3e54f0`. |
 | 514 | 2026-03-03 | 11.359 | DONE | XPENDING IDLE filter support. 371 lib tests. Commit: `bc8af5494d`. |
 | 515 | 2026-03-03 | 11.360 | DONE | PFDEBUG/SCRIPT/XINFO UnknownSubcommand fix. 371 lib tests. Commit: `b1346bced0`. |
+| 516 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 509-515 and TODOs 11.354-11.360. Commit: `7c96f513e4`. |
+| 517 | 2026-03-03 | 11.361 | DONE | FUNCTION LIST/STATS RESP3 map/set types. 372 lib tests. Commit: `d837004bc3`. |
+| 518 | 2026-03-03 | 11.362 | DONE | COMMAND unknown subcommand fix. 372 lib tests. Commit: `342541a64a`. |
