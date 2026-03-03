@@ -2575,9 +2575,6 @@ fn build_lua_cjson_table(lua: &Lua) -> mlua::Result<LuaTable> {
 const CMSGPACK_MAX_NESTING: usize = 16;
 
 fn lua_value_to_msgpack(value: LuaValue, depth: usize) -> mlua::Result<rmpv::Value> {
-    if depth > CMSGPACK_MAX_NESTING {
-        return Ok(rmpv::Value::Nil);
-    }
     match value {
         LuaValue::Nil => Ok(rmpv::Value::Nil),
         LuaValue::Boolean(b) => Ok(rmpv::Value::Boolean(b)),
@@ -2604,6 +2601,10 @@ fn lua_value_to_msgpack(value: LuaValue, depth: usize) -> mlua::Result<rmpv::Val
             s.to_string_lossy().as_ref(),
         ))),
         LuaValue::Table(table) => {
+            // Redis cmsgpack: at max nesting depth, tables become nil
+            if depth >= CMSGPACK_MAX_NESTING {
+                return Ok(rmpv::Value::Nil);
+            }
             let len = table.raw_len();
             // Check if it's an array-like table
             let mut is_array = len > 0;
