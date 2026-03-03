@@ -936,6 +936,35 @@ fn hash_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn hgetall_returns_map_in_resp3_and_flat_array_in_resp2() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "HSET mh f1 v1 f2 v2", b":2\r\n");
+
+    // RESP2: flat array with 2*N elements
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    assert_command_response(
+        &processor,
+        "HGETALL mh",
+        b"*4\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n",
+    );
+
+    // RESP3: map with N entries
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    assert_command_response(
+        &processor,
+        "HGETALL mh",
+        b"%2\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n",
+    );
+
+    // Empty key in RESP3 returns empty map
+    assert_command_response(&processor, "HGETALL nonexistent", b"%0\r\n");
+
+    // Reset to RESP2
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    assert_command_response(&processor, "HGETALL nonexistent", b"*0\r\n");
+}
+
+#[test]
 fn additional_hash_commands_cover_common_redis_semantics() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 16];
@@ -10187,6 +10216,26 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
 fn config_get_returns_array_for_known_param() {
     let processor = RequestProcessor::new().unwrap();
     // "appendonly" is in default config with value "no"
+    assert_command_response(
+        &processor,
+        "CONFIG GET appendonly",
+        b"*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n",
+    );
+}
+
+#[test]
+fn config_get_returns_map_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    // RESP3: map with 1 entry
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    assert_command_response(
+        &processor,
+        "CONFIG GET appendonly",
+        b"%1\r\n$10\r\nappendonly\r\n$2\r\nno\r\n",
+    );
+
+    // Reset to RESP2: flat array with 2 elements
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
     assert_command_response(
         &processor,
         "CONFIG GET appendonly",

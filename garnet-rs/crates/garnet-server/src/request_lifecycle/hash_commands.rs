@@ -174,18 +174,24 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "HGETALL", "HGETALL key")?;
 
         let key = RedisKey::from(args[1]);
+        let resp3 = self.resp_protocol_version().is_resp3();
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                if resp3 {
+                    append_map_length(response_out, 0);
+                } else {
+                    response_out.extend_from_slice(b"*0\r\n");
+                }
                 return Ok(());
             }
         };
 
-        let pair_count = hash.len().saturating_mul(2);
-        response_out.push(b'*');
-        response_out.extend_from_slice(pair_count.to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        if resp3 {
+            append_map_length(response_out, hash.len());
+        } else {
+            append_array_length(response_out, hash.len().saturating_mul(2));
+        }
         for (field, value) in &hash {
             append_bulk_string(response_out, field);
             append_bulk_string(response_out, value);

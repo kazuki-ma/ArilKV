@@ -2721,9 +2721,11 @@ impl RequestProcessor {
                 }
             }
 
-            response_out.push(b'*');
-            response_out.extend_from_slice((matched_items.len() * 2).to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            if self.resp_protocol_version().is_resp3() {
+                append_map_length(response_out, matched_items.len());
+            } else {
+                append_array_length(response_out, matched_items.len() * 2);
+            }
             for (key, value) in matched_items {
                 append_bulk_string(response_out, &key);
                 append_bulk_string(response_out, &value);

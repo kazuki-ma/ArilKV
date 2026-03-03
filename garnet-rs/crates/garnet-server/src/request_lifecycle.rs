@@ -257,6 +257,7 @@ use self::resp::append_bulk_array;
 use self::resp::append_bulk_string;
 use self::resp::append_error;
 use self::resp::append_integer;
+use self::resp::append_map_length;
 use self::resp::append_null;
 use self::resp::append_null_array;
 use self::resp::append_null_bulk_string;
