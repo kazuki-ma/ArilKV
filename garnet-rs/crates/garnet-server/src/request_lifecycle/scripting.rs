@@ -3709,9 +3709,13 @@ fn strip_lua_shebang(source: &[u8]) -> &[u8] {
     }
 }
 
+/// Commands flagged CMD_NOSCRIPT in Redis are not allowed from scripts.
+/// This list mirrors the Redis NOSCRIPT flag for every CommandId variant
+/// that garnet-rs currently recognises.
 fn command_allowed_from_script(command: CommandId) -> bool {
     !matches!(
         command,
+        // Scripting commands (recursive invocation forbidden)
         CommandId::Eval
             | CommandId::EvalRo
             | CommandId::Evalsha
@@ -3720,11 +3724,41 @@ fn command_allowed_from_script(command: CommandId) -> bool {
             | CommandId::FcallRo
             | CommandId::Function
             | CommandId::Script
+            // Transaction control
             | CommandId::Multi
             | CommandId::Exec
             | CommandId::Discard
             | CommandId::Watch
             | CommandId::Unwatch
+            // Pub/Sub
+            | CommandId::Subscribe
+            | CommandId::Psubscribe
+            | CommandId::Ssubscribe
+            | CommandId::Unsubscribe
+            | CommandId::Punsubscribe
+            | CommandId::Sunsubscribe
+            // Admin / server lifecycle
+            | CommandId::Cluster
+            | CommandId::Failover
+            | CommandId::Monitor
+            | CommandId::Shutdown
+            | CommandId::Save
+            | CommandId::Bgsave
+            | CommandId::Bgrewriteaof
+            | CommandId::Debug
+            | CommandId::Module
+            | CommandId::Latency
+            // Connection / auth
+            | CommandId::Auth
+            | CommandId::Hello
+            | CommandId::Client
+            | CommandId::Reset
+            | CommandId::Quit
+            | CommandId::Role
+            // Configuration
+            | CommandId::Config
+            | CommandId::Acl
+            // Unknown / unrecognised
             | CommandId::Unknown
     )
 }
