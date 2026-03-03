@@ -814,7 +814,12 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"LIST") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT LIST")?;
             // Minimal compatibility surface for tests that probe blocked EXEC visibility.
-            append_bulk_string(response_out, b"id=1 cmd=exec");
+            let client_info = b"id=1 cmd=exec";
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(response_out, b"txt", client_info);
+            } else {
+                append_bulk_string(response_out, client_info);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"UNBLOCK") {
