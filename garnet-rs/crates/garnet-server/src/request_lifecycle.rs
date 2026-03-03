@@ -20,6 +20,7 @@ use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicU8;
+use std::sync::atomic::AtomicU32;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
@@ -45,6 +46,32 @@ const ZSET_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Zset;
 const STREAM_OBJECT_TYPE_TAG: ObjectTypeTag = ObjectTypeTag::Stream;
 const WATCH_VERSION_MAP_SIZE: usize = 1024;
 const WATCH_VERSION_MAP_MASK: usize = WATCH_VERSION_MAP_SIZE - 1;
+
+// Keyspace notification flags (matching Valkey/Redis bit layout).
+const NOTIFY_KEYSPACE: u32 = 1 << 0; // K
+const NOTIFY_KEYEVENT: u32 = 1 << 1; // E
+const NOTIFY_GENERIC: u32 = 1 << 2; // g
+const NOTIFY_STRING: u32 = 1 << 3; // $
+const NOTIFY_LIST: u32 = 1 << 4; // l
+const NOTIFY_SET: u32 = 1 << 5; // s
+const NOTIFY_HASH: u32 = 1 << 6; // h
+const NOTIFY_ZSET: u32 = 1 << 7; // z
+const NOTIFY_EXPIRED: u32 = 1 << 8; // x
+const NOTIFY_EVICTED: u32 = 1 << 9; // e
+const NOTIFY_STREAM: u32 = 1 << 10; // t
+const NOTIFY_KEY_MISS: u32 = 1 << 11; // m
+const NOTIFY_MODULE: u32 = 1 << 13; // d
+const NOTIFY_NEW: u32 = 1 << 14; // n
+const NOTIFY_ALL: u32 = NOTIFY_GENERIC
+    | NOTIFY_STRING
+    | NOTIFY_LIST
+    | NOTIFY_SET
+    | NOTIFY_HASH
+    | NOTIFY_ZSET
+    | NOTIFY_EXPIRED
+    | NOTIFY_EVICTED
+    | NOTIFY_STREAM
+    | NOTIFY_MODULE;
 const GARNET_HASH_INDEX_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_HASH_INDEX_SIZE_BITS";
 const GARNET_PAGE_SIZE_BITS_ENV: &str = "GARNET_TSAVORITE_PAGE_SIZE_BITS";
 const GARNET_MAX_IN_MEMORY_PAGES_ENV: &str = "GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES";
@@ -70,6 +97,7 @@ thread_local! {
         Cell::new(RequestExecutionContext {
             client_no_touch: false,
             client_id: None,
+            in_transaction: false,
         })
     };
 }
@@ -78,6 +106,7 @@ thread_local! {
 struct RequestExecutionContext {
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    in_transaction: bool,
 }
 
 struct RequestExecutionContextScope {
@@ -110,6 +139,11 @@ fn current_client_no_touch_mode() -> bool {
 #[inline]
 fn current_request_client_id() -> Option<ClientId> {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().client_id)
+}
+
+#[inline]
+fn current_request_in_transaction() -> bool {
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().in_transaction)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -157,6 +191,7 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"key-load-delay".to_vec(), b"0".to_vec());
     values.insert(b"lazyfree-lazy-server-del".to_vec(), b"no".to_vec());
     values.insert(b"port".to_vec(), b"6379".to_vec());
+    values.insert(b"notify-keyspace-events".to_vec(), b"".to_vec());
     values
 }
 
@@ -813,6 +848,7 @@ pub struct RequestProcessor {
     script_cache_evictions: AtomicU64,
     script_runtime_timeouts: AtomicU64,
     used_memory_vm_functions: AtomicU64,
+    lazyfree_pending_objects: AtomicU64,
     lazyfreed_objects: AtomicU64,
     maxmemory_limit_bytes: AtomicU64,
     min_replicas_to_write: AtomicU64,
@@ -824,11 +860,20 @@ pub struct RequestProcessor {
     scripting_runtime_config: ScriptingRuntimeConfig,
     function_registry: Mutex<FunctionRegistry>,
     scripting_enabled: bool,
+    notify_keyspace_events_flags: AtomicU32,
     zset_max_listpack_entries: AtomicUsize,
     list_max_listpack_size: AtomicI64,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
+    /// CLIENT PAUSE end time as milliseconds since UNIX epoch. 0 means not paused.
+    client_pause_end_millis: AtomicU64,
+    /// CLIENT PAUSE type: 0 = none, 1 = WRITE, 2 = ALL.
+    client_pause_type: AtomicU8,
 }
+
+const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
+const CLIENT_PAUSE_TYPE_WRITE: u8 = 1;
+const CLIENT_PAUSE_TYPE_ALL: u8 = 2;
 
 impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
@@ -992,6 +1037,7 @@ impl RequestProcessor {
             script_cache_evictions: AtomicU64::new(0),
             script_runtime_timeouts: AtomicU64::new(0),
             used_memory_vm_functions: AtomicU64::new(0),
+            lazyfree_pending_objects: AtomicU64::new(0),
             lazyfreed_objects: AtomicU64::new(0),
             maxmemory_limit_bytes: AtomicU64::new(0),
             min_replicas_to_write: AtomicU64::new(0),
@@ -1003,10 +1049,13 @@ impl RequestProcessor {
             scripting_runtime_config,
             function_registry: Mutex::new(FunctionRegistry::default()),
             scripting_enabled,
+            notify_keyspace_events_flags: AtomicU32::new(0),
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
             functions: KvSessionFunctions,
             object_functions: ObjectSessionFunctions,
+            client_pause_end_millis: AtomicU64::new(0),
+            client_pause_type: AtomicU8::new(CLIENT_PAUSE_TYPE_NONE),
         })
     }
 
@@ -1019,7 +1068,8 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<(), RequestExecutionError> {
-        self.expire_key_if_needed(key)
+        self.expire_key_if_needed(key)?;
+        Ok(())
     }
 
     pub(crate) fn string_value_len_for_replication(
@@ -1322,6 +1372,47 @@ impl RequestProcessor {
             drained.push(message);
         }
         drained
+    }
+
+    /// Emit keyspace/keyevent notifications through pubsub.
+    ///
+    /// `event_type` is the notification class (NOTIFY_STRING, NOTIFY_GENERIC, etc.).
+    /// `event` is the event name (e.g. "set", "del", "expire").
+    /// `key` is the affected key.
+    pub(super) fn notify_keyspace_event(&self, event_type: u32, event: &[u8], key: &[u8]) {
+        let flags = self.notify_keyspace_events_flags.load(Ordering::Acquire);
+        if flags == 0 {
+            return;
+        }
+        // Event must match the configured type filter.
+        if flags & event_type == 0 {
+            return;
+        }
+
+        // __keyspace@0__:<key> notifications (event name as message)
+        if flags & NOTIFY_KEYSPACE != 0 {
+            let mut channel = Vec::with_capacity(15 + key.len());
+            channel.extend_from_slice(b"__keyspace@0__:");
+            channel.extend_from_slice(key);
+            self.pubsub_publish(&channel, event);
+        }
+
+        // __keyevent@0__:<event> notifications (key name as message)
+        if flags & NOTIFY_KEYEVENT != 0 {
+            let mut channel = Vec::with_capacity(15 + event.len());
+            channel.extend_from_slice(b"__keyevent@0__:");
+            channel.extend_from_slice(event);
+            self.pubsub_publish(&channel, key);
+        }
+    }
+
+    pub(super) fn notify_keyspace_events_flags(&self) -> u32 {
+        self.notify_keyspace_events_flags.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_notify_keyspace_events_flags(&self, flags: u32) {
+        self.notify_keyspace_events_flags
+            .store(flags, Ordering::Release);
     }
 
     pub(super) fn connected_clients(&self) -> u64 {
@@ -1708,6 +1799,19 @@ impl RequestProcessor {
             .store(bytes, Ordering::Relaxed);
     }
 
+    pub(super) fn lazyfree_pending_objects(&self) -> u64 {
+        self.lazyfree_pending_objects.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn set_lazyfree_pending_objects(&self, count: u64) {
+        self.lazyfree_pending_objects
+            .store(count, Ordering::Relaxed);
+    }
+
+    pub(super) fn reset_lazyfree_pending_objects(&self) {
+        self.lazyfree_pending_objects.store(0, Ordering::Relaxed);
+    }
+
     pub(super) fn lazyfreed_objects(&self) -> u64 {
         self.lazyfreed_objects.load(Ordering::Relaxed)
     }
@@ -1872,6 +1976,126 @@ impl RequestProcessor {
         if let Ok(mut pending) = self.pending_client_unblocks.lock() {
             let _ = pending.remove(&client_id);
         }
+    }
+
+    /// Apply CLIENT PAUSE with the given timeout (in millis) and mode.
+    /// Follows Valkey semantics:
+    /// - If currently paused with ALL and new pause is WRITE, keep ALL.
+    /// - End time is only extended, never shortened.
+    pub(crate) fn client_pause(&self, timeout_millis: u64, pause_all: bool) {
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        let new_end = now_millis.saturating_add(timeout_millis);
+
+        let current_type = self.client_pause_type.load(Ordering::Acquire);
+        let new_type = if pause_all {
+            CLIENT_PAUSE_TYPE_ALL
+        } else if current_type == CLIENT_PAUSE_TYPE_ALL {
+            CLIENT_PAUSE_TYPE_ALL
+        } else {
+            CLIENT_PAUSE_TYPE_WRITE
+        };
+
+        self.client_pause_type.store(new_type, Ordering::Release);
+
+        loop {
+            let current_end = self.client_pause_end_millis.load(Ordering::Acquire);
+            if new_end <= current_end {
+                break;
+            }
+            match self.client_pause_end_millis.compare_exchange_weak(
+                current_end,
+                new_end,
+                Ordering::Release,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break,
+                Err(_) => continue,
+            }
+        }
+    }
+
+    /// Remove CLIENT PAUSE state.
+    pub(crate) fn client_unpause(&self) {
+        self.client_pause_type
+            .store(CLIENT_PAUSE_TYPE_NONE, Ordering::Release);
+        self.client_pause_end_millis.store(0, Ordering::Release);
+    }
+
+    /// Check whether the server is currently paused for the given command type.
+    /// Returns true if the command should be blocked.
+    pub(crate) fn is_client_paused(&self, is_write_or_may_replicate: bool) -> bool {
+        let pause_type = self.client_pause_type.load(Ordering::Acquire);
+        if pause_type == CLIENT_PAUSE_TYPE_NONE {
+            return false;
+        }
+        let end_millis = self.client_pause_end_millis.load(Ordering::Acquire);
+        if end_millis == 0 {
+            return false;
+        }
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        if now_millis >= end_millis {
+            self.client_pause_type
+                .store(CLIENT_PAUSE_TYPE_NONE, Ordering::Release);
+            self.client_pause_end_millis.store(0, Ordering::Release);
+            return false;
+        }
+        if pause_type == CLIENT_PAUSE_TYPE_ALL {
+            return true;
+        }
+        is_write_or_may_replicate
+    }
+
+    /// Check whether key expiration is suppressed by an active CLIENT PAUSE.
+    /// In Valkey, both WRITE and ALL pause modes include PAUSE_ACTION_EXPIRE.
+    pub(crate) fn is_expire_action_paused(&self) -> bool {
+        let pause_type = self.client_pause_type.load(Ordering::Acquire);
+        if pause_type == CLIENT_PAUSE_TYPE_NONE {
+            return false;
+        }
+        let end_millis = self.client_pause_end_millis.load(Ordering::Acquire);
+        if end_millis == 0 {
+            return false;
+        }
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        now_millis < end_millis
+    }
+
+    /// Returns the remaining pause duration, or None if not paused.
+    pub(crate) fn client_pause_remaining(&self) -> Option<Duration> {
+        let end_millis = self.client_pause_end_millis.load(Ordering::Acquire);
+        if end_millis == 0 {
+            return None;
+        }
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        if now_millis >= end_millis {
+            return None;
+        }
+        Some(Duration::from_millis(end_millis - now_millis))
+    }
+
+    /// Look up a cached script by SHA1 and return its body for shebang inspection.
+    pub(crate) fn cached_script_body(&self, sha1: &[u8]) -> Option<Vec<u8>> {
+        let normalized: String = sha1
+            .iter()
+            .map(|&byte| byte.to_ascii_lowercase() as char)
+            .collect();
+        let Ok(cache) = self.script_cache.lock() else {
+            return None;
+        };
+        cache.get(&normalized).cloned()
+    }
+
+    /// Check if a registered function has the no-writes (read-only) flag.
+    pub(crate) fn is_function_read_only(&self, function_name: &[u8]) -> bool {
+        let name = String::from_utf8_lossy(function_name).to_lowercase();
+        let Ok(registry) = self.function_registry.lock() else {
+            return false;
+        };
+        registry
+            .functions
+            .get(&name)
+            .map(|desc| desc.read_only)
+            .unwrap_or(false)
     }
 
     pub(crate) fn has_ready_blocking_waiters(&self) -> bool {
@@ -2048,7 +2272,23 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
         client_no_touch: bool,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context(args, response_out, client_no_touch, None)
+        self.execute_with_client_context_internal(args, response_out, client_no_touch, None, false)
+    }
+
+    pub(crate) fn execute_with_client_no_touch_in_transaction(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+    ) -> Result<(), RequestExecutionError> {
+        self.execute_with_client_context_internal(
+            args,
+            response_out,
+            client_no_touch,
+            client_id,
+            true,
+        )
     }
 
     pub(crate) fn execute_with_client_context(
@@ -2058,9 +2298,27 @@ impl RequestProcessor {
         client_no_touch: bool,
         client_id: Option<ClientId>,
     ) -> Result<(), RequestExecutionError> {
+        self.execute_with_client_context_internal(
+            args,
+            response_out,
+            client_no_touch,
+            client_id,
+            false,
+        )
+    }
+
+    fn execute_with_client_context_internal(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+        in_transaction: bool,
+    ) -> Result<(), RequestExecutionError> {
         let _scope = RequestExecutionContextScope::enter(RequestExecutionContext {
             client_no_touch,
             client_id,
+            in_transaction,
         });
         self.execute(args, response_out)
     }
@@ -2488,6 +2746,89 @@ fn encode_pubsub_message_frame(
         }
     }
     frame
+}
+
+/// Parse a notify-keyspace-events flag string (e.g. "KEA", "Kx$") into a bitmask.
+/// Returns `None` if the string contains an invalid character.
+fn keyspace_events_string_to_flags(classes: &[u8]) -> Option<u32> {
+    let mut flags = 0u32;
+    for &c in classes {
+        match c {
+            b'A' => flags |= NOTIFY_ALL,
+            b'g' => flags |= NOTIFY_GENERIC,
+            b'$' => flags |= NOTIFY_STRING,
+            b'l' => flags |= NOTIFY_LIST,
+            b's' => flags |= NOTIFY_SET,
+            b'h' => flags |= NOTIFY_HASH,
+            b'z' => flags |= NOTIFY_ZSET,
+            b'x' => flags |= NOTIFY_EXPIRED,
+            b'e' => flags |= NOTIFY_EVICTED,
+            b'K' => flags |= NOTIFY_KEYSPACE,
+            b'E' => flags |= NOTIFY_KEYEVENT,
+            b't' => flags |= NOTIFY_STREAM,
+            b'm' => flags |= NOTIFY_KEY_MISS,
+            b'd' => flags |= NOTIFY_MODULE,
+            b'n' => flags |= NOTIFY_NEW,
+            _ => return None,
+        }
+    }
+    // If neither K nor E is set, clear all event type flags (no delivery targets).
+    if flags & (NOTIFY_KEYSPACE | NOTIFY_KEYEVENT) == 0 {
+        flags = 0;
+    }
+    Some(flags)
+}
+
+/// Convert a keyspace events bitmask back to its string representation.
+fn keyspace_events_flags_to_string(flags: u32) -> Vec<u8> {
+    let mut res = Vec::with_capacity(16);
+    if flags & NOTIFY_ALL == NOTIFY_ALL {
+        res.push(b'A');
+    } else {
+        if flags & NOTIFY_GENERIC != 0 {
+            res.push(b'g');
+        }
+        if flags & NOTIFY_STRING != 0 {
+            res.push(b'$');
+        }
+        if flags & NOTIFY_LIST != 0 {
+            res.push(b'l');
+        }
+        if flags & NOTIFY_SET != 0 {
+            res.push(b's');
+        }
+        if flags & NOTIFY_HASH != 0 {
+            res.push(b'h');
+        }
+        if flags & NOTIFY_ZSET != 0 {
+            res.push(b'z');
+        }
+        if flags & NOTIFY_EXPIRED != 0 {
+            res.push(b'x');
+        }
+        if flags & NOTIFY_EVICTED != 0 {
+            res.push(b'e');
+        }
+        if flags & NOTIFY_STREAM != 0 {
+            res.push(b't');
+        }
+        if flags & NOTIFY_MODULE != 0 {
+            res.push(b'd');
+        }
+        if flags & NOTIFY_NEW != 0 {
+            res.push(b'n');
+        }
+    }
+    if flags & NOTIFY_KEYSPACE != 0 {
+        res.push(b'K');
+    }
+    if flags & NOTIFY_KEYEVENT != 0 {
+        res.push(b'E');
+    }
+    if flags & NOTIFY_KEY_MISS != 0 {
+        res.push(b'm');
+    }
+    res
 }
 
 #[inline]

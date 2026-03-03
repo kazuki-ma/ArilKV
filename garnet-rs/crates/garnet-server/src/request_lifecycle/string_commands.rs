@@ -154,7 +154,11 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let shard_index = self.string_store_shard_index_for_key(&key);
-        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        let logically_expired = self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        if logically_expired {
+            append_null_bulk_string(response_out);
+            return Ok(());
+        }
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
         let mut store = self.lock_string_store_for_shard(shard_index);
@@ -419,6 +423,7 @@ impl RequestProcessor {
         self.upsert_string_value_with_expiration_unix_millis(&key, &value, expiration_unix_millis)?;
         self.track_string_key(&key);
         self.bump_watch_version(&key);
+        self.notify_keyspace_event(NOTIFY_STRING, b"setrange", &key);
         append_integer(response_out, value.len() as i64);
         Ok(())
     }
@@ -1225,6 +1230,7 @@ impl RequestProcessor {
 
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
+        self.notify_keyspace_event(NOTIFY_STRING, b"append", &key);
         append_integer(response_out, current_value.len() as i64);
         Ok(())
     }
@@ -1258,6 +1264,7 @@ impl RequestProcessor {
                         ));
                     }
                     self.bump_watch_version(&key);
+                    self.notify_keyspace_event(NOTIFY_GENERIC, b"persist", &key);
                 }
             }
             GetExAction::SetExpiration(expiration) => {
@@ -1274,6 +1281,7 @@ impl RequestProcessor {
                     ));
                 }
                 self.bump_watch_version(&key);
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
             }
             GetExAction::DeleteNow => {
                 let mut store = self.lock_string_store_for_key(&key);
@@ -1285,6 +1293,7 @@ impl RequestProcessor {
                     | DeleteOperationStatus::AppendedTombstone => {
                         self.remove_string_key_metadata(&key);
                         self.bump_watch_version(&key);
+                        self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
                     }
                     DeleteOperationStatus::NotFound => {}
                     DeleteOperationStatus::RetryLater => {
@@ -1343,6 +1352,7 @@ impl RequestProcessor {
             .map_err(map_upsert_error)?;
         self.track_string_key(&key);
         self.bump_watch_version(&key);
+        self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
         append_bulk_string(response_out, &updated_text);
         Ok(())
     }
@@ -1474,6 +1484,11 @@ impl RequestProcessor {
         self.bump_watch_version(&key);
         self.record_key_access(&key, true);
 
+        self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+        if effective_expiration.is_some() {
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+        }
+
         // TLA+ : ServerProcessSetApply
         // This ACK is emitted only after the write path and metadata updates complete.
         append_simple_string(response_out, b"OK");
@@ -1590,9 +1605,16 @@ impl RequestProcessor {
                 }
             }
 
-            let object_deleted = self.object_delete(&key)?;
+            let object_deleted = match self.object_delete(&key) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.reset_lazyfree_pending_objects();
+                    return Err(error);
+                }
+            };
             if string_deleted || object_deleted {
                 deleted += 1;
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
             if string_deleted && !object_deleted {
                 self.bump_watch_version(&key);
@@ -1629,7 +1651,74 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "UNLINK", "UNLINK key [key ...]")?;
-        self.handle_del(args, response_out)
+
+        let keys: Vec<Vec<u8>> = args[1..].iter().map(|arg| arg.to_vec()).collect();
+
+        for key in &keys {
+            self.expire_key_if_needed(key)?;
+        }
+
+        self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
+
+        let mut deleted = 0i64;
+        let mut lazyfreed = 0u64;
+        for key in keys {
+            let object_lazyfree_weight = self.unlink_object_lazyfree_weight(&key)?;
+
+            let mut string_deleted = false;
+            let mut store = self.lock_string_store_for_key(&key);
+            let mut session = store.session(&self.functions);
+            let mut info = DeleteInfo::default();
+            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
+            match status {
+                DeleteOperationStatus::TombstonedInPlace
+                | DeleteOperationStatus::AppendedTombstone => {
+                    string_deleted = true;
+                    self.remove_string_key_metadata(&key);
+                }
+                DeleteOperationStatus::NotFound => {}
+                DeleteOperationStatus::RetryLater => {
+                    self.reset_lazyfree_pending_objects();
+                    return Err(RequestExecutionError::StorageBusy);
+                }
+            }
+
+            let object_deleted = self.object_delete(&key)?;
+            if string_deleted || object_deleted {
+                deleted += 1;
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                if string_deleted {
+                    lazyfreed = lazyfreed.saturating_add(1);
+                } else if object_deleted {
+                    lazyfreed = lazyfreed.saturating_add(object_lazyfree_weight);
+                }
+            }
+            if string_deleted && !object_deleted {
+                self.bump_watch_version(&key);
+            }
+        }
+
+        self.record_lazyfreed_objects(lazyfreed);
+        self.reset_lazyfree_pending_objects();
+        append_integer(response_out, deleted);
+        Ok(())
+    }
+
+    fn unlink_object_lazyfree_weight(&self, key: &[u8]) -> Result<u64, RequestExecutionError> {
+        let Some(object) = self.object_read(key)? else {
+            return Ok(0);
+        };
+        if object.object_type != STREAM_OBJECT_TYPE_TAG {
+            return Ok(1);
+        }
+        let Some(stream) = deserialize_stream_object_payload(&object.payload) else {
+            return Ok(1);
+        };
+        if stream.groups.is_empty() {
+            Ok(0)
+        } else {
+            Ok(1)
+        }
     }
 
     pub(super) fn handle_rename(
@@ -1688,6 +1777,9 @@ impl RequestProcessor {
         self.import_migration_entry(&source_entry)?;
         self.delete_string_key_for_migration(&source)?;
         let _ = self.object_delete(&source)?;
+
+        self.notify_keyspace_event(NOTIFY_GENERIC, b"rename_from", &source);
+        self.notify_keyspace_event(NOTIFY_GENERIC, b"rename_to", &destination);
 
         if only_if_absent {
             append_integer(response_out, 1);
@@ -1756,8 +1848,9 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        source_entry.key = destination.into();
+        source_entry.key = destination.clone().into();
         self.import_migration_entry(&source_entry)?;
+        self.notify_keyspace_event(NOTIFY_GENERIC, b"copy_to", &destination);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -1829,6 +1922,7 @@ impl RequestProcessor {
                     parse_i64_ascii(&output).ok_or(RequestExecutionError::ValueNotInteger)?;
                 self.track_string_key(&key);
                 self.bump_watch_version(&key);
+                self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
                 append_integer(response_out, parsed);
                 Ok(())
             }
@@ -1850,6 +1944,7 @@ impl RequestProcessor {
                     .map_err(map_upsert_error)?;
                 self.track_string_key(&key);
                 self.bump_watch_version(&key);
+                self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
                 append_integer(response_out, delta);
                 Ok(())
             }
@@ -2201,6 +2296,7 @@ impl RequestProcessor {
         self.set_string_expiration_deadline_in_shard(&key_vec, shard_index, None);
         self.track_string_key_in_shard(&key_vec, shard_index);
         self.bump_watch_version(&key_vec);
+        self.notify_keyspace_event(NOTIFY_STRING, b"set", &key_vec);
         Ok(())
     }
 
@@ -2315,6 +2411,7 @@ impl RequestProcessor {
             return Ok(());
         }
         self.bump_watch_version(&key);
+        self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -2390,6 +2487,7 @@ impl RequestProcessor {
             return Ok(());
         }
         self.bump_watch_version(&key);
+        self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -2432,6 +2530,7 @@ impl RequestProcessor {
             if string_deleted && !object_deleted {
                 self.bump_watch_version(key);
             }
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key);
             append_integer(response_out, 1);
         } else {
             append_integer(response_out, 0);
@@ -2632,6 +2731,7 @@ impl RequestProcessor {
         }
 
         self.bump_watch_version(&key);
+        self.notify_keyspace_event(NOTIFY_GENERIC, b"persist", &key);
         append_integer(response_out, 1);
         Ok(())
     }

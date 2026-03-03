@@ -61,6 +61,7 @@ impl RequestProcessor {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     removed += 1;
+                    self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
                     if !object_deleted {
                         self.bump_watch_version(key.as_slice());
                     }
@@ -68,6 +69,7 @@ impl RequestProcessor {
                 DeleteOperationStatus::NotFound => {
                     if object_deleted {
                         removed += 1;
+                        self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
                     }
                 }
                 DeleteOperationStatus::RetryLater => {
@@ -249,7 +251,10 @@ impl RequestProcessor {
         }
     }
 
-    pub(super) fn expire_key_if_needed(&self, key: &[u8]) -> Result<(), RequestExecutionError> {
+    /// Check if a key has expired and, unless expiration is suppressed by
+    /// CLIENT PAUSE, physically delete it.  Returns `true` when the key is
+    /// logically expired (whether or not it was actually deleted).
+    pub(super) fn expire_key_if_needed(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         let shard_index = self.string_store_shard_index_for_key(key);
         self.expire_key_if_needed_in_shard(key, shard_index)
     }
@@ -258,11 +263,28 @@ impl RequestProcessor {
         &self,
         key: &[u8],
         shard_index: ShardIndex,
-    ) -> Result<(), RequestExecutionError> {
+    ) -> Result<bool, RequestExecutionError> {
         if self.string_expiration_count_for_shard(shard_index) == 0 {
-            return Ok(());
+            return Ok(false);
         }
         crate::debug_sync_point!("request_processor.expire_key_if_needed.enter");
+
+        // When expiration is suppressed by CLIENT PAUSE, check the deadline
+        // without removing metadata or deleting the key.  The caller sees the
+        // key as logically expired (returns true) but the physical key remains
+        // so that expired_keys stats and replication are deferred until after
+        // the pause ends.
+        if self.is_expire_action_paused() {
+            let logically_expired = {
+                let expirations = self.lock_string_expirations_for_shard(shard_index);
+                matches!(expirations.get(key), Some(metadata) if metadata.deadline <= Instant::now())
+            };
+            crate::debug_sync_point!(
+                "request_processor.expire_key_if_needed.after_expiration_lookup"
+            );
+            return Ok(logically_expired);
+        }
+
         let should_expire = {
             let mut expirations = self.lock_string_expirations_for_shard(shard_index);
             match expirations.get(key) {
@@ -278,7 +300,7 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.expire_key_if_needed.after_expiration_lookup");
 
         if !should_expire {
-            return Ok(());
+            return Ok(false);
         }
 
         crate::debug_sync_point!("request_processor.expire_key_if_needed.before_store_lock");
@@ -299,10 +321,11 @@ impl RequestProcessor {
         };
         self.untrack_string_key_in_shard(key, shard_index);
         if key_removed {
+            self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
             self.record_lazy_expired_keys(1);
             self.enqueue_lazy_expired_key_for_replication(key);
         }
-        Ok(())
+        Ok(true)
     }
 
     #[inline]

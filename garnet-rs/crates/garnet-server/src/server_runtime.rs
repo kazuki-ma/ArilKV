@@ -134,7 +134,9 @@ where
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
-            if !expiration_processor.active_expire_enabled() {
+            if !expiration_processor.active_expire_enabled()
+                || expiration_processor.is_expire_action_paused()
+            {
                 continue;
             }
             for shard in 0..expiration_shard_count {

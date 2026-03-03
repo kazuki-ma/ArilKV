@@ -2310,7 +2310,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: Some(ArityPolicy::Exact(1)),
+        arity_policy: Some(ArityPolicy::Min(1)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2320,7 +2320,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::Never,
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: Some(ArityPolicy::Exact(1)),
+        arity_policy: Some(ArityPolicy::Min(1)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2770,6 +2770,94 @@ pub fn command_allowed_while_script_busy(command: CommandId, subcommand: Option<
     }
 }
 
+/// Returns true if the command should be blocked by CLIENT PAUSE WRITE.
+/// This mirrors Valkey's `CMD_WRITE | CMD_MAY_REPLICATE` semantics.
+/// Includes all mutating commands, plus PUBLISH, PFCOUNT, and write-capable scripts.
+/// Does NOT include read-only script variants (EVAL_RO, EVALSHA_RO, FCALL_RO),
+/// or scripts that declare `flags=no-writes` in their shebang.
+///
+/// `script_body` should be provided for EVAL/EVALSHA to allow shebang inspection.
+/// For EVALSHA, pass `None` if the cached script body is not available.
+pub fn command_is_write_pause_affected_with_script(
+    command: CommandId,
+    subcommand: Option<&[u8]>,
+    script_body: Option<&[u8]>,
+) -> bool {
+    // Read-only script commands are never blocked by WRITE pause.
+    if matches!(
+        command,
+        CommandId::EvalRo | CommandId::EvalshaRo | CommandId::FcallRo
+    ) {
+        return false;
+    }
+    // Write-capable scripting commands: check shebang flags.
+    if matches!(command, CommandId::Eval | CommandId::Evalsha) {
+        if let Some(body) = script_body {
+            if eval_script_has_no_writes_flag(body) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if command == CommandId::Fcall {
+        return true;
+    }
+    // PUBLISH, SPUBLISH, and PFCOUNT are "may_replicate" commands.
+    if matches!(
+        command,
+        CommandId::Publish | CommandId::Spublish | CommandId::Pfcount
+    ) {
+        return true;
+    }
+    // All other mutating commands.
+    command_is_effectively_mutating(command, subcommand)
+}
+
+/// Convenience wrapper that does not inspect script body.
+pub fn command_is_write_pause_affected(command: CommandId, subcommand: Option<&[u8]>) -> bool {
+    command_is_write_pause_affected_with_script(command, subcommand, None)
+}
+
+/// Check if a Lua script body declares `flags=no-writes` in its shebang line.
+/// Returns true if the script has a shebang header with the no-writes flag.
+fn eval_script_has_no_writes_flag(body: &[u8]) -> bool {
+    if !body.starts_with(b"#!") {
+        // No shebang = eval-compat-mode = treated as may-replicate.
+        return false;
+    }
+    let shebang_end = match body.iter().position(|byte| *byte == b'\n') {
+        Some(pos) => pos,
+        None => body.len(),
+    };
+    let shebang = &body[..shebang_end];
+    // Look for "flags=...no-writes..." in the shebang line.
+    let flags_prefix = b"flags=";
+    let mut search_start = 0;
+    while search_start + flags_prefix.len() <= shebang.len() {
+        if let Some(pos) = shebang[search_start..]
+            .windows(flags_prefix.len())
+            .position(|w| w == flags_prefix.as_slice())
+        {
+            let flags_start = search_start + pos + flags_prefix.len();
+            let flags_end = shebang[flags_start..]
+                .iter()
+                .position(|byte| byte.is_ascii_whitespace())
+                .map(|pos| flags_start + pos)
+                .unwrap_or(shebang.len());
+            let flags_str = &shebang[flags_start..flags_end];
+            for flag in flags_str.split(|byte| *byte == b',') {
+                if flag.eq_ignore_ascii_case(b"no-writes") {
+                    return true;
+                }
+            }
+            search_start = flags_end;
+        } else {
+            break;
+        }
+    }
+    false
+}
+
 pub fn command_is_scripting_family(command: CommandId) -> bool {
     matches!(
         command,
@@ -3149,8 +3237,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Memory, 2));
         assert!(command_has_valid_arity(CommandId::Memory, 3));
         assert!(command_has_valid_arity(CommandId::Flushdb, 1));
-        assert!(!command_has_valid_arity(CommandId::Flushdb, 2));
+        assert!(command_has_valid_arity(CommandId::Flushdb, 2));
         assert!(command_has_valid_arity(CommandId::Flushall, 1));
+        assert!(command_has_valid_arity(CommandId::Flushall, 2));
         assert!(command_has_valid_arity(CommandId::Function, 2));
         assert!(command_has_valid_arity(CommandId::Function, 3));
         assert!(!command_has_valid_arity(CommandId::Function, 1));

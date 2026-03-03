@@ -34,6 +34,7 @@ use crate::command_spec::command_has_valid_arity;
 use crate::command_spec::command_is_effectively_mutating;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_scripting_family;
+use crate::command_spec::command_is_write_pause_affected_with_script;
 use crate::command_spec::command_transaction_control;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
 use crate::connection_owner_routing::RoutedExecutionError;
@@ -747,6 +748,24 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
+            if command == CommandId::Quit {
+                append_simple_string(&mut responses, b"OK");
+                command_outcome.disconnect_after_reply = true;
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                // After QUIT, discard any remaining pipelined commands.
+                break;
+            }
+
             if command == CommandId::Auth {
                 let maybe_user = if argument_count == 2 {
                     Some(b"default".to_vec())
@@ -1064,6 +1083,27 @@ pub(crate) async fn handle_connection(
                                                 transaction_runtime_execabort_message(reason),
                                             );
                                         } else {
+                                            // CLIENT PAUSE gating at EXEC: if the transaction
+                                            // contains write-pause-affected commands, block until
+                                            // the pause expires or is cancelled.
+                                            let exec_write_affected =
+                                                transaction_has_write_pause_affected_commands(
+                                                    &transaction.queued_frames,
+                                                    max_resp_arguments,
+                                                );
+                                            if processor.is_client_paused(exec_write_affected) {
+                                                if !responses.is_empty() {
+                                                    stream.write_all(&responses).await?;
+                                                    responses.clear();
+                                                }
+                                                wait_for_client_unpause(
+                                                    &processor,
+                                                    &metrics,
+                                                    client_id,
+                                                    exec_write_affected,
+                                                )
+                                                .await;
+                                            }
                                             let transaction_outcome = execute_transaction_queue(
                                                 &processor,
                                                 &owner_thread_pool,
@@ -1071,6 +1111,7 @@ pub(crate) async fn handle_connection(
                                                 &mut responses,
                                                 max_resp_arguments,
                                                 client_state.no_touch,
+                                                Some(client_id),
                                             );
                                             publish_transaction_replication_frames(
                                                 &processor,
@@ -1391,6 +1432,52 @@ pub(crate) async fn handle_connection(
                                 break;
                             }
                             continue;
+                        }
+                        // CLIENT PAUSE gating: block until pause expires or is cancelled.
+                        // For EVAL, pass the script body to check shebang flags.
+                        // For EVALSHA, look up the cached script body.
+                        // For FCALL, check the function registry for no-writes flag.
+                        let cached_script_body_for_pause;
+                        let script_body_for_pause =
+                            if command == CommandId::Eval && argument_count > 1 {
+                                Some(arg_slice_bytes(&args[1]))
+                            } else if command == CommandId::Evalsha && argument_count > 1 {
+                                cached_script_body_for_pause =
+                                    processor.cached_script_body(arg_slice_bytes(&args[1]));
+                                cached_script_body_for_pause.as_deref()
+                            } else {
+                                None
+                            };
+                        let mut write_pause_affected = command_is_write_pause_affected_with_script(
+                            command,
+                            if argument_count > 1 {
+                                Some(arg_slice_bytes(&args[1]))
+                            } else {
+                                None
+                            },
+                            script_body_for_pause,
+                        );
+                        // FCALL with a read-only function should not be blocked.
+                        if write_pause_affected
+                            && command == CommandId::Fcall
+                            && argument_count > 1
+                            && processor.is_function_read_only(arg_slice_bytes(&args[1]))
+                        {
+                            write_pause_affected = false;
+                        }
+                        if processor.is_client_paused(write_pause_affected) {
+                            // Flush any buffered responses before blocking.
+                            if !responses.is_empty() {
+                                stream.write_all(&responses).await?;
+                                responses.clear();
+                            }
+                            wait_for_client_unpause(
+                                &processor,
+                                &metrics,
+                                client_id,
+                                write_pause_affected,
+                            )
+                            .await;
                         }
                         if is_blocking_command(command) && !responses.is_empty() {
                             stream.write_all(&responses).await?;
@@ -1870,6 +1957,64 @@ async fn yield_for_blocking_progress(processor: &RequestProcessor, initial_block
         sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
         yield_now().await;
     }
+}
+
+const CLIENT_PAUSE_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Check whether any queued frame in a MULTI transaction is write-pause-affected.
+fn transaction_has_write_pause_affected_commands(
+    queued_frames: &[Vec<u8>],
+    max_resp_arguments: usize,
+) -> bool {
+    let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
+    for frame in queued_frames {
+        let Ok(meta) = parse_resp_command_arg_slices_dynamic(frame, &mut args, max_resp_arguments)
+        else {
+            continue;
+        };
+        if meta.argument_count == 0 {
+            continue;
+        }
+        let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+        let subcommand = if meta.argument_count > 1 {
+            Some(arg_slice_bytes(&args[1]))
+        } else {
+            None
+        };
+        let script_body =
+            if matches!(command, CommandId::Eval | CommandId::Evalsha) && meta.argument_count > 1 {
+                Some(arg_slice_bytes(&args[1]))
+            } else {
+                None
+            };
+        if command_is_write_pause_affected_with_script(command, subcommand, script_body) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Block the current connection until CLIENT PAUSE expires or is cancelled.
+/// Increments blocked_clients while waiting so tests can observe it via INFO.
+async fn wait_for_client_unpause(
+    processor: &RequestProcessor,
+    metrics: &ServerMetrics,
+    client_id: ClientId,
+    is_write_or_may_replicate: bool,
+) {
+    if !processor.is_client_paused(is_write_or_may_replicate) {
+        return;
+    }
+    processor.increment_blocked_clients();
+    metrics.set_client_blocked(client_id, true);
+    loop {
+        if !processor.is_client_paused(is_write_or_may_replicate) {
+            break;
+        }
+        sleep(CLIENT_PAUSE_POLL_INTERVAL).await;
+    }
+    processor.decrement_blocked_clients();
+    metrics.set_client_blocked(client_id, false);
 }
 
 fn command_may_wake_blocking_waiters(command: CommandId) -> bool {
@@ -2722,13 +2867,20 @@ fn handle_client_command(
             append_error_line(response_out, b"ERR timeout is negative");
             return outcome;
         }
-        if args.len() == 4 {
+        let pause_all = if args.len() == 4 {
             let mode = arg_slice_bytes(&args[3]);
-            if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
+            if ascii_eq_ignore_case(mode, b"ALL") {
+                true
+            } else if ascii_eq_ignore_case(mode, b"WRITE") {
+                false
+            } else {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
                 return outcome;
             }
-        }
+        } else {
+            true
+        };
+        processor.client_pause(timeout as u64, pause_all);
         append_simple_string(response_out, b"OK");
         return outcome;
     }
@@ -2738,6 +2890,7 @@ fn handle_client_command(
             append_client_subcommand_wrong_arity(response_out, b"unpause");
             return outcome;
         }
+        processor.client_unpause();
         append_simple_string(response_out, b"OK");
         return outcome;
     }
