@@ -1204,11 +1204,7 @@ impl RequestProcessor {
             }
             if ascii_eq_ignore_case(protocol_subcommand, b"VERBATIM") {
                 if resp3 {
-                    append_verbatim_string(
-                        response_out,
-                        b"txt",
-                        DEBUG_PROTOCOL_VERBATIM_VALUE,
-                    );
+                    append_verbatim_string(response_out, b"txt", DEBUG_PROTOCOL_VERBATIM_VALUE);
                 } else {
                     append_bulk_string(response_out, DEBUG_PROTOCOL_VERBATIM_VALUE);
                 }
@@ -1715,9 +1711,9 @@ impl RequestProcessor {
                         return false;
                     };
                     let cid = command_id_from_name(ct.name);
-                    let sub_known =
-                        ct.subcommand
-                            .is_some_and(|v| command_subcommand_known(ct.name, v));
+                    let sub_known = ct
+                        .subcommand
+                        .is_some_and(|v| command_subcommand_known(ct.name, v));
                     cid.is_some() && (ct.subcommand.is_none() || sub_known)
                 })
                 .count();
