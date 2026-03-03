@@ -11001,8 +11001,8 @@ fn debug_object_reports_metadata_for_existing_key() {
         "expected 'refcount:1' in response: {response_str}"
     );
     assert!(
-        response_str.contains("encoding:raw"),
-        "expected 'encoding:raw' in response: {response_str}"
+        response_str.contains("encoding:embstr"),
+        "expected 'encoding:embstr' for short string in response: {response_str}"
     );
 }
 

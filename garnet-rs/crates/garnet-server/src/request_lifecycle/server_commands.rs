@@ -1541,11 +1541,33 @@ impl RequestProcessor {
                 append_error(response_out, b"ERR no such key");
                 return Ok(());
             }
+            let encoding = if let Some(value) = self.read_string_value(&key)? {
+                String::from_utf8_lossy(string_encoding_name(&value)).into_owned()
+            } else if let Some(object) = self.object_read(&key)? {
+                let zset_max = self.zset_max_listpack_entries.load(Ordering::Acquire);
+                let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
+                let hash_max = self.hash_max_listpack_entries.load(Ordering::Acquire);
+                let set_max_lp = self.set_max_listpack_entries.load(Ordering::Acquire);
+                let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
+                match object_encoding_name(
+                    object.object_type,
+                    &object.payload,
+                    zset_max,
+                    list_max,
+                    hash_max,
+                    set_max_lp,
+                    set_max_is,
+                ) {
+                    Ok(name) => String::from_utf8_lossy(name).into_owned(),
+                    Err(_) => "raw".to_owned(),
+                }
+            } else {
+                "raw".to_owned()
+            };
             let lru = self.key_lru_millis(&key).unwrap_or(0);
             let idle = self.key_idle_seconds(&key).unwrap_or(0);
             let payload = format!(
-                "Value at:0x0 refcount:1 encoding:raw serializedlength:0 lru:{} lru_seconds_idle:{}",
-                lru, idle
+                "Value at:0x0 refcount:1 encoding:{encoding} serializedlength:0 lru:{lru} lru_seconds_idle:{idle}"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", payload.as_bytes());
