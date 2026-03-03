@@ -17,6 +17,7 @@ pub const NAMESPACE_BIT_MASK: u32 = 1 << 29;
 /// All flag bits in the 4-byte packed header.
 pub const HEADER_MASK: u32 = UNSERIALIZED_BIT_MASK | EXTRA_METADATA_BIT_MASK | NAMESPACE_BIT_MASK;
 /// Maximum payload length representable in the 29-bit length field.
+#[allow(clippy::identity_op)]
 pub const MAX_PAYLOAD_LENGTH: usize = (u32::MAX & !HEADER_MASK) as usize;
 
 /// Errors produced when parsing or materializing serialized [`SpanByte`] values.

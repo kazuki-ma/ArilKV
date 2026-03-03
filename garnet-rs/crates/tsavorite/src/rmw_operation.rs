@@ -138,19 +138,19 @@ where
 
     if let Some(head_entry) = maybe_head_entry {
         previous_address = entry_address(head_entry.word);
-        if previous_address != LogicalAddress(0) {
-            if let Some(record_match) = find_matching_record_in_chain(
+        if previous_address != LogicalAddress(0)
+            && let Some(record_match) = find_matching_record_in_chain(
                 context.page_manager,
                 context.pointers.begin_address(),
                 functions,
                 key,
                 previous_address,
-            )? {
-                let address = record_match.address;
-                let record = record_match.record;
-                matched_address = Some(address);
-                matched_record = Some(record);
-            }
+            )?
+        {
+            let address = record_match.address;
+            let record = record_match.record;
+            matched_address = Some(address);
+            matched_record = Some(record);
         }
     }
 
@@ -594,7 +594,7 @@ mod tests {
         page_manager.allocate_page(0).unwrap();
         let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
 
-        let key_hash = (31u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 31u64 << crate::HASH_TAG_SHIFT;
         seed_record(
             &hash_index,
             &mut page_manager,
@@ -640,7 +640,7 @@ mod tests {
         page_manager.allocate_page(0).unwrap();
         let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
 
-        let key_hash = (32u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 32u64 << crate::HASH_TAG_SHIFT;
         seed_record(
             &hash_index,
             &mut page_manager,
@@ -688,7 +688,7 @@ mod tests {
         page_manager.allocate_page(0).unwrap();
         let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
 
-        let key_hash = (33u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 33u64 << crate::HASH_TAG_SHIFT;
         seed_record(
             &hash_index,
             &mut page_manager,

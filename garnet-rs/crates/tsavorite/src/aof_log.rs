@@ -114,11 +114,8 @@ impl AofReader {
 
     pub fn replay_all_tolerant(&mut self) -> io::Result<Vec<Vec<u8>>> {
         let mut operations = Vec::new();
-        loop {
-            match read_one_record(&mut self.file)? {
-                Some(operation) => operations.push(operation),
-                None => break,
-            }
+        while let Some(operation) = read_one_record(&mut self.file)? {
+            operations.push(operation);
         }
         Ok(operations)
     }

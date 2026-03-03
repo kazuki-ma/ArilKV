@@ -1680,14 +1680,15 @@ impl ReplicationManager {
     }
 
     pub fn plan_sync(&self, replica_offset: Option<ReplicationOffset>) -> ReplicationSyncPlan {
-        if let Some(offset) = replica_offset {
-            if offset >= self.aof_replay_start_offset && offset <= self.aof_tail_offset {
-                return ReplicationSyncPlan {
-                    mode: ReplicationSyncMode::Incremental,
-                    checkpoint_id: None,
-                    aof_start_offset: offset,
-                };
-            }
+        if let Some(offset) = replica_offset
+            && offset >= self.aof_replay_start_offset
+            && offset <= self.aof_tail_offset
+        {
+            return ReplicationSyncPlan {
+                mode: ReplicationSyncMode::Incremental,
+                checkpoint_id: None,
+                aof_start_offset: offset,
+            };
         }
 
         ReplicationSyncPlan {
@@ -2783,6 +2784,7 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
         reports
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_with_config_updates_and_failover<F, R>(
         &mut self,
         config_store: &ClusterConfigStore,
@@ -2811,6 +2813,7 @@ impl<T: AsyncGossipTransport> ClusterManager<T> {
             .gossip_reports)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn run_with_config_updates_and_failover_report<F, R>(
         &mut self,
         config_store: &ClusterConfigStore,
@@ -2980,11 +2983,11 @@ mod tests {
         let config = base_config();
         assert_eq!(config.workers().len(), 2);
         assert_eq!(
-            config.workers()[RESERVED_WORKER_ID as usize].id,
+            config.workers()[RESERVED_WORKER_ID.as_usize()].id,
             RESERVED_WORKER_ID
         );
         assert_eq!(
-            config.workers()[LOCAL_WORKER_ID as usize].id,
+            config.workers()[LOCAL_WORKER_ID.as_usize()].id,
             LOCAL_WORKER_ID
         );
         assert_eq!(config.local_worker().unwrap().role, WorkerRole::Primary);
@@ -2994,11 +2997,20 @@ mod tests {
     fn set_slot_state_is_copy_on_write() {
         let config = base_config();
         let updated = config
-            .set_slot_state(42, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(42), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
-        assert_eq!(config.slot_state(42).unwrap(), SlotState::Offline);
-        assert_eq!(updated.slot_state(42).unwrap(), SlotState::Stable);
-        assert_eq!(updated.slot_owner(42).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            config.slot_state(SlotNumber::new(42)).unwrap(),
+            SlotState::Offline
+        );
+        assert_eq!(
+            updated.slot_state(SlotNumber::new(42)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            updated.slot_owner(SlotNumber::new(42)).unwrap(),
+            LOCAL_WORKER_ID
+        );
     }
 
     #[test]
@@ -3008,35 +3020,65 @@ mod tests {
             .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
 
-        let migrating = config.begin_slot_migration_to(42, remote_id).unwrap();
-        assert_eq!(migrating.slot_state(42).unwrap(), SlotState::Migrating);
-        assert_eq!(migrating.slot_assigned_owner(42).unwrap(), remote_id);
-        assert_eq!(migrating.slot_owner(42).unwrap(), LOCAL_WORKER_ID);
+        let migrating = config
+            .begin_slot_migration_to(SlotNumber::new(42), remote_id)
+            .unwrap();
+        assert_eq!(
+            migrating.slot_state(SlotNumber::new(42)).unwrap(),
+            SlotState::Migrating
+        );
+        assert_eq!(
+            migrating.slot_assigned_owner(SlotNumber::new(42)).unwrap(),
+            remote_id
+        );
+        assert_eq!(
+            migrating.slot_owner(SlotNumber::new(42)).unwrap(),
+            LOCAL_WORKER_ID
+        );
 
-        let importing = config.begin_slot_import_from(42, remote_id).unwrap();
-        assert_eq!(importing.slot_state(42).unwrap(), SlotState::Importing);
-        assert_eq!(importing.slot_assigned_owner(42).unwrap(), remote_id);
+        let importing = config
+            .begin_slot_import_from(SlotNumber::new(42), remote_id)
+            .unwrap();
+        assert_eq!(
+            importing.slot_state(SlotNumber::new(42)).unwrap(),
+            SlotState::Importing
+        );
+        assert_eq!(
+            importing.slot_assigned_owner(SlotNumber::new(42)).unwrap(),
+            remote_id
+        );
 
-        let finalized = migrating.finalize_slot_migration(42, remote_id).unwrap();
-        assert_eq!(finalized.slot_state(42).unwrap(), SlotState::Stable);
-        assert_eq!(finalized.slot_assigned_owner(42).unwrap(), remote_id);
-        assert_eq!(finalized.slot_owner(42).unwrap(), remote_id);
+        let finalized = migrating
+            .finalize_slot_migration(SlotNumber::new(42), remote_id)
+            .unwrap();
+        assert_eq!(
+            finalized.slot_state(SlotNumber::new(42)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            finalized.slot_assigned_owner(SlotNumber::new(42)).unwrap(),
+            remote_id
+        );
+        assert_eq!(
+            finalized.slot_owner(SlotNumber::new(42)).unwrap(),
+            remote_id
+        );
     }
 
     #[test]
     fn slot_migration_helpers_reject_unknown_worker() {
         let config = base_config();
         assert!(matches!(
-            config.begin_slot_migration_to(42, 99),
-            Err(ClusterConfigError::WorkerNotFound(99))
+            config.begin_slot_migration_to(SlotNumber::new(42), WorkerId::new(99)),
+            Err(ClusterConfigError::WorkerNotFound(WorkerId(99)))
         ));
         assert!(matches!(
-            config.begin_slot_import_from(42, 99),
-            Err(ClusterConfigError::WorkerNotFound(99))
+            config.begin_slot_import_from(SlotNumber::new(42), WorkerId::new(99)),
+            Err(ClusterConfigError::WorkerNotFound(WorkerId(99)))
         ));
         assert!(matches!(
-            config.finalize_slot_migration(42, 99),
-            Err(ClusterConfigError::WorkerNotFound(99))
+            config.finalize_slot_migration(SlotNumber::new(42), WorkerId::new(99)),
+            Err(ClusterConfigError::WorkerNotFound(WorkerId(99)))
         ));
     }
 
@@ -3047,16 +3089,25 @@ mod tests {
             .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
         let config = config
-            .set_slot_state(11, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(11), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap()
-            .set_slot_state(12, remote_id, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(12), remote_id, SlotState::Migrating)
             .unwrap()
-            .set_slot_state(13, remote_id, SlotState::Importing)
+            .set_slot_state(SlotNumber::new(13), remote_id, SlotState::Importing)
             .unwrap();
 
-        assert_eq!(config.slots_in_state(SlotState::Stable), vec![11]);
-        assert_eq!(config.slots_in_state(SlotState::Migrating), vec![12]);
-        assert_eq!(config.slots_in_state(SlotState::Importing), vec![13]);
+        assert_eq!(
+            config.slots_in_state(SlotState::Stable),
+            vec![SlotNumber::new(11)]
+        );
+        assert_eq!(
+            config.slots_in_state(SlotState::Migrating),
+            vec![SlotNumber::new(12)]
+        );
+        assert_eq!(
+            config.slots_in_state(SlotState::Importing),
+            vec![SlotNumber::new(13)]
+        );
     }
 
     #[test]
@@ -3066,20 +3117,20 @@ mod tests {
             .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
             .unwrap();
         let config = config
-            .set_slot_state(21, remote_id, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(21), remote_id, SlotState::Migrating)
             .unwrap()
-            .set_slot_state(22, remote_id, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(22), remote_id, SlotState::Migrating)
             .unwrap()
-            .set_slot_state(23, remote_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(23), remote_id, SlotState::Stable)
             .unwrap()
-            .set_slot_state(24, LOCAL_WORKER_ID, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(24), LOCAL_WORKER_ID, SlotState::Migrating)
             .unwrap();
 
         assert_eq!(
             config
                 .slots_assigned_to_worker_in_state(remote_id, SlotState::Migrating)
                 .unwrap(),
-            vec![21, 22]
+            vec![SlotNumber::new(21), SlotNumber::new(22)]
         );
     }
 
@@ -3087,8 +3138,8 @@ mod tests {
     fn slots_assigned_to_worker_in_state_rejects_unknown_worker() {
         let config = base_config();
         assert!(matches!(
-            config.slots_assigned_to_worker_in_state(99, SlotState::Stable),
-            Err(ClusterConfigError::WorkerNotFound(99))
+            config.slots_assigned_to_worker_in_state(WorkerId::new(99), SlotState::Stable),
+            Err(ClusterConfigError::WorkerNotFound(WorkerId(99)))
         ));
     }
 
@@ -3098,11 +3149,17 @@ mod tests {
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let updated = with_remote
-            .set_slot_state(777, remote_id, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(777), remote_id, SlotState::Migrating)
             .unwrap();
-        assert_eq!(updated.slot_assigned_owner(777).unwrap(), remote_id);
-        assert_eq!(updated.slot_owner(777).unwrap(), LOCAL_WORKER_ID);
-        assert!(updated.is_local_slot(777).unwrap());
+        assert_eq!(
+            updated.slot_assigned_owner(SlotNumber::new(777)).unwrap(),
+            remote_id
+        );
+        assert_eq!(
+            updated.slot_owner(SlotNumber::new(777)).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert!(updated.is_local_slot(SlotNumber::new(777)).unwrap());
     }
 
     #[test]
@@ -3110,7 +3167,7 @@ mod tests {
         let config = base_config();
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (updated, remote_id) = config.add_worker(remote).unwrap();
-        assert_eq!(remote_id, 2);
+        assert_eq!(remote_id, WorkerId::new(2));
         assert!(config.worker(remote_id).is_none());
         assert_eq!(updated.worker(remote_id).unwrap().node_id, "node-2");
     }
@@ -3123,19 +3180,34 @@ mod tests {
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let with_slots = with_remote
-            .set_slot_state(100, remote_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(100), remote_id, SlotState::Stable)
             .unwrap()
-            .set_slot_state(101, remote_id, SlotState::Importing)
+            .set_slot_state(SlotNumber::new(101), remote_id, SlotState::Importing)
             .unwrap()
-            .set_slot_state(102, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(102), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
 
         let updated = with_slots.take_over_slots_from_primary(remote_id).unwrap();
-        assert_eq!(updated.slot_owner(100).unwrap(), LOCAL_WORKER_ID);
-        assert_eq!(updated.slot_state(100).unwrap(), SlotState::Stable);
-        assert_eq!(updated.slot_owner(101).unwrap(), LOCAL_WORKER_ID);
-        assert_eq!(updated.slot_state(101).unwrap(), SlotState::Stable);
-        assert_eq!(updated.slot_owner(102).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            updated.slot_owner(SlotNumber::new(100)).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(
+            updated.slot_state(SlotNumber::new(100)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            updated.slot_owner(SlotNumber::new(101)).unwrap(),
+            LOCAL_WORKER_ID
+        );
+        assert_eq!(
+            updated.slot_state(SlotNumber::new(101)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            updated.slot_owner(SlotNumber::new(102)).unwrap(),
+            LOCAL_WORKER_ID
+        );
         assert_eq!(updated.local_worker().unwrap().role, WorkerRole::Primary);
     }
 
@@ -3143,8 +3215,8 @@ mod tests {
     fn takeover_slots_from_primary_rejects_unknown_worker() {
         let config = base_config();
         assert!(matches!(
-            config.take_over_slots_from_primary(99),
-            Err(ClusterConfigError::WorkerNotFound(99))
+            config.take_over_slots_from_primary(WorkerId::new(99)),
+            Err(ClusterConfigError::WorkerNotFound(WorkerId(99)))
         ));
     }
 
@@ -3181,11 +3253,15 @@ mod tests {
             .unwrap()
             .set_worker_config_epoch(follower_replica_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_slot_state(300, failed_primary_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(300), failed_primary_id, SlotState::Stable)
             .unwrap()
-            .set_slot_state(301, failed_primary_id, SlotState::Importing)
+            .set_slot_state(
+                SlotNumber::new(301),
+                failed_primary_id,
+                SlotState::Importing,
+            )
             .unwrap()
-            .set_slot_state(302, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(302), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
 
         let updated = config
@@ -3197,21 +3273,30 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            updated.slot_assigned_owner(300).unwrap(),
+            updated.slot_assigned_owner(SlotNumber::new(300)).unwrap(),
             promoted_replica_id
         );
         assert_eq!(
-            updated.slot_assigned_owner(301).unwrap(),
+            updated.slot_assigned_owner(SlotNumber::new(301)).unwrap(),
             promoted_replica_id
         );
-        assert_eq!(updated.slot_state(300).unwrap(), SlotState::Stable);
-        assert_eq!(updated.slot_state(301).unwrap(), SlotState::Stable);
-        assert_eq!(updated.slot_assigned_owner(302).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            updated.slot_state(SlotNumber::new(300)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            updated.slot_state(SlotNumber::new(301)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            updated.slot_assigned_owner(SlotNumber::new(302)).unwrap(),
+            LOCAL_WORKER_ID
+        );
 
         let promoted = updated.worker(promoted_replica_id).unwrap();
         assert_eq!(promoted.role, WorkerRole::Primary);
         assert_eq!(promoted.replica_of_node_id, None);
-        assert_eq!(promoted.replication_offset, 888);
+        assert_eq!(promoted.replication_offset, ReplicationOffset::new(888));
         assert!(promoted.config_epoch > ConfigEpoch::new(3));
 
         let failed = updated.worker(failed_primary_id).unwrap();
@@ -3227,13 +3312,13 @@ mod tests {
     fn apply_failover_plan_rejects_unknown_worker_ids() {
         let config = base_config();
         let result = config.apply_failover_plan(&FailoverPlan {
-            failed_primary_worker_id: 99,
+            failed_primary_worker_id: WorkerId::new(99),
             promoted_worker_id: LOCAL_WORKER_ID,
             promoted_replication_offset: ReplicationOffset::new(0),
         });
         assert!(matches!(
             result,
-            Err(ClusterConfigError::WorkerNotFound(99))
+            Err(ClusterConfigError::WorkerNotFound(WorkerId(99)))
         ));
     }
 
@@ -3243,15 +3328,24 @@ mod tests {
         let store = ClusterConfigStore::new(config.clone());
         let before = store.load();
         let next = config
-            .set_slot_state(11, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(11), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
 
         let previous = store.publish(next);
         let after = store.load();
 
-        assert_eq!(before.slot_state(11).unwrap(), SlotState::Offline);
-        assert_eq!(previous.slot_state(11).unwrap(), SlotState::Offline);
-        assert_eq!(after.slot_state(11).unwrap(), SlotState::Stable);
+        assert_eq!(
+            before.slot_state(SlotNumber::new(11)).unwrap(),
+            SlotState::Offline
+        );
+        assert_eq!(
+            previous.slot_state(SlotNumber::new(11)).unwrap(),
+            SlotState::Offline
+        );
+        assert_eq!(
+            after.slot_state(SlotNumber::new(11)).unwrap(),
+            SlotState::Stable
+        );
     }
 
     #[test]
@@ -3266,17 +3360,20 @@ mod tests {
             .unwrap()
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_slot_state(200, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(200), worker2_id, SlotState::Stable)
             .unwrap();
 
         let incoming = base
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
-            .set_slot_state(200, worker3_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(200), worker3_id, SlotState::Stable)
             .unwrap();
         let merged = base.merge_from(&incoming);
 
-        assert_eq!(merged.slot_assigned_owner(200).unwrap(), worker3_id);
+        assert_eq!(
+            merged.slot_assigned_owner(SlotNumber::new(200)).unwrap(),
+            worker3_id
+        );
     }
 
     #[test]
@@ -3291,15 +3388,18 @@ mod tests {
             .unwrap()
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(7))
             .unwrap()
-            .set_slot_state(201, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(201), worker2_id, SlotState::Stable)
             .unwrap();
 
         let incoming = base
-            .set_slot_state(201, worker3_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(201), worker3_id, SlotState::Stable)
             .unwrap();
         let merged = base.merge_from(&incoming);
 
-        assert_eq!(merged.slot_assigned_owner(201).unwrap(), worker3_id);
+        assert_eq!(
+            merged.slot_assigned_owner(SlotNumber::new(201)).unwrap(),
+            worker3_id
+        );
     }
 
     #[test]
@@ -3326,17 +3426,20 @@ mod tests {
         let current = base
             .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_slot_state(202, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(202), worker2_id, SlotState::Stable)
             .unwrap();
         let incoming = base
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
-            .set_slot_state(202, worker3_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(202), worker3_id, SlotState::Stable)
             .unwrap();
 
         let store = ClusterConfigStore::new(current);
         let merged = store.merge_publish(&incoming);
-        assert_eq!(merged.slot_assigned_owner(202).unwrap(), worker3_id);
+        assert_eq!(
+            merged.slot_assigned_owner(SlotNumber::new(202)).unwrap(),
+            worker3_id
+        );
     }
 
     #[test]
@@ -3355,18 +3458,30 @@ mod tests {
             .unwrap()
             .set_worker_replication_offset(worker3_id, ReplicationOffset::new(1_234))
             .unwrap()
-            .set_slot_state(101, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(101), worker2_id, SlotState::Stable)
             .unwrap()
-            .set_slot_state(102, worker3_id, SlotState::Importing)
+            .set_slot_state(SlotNumber::new(102), worker3_id, SlotState::Importing)
             .unwrap();
 
         let encoded = encode_cluster_config_snapshot(&original).unwrap();
         let decoded = decode_cluster_config_snapshot(&encoded).unwrap();
 
-        assert_eq!(decoded.slot_assigned_owner(101).unwrap(), worker2_id);
-        assert_eq!(decoded.slot_state(101).unwrap(), SlotState::Stable);
-        assert_eq!(decoded.slot_assigned_owner(102).unwrap(), worker3_id);
-        assert_eq!(decoded.slot_state(102).unwrap(), SlotState::Importing);
+        assert_eq!(
+            decoded.slot_assigned_owner(SlotNumber::new(101)).unwrap(),
+            worker2_id
+        );
+        assert_eq!(
+            decoded.slot_state(SlotNumber::new(101)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            decoded.slot_assigned_owner(SlotNumber::new(102)).unwrap(),
+            worker3_id
+        );
+        assert_eq!(
+            decoded.slot_state(SlotNumber::new(102)).unwrap(),
+            SlotState::Importing
+        );
         assert_eq!(
             decoded.worker(worker2_id).unwrap().config_epoch,
             ConfigEpoch::new(5)
@@ -3385,64 +3500,64 @@ mod tests {
         );
         assert_eq!(
             decoded.worker(worker3_id).unwrap().replication_offset,
-            1_234
+            ReplicationOffset::new(1_234)
         );
     }
 
     #[test]
     fn replication_manager_selects_incremental_when_replica_offset_is_in_window() {
         let manager = ReplicationManager::new(
-            Some(99),
+            Some(CheckpointId::new(99)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
         .unwrap();
-        let plan = manager.plan_sync(Some(1_500));
+        let plan = manager.plan_sync(Some(ReplicationOffset::new(1_500)));
         assert_eq!(plan.mode, ReplicationSyncMode::Incremental);
         assert_eq!(plan.checkpoint_id, None);
-        assert_eq!(plan.aof_start_offset, 1_500);
+        assert_eq!(plan.aof_start_offset, ReplicationOffset::new(1_500));
     }
 
     #[test]
     fn replication_manager_selects_full_when_replica_offset_is_stale() {
         let manager = ReplicationManager::new(
-            Some(55),
+            Some(CheckpointId::new(55)),
             ReplicationOffset::new(5_000),
             ReplicationOffset::new(8_000),
         )
         .unwrap();
-        let plan = manager.plan_sync(Some(4_999));
+        let plan = manager.plan_sync(Some(ReplicationOffset::new(4_999)));
         assert_eq!(plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(plan.checkpoint_id, Some(55));
-        assert_eq!(plan.aof_start_offset, 5_000);
+        assert_eq!(plan.checkpoint_id, Some(CheckpointId::new(55)));
+        assert_eq!(plan.aof_start_offset, ReplicationOffset::new(5_000));
     }
 
     #[test]
     fn replication_manager_selects_full_when_replica_offset_is_unknown() {
         let manager = ReplicationManager::new(
-            Some(12),
+            Some(CheckpointId::new(12)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
         .unwrap();
         let plan = manager.plan_sync(None);
         assert_eq!(plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(plan.checkpoint_id, Some(12));
-        assert_eq!(plan.aof_start_offset, 100);
+        assert_eq!(plan.checkpoint_id, Some(CheckpointId::new(12)));
+        assert_eq!(plan.aof_start_offset, ReplicationOffset::new(100));
     }
 
     #[test]
     fn replication_manager_rejects_invalid_recovery_window() {
         let result = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(10),
             ReplicationOffset::new(9),
         );
         assert!(matches!(
             result,
             Err(ReplicationError::InvalidAofWindow {
-                replay_start_offset: ReplicationOffset::new(10),
-                tail_offset: ReplicationOffset::new(9),
+                replay_start_offset: ReplicationOffset(10),
+                tail_offset: ReplicationOffset(9),
             })
         ));
     }
@@ -3455,15 +3570,15 @@ mod tests {
             ReplicationOffset::new(10_000),
         )
         .unwrap();
-        manager.record_replica_offset(7, ReplicationOffset::new(8_000));
-        manager.record_replica_offset(2, ReplicationOffset::new(9_000));
-        manager.record_replica_offset(5, ReplicationOffset::new(9_000));
+        manager.record_replica_offset(WorkerId::new(7), ReplicationOffset::new(8_000));
+        manager.record_replica_offset(WorkerId::new(2), ReplicationOffset::new(9_000));
+        manager.record_replica_offset(WorkerId::new(5), ReplicationOffset::new(9_000));
 
         assert_eq!(
             manager.best_replica_candidate(),
             Some(ReplicaProgress {
-                worker_id: 2,
-                acknowledged_offset: 9_000,
+                worker_id: WorkerId::new(2),
+                acknowledged_offset: ReplicationOffset::new(9_000),
             })
         );
     }
@@ -3471,21 +3586,28 @@ mod tests {
     #[test]
     fn replication_manager_updates_recovery_window_and_tail() {
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
         .unwrap();
         manager
-            .update_recovery_window(Some(CheckpointId::new(2)), 150, 400)
+            .update_recovery_window(
+                Some(CheckpointId::new(2)),
+                ReplicationOffset::new(150),
+                ReplicationOffset::new(400),
+            )
             .expect("window update should succeed");
         manager
             .set_aof_tail_offset(ReplicationOffset::new(450))
             .expect("tail advance should succeed");
 
         assert_eq!(manager.checkpoint_id(), Some(CheckpointId::new(2)));
-        assert_eq!(manager.aof_replay_start_offset(), 150);
-        assert_eq!(manager.aof_tail_offset(), 450);
+        assert_eq!(
+            manager.aof_replay_start_offset(),
+            ReplicationOffset::new(150)
+        );
+        assert_eq!(manager.aof_tail_offset(), ReplicationOffset::new(450));
     }
 
     fn worker_checkpoint(
@@ -3549,7 +3671,7 @@ mod tests {
     #[test]
     fn replication_manager_execute_sync_uses_incremental_plan_without_checkpoint() {
         let mut manager = ReplicationManager::new(
-            Some(7),
+            Some(CheckpointId::new(7)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
@@ -3560,18 +3682,25 @@ mod tests {
         };
 
         let outcome = manager
-            .execute_sync(3, Some(1_500), &mut transport)
+            .execute_sync(
+                WorkerId::new(3),
+                Some(ReplicationOffset::new(1_500)),
+                &mut transport,
+            )
             .expect("incremental sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
         assert!(transport.checkpoints.is_empty());
         assert_eq!(transport.streams, vec![worker_stream(3, 1_500)]);
-        assert_eq!(manager.replica_offset(3), Some(1_750));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(3)),
+            Some(ReplicationOffset::new(1_750))
+        );
     }
 
     #[test]
     fn replication_manager_execute_sync_sends_checkpoint_for_full_sync() {
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -3582,12 +3711,19 @@ mod tests {
         };
 
         let outcome = manager
-            .execute_sync(4, Some(400), &mut transport)
+            .execute_sync(
+                WorkerId::new(4),
+                Some(ReplicationOffset::new(400)),
+                &mut transport,
+            )
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
         assert_eq!(transport.streams, vec![worker_stream(4, 500)]);
-        assert_eq!(manager.replica_offset(4), Some(900));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(4)),
+            Some(ReplicationOffset::new(900))
+        );
     }
 
     #[test]
@@ -3603,7 +3739,11 @@ mod tests {
             ..Default::default()
         };
 
-        let result = manager.execute_sync(8, Some(999), &mut transport);
+        let result = manager.execute_sync(
+            WorkerId::new(8),
+            Some(ReplicationOffset::new(999)),
+            &mut transport,
+        );
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Replication(
@@ -3616,7 +3756,7 @@ mod tests {
     #[test]
     fn replication_manager_execute_sync_propagates_transport_errors() {
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(10),
             ReplicationOffset::new(20),
         )
@@ -3626,7 +3766,11 @@ mod tests {
             ..Default::default()
         };
 
-        let result = manager.execute_sync(2, Some(15), &mut transport);
+        let result = manager.execute_sync(
+            WorkerId::new(2),
+            Some(ReplicationOffset::new(15)),
+            &mut transport,
+        );
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport("stream failed"))
@@ -3636,7 +3780,7 @@ mod tests {
     #[test]
     fn replication_manager_execute_sync_for_worker_reuses_tracked_offset() {
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -3647,7 +3791,7 @@ mod tests {
         };
 
         let first = manager
-            .execute_sync_for_worker(4, &mut transport)
+            .execute_sync_for_worker(WorkerId::new(4), &mut transport)
             .expect("first sync should succeed");
         assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
@@ -3661,12 +3805,15 @@ mod tests {
         transport.stream_result = 940;
 
         let second = manager
-            .execute_sync_for_worker(4, &mut transport)
+            .execute_sync_for_worker(WorkerId::new(4), &mut transport)
             .expect("second sync should succeed");
         assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
         assert!(transport.checkpoints.is_empty());
         assert_eq!(transport.streams, vec![worker_stream(4, 900)]);
-        assert_eq!(manager.replica_offset(4), Some(940));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(4)),
+            Some(ReplicationOffset::new(940))
+        );
     }
 
     #[test]
@@ -3705,7 +3852,7 @@ mod tests {
             .unwrap();
 
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -3732,8 +3879,14 @@ mod tests {
             transport.streams,
             vec![worker_stream(replica_a, 500), worker_stream(replica_b, 500)]
         );
-        assert_eq!(manager.replica_offset(replica_a), Some(900));
-        assert_eq!(manager.replica_offset(replica_b), Some(900));
+        assert_eq!(
+            manager.replica_offset(replica_a),
+            Some(ReplicationOffset::new(900))
+        );
+        assert_eq!(
+            manager.replica_offset(replica_b),
+            Some(ReplicationOffset::new(900))
+        );
         assert_eq!(manager.replica_offset(replica_other), None);
     }
 
@@ -3788,7 +3941,7 @@ mod tests {
     #[tokio::test]
     async fn replication_manager_execute_sync_async_uses_incremental_plan_without_checkpoint() {
         let mut manager = ReplicationManager::new(
-            Some(7),
+            Some(CheckpointId::new(7)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
@@ -3799,19 +3952,26 @@ mod tests {
         };
 
         let outcome = manager
-            .execute_sync_async(3, Some(1_500), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(3),
+                Some(ReplicationOffset::new(1_500)),
+                &mut transport,
+            )
             .await
             .expect("incremental sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
         assert!(transport.checkpoints.is_empty());
         assert_eq!(transport.streams, vec![worker_stream(3, 1_500)]);
-        assert_eq!(manager.replica_offset(3), Some(1_750));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(3)),
+            Some(ReplicationOffset::new(1_750))
+        );
     }
 
     #[tokio::test]
     async fn replication_manager_execute_sync_async_sends_checkpoint_for_full_sync() {
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -3822,13 +3982,20 @@ mod tests {
         };
 
         let outcome = manager
-            .execute_sync_async(4, Some(400), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(4),
+                Some(ReplicationOffset::new(400)),
+                &mut transport,
+            )
             .await
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(transport.checkpoints, vec![worker_checkpoint(4, 9)]);
         assert_eq!(transport.streams, vec![worker_stream(4, 500)]);
-        assert_eq!(manager.replica_offset(4), Some(900));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(4)),
+            Some(ReplicationOffset::new(900))
+        );
     }
 
     #[tokio::test]
@@ -3845,7 +4012,11 @@ mod tests {
         };
 
         let result = manager
-            .execute_sync_async(8, Some(999), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(8),
+                Some(ReplicationOffset::new(999)),
+                &mut transport,
+            )
             .await;
         assert!(matches!(
             result,
@@ -3859,7 +4030,7 @@ mod tests {
     #[tokio::test]
     async fn replication_manager_execute_sync_async_propagates_transport_errors() {
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(10),
             ReplicationOffset::new(20),
         )
@@ -3870,7 +4041,11 @@ mod tests {
         };
 
         let result = manager
-            .execute_sync_async(2, Some(15), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(2),
+                Some(ReplicationOffset::new(15)),
+                &mut transport,
+            )
             .await;
         assert!(matches!(
             result,
@@ -3881,7 +4056,7 @@ mod tests {
     #[tokio::test]
     async fn channel_replication_transport_emits_full_sync_events_in_order() {
         let mut manager = ReplicationManager::new(
-            Some(42),
+            Some(CheckpointId::new(42)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
@@ -3890,33 +4065,40 @@ mod tests {
         let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(1_750));
 
         let outcome = manager
-            .execute_sync_async(9, Some(999), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(9),
+                Some(ReplicationOffset::new(999)),
+                &mut transport,
+            )
             .await
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(outcome.streamed_until_offset, 1_750);
+        assert_eq!(outcome.streamed_until_offset, ReplicationOffset::new(1_750));
 
         assert_eq!(
             rx.recv().await,
             Some(ReplicationEvent::Checkpoint {
-                worker_id: 9,
+                worker_id: WorkerId::new(9),
                 checkpoint_id: CheckpointId::new(42),
             })
         );
         assert_eq!(
             rx.recv().await,
             Some(ReplicationEvent::StreamAof {
-                worker_id: 9,
-                start_offset: 1_000,
+                worker_id: WorkerId::new(9),
+                start_offset: ReplicationOffset::new(1_000),
             })
         );
-        assert_eq!(manager.replica_offset(9), Some(1_750));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(9)),
+            Some(ReplicationOffset::new(1_750))
+        );
     }
 
     #[tokio::test]
     async fn channel_replication_transport_emits_incremental_stream_only() {
         let mut manager = ReplicationManager::new(
-            Some(42),
+            Some(CheckpointId::new(42)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
@@ -3925,7 +4107,11 @@ mod tests {
         let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(1_980));
 
         let outcome = manager
-            .execute_sync_async(5, Some(1_500), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(5),
+                Some(ReplicationOffset::new(1_500)),
+                &mut transport,
+            )
             .await
             .expect("incremental sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Incremental);
@@ -3933,17 +4119,20 @@ mod tests {
         assert_eq!(
             rx.recv().await,
             Some(ReplicationEvent::StreamAof {
-                worker_id: 5,
-                start_offset: 1_500,
+                worker_id: WorkerId::new(5),
+                start_offset: ReplicationOffset::new(1_500),
             })
         );
-        assert_eq!(manager.replica_offset(5), Some(1_980));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(5)),
+            Some(ReplicationOffset::new(1_980))
+        );
     }
 
     #[tokio::test]
     async fn channel_replication_transport_propagates_closed_channel_error() {
         let mut manager = ReplicationManager::new(
-            Some(42),
+            Some(CheckpointId::new(42)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
@@ -3953,7 +4142,11 @@ mod tests {
         let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(1_980));
 
         let result = manager
-            .execute_sync_async(5, Some(1_500), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(5),
+                Some(ReplicationOffset::new(1_500)),
+                &mut transport,
+            )
             .await;
         assert!(matches!(
             result,
@@ -3967,7 +4160,7 @@ mod tests {
     fn file_replication_transport_writes_checkpoint_and_stream_offsets() {
         let dir = unique_temp_dir("file-transport-sync");
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -3975,10 +4168,14 @@ mod tests {
         let mut transport = FileReplicationTransport::new(&dir, ReplicationOffset::new(900));
 
         let outcome = manager
-            .execute_sync(4, Some(400), &mut transport)
+            .execute_sync(
+                WorkerId::new(4),
+                Some(ReplicationOffset::new(400)),
+                &mut transport,
+            )
             .expect("full sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(outcome.streamed_until_offset, 900);
+        assert_eq!(outcome.streamed_until_offset, ReplicationOffset::new(900));
 
         let checkpoint =
             std::fs::read_to_string(dir.join("worker-4.checkpoint")).expect("checkpoint exists");
@@ -3993,7 +4190,7 @@ mod tests {
     async fn file_replication_transport_supports_async_full_then_incremental_sync() {
         let dir = unique_temp_dir("file-transport-async");
         let mut manager = ReplicationManager::new(
-            Some(11),
+            Some(CheckpointId::new(11)),
             ReplicationOffset::new(700),
             ReplicationOffset::new(900),
         )
@@ -4001,22 +4198,22 @@ mod tests {
         let mut transport = FileReplicationTransport::new(&dir, ReplicationOffset::new(900));
 
         let first = manager
-            .execute_sync_for_worker_async(6, &mut transport)
+            .execute_sync_for_worker_async(WorkerId::new(6), &mut transport)
             .await
             .expect("first sync should succeed");
         assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(first.plan.aof_start_offset, 700);
+        assert_eq!(first.plan.aof_start_offset, ReplicationOffset::new(700));
 
         manager
             .set_aof_tail_offset(ReplicationOffset::new(960))
             .unwrap();
         transport.set_stream_result(ReplicationOffset::new(960));
         let second = manager
-            .execute_sync_for_worker_async(6, &mut transport)
+            .execute_sync_for_worker_async(WorkerId::new(6), &mut transport)
             .await
             .expect("second sync should succeed");
         assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
-        assert_eq!(second.plan.aof_start_offset, 900);
+        assert_eq!(second.plan.aof_start_offset, ReplicationOffset::new(900));
 
         let checkpoint =
             std::fs::read_to_string(dir.join("worker-6.checkpoint")).expect("checkpoint exists");
@@ -4050,20 +4247,24 @@ mod tests {
         });
 
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
         .unwrap();
         let mut transport = TcpReplicationTransport::new(ReplicationOffset::new(900));
-        transport.add_peer(4, addr);
+        transport.add_peer(WorkerId::new(4), addr);
 
         let outcome = manager
-            .execute_sync_async(4, Some(400), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(4),
+                Some(ReplicationOffset::new(400)),
+                &mut transport,
+            )
             .await
             .expect("sync should succeed");
         assert_eq!(outcome.plan.mode, ReplicationSyncMode::Full);
-        assert_eq!(outcome.streamed_until_offset, 900);
+        assert_eq!(outcome.streamed_until_offset, ReplicationOffset::new(900));
 
         let payloads = receiver.await.expect("receiver task should succeed");
         assert_eq!(
@@ -4075,7 +4276,7 @@ mod tests {
     #[tokio::test]
     async fn tcp_replication_transport_reports_unknown_peer() {
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -4083,12 +4284,16 @@ mod tests {
         let mut transport = TcpReplicationTransport::new(ReplicationOffset::new(900));
 
         let result = manager
-            .execute_sync_async(4, Some(400), &mut transport)
+            .execute_sync_async(
+                WorkerId::new(4),
+                Some(ReplicationOffset::new(400)),
+                &mut transport,
+            )
             .await;
         assert!(matches!(
             result,
             Err(ReplicationSyncError::Transport(
-                TcpReplicationTransportError::UnknownPeer(4)
+                TcpReplicationTransportError::UnknownPeer(WorkerId(4))
             ))
         ));
     }
@@ -4096,7 +4301,7 @@ mod tests {
     #[tokio::test]
     async fn replication_manager_execute_sync_for_worker_async_reuses_tracked_offset() {
         let mut manager = ReplicationManager::new(
-            Some(42),
+            Some(CheckpointId::new(42)),
             ReplicationOffset::new(1_000),
             ReplicationOffset::new(2_000),
         )
@@ -4105,22 +4310,22 @@ mod tests {
         let mut transport = ChannelReplicationTransport::new(tx, ReplicationOffset::new(2_000));
 
         let first = manager
-            .execute_sync_for_worker_async(9, &mut transport)
+            .execute_sync_for_worker_async(WorkerId::new(9), &mut transport)
             .await
             .expect("first sync should succeed");
         assert_eq!(first.plan.mode, ReplicationSyncMode::Full);
         assert_eq!(
             rx.recv().await,
             Some(ReplicationEvent::Checkpoint {
-                worker_id: 9,
+                worker_id: WorkerId::new(9),
                 checkpoint_id: CheckpointId::new(42),
             })
         );
         assert_eq!(
             rx.recv().await,
             Some(ReplicationEvent::StreamAof {
-                worker_id: 9,
-                start_offset: 1_000,
+                worker_id: WorkerId::new(9),
+                start_offset: ReplicationOffset::new(1_000),
             })
         );
 
@@ -4129,18 +4334,21 @@ mod tests {
             .unwrap();
         transport.set_stream_result(ReplicationOffset::new(2_100));
         let second = manager
-            .execute_sync_for_worker_async(9, &mut transport)
+            .execute_sync_for_worker_async(WorkerId::new(9), &mut transport)
             .await
             .expect("second sync should succeed");
         assert_eq!(second.plan.mode, ReplicationSyncMode::Incremental);
         assert_eq!(
             rx.recv().await,
             Some(ReplicationEvent::StreamAof {
-                worker_id: 9,
-                start_offset: 2_000,
+                worker_id: WorkerId::new(9),
+                start_offset: ReplicationOffset::new(2_000),
             })
         );
-        assert_eq!(manager.replica_offset(9), Some(2_100));
+        assert_eq!(
+            manager.replica_offset(WorkerId::new(9)),
+            Some(ReplicationOffset::new(2_100))
+        );
     }
 
     #[tokio::test]
@@ -4169,7 +4377,7 @@ mod tests {
             .unwrap();
 
         let mut manager = ReplicationManager::new(
-            Some(11),
+            Some(CheckpointId::new(11)),
             ReplicationOffset::new(700),
             ReplicationOffset::new(900),
         )
@@ -4216,8 +4424,14 @@ mod tests {
             transport.streams,
             vec![worker_stream(replica_a, 900), worker_stream(replica_b, 900)]
         );
-        assert_eq!(manager.replica_offset(replica_a), Some(960));
-        assert_eq!(manager.replica_offset(replica_b), Some(960));
+        assert_eq!(
+            manager.replica_offset(replica_a),
+            Some(ReplicationOffset::new(960))
+        );
+        assert_eq!(
+            manager.replica_offset(replica_b),
+            Some(ReplicationOffset::new(960))
+        );
     }
 
     #[test]
@@ -4246,7 +4460,7 @@ mod tests {
             .unwrap();
 
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4257,7 +4471,10 @@ mod tests {
         let plan = manager.plan_failover(&config, "local-node").unwrap();
         assert_eq!(plan.failed_primary_worker_id, LOCAL_WORKER_ID);
         assert_eq!(plan.promoted_worker_id, replica_b);
-        assert_eq!(plan.promoted_replication_offset, 180);
+        assert_eq!(
+            plan.promoted_replication_offset,
+            ReplicationOffset::new(180)
+        );
     }
 
     #[test]
@@ -4286,7 +4503,7 @@ mod tests {
             .unwrap();
 
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4296,7 +4513,10 @@ mod tests {
 
         let plan = manager.plan_failover(&config, "local-node").unwrap();
         assert_eq!(plan.promoted_worker_id, replica_a);
-        assert_eq!(plan.promoted_replication_offset, 190);
+        assert_eq!(
+            plan.promoted_replication_offset,
+            ReplicationOffset::new(190)
+        );
     }
 
     #[test]
@@ -4317,14 +4537,17 @@ mod tests {
             .unwrap();
 
         let manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
         .unwrap();
         let plan = manager.plan_failover(&config, "local-node").unwrap();
         assert_eq!(plan.promoted_worker_id, replica_a);
-        assert_eq!(plan.promoted_replication_offset, 777);
+        assert_eq!(
+            plan.promoted_replication_offset,
+            ReplicationOffset::new(777)
+        );
     }
 
     #[test]
@@ -4342,7 +4565,7 @@ mod tests {
             .set_worker_replica_of(replica_a, "some-other-primary")
             .unwrap();
         let manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4376,11 +4599,11 @@ mod tests {
             .unwrap()
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap()
-            .set_slot_state(450, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(450), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
 
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4397,8 +4620,16 @@ mod tests {
             .expect("failover should be elected");
 
         assert_eq!(plan.promoted_worker_id, replica_b);
-        assert_eq!(updated_config.slot_assigned_owner(450).unwrap(), replica_b);
-        assert_eq!(updated_config.slot_state(450).unwrap(), SlotState::Stable);
+        assert_eq!(
+            updated_config
+                .slot_assigned_owner(SlotNumber::new(450))
+                .unwrap(),
+            replica_b
+        );
+        assert_eq!(
+            updated_config.slot_state(SlotNumber::new(450)).unwrap(),
+            SlotState::Stable
+        );
         assert_eq!(
             updated_config.worker(replica_b).unwrap().role,
             WorkerRole::Primary
@@ -4409,7 +4640,7 @@ mod tests {
         );
         assert_eq!(
             updated_config.worker(replica_b).unwrap().replication_offset,
-            190
+            ReplicationOffset::new(190)
         );
         assert_eq!(
             updated_config.worker(LOCAL_WORKER_ID).unwrap().role,
@@ -4429,7 +4660,7 @@ mod tests {
     fn execute_failover_returns_none_when_no_candidate_exists() {
         let config = base_config();
         let manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4462,12 +4693,12 @@ mod tests {
             .unwrap()
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap()
-            .set_slot_state(451, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(451), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
         let mut manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4481,7 +4712,13 @@ mod tests {
             .unwrap()
             .expect("first execution should apply failover");
         assert_eq!(plan.promoted_worker_id, replica_b);
-        assert_eq!(store.load().slot_assigned_owner(451).unwrap(), replica_b);
+        assert_eq!(
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(451))
+                .unwrap(),
+            replica_b
+        );
         assert!(
             coordinator
                 .handled_failed_primaries()
@@ -4498,7 +4735,7 @@ mod tests {
     fn failover_coordinator_keeps_state_clean_when_no_plan_exists() {
         let store = ClusterConfigStore::new(base_config());
         let manager = ReplicationManager::new(
-            Some(1),
+            Some(CheckpointId::new(1)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -4536,12 +4773,12 @@ mod tests {
             .unwrap()
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap()
-            .set_slot_state(452, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(452), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -4563,7 +4800,13 @@ mod tests {
                 .map(|plan| plan.promoted_worker_id),
             Some(replica_a)
         );
-        assert_eq!(store.load().slot_assigned_owner(452).unwrap(), replica_a);
+        assert_eq!(
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(452))
+                .unwrap(),
+            replica_a
+        );
         assert_eq!(
             transport.checkpoints,
             vec![
@@ -4611,12 +4854,12 @@ mod tests {
             .unwrap()
             .set_worker_replica_of(replica_b, "local-node")
             .unwrap()
-            .set_slot_state(453, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(453), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
         let mut manager = ReplicationManager::new(
-            Some(7),
+            Some(CheckpointId::new(7)),
             ReplicationOffset::new(700),
             ReplicationOffset::new(900),
         )
@@ -4639,7 +4882,13 @@ mod tests {
                 .map(|plan| plan.promoted_worker_id),
             Some(replica_a)
         );
-        assert_eq!(store.load().slot_assigned_owner(453).unwrap(), replica_a);
+        assert_eq!(
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(453))
+                .unwrap(),
+            replica_a
+        );
         assert_eq!(
             transport.checkpoints,
             vec![
@@ -4664,12 +4913,12 @@ mod tests {
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
             .unwrap()
-            .set_slot_state(454, failed_primary_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(454), failed_primary_id, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
         let mut manager = ReplicationManager::new(
-            Some(9),
+            Some(CheckpointId::new(9)),
             ReplicationOffset::new(500),
             ReplicationOffset::new(900),
         )
@@ -4691,7 +4940,10 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].failed_worker_id, failed_primary_id);
         assert_eq!(
-            store.load().slot_assigned_owner(454).unwrap(),
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(454))
+                .unwrap(),
             LOCAL_WORKER_ID
         );
         assert_eq!(
@@ -4715,12 +4967,12 @@ mod tests {
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
             .unwrap()
-            .set_slot_state(455, failed_primary_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(455), failed_primary_id, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
         let mut manager = ReplicationManager::new(
-            Some(5),
+            Some(CheckpointId::new(5)),
             ReplicationOffset::new(300),
             ReplicationOffset::new(900),
         )
@@ -4738,7 +4990,10 @@ mod tests {
         assert_eq!(outcomes.len(), 1);
         assert_eq!(outcomes[0].failed_worker_id, failed_primary_id);
         assert_eq!(
-            store.load().slot_assigned_owner(455).unwrap(),
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(455))
+                .unwrap(),
             LOCAL_WORKER_ID
         );
         assert_eq!(
@@ -4761,9 +5016,9 @@ mod tests {
     #[test]
     fn gossip_round_continues_across_successes_until_no_stale_nodes_exist() {
         let mut nodes = vec![
-            GossipNode::new(1, 10),
-            GossipNode::new(2, 20),
-            GossipNode::new(3, 30),
+            GossipNode::new(WorkerId::new(1), 10),
+            GossipNode::new(WorkerId::new(2), 20),
+            GossipNode::new(WorkerId::new(3), 30),
         ];
         let report = run_gossip_sample_round(
             &mut nodes,
@@ -4776,13 +5031,19 @@ mod tests {
 
         assert_eq!(report.success_count, 3);
         assert_eq!(report.failure_count, 0);
-        assert_eq!(report.attempted_worker_ids, vec![1, 2, 3]);
+        assert_eq!(
+            report.attempted_worker_ids,
+            vec![WorkerId::new(1), WorkerId::new(2), WorkerId::new(3)]
+        );
         assert_eq!(report.remaining_failure_budget, 1);
     }
 
     #[test]
     fn gossip_round_decrements_failure_budget_only_on_failure() {
-        let mut nodes = vec![GossipNode::new(1, 10), GossipNode::new(2, 20)];
+        let mut nodes = vec![
+            GossipNode::new(WorkerId::new(1), 10),
+            GossipNode::new(WorkerId::new(2), 20),
+        ];
         let mut calls = 0usize;
         let report = run_gossip_sample_round(
             &mut nodes,
@@ -4808,9 +5069,9 @@ mod tests {
     #[test]
     fn gossip_round_chooses_stalest_candidate_from_sample() {
         let mut nodes = vec![
-            GossipNode::new(1, 80),
-            GossipNode::new(2, 10),
-            GossipNode::new(3, 50),
+            GossipNode::new(WorkerId::new(1), 80),
+            GossipNode::new(WorkerId::new(2), 10),
+            GossipNode::new(WorkerId::new(3), 50),
         ];
         let report = run_gossip_sample_round(
             &mut nodes,
@@ -4821,7 +5082,10 @@ mod tests {
             |_node| GossipSendResult::Failure,
         );
 
-        assert_eq!(report.attempted_worker_ids, vec![2, 3, 1]);
+        assert_eq!(
+            report.attempted_worker_ids,
+            vec![WorkerId::new(2), WorkerId::new(3), WorkerId::new(1)]
+        );
         assert_eq!(report.failure_count, 3);
         assert_eq!(report.success_count, 0);
     }
@@ -4830,38 +5094,38 @@ mod tests {
     fn failure_detector_marks_worker_failed_after_threshold() {
         let mut detector = FailureDetector::new(2);
         let report = GossipRoundReport {
-            attempted_worker_ids: vec![7],
+            attempted_worker_ids: vec![WorkerId::new(7)],
             successful_worker_ids: Vec::new(),
-            failed_worker_ids: vec![7],
+            failed_worker_ids: vec![WorkerId::new(7)],
             success_count: 0,
             failure_count: 1,
             remaining_failure_budget: 0,
         };
 
         assert!(detector.record_report(&report).is_empty());
-        assert_eq!(detector.consecutive_failures(7), 1);
-        assert!(!detector.is_failed(7));
+        assert_eq!(detector.consecutive_failures(WorkerId::new(7)), 1);
+        assert!(!detector.is_failed(WorkerId::new(7)));
 
         let newly_failed = detector.record_report(&report);
-        assert_eq!(newly_failed, vec![7]);
-        assert_eq!(detector.consecutive_failures(7), 2);
-        assert!(detector.is_failed(7));
+        assert_eq!(newly_failed, vec![WorkerId::new(7)]);
+        assert_eq!(detector.consecutive_failures(WorkerId::new(7)), 2);
+        assert!(detector.is_failed(WorkerId::new(7)));
     }
 
     #[test]
     fn failure_detector_clears_failure_state_on_successful_probe() {
         let mut detector = FailureDetector::new(2);
         let fail_report = GossipRoundReport {
-            attempted_worker_ids: vec![8],
+            attempted_worker_ids: vec![WorkerId::new(8)],
             successful_worker_ids: Vec::new(),
-            failed_worker_ids: vec![8],
+            failed_worker_ids: vec![WorkerId::new(8)],
             success_count: 0,
             failure_count: 1,
             remaining_failure_budget: 0,
         };
         let success_report = GossipRoundReport {
-            attempted_worker_ids: vec![8],
-            successful_worker_ids: vec![8],
+            attempted_worker_ids: vec![WorkerId::new(8)],
+            successful_worker_ids: vec![WorkerId::new(8)],
             failed_worker_ids: Vec::new(),
             success_count: 1,
             failure_count: 0,
@@ -4870,21 +5134,21 @@ mod tests {
 
         let _ = detector.record_report(&fail_report);
         let _ = detector.record_report(&fail_report);
-        assert!(detector.is_failed(8));
+        assert!(detector.is_failed(WorkerId::new(8)));
 
         let newly_failed = detector.record_report(&success_report);
         assert!(newly_failed.is_empty());
-        assert!(!detector.is_failed(8));
-        assert_eq!(detector.consecutive_failures(8), 0);
+        assert!(!detector.is_failed(WorkerId::new(8)));
+        assert_eq!(detector.consecutive_failures(WorkerId::new(8)), 0);
     }
 
     #[test]
     fn failure_detector_tracks_multiple_workers_independently() {
         let mut detector = FailureDetector::new(3);
         let mixed_report = GossipRoundReport {
-            attempted_worker_ids: vec![2, 3],
-            successful_worker_ids: vec![3],
-            failed_worker_ids: vec![2],
+            attempted_worker_ids: vec![WorkerId::new(2), WorkerId::new(3)],
+            successful_worker_ids: vec![WorkerId::new(3)],
+            failed_worker_ids: vec![WorkerId::new(2)],
             success_count: 1,
             failure_count: 1,
             remaining_failure_budget: 1,
@@ -4893,15 +5157,15 @@ mod tests {
         for _ in 0..2 {
             let _ = detector.record_report(&mixed_report);
         }
-        assert_eq!(detector.consecutive_failures(2), 2);
-        assert_eq!(detector.consecutive_failures(3), 0);
-        assert!(!detector.is_failed(2));
-        assert!(!detector.is_failed(3));
+        assert_eq!(detector.consecutive_failures(WorkerId::new(2)), 2);
+        assert_eq!(detector.consecutive_failures(WorkerId::new(3)), 0);
+        assert!(!detector.is_failed(WorkerId::new(2)));
+        assert!(!detector.is_failed(WorkerId::new(3)));
 
         let newly_failed = detector.record_report(&mixed_report);
-        assert_eq!(newly_failed, vec![2]);
-        assert!(detector.is_failed(2));
-        assert!(!detector.is_failed(3));
+        assert_eq!(newly_failed, vec![WorkerId::new(2)]);
+        assert!(detector.is_failed(WorkerId::new(2)));
+        assert!(!detector.is_failed(WorkerId::new(3)));
     }
 
     #[derive(Default)]
@@ -4937,9 +5201,9 @@ mod tests {
     #[test]
     fn coordinator_round_uses_transport_result_for_success_failure() {
         let nodes = vec![
-            GossipNode::new(10, 0),
-            GossipNode::new(20, 0),
-            GossipNode::new(30, 0),
+            GossipNode::new(WorkerId::new(10), 0),
+            GossipNode::new(WorkerId::new(20), 0),
+            GossipNode::new(WorkerId::new(30), 0),
         ];
         let mut coordinator = GossipCoordinator::new(nodes, 3);
         let mut transport = MockTransport {
@@ -4955,7 +5219,10 @@ mod tests {
 
     #[test]
     fn gossip_engine_advances_tick_and_runs_rounds() {
-        let nodes = vec![GossipNode::new(1, 0), GossipNode::new(2, 0)];
+        let nodes = vec![
+            GossipNode::new(WorkerId::new(1), 0),
+            GossipNode::new(WorkerId::new(2), 0),
+        ];
         let coordinator = GossipCoordinator::new(nodes, 2);
         let transport = MockTransport {
             fail_on_worker: None,
@@ -4972,7 +5239,7 @@ mod tests {
 
     #[test]
     fn gossip_engine_exposes_transport_state_after_round() {
-        let nodes = vec![GossipNode::new(1, 0)];
+        let nodes = vec![GossipNode::new(WorkerId::new(1), 0)];
         let coordinator = GossipCoordinator::new(nodes, 1);
         let transport = MockTransport {
             fail_on_worker: None,
@@ -5010,9 +5277,9 @@ mod tests {
     #[tokio::test]
     async fn coordinator_round_async_uses_transport_result_for_success_failure() {
         let nodes = vec![
-            GossipNode::new(10, 0),
-            GossipNode::new(20, 0),
-            GossipNode::new(30, 0),
+            GossipNode::new(WorkerId::new(10), 0),
+            GossipNode::new(WorkerId::new(20), 0),
+            GossipNode::new(WorkerId::new(30), 0),
         ];
         let mut coordinator = GossipCoordinator::new(nodes, 3);
         let mut transport = AsyncMockTransport {
@@ -5029,29 +5296,35 @@ mod tests {
     #[tokio::test]
     async fn in_memory_gossip_transport_sends_current_config_snapshot() {
         let config = base_config()
-            .set_slot_state(12, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(12), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
         let store = std::sync::Arc::new(ClusterConfigStore::new(config));
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
 
         let mut transport = InMemoryGossipTransport::new(store);
-        transport.add_peer(2, tx);
-        transport.try_gossip(2).await.unwrap();
+        transport.add_peer(WorkerId::new(2), tx);
+        transport.try_gossip(WorkerId::new(2)).await.unwrap();
 
         let received = rx.recv().await.unwrap();
-        assert_eq!(received.slot_state(12).unwrap(), SlotState::Stable);
-        assert_eq!(received.slot_owner(12).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            received.slot_state(SlotNumber::new(12)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            received.slot_owner(SlotNumber::new(12)).unwrap(),
+            LOCAL_WORKER_ID
+        );
     }
 
     #[tokio::test]
     async fn in_memory_gossip_transport_returns_unknown_peer_error() {
         let store = std::sync::Arc::new(ClusterConfigStore::new(base_config()));
         let mut transport = InMemoryGossipTransport::new(store);
-        let result = transport.try_gossip(7).await;
+        let result = transport.try_gossip(WorkerId::new(7)).await;
 
         assert!(matches!(
             result,
-            Err(InMemoryGossipTransportError::UnknownPeer(7))
+            Err(InMemoryGossipTransportError::UnknownPeer(WorkerId(7)))
         ));
     }
 
@@ -5061,19 +5334,19 @@ mod tests {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<ClusterConfig>();
         drop(rx);
         let mut transport = InMemoryGossipTransport::new(store);
-        transport.add_peer(4, tx);
+        transport.add_peer(WorkerId::new(4), tx);
 
-        let result = transport.try_gossip(4).await;
+        let result = transport.try_gossip(WorkerId::new(4)).await;
         assert!(matches!(
             result,
-            Err(InMemoryGossipTransportError::ChannelClosed(4))
+            Err(InMemoryGossipTransportError::ChannelClosed(WorkerId(4)))
         ));
     }
 
     #[tokio::test]
     async fn tcp_gossip_transport_sends_snapshot_over_socket() {
         let config = base_config()
-            .set_slot_state(12, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(12), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
         let store = std::sync::Arc::new(ClusterConfigStore::new(config));
 
@@ -5087,12 +5360,18 @@ mod tests {
         });
 
         let mut transport = TcpGossipTransport::new(std::sync::Arc::clone(&store));
-        transport.add_peer(2, addr);
-        transport.try_gossip(2).await.unwrap();
+        transport.add_peer(WorkerId::new(2), addr);
+        transport.try_gossip(WorkerId::new(2)).await.unwrap();
 
         let received = receiver.await.unwrap().unwrap();
-        assert_eq!(received.slot_state(12).unwrap(), SlotState::Stable);
-        assert_eq!(received.slot_owner(12).unwrap(), LOCAL_WORKER_ID);
+        assert_eq!(
+            received.slot_state(SlotNumber::new(12)).unwrap(),
+            SlotState::Stable
+        );
+        assert_eq!(
+            received.slot_owner(SlotNumber::new(12)).unwrap(),
+            LOCAL_WORKER_ID
+        );
         assert_eq!(received.local_worker().unwrap().node_id, "local-node");
     }
 
@@ -5101,16 +5380,19 @@ mod tests {
         let store = std::sync::Arc::new(ClusterConfigStore::new(base_config()));
         let mut transport = TcpGossipTransport::new(store);
 
-        let result = transport.try_gossip(99).await;
+        let result = transport.try_gossip(WorkerId::new(99)).await;
         assert!(matches!(
             result,
-            Err(TcpGossipTransportError::UnknownPeer(99))
+            Err(TcpGossipTransportError::UnknownPeer(WorkerId(99)))
         ));
     }
 
     #[tokio::test]
     async fn async_gossip_engine_advances_tick_and_runs_rounds() {
-        let nodes = vec![GossipNode::new(1, 0), GossipNode::new(2, 0)];
+        let nodes = vec![
+            GossipNode::new(WorkerId::new(1), 0),
+            GossipNode::new(WorkerId::new(2), 0),
+        ];
         let coordinator = GossipCoordinator::new(nodes, 2);
         let transport = AsyncMockTransport {
             fail_on_worker: None,
@@ -5128,7 +5410,7 @@ mod tests {
 
     #[tokio::test]
     async fn cluster_manager_runs_configured_number_of_rounds() {
-        let nodes = vec![GossipNode::new(1, 0)];
+        let nodes = vec![GossipNode::new(WorkerId::new(1), 0)];
         let coordinator = GossipCoordinator::new(nodes, 1);
         let transport = AsyncMockTransport {
             fail_on_worker: None,
@@ -5142,7 +5424,7 @@ mod tests {
 
     #[tokio::test]
     async fn cluster_manager_stops_on_shutdown_signal() {
-        let nodes = vec![GossipNode::new(1, 0)];
+        let nodes = vec![GossipNode::new(WorkerId::new(1), 0)];
         let coordinator = GossipCoordinator::new(nodes, 1);
         let transport = AsyncMockTransport {
             fail_on_worker: None,
@@ -5168,16 +5450,16 @@ mod tests {
         let current = base
             .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_slot_state(303, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(303), worker2_id, SlotState::Stable)
             .unwrap();
         let incoming = base
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
-            .set_slot_state(303, worker3_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(303), worker3_id, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(current);
 
-        let nodes = vec![GossipNode::new(1, 0)];
+        let nodes = vec![GossipNode::new(WorkerId::new(1), 0)];
         let coordinator = GossipCoordinator::new(nodes, 1);
         let transport = AsyncMockTransport {
             fail_on_worker: None,
@@ -5198,7 +5480,13 @@ mod tests {
             )
             .await;
         assert!(reports.len() >= 2);
-        assert_eq!(store.load().slot_assigned_owner(303).unwrap(), worker3_id);
+        assert_eq!(
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(303))
+                .unwrap(),
+            worker3_id
+        );
     }
 
     #[tokio::test]
@@ -5214,14 +5502,14 @@ mod tests {
             .unwrap()
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
-            .set_slot_state(304, worker3_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(304), worker3_id, SlotState::Stable)
             .unwrap();
         let older = base
             .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_slot_state(304, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(304), worker2_id, SlotState::Stable)
             .unwrap();
 
         let sender_store = std::sync::Arc::new(ClusterConfigStore::new(newer));
@@ -5264,7 +5552,10 @@ mod tests {
         sender_manager.run_for_rounds(1).await;
         let receiver_store = receiver_task.await.unwrap();
         assert_eq!(
-            receiver_store.load().slot_assigned_owner(304).unwrap(),
+            receiver_store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(304))
+                .unwrap(),
             worker3_id
         );
     }
@@ -5282,14 +5573,14 @@ mod tests {
             .unwrap()
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(2))
             .unwrap()
-            .set_slot_state(305, worker3_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(305), worker3_id, SlotState::Stable)
             .unwrap();
         let older = base
             .set_worker_config_epoch(worker2_id, ConfigEpoch::new(1))
             .unwrap()
             .set_worker_config_epoch(worker3_id, ConfigEpoch::new(1))
             .unwrap()
-            .set_slot_state(305, worker2_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(305), worker2_id, SlotState::Stable)
             .unwrap();
 
         let sender_store = std::sync::Arc::new(ClusterConfigStore::new(newer));
@@ -5346,7 +5637,10 @@ mod tests {
         listener_task.await.unwrap();
         let receiver_store = receiver_task.await.unwrap();
         assert_eq!(
-            receiver_store.load().slot_assigned_owner(305).unwrap(),
+            receiver_store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(305))
+                .unwrap(),
             worker3_id
         );
     }
@@ -5362,7 +5656,7 @@ mod tests {
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
             .unwrap()
-            .set_slot_state(460, failed_primary_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(460), failed_primary_id, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
@@ -5379,7 +5673,7 @@ mod tests {
         let mut failure_detector = FailureDetector::new(1);
         let mut failover_controller = ClusterFailoverController::new();
         let mut replication_manager = ReplicationManager::new(
-            Some(3),
+            Some(CheckpointId::new(3)),
             ReplicationOffset::new(100),
             ReplicationOffset::new(200),
         )
@@ -5409,7 +5703,10 @@ mod tests {
                 .any(|report| report.failed_worker_ids.contains(&failed_primary_id))
         );
         assert_eq!(
-            store.load().slot_assigned_owner(460).unwrap(),
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(460))
+                .unwrap(),
             LOCAL_WORKER_ID
         );
         assert_eq!(
@@ -5437,7 +5734,7 @@ mod tests {
         let config = config
             .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
             .unwrap()
-            .set_slot_state(461, failed_primary_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(461), failed_primary_id, SlotState::Stable)
             .unwrap();
         let store = ClusterConfigStore::new(config);
 
@@ -5456,7 +5753,7 @@ mod tests {
         let mut failure_detector = FailureDetector::new(1);
         let mut failover_controller = ClusterFailoverController::new();
         let mut replication_manager = ReplicationManager::new(
-            Some(4),
+            Some(CheckpointId::new(4)),
             ReplicationOffset::new(200),
             ReplicationOffset::new(300),
         )
@@ -5487,7 +5784,10 @@ mod tests {
         assert_eq!(record.plan.promoted_worker_id, LOCAL_WORKER_ID);
         assert_eq!(record.synchronized_replicas.len(), 1);
         assert_eq!(
-            store.load().slot_assigned_owner(461).unwrap(),
+            store
+                .load()
+                .slot_assigned_owner(SlotNumber::new(461))
+                .unwrap(),
             LOCAL_WORKER_ID
         );
     }
@@ -5507,7 +5807,7 @@ mod tests {
         let mut failure_detector = FailureDetector::new(1);
         let mut failover_controller = ClusterFailoverController::new();
         let mut replication_manager = ReplicationManager::new(
-            Some(4),
+            Some(CheckpointId::new(4)),
             ReplicationOffset::new(200),
             ReplicationOffset::new(300),
         )
@@ -5535,7 +5835,7 @@ mod tests {
     fn redis_hash_slot_uses_crc16_xmodem() {
         assert_eq!(crc16_xmodem(b"123456789"), 0x31C3);
         let slot = redis_hash_slot(b"123456789");
-        assert_eq!(slot, 12_739);
+        assert_eq!(slot, SlotNumber::new(12_739));
     }
 
     #[test]
@@ -5553,12 +5853,12 @@ mod tests {
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let updated = with_remote
-            .set_slot_state(120, remote_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(120), remote_id, SlotState::Stable)
             .unwrap();
         assert_eq!(
-            updated.route_for_slot(120).unwrap(),
+            updated.route_for_slot(SlotNumber::new(120)).unwrap(),
             SlotRouteDecision::Moved {
-                slot: 120,
+                slot: SlotNumber::new(120),
                 worker_id: remote_id,
             }
         );
@@ -5570,12 +5870,12 @@ mod tests {
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let updated = with_remote
-            .set_slot_state(121, remote_id, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(121), remote_id, SlotState::Migrating)
             .unwrap();
         assert_eq!(
-            updated.route_for_slot(121).unwrap(),
+            updated.route_for_slot(SlotNumber::new(121)).unwrap(),
             SlotRouteDecision::Ask {
-                slot: 121,
+                slot: SlotNumber::new(121),
                 worker_id: remote_id,
             }
         );
@@ -5584,10 +5884,10 @@ mod tests {
     #[test]
     fn local_stable_slot_routes_locally() {
         let config = base_config()
-            .set_slot_state(122, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(122), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
         assert_eq!(
-            config.route_for_slot(122).unwrap(),
+            config.route_for_slot(SlotNumber::new(122)).unwrap(),
             SlotRouteDecision::Local
         );
     }
@@ -5604,10 +5904,12 @@ mod tests {
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let updated = with_remote
-            .set_slot_state(220, remote_id, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(220), remote_id, SlotState::Stable)
             .unwrap();
         assert_eq!(
-            updated.redirection_error_for_slot(220).unwrap(),
+            updated
+                .redirection_error_for_slot(SlotNumber::new(220))
+                .unwrap(),
             Some("MOVED 220 10.0.0.2:6380".to_string())
         );
     }
@@ -5618,10 +5920,12 @@ mod tests {
         let remote = Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary);
         let (with_remote, remote_id) = config.add_worker(remote).unwrap();
         let updated = with_remote
-            .set_slot_state(221, remote_id, SlotState::Migrating)
+            .set_slot_state(SlotNumber::new(221), remote_id, SlotState::Migrating)
             .unwrap();
         assert_eq!(
-            updated.redirection_error_for_slot(221).unwrap(),
+            updated
+                .redirection_error_for_slot(SlotNumber::new(221))
+                .unwrap(),
             Some("ASK 221 10.0.0.2:6380".to_string())
         );
     }
@@ -5629,9 +5933,14 @@ mod tests {
     #[test]
     fn local_slot_has_no_redirection_error() {
         let config = base_config()
-            .set_slot_state(222, LOCAL_WORKER_ID, SlotState::Stable)
+            .set_slot_state(SlotNumber::new(222), LOCAL_WORKER_ID, SlotState::Stable)
             .unwrap();
-        assert_eq!(config.redirection_error_for_slot(222).unwrap(), None);
+        assert_eq!(
+            config
+                .redirection_error_for_slot(SlotNumber::new(222))
+                .unwrap(),
+            None
+        );
     }
 
     #[test]

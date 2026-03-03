@@ -76,6 +76,7 @@ pub enum WriteReason {
 /// Generic callback interface used by Tsavorite operation paths.
 ///
 /// This maps the core read/upsert/RMW callbacks used by Phase 4 operation flows.
+#[allow(clippy::too_many_arguments)]
 pub trait ISessionFunctions {
     type Key;
     type Value;

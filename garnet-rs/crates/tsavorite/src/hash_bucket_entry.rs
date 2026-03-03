@@ -244,6 +244,7 @@ impl HashBucketEntry {
     }
 
     #[inline]
+    #[allow(clippy::too_many_arguments)]
     pub fn compare_exchange_parts(
         &self,
         current: PackedEntryWord,

@@ -602,8 +602,9 @@ impl HashIndex {
             }
 
             let address = HashBucketEntry::address_from_word(word);
-            if address < begin_address && address != TEMP_INVALID_ADDRESS {
-                if entry
+            if address < begin_address
+                && address != TEMP_INVALID_ADDRESS
+                && entry
                     .compare_exchange_word(
                         word,
                         HashBucketEntry::EMPTY_WORD,
@@ -611,12 +612,11 @@ impl HashIndex {
                         Ordering::Acquire,
                     )
                     .is_ok()
-                {
-                    if free_slot.is_none() {
-                        free_slot = Some(slot);
-                    }
-                    continue;
+            {
+                if free_slot.is_none() {
+                    free_slot = Some(slot);
                 }
+                continue;
             }
 
             if HashBucketEntry::tag_from_word(word) == tag
@@ -807,7 +807,7 @@ mod tests {
             }
         }
 
-        let hash = (999u64 << HASH_TAG_SHIFT) | 0;
+        let hash = 999u64 << HASH_TAG_SHIFT;
         let created = index.find_or_create_tag(hash, LogicalAddress(0)).unwrap();
 
         assert_eq!(created.bucket_index, 0);
@@ -859,7 +859,7 @@ mod tests {
         for tag in tags.iter().copied() {
             let index = Arc::clone(&index);
             handles.push(thread::spawn(move || {
-                let hash = ((tag as u64) << HASH_TAG_SHIFT) | 0;
+                let hash = (tag as u64) << HASH_TAG_SHIFT;
                 index.find_or_create_tag(hash, LogicalAddress(0)).unwrap()
             }));
         }
@@ -869,7 +869,7 @@ mod tests {
         }
 
         for tag in tags {
-            let hash = ((tag as u64) << HASH_TAG_SHIFT) | 0;
+            let hash = (tag as u64) << HASH_TAG_SHIFT;
             assert!(
                 index.find_tag(hash).is_some(),
                 "tag {} missing from collision chain",

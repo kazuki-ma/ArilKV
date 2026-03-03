@@ -390,7 +390,7 @@ mod tests {
         let mut page_manager = PageManager::new(8, 4).unwrap();
         page_manager.allocate_page(0).unwrap();
 
-        let key_hash = (10u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 10u64 << crate::HASH_TAG_SHIFT;
         let logical_address = page_manager.address_space().encode(0, 8).unwrap();
 
         let mut info = RecordInfo::default();
@@ -442,7 +442,7 @@ mod tests {
         let mut page_manager = PageManager::new(8, 4).unwrap();
         page_manager.allocate_page(0).unwrap();
 
-        let key_hash = (11u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 11u64 << crate::HASH_TAG_SHIFT;
         let logical_address = page_manager.address_space().encode(0, 8).unwrap();
 
         let mut info = RecordInfo::default();
@@ -496,7 +496,7 @@ mod tests {
         let mut page_manager = PageManager::new(8, 4).unwrap();
         page_manager.allocate_page(0).unwrap();
 
-        let key_hash = (12u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 12u64 << crate::HASH_TAG_SHIFT;
         let logical_address = page_manager.address_space().encode(0, 8).unwrap();
 
         let mut info = RecordInfo::default();
@@ -553,7 +553,7 @@ mod tests {
         let mut page_manager = PageManager::new(8, 4).unwrap();
         page_manager.allocate_page(0).unwrap();
 
-        let key_hash = (13u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 13u64 << crate::HASH_TAG_SHIFT;
         let logical_address = page_manager.address_space().encode(0, 8).unwrap();
 
         let mut info = RecordInfo::default();

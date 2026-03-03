@@ -544,7 +544,7 @@ mod tests {
         let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
         pointers.shift_read_only_address(LogicalAddress(0));
 
-        let key_hash = (41u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 41u64 << crate::HASH_TAG_SHIFT;
         seed_record(
             &hash_index,
             &mut page_manager,
@@ -595,7 +595,7 @@ mod tests {
         let pointers = LogAddressPointers::new(LogicalAddress(crate::RECORD_ALIGNMENT as u64));
         pointers.shift_read_only_address(LogicalAddress(128));
 
-        let key_hash = (42u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 42u64 << crate::HASH_TAG_SHIFT;
         seed_record(
             &hash_index,
             &mut page_manager,
@@ -630,7 +630,7 @@ mod tests {
 
         let functions = ByteDeleteFunctions;
         let mut delete_info = DeleteInfo::default();
-        let key_hash = (43u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 43u64 << crate::HASH_TAG_SHIFT;
         let key = b"absent".to_vec();
         let mut context = DeleteOperationContext {
             hash_index: &hash_index,

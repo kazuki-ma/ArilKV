@@ -156,7 +156,10 @@ where
         device: D,
     ) -> Result<Self, TsavoriteKvInitError> {
         if config.initial_logical_address == LogicalAddress(0)
-            || config.initial_logical_address.raw() % (crate::RECORD_ALIGNMENT as u64) != 0
+            || !config
+                .initial_logical_address
+                .raw()
+                .is_multiple_of(crate::RECORD_ALIGNMENT as u64)
         {
             return Err(TsavoriteKvInitError::InvalidInitialAddress {
                 initial_logical_address: config.initial_logical_address,

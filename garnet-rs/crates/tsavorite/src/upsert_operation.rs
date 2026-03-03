@@ -139,20 +139,20 @@ where
     if let Some(head_entry) = maybe_head_entry {
         previous_address = entry_address(head_entry.word);
 
-        if previous_address != LogicalAddress(0) {
-            if let Some(record_match) = find_matching_record_in_chain(
+        if previous_address != LogicalAddress(0)
+            && let Some(record_match) = find_matching_record_in_chain(
                 context.page_manager,
                 context.pointers.begin_address(),
                 functions,
                 key,
                 previous_address,
-            )? {
-                let address = record_match.address;
-                let record = record_match.record;
-                if !record.record_info.tombstone() && !record.record_info.invalid() {
-                    matched_address = Some(address);
-                    matched_record = Some(record);
-                }
+            )?
+        {
+            let address = record_match.address;
+            let record = record_match.record;
+            if !record.record_info.tombstone() && !record.record_info.invalid() {
+                matched_address = Some(address);
+                matched_record = Some(record);
             }
         }
     }
@@ -582,7 +582,7 @@ mod tests {
         let input = b"value".to_vec();
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
-        let key_hash = (21u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 21u64 << crate::HASH_TAG_SHIFT;
 
         let mut context = UpsertOperationContext {
             hash_index: &hash_index,
@@ -635,7 +635,7 @@ mod tests {
 
         let functions = ByteUpsertFunctions;
         let key = b"key".to_vec();
-        let key_hash = (22u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 22u64 << crate::HASH_TAG_SHIFT;
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
 
@@ -682,7 +682,7 @@ mod tests {
 
         let functions = ByteUpsertFunctions;
         let key = b"key".to_vec();
-        let key_hash = (23u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 23u64 << crate::HASH_TAG_SHIFT;
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
 
@@ -729,7 +729,7 @@ mod tests {
 
         let functions = ByteUpsertFunctions;
         let key = b"key".to_vec();
-        let key_hash = (24u64 << crate::HASH_TAG_SHIFT) | 0;
+        let key_hash = 24u64 << crate::HASH_TAG_SHIFT;
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
 
