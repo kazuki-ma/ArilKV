@@ -232,15 +232,24 @@ impl RequestProcessor {
         require_exact_arity(args, 3, "LINDEX", "LINDEX key index")?;
         let key = RedisKey::from(args[1]);
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let resp3 = self.resp_protocol_version().is_resp3();
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };
         let Some(index) = normalize_list_index(list.len(), index) else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         append_bulk_string(response_out, &list[index]);
@@ -261,9 +270,12 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let element = args[2];
         let options = parse_lpos_options(args, 3)?;
+        let resp3 = self.resp_protocol_version().is_resp3();
         let Some(list) = self.load_list_object(&key)? else {
             if options.count.is_some() {
                 response_out.extend_from_slice(b"*0\r\n");
+            } else if resp3 {
+                append_null(response_out);
             } else {
                 append_null_bulk_string(response_out);
             }
@@ -325,6 +337,8 @@ impl RequestProcessor {
             }
         } else if let Some(position) = positions.first() {
             append_integer(response_out, *position);
+        } else if resp3 {
+            append_null(response_out);
         } else {
             append_null_bulk_string(response_out);
         }
@@ -710,13 +724,22 @@ impl RequestProcessor {
         destination_side: ListSide,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        let resp3 = self.resp_protocol_version().is_resp3();
         let Some(mut source_list) = self.load_list_object(source)? else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         if source_list.is_empty() {
             let _ = self.object_delete(source)?;
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         }
 
@@ -757,7 +780,11 @@ impl RequestProcessor {
             append_blocking_pop_response(response_out, key, &popped_values[0]);
             return Ok(());
         }
-        response_out.extend_from_slice(b"*-1\r\n");
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            response_out.extend_from_slice(b"*-1\r\n");
+        }
         Ok(())
     }
 
@@ -775,7 +802,11 @@ impl RequestProcessor {
             append_lmpop_response(response_out, key, &popped_values);
             return Ok(());
         }
-        response_out.extend_from_slice(b"*-1\r\n");
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            response_out.extend_from_slice(b"*-1\r\n");
+        }
         Ok(())
     }
 

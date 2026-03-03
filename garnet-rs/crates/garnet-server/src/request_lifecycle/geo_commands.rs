@@ -223,15 +223,24 @@ impl RequestProcessor {
 
         let key = args[1];
         let zset = self.load_zset_object(key)?;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
         for member in &args[2..] {
             let Some(score) = zset.as_ref().and_then(|entries| entries.get(*member)) else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 continue;
             };
             let Some(decoded_score) = decode_geo_score(*score) else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 continue;
             };
             let longitude = decoded_score.longitude;
@@ -261,10 +270,15 @@ impl RequestProcessor {
         };
 
         let key = args[1];
+        let resp3 = self.resp_protocol_version().is_resp3();
         let zset = match self.load_zset_object(key)? {
             Some(entries) => entries,
             None => {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };
@@ -272,20 +286,36 @@ impl RequestProcessor {
         let member_a = args[2];
         let member_b = args[3];
         let Some(score_a) = zset.get(member_a).copied() else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         let Some(score_b) = zset.get(member_b).copied() else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
 
         let Some(decoded_score_a) = decode_geo_score(score_a) else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         let Some(decoded_score_b) = decode_geo_score(score_b) else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         let lon_a = decoded_score_a.longitude;
@@ -309,15 +339,24 @@ impl RequestProcessor {
 
         let key = args[1];
         let zset = self.load_zset_object(key)?;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
         for member in &args[2..] {
             let Some(score) = zset.as_ref().and_then(|entries| entries.get(*member)) else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 continue;
             };
             let Some(decoded_score) = decode_geo_score(*score) else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 continue;
             };
             let longitude = decoded_score.longitude;

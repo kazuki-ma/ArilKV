@@ -153,10 +153,15 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "GET", "GET key")?;
 
         let key = RedisKey::from(args[1]);
+        let resp3 = self.resp_protocol_version().is_resp3();
         let shard_index = self.string_store_shard_index_for_key(&key);
         let logically_expired = self.expire_key_if_needed_in_shard(&key, shard_index)?;
         if logically_expired {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         }
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
@@ -181,7 +186,11 @@ impl RequestProcessor {
                 }
                 // TLA+ : ClientReadLenNullBulkHang
                 // Pipeline stresser read loop hangs if a pipelined GET observes NULL bulk.
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 Ok(())
             }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -913,11 +922,18 @@ impl RequestProcessor {
             self.bump_watch_version(&key);
         }
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         response_out.extend_from_slice(format!("*{}\r\n", responses.len()).as_bytes());
         for entry in responses {
             match entry {
                 Some(value) => append_integer(response_out, value),
-                None => append_null_bulk_string(response_out),
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
             }
         }
         Ok(())
@@ -1133,11 +1149,18 @@ impl RequestProcessor {
                 append_bulk_string(response_out, element);
             }
         } else {
+            let resp3 = self.resp_protocol_version().is_resp3();
             for element in selected {
                 for pattern in &options.get_patterns {
                     match resolve_sort_get_value(self, pattern, element)? {
                         Some(value) => append_bulk_string(response_out, &value),
-                        None => append_null_bulk_string(response_out),
+                        None => {
+                            if resp3 {
+                                append_null(response_out);
+                            } else {
+                                append_null_bulk_string(response_out);
+                            }
+                        }
                     }
                 }
             }
@@ -1249,11 +1272,16 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         let Some(value) = self.read_string_value(&key)? else {
             if self.object_key_exists(&key)? {
                 return Err(RequestExecutionError::WrongType);
             }
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
 
@@ -1414,13 +1442,22 @@ impl RequestProcessor {
         };
 
         if options.only_if_absent || options.only_if_present {
+            let resp3 = self.resp_protocol_version().is_resp3();
             let exists_any = string_exists || object_exists;
             if options.only_if_absent && exists_any {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             if options.only_if_present && !exists_any {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         }
@@ -2013,6 +2050,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "MGET", "MGET key [key ...]")?;
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         response_out.push(b'*');
         response_out.extend_from_slice((args.len() - 1).to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
@@ -2021,6 +2059,8 @@ impl RequestProcessor {
             self.expire_key_if_needed(&key)?;
             if let Some(value) = self.read_string_value(&key)? {
                 append_bulk_string(response_out, &value);
+            } else if resp3 {
+                append_null(response_out);
             } else {
                 append_null_bulk_string(response_out);
             }

@@ -10834,3 +10834,56 @@ fn pubsub_numsub_returns_map_in_resp3() {
         String::from_utf8_lossy(&resp3)
     );
 }
+
+#[test]
+fn lpop_returns_resp3_null_for_missing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    // RESP2: returns $-1
+    let resp2 = execute_command_line(&processor, "LPOP nokey").unwrap();
+    assert_eq!(resp2, b"$-1\r\n");
+    // RESP3: returns _
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "LPOP nokey").unwrap();
+    assert_eq!(resp3, b"_\r\n");
+}
+
+#[test]
+fn zscore_returns_resp3_null_for_missing_member() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "ZADD myz 1.0 alpha", b":1\r\n");
+    // RESP2: ZSCORE missing member returns $-1
+    let resp2 = execute_command_line(&processor, "ZSCORE myz beta").unwrap();
+    assert_eq!(resp2, b"$-1\r\n");
+    // RESP3: returns _
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "ZSCORE myz beta").unwrap();
+    assert_eq!(resp3, b"_\r\n");
+}
+
+#[test]
+fn get_returns_resp3_null_for_missing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    // RESP2: GET on missing key returns $-1
+    let resp2 = execute_command_line(&processor, "GET nokey").unwrap();
+    assert_eq!(resp2, b"$-1\r\n");
+
+    // RESP3: GET on missing key returns _
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "GET nokey").unwrap();
+    assert_eq!(resp3, b"_\r\n");
+}
+
+#[test]
+fn hget_returns_resp3_null_for_missing_field() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "HSET h1 f1 v1", b":1\r\n");
+
+    // RESP2: HGET on missing field returns $-1
+    let resp2 = execute_command_line(&processor, "HGET h1 nofield").unwrap();
+    assert_eq!(resp2, b"$-1\r\n");
+
+    // RESP3: HGET on missing field returns _
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "HGET h1 nofield").unwrap();
+    assert_eq!(resp3, b"_\r\n");
+}

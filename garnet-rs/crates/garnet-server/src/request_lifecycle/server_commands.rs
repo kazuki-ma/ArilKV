@@ -795,7 +795,11 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GETNAME") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT GETNAME")?;
-            append_null_bulk_string(response_out);
+            if self.resp_protocol_version().is_resp3() {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"SETNAME") {
@@ -1048,7 +1052,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        append_null_bulk_string(response_out);
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            append_null_bulk_string(response_out);
+        }
         Ok(())
     }
 
@@ -1287,6 +1295,7 @@ impl RequestProcessor {
             "OBJECT",
             "OBJECT <ENCODING|REFCOUNT|IDLETIME|FREQ> key",
         )?;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
@@ -1298,7 +1307,11 @@ impl RequestProcessor {
                 return Ok(());
             }
             let Some(object) = self.object_read(&key)? else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             };
             if object.object_type == LIST_OBJECT_TYPE_TAG
@@ -1325,6 +1338,8 @@ impl RequestProcessor {
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(&key)? {
                 append_integer(response_out, 1);
+            } else if resp3 {
+                append_null(response_out);
             } else {
                 append_null_bulk_string(response_out);
             }
@@ -1336,7 +1351,11 @@ impl RequestProcessor {
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if !self.key_exists_any(&key)? {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             append_integer(response_out, self.key_idle_seconds(&key).unwrap_or(0));
@@ -1348,7 +1367,11 @@ impl RequestProcessor {
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if !self.key_exists_any(&key)? {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             append_integer(
@@ -1429,7 +1452,11 @@ impl RequestProcessor {
         }
 
         if live_keys.is_empty() {
-            append_null_bulk_string(response_out);
+            if self.resp_protocol_version().is_resp3() {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         }
 
@@ -1965,7 +1992,11 @@ impl RequestProcessor {
             );
             return Ok(());
         }
-        append_null_bulk_string(response_out);
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            append_null_bulk_string(response_out);
+        }
         Ok(())
     }
 
@@ -2227,7 +2258,11 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
             let username = args[2];
             if !ascii_eq_ignore_case(username, b"default") {
-                append_null_bulk_string(response_out);
+                if self.resp_protocol_version().is_resp3() {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             append_bulk_array(
@@ -3336,7 +3371,13 @@ fn append_pubsub_ack(
     append_bulk_string(response_out, kind);
     match channel {
         Some(channel) => append_bulk_string(response_out, channel),
-        None => append_null_bulk_string(response_out),
+        None => {
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
+        }
     }
     append_integer(response_out, saturating_usize_to_i64(count));
 }

@@ -255,14 +255,23 @@ impl RequestProcessor {
         ensure_ranged_arity(args, 2, 3, "SRANDMEMBER", "SRANDMEMBER key [count]")?;
 
         let key = RedisKey::from(args[1]);
+        let resp3 = self.resp_protocol_version().is_resp3();
         let set = self.load_set_object(&key)?;
         if args.len() == 2 {
             let Some(set) = set else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             };
             if set.is_empty() {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             let members = select_random_members_distinct(self, &set, 1);
@@ -305,15 +314,24 @@ impl RequestProcessor {
         ensure_ranged_arity(args, 2, 3, "SPOP", "SPOP key [count]")?;
 
         let key = RedisKey::from(args[1]);
+        let resp3 = self.resp_protocol_version().is_resp3();
         let mut set = self.load_set_object(&key)?;
         if args.len() == 2 {
             let Some(mut set) = set.take() else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             };
             if set.is_empty() {
                 let _ = self.object_delete(&key)?;
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             let selected = select_random_members_distinct(self, &set, 1);

@@ -190,17 +190,28 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let member = args[2];
+        let resp3 = self.resp_protocol_version().is_resp3();
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };
 
         match zset.get(member) {
             Some(score) => append_bulk_string(response_out, score.to_string().as_bytes()),
-            None => append_null_bulk_string(response_out),
+            None => {
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
+            }
         }
         Ok(())
     }
@@ -918,6 +929,7 @@ impl RequestProcessor {
         let zset = self.load_zset_object(&key)?;
         let members = &args[2..];
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         response_out.push(b'*');
         response_out.extend_from_slice(members.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
@@ -925,7 +937,13 @@ impl RequestProcessor {
             let score = zset.as_ref().and_then(|zset| zset.get(*member));
             match score {
                 Some(score) => append_bulk_string(response_out, score.to_string().as_bytes()),
-                None => append_null_bulk_string(response_out),
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
             }
         }
         Ok(())
@@ -944,14 +962,23 @@ impl RequestProcessor {
             "ZRANDMEMBER key [count [WITHSCORES]]",
         )?;
         let key = RedisKey::from(args[1]);
+        let resp3 = self.resp_protocol_version().is_resp3();
         let zset = self.load_zset_object(&key)?;
         if args.len() == 2 {
             let Some(zset) = zset else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             };
             if zset.is_empty() {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             let sampled = select_random_zset_entries_distinct(self, &zset, 1);
@@ -1066,10 +1093,15 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let member = args[2];
+        let resp3 = self.resp_protocol_version().is_resp3();
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };
@@ -1078,7 +1110,11 @@ impl RequestProcessor {
             .iter()
             .position(|(candidate_member, _score)| candidate_member.as_slice() == member)
         else {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             return Ok(());
         };
         let rank = if reverse {
@@ -1179,7 +1215,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        response_out.extend_from_slice(b"*-1\r\n");
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            response_out.extend_from_slice(b"*-1\r\n");
+        }
         Ok(())
     }
 
@@ -1197,7 +1237,11 @@ impl RequestProcessor {
             append_zmpop_response(response_out, key, &selected);
             return Ok(());
         }
-        response_out.extend_from_slice(b"*-1\r\n");
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            response_out.extend_from_slice(b"*-1\r\n");
+        }
         Ok(())
     }
 

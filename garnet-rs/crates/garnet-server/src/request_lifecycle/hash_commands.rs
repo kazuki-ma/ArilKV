@@ -103,10 +103,15 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let field = args[2];
+        let resp3 = self.resp_protocol_version().is_resp3();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };
@@ -114,14 +119,24 @@ impl RequestProcessor {
         if lazy_expired {
             self.persist_hash_after_field_expiration(&key, &hash)?;
             if hash.is_empty() {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         }
 
         match hash.get(field) {
             Some(value) => append_bulk_string(response_out, value),
-            None => append_null_bulk_string(response_out),
+            None => {
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
+            }
         }
         Ok(())
     }
@@ -230,6 +245,7 @@ impl RequestProcessor {
                 self.persist_hash_after_field_expiration(&key, hash_mut)?;
             }
         }
+        let resp3 = self.resp_protocol_version().is_resp3();
         let field_count = args.len() - 2;
         response_out.push(b'*');
         response_out.extend_from_slice(field_count.to_string().as_bytes());
@@ -237,7 +253,13 @@ impl RequestProcessor {
         for field in &args[2..] {
             match hash.as_ref().and_then(|hash| hash.get(*field)) {
                 Some(value) => append_bulk_string(response_out, value),
-                None => append_null_bulk_string(response_out),
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
             }
         }
         Ok(())
@@ -563,11 +585,19 @@ impl RequestProcessor {
 
         if args.len() == 2 {
             let Some(hash) = hash else {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             };
             if hash.is_empty() {
-                append_null_bulk_string(response_out);
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
             let entries: Vec<(&Vec<u8>, &Vec<u8>)> = hash.iter().collect();
@@ -754,6 +784,7 @@ impl RequestProcessor {
             "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
         )?;
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -761,7 +792,11 @@ impl RequestProcessor {
                 response_out.extend_from_slice(fields.len().to_string().as_bytes());
                 response_out.extend_from_slice(b"\r\n");
                 for _ in 0..fields.len() {
-                    append_null_bulk_string(response_out);
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
                 }
                 return Ok(());
             }
@@ -774,7 +809,13 @@ impl RequestProcessor {
         for field in &fields {
             match hash.get(*field) {
                 Some(value) => append_bulk_string(response_out, value),
-                None => append_null_bulk_string(response_out),
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
             }
         }
 
@@ -823,6 +864,7 @@ impl RequestProcessor {
             "HGETDEL key FIELDS num field [field ...]",
         )?;
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -830,7 +872,11 @@ impl RequestProcessor {
                 response_out.extend_from_slice(fields.len().to_string().as_bytes());
                 response_out.extend_from_slice(b"\r\n");
                 for _ in 0..fields.len() {
-                    append_null_bulk_string(response_out);
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
                 }
                 return Ok(());
             }
@@ -846,7 +892,13 @@ impl RequestProcessor {
                     self.set_hash_field_expiration_unix_millis(&key, field, None);
                     append_bulk_string(response_out, &value);
                 }
-                None => append_null_bulk_string(response_out),
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
             }
         }
 

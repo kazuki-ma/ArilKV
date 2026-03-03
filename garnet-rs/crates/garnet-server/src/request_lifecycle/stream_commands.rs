@@ -368,12 +368,15 @@ impl RequestProcessor {
             }
         }
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         if stream_results.is_empty() {
-            append_null_array(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_array(response_out);
+            }
             return Ok(());
         }
-
-        let resp3 = self.resp_protocol_version().is_resp3();
         if resp3 {
             append_map_length(response_out, stream_results.len());
         } else {
@@ -430,10 +433,16 @@ impl RequestProcessor {
         }
 
         if args.len() == 3 {
+            let resp3 = self.resp_protocol_version().is_resp3();
             response_out.extend_from_slice(b"*4\r\n");
             append_integer(response_out, 0);
-            append_null_bulk_string(response_out);
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+                append_null_bulk_string(response_out);
+            }
             response_out.extend_from_slice(b"*0\r\n");
             return Ok(());
         }
@@ -655,7 +664,11 @@ impl RequestProcessor {
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
-                append_null_bulk_string(response_out);
+                if self.resp_protocol_version().is_resp3() {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
                 return Ok(());
             }
         };

@@ -1033,6 +1033,8 @@ impl RequestProcessor {
                 append_bulk_string(response_out, b"library_code");
                 if let Some(source) = registry.library_sources.get(&library_name) {
                     append_bulk_string(response_out, source);
+                } else if self.resp_protocol_version().is_resp3() {
+                    append_null(response_out);
                 } else {
                     append_null_bulk_string(response_out);
                 }
@@ -1440,7 +1442,8 @@ impl RequestProcessor {
 
         match run_result {
             Ok(value) => {
-                if let Err(error_message) = append_lua_value_as_resp(value, response_out) {
+                let resp3 = self.resp_protocol_version().is_resp3();
+                if let Err(error_message) = append_lua_value_as_resp(value, response_out, resp3) {
                     let message = format!(
                         "ERR Error running script: {}",
                         sanitize_error_text(&error_message)
@@ -1694,7 +1697,8 @@ impl RequestProcessor {
 
         match run_result {
             Ok(value) => {
-                if let Err(error_message) = append_lua_value_as_resp(value, response_out) {
+                let resp3 = self.resp_protocol_version().is_resp3();
+                if let Err(error_message) = append_lua_value_as_resp(value, response_out, resp3) {
                     let message = format!(
                         "ERR Error running function: {}",
                         sanitize_error_text(&error_message)
@@ -3492,14 +3496,19 @@ fn request_error_message(error: RequestExecutionError) -> String {
     "ERR internal script command failure".to_string()
 }
 
-fn append_lua_value_as_resp(value: LuaValue, response_out: &mut Vec<u8>) -> Result<(), String> {
-    append_lua_value_as_resp_depth(value, response_out, 0)
+fn append_lua_value_as_resp(
+    value: LuaValue,
+    response_out: &mut Vec<u8>,
+    resp3: bool,
+) -> Result<(), String> {
+    append_lua_value_as_resp_depth(value, response_out, 0, resp3)
 }
 
 fn append_lua_value_as_resp_depth(
     value: LuaValue,
     response_out: &mut Vec<u8>,
     depth: usize,
+    resp3: bool,
 ) -> Result<(), String> {
     if depth >= LUA_REPLY_MAX_DEPTH {
         append_error(response_out, b"ERR reached lua stack limit");
@@ -3507,12 +3516,18 @@ fn append_lua_value_as_resp_depth(
     }
     match value {
         LuaValue::Nil => {
-            append_null_bulk_string(response_out);
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
             Ok(())
         }
         LuaValue::Boolean(value) => {
             if value {
                 append_integer(response_out, 1);
+            } else if resp3 {
+                append_null(response_out);
             } else {
                 append_null_bulk_string(response_out);
             }
@@ -3536,7 +3551,7 @@ fn append_lua_value_as_resp_depth(
             append_bulk_string(response_out, value.as_bytes().as_ref());
             Ok(())
         }
-        LuaValue::Table(table) => append_lua_table_as_resp_depth(table, response_out, depth),
+        LuaValue::Table(table) => append_lua_table_as_resp_depth(table, response_out, depth, resp3),
         _ => Err("Lua script returned unsupported value type".to_string()),
     }
 }
@@ -3545,6 +3560,7 @@ fn append_lua_table_as_resp_depth(
     table: LuaTable,
     response_out: &mut Vec<u8>,
     depth: usize,
+    resp3: bool,
 ) -> Result<(), String> {
     // Use raw_get to avoid triggering metamethods (matches Redis/Valkey behaviour).
     if let Some(error_payload) = lua_table_raw_string_field(&table, "err")? {
@@ -3573,7 +3589,7 @@ fn append_lua_table_as_resp_depth(
     response_out.extend_from_slice(values.len().to_string().as_bytes());
     response_out.extend_from_slice(b"\r\n");
     for value in values {
-        append_lua_value_as_resp_depth(value, response_out, depth + 1)?;
+        append_lua_value_as_resp_depth(value, response_out, depth + 1, resp3)?;
     }
     Ok(())
 }
