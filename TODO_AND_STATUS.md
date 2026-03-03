@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 467
+> **Current Iteration**: 468
 
 ---
 
@@ -469,7 +469,7 @@
 | 11.309 | Improve script error messages with SHA suffix and source location | DONE | 11.308 | Added script SHA1 and function name to Lua error messages as suffix matching Redis luaCallFunction format. Use @user_script chunk name, extract_script_error_location() for source:line patterns. Commit: `6485dc35bc`. |
 | 11.310 | Emit RESP3 map type for HGETALL and CONFIG GET | DONE | 11.308 | HGETALL returns %N (map) in RESP3 mode instead of *2N (flat array). CONFIG GET returns %N instead of *2N. Added append_map_length helper and 2 tests. 337 total tests. Commit: `831fb1d460`. |
 | 11.311 | Add RESP3 map format for stream entry responses (XRANGE/XREVRANGE/XREAD/XREADGROUP) | DONE | 11.310 | Stream commands return field-value pairs as maps (%N) in RESP3. XREAD/XREADGROUP outer structure uses map for stream-key mapping. Added append_stream_entry_fields helper. 338 total tests. Commits: `7ba313f464` (scripting fix), `7145b5b31a` (stream RESP3). |
-| 11.312 | Add RESP3 map format for COMMAND INFO responses | TODO | 11.310 | COMMAND/COMMAND INFO should return command metadata as maps in RESP3 mode. |
+| 11.312 | Add RESP3 map format for COMMAND INFO responses | DONE | 11.310 | COMMAND INFO returns %N map in RESP3 (keyed by command name, unknown commands omitted). RESP2 unchanged (*N array with *0 placeholders). Added test. 352 total tests. Commit: `bfffb5e737`. |
 | 11.313 | Fix mlua BorrowedStr type mismatch in pcall error extraction | DONE | 11.309 | Replaced unwrap_or with map/unwrap_or_else for mlua's BorrowedStr type. Commit: `7ba313f464`. |
 | 11.314 | Implement HELLO AUTH/SETNAME and server info response | DONE | 11.310 | HELLO now accepts optional AUTH (rejected, auth not enabled) and SETNAME arguments. Response changed from +OK to proper server info map/array with server, version, proto, id, mode, role, modules. Connection handler applies SETNAME side effect. Commit: `4da0bc8b4e`. |
 | 11.315 | Emit RESP3 push type for pubsub subscribe/unsubscribe acks | DONE | 11.310 | Subscribe/unsubscribe acks use `>3` (push) instead of `*3` (array) in RESP3 mode. Added `append_push_length` helper, threaded `resp3: bool` through all pubsub ack helpers. 339 total tests. Commit: `bf30e37ad8`. |
@@ -1184,3 +1184,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 465 | 2026-03-03 | 11.319 | DONE | RESP3 null type for all null bulk string/null array responses. Converted 64 call sites across 9 files (string, hash, list, set, zset, server, stream, scripting, geo). Threaded resp3 through Lua value chain. 4 new tests (347 total). Commit: `a79d990a08`. |
 | 466 | 2026-03-03 | 11.320 | DONE | RESP3 set type for SMEMBERS/SUNION/SINTER/SDIFF. Added `append_set_length` helper. 2 new tests (349 total). Commit: `57f3003072`. |
 | 467 | 2026-03-03 | 11.321 | DONE | RESP3 double type for sorted set scores and GEODIST. Added `append_double` helper. All WITHSCORES, ZSCORE, ZINCRBY, ZPOP, ZSCAN, GEODIST now emit double in RESP3. 2 new tests (351 total). Commit: `9b309f0aaf`. |
+| 468 | 2026-03-03 | 11.312 | DONE | RESP3 map type for COMMAND INFO responses. Map keyed by command name, unknown commands omitted. 1 new test (352 total). Commit: `bfffb5e737`. |
