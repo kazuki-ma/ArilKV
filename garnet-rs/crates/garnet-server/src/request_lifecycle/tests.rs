@@ -1315,6 +1315,15 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .unwrap();
     assert!(response.starts_with(b"*2\r\n*2\r\n"));
 
+    // RESP3 without WITHVALUES: flat array of bulk strings (no nested `*1` wrappers).
+    response.clear();
+    let hrand_resp3_no_values = b"*3\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n";
+    let meta = parse_resp_command_arg_slices(hrand_resp3_no_values, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*2\r\n$"));
+
     // Switch back to RESP2.
     processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 

@@ -628,21 +628,13 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if resp3 {
-            response_out.push(b'*');
-            response_out.extend_from_slice(sampled.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
-            for (field, _) in sampled {
-                response_out.extend_from_slice(b"*1\r\n");
-                append_bulk_string(response_out, field);
-            }
-        } else {
-            response_out.push(b'*');
-            response_out.extend_from_slice(sampled.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
-            for (field, _) in sampled {
-                append_bulk_string(response_out, field);
-            }
+        // HRANDFIELD without WITHVALUES: flat array of field names in both
+        // RESP2 and RESP3 (Valkey emits the same shape for both protocols).
+        response_out.push(b'*');
+        response_out.extend_from_slice(sampled.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+        for (field, _) in sampled {
+            append_bulk_string(response_out, field);
         }
         Ok(())
     }
