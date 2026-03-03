@@ -1669,6 +1669,15 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(args[1], b"INFO") {
             return self.handle_command_info(args, response_out);
         }
+        if ascii_eq_ignore_case(args[1], b"DOCS") {
+            // Stub: return empty map for COMMAND DOCS compatibility.
+            if self.resp_protocol_version().is_resp3() {
+                append_map_length(response_out, 0);
+            } else {
+                append_array_length(response_out, 0);
+            }
+            return Ok(());
+        }
         if ascii_eq_ignore_case(args[1], b"GETKEYS") {
             return self.handle_command_getkeys(args, response_out);
         }
