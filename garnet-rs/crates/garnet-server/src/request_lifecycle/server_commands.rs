@@ -181,7 +181,7 @@ const CONFIG_HELP_LINES: [&[u8]; 13] = [
     b"SET [... <directive> <value> ...]",
     b"    Set multiple configuration directives at once.",
 ];
-const CLIENT_HELP_LINES: [&[u8]; 29] = [
+const CLIENT_HELP_LINES: [&[u8]; 35] = [
     b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"CACHING (YES|NO)",
     b"    Enable/disable tracking of the keys for next command in OPTIN/OPTOUT modes.",
@@ -211,6 +211,12 @@ const CLIENT_HELP_LINES: [&[u8]; 29] = [
     b"    Set the current connection name.",
     b"TRACKING (ON|OFF) [REDIRECT <id>] [BCAST] [PREFIX <prefix> [...]] [OPTIN] [OPTOUT]",
     b"    Enable/disable server-assisted client-side caching.",
+    b"TRACKINGINFO",
+    b"    Return the tracking status and redirect client id for the current connection.",
+    b"GETREDIR",
+    b"    Return the redirect client id for the current connection.",
+    b"UNBLOCK <clientid> [TIMEOUT|ERROR]",
+    b"    Unblock a client blocked by a blocking command.",
 ];
 const DEBUG_HELP_LINES: [&[u8]; 22] = [
     b"DEBUG <subcommand> [<arg> [value] [opt] ...]",
@@ -1109,6 +1115,42 @@ impl RequestProcessor {
                 return Ok(());
             }
             return Err(RequestExecutionError::SyntaxError);
+        }
+        if ascii_eq_ignore_case(subcommand, b"TRACKING") {
+            ensure_min_arity(
+                args,
+                3,
+                "CLIENT",
+                "CLIENT TRACKING (ON|OFF) [REDIRECT <id>] [BCAST] [PREFIX <prefix> [...]] [OPTIN] [OPTOUT]",
+            )?;
+            let mode = args[2];
+            if ascii_eq_ignore_case(mode, b"ON") || ascii_eq_ignore_case(mode, b"OFF") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        if ascii_eq_ignore_case(subcommand, b"TRACKINGINFO") {
+            require_exact_arity(args, 2, "CLIENT", "CLIENT TRACKINGINFO")?;
+            let resp3 = self.resp_protocol_version().is_resp3();
+            if resp3 {
+                append_map_length(response_out, 3);
+            } else {
+                append_array_length(response_out, 6);
+            }
+            append_bulk_string(response_out, b"flags");
+            append_array_length(response_out, 1);
+            append_bulk_string(response_out, b"off");
+            append_bulk_string(response_out, b"redirect");
+            append_integer(response_out, -1);
+            append_bulk_string(response_out, b"prefixes");
+            append_array_length(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GETREDIR") {
+            require_exact_arity(args, 2, "CLIENT", "CLIENT GETREDIR")?;
+            append_integer(response_out, -1);
+            return Ok(());
         }
         Err(RequestExecutionError::UnknownSubcommand)
     }

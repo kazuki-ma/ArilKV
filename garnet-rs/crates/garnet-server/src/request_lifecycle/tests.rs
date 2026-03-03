@@ -11699,6 +11699,33 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
     // Restore to ON for remaining tests
     let _ = execute_command_line(&processor, "CLIENT REPLY ON").unwrap();
 
+    // CLIENT TRACKING ON returns OK
+    let tracking_on = execute_command_line(&processor, "CLIENT TRACKING ON").unwrap();
+    assert_eq!(tracking_on, b"+OK\r\n");
+
+    // CLIENT TRACKING OFF returns OK
+    let tracking_off = execute_command_line(&processor, "CLIENT TRACKING OFF").unwrap();
+    assert_eq!(tracking_off, b"+OK\r\n");
+
+    // CLIENT TRACKING ON with BCAST prefix returns OK
+    let tracking_bcast = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"TRACKING", b"ON", b"BCAST", b"PREFIX", b"foo"]),
+    );
+    assert_eq!(tracking_bcast, b"+OK\r\n");
+
+    // CLIENT TRACKINGINFO returns tracking info
+    let trackinginfo = execute_command_line(&processor, "CLIENT TRACKINGINFO").unwrap();
+    assert!(
+        trackinginfo.windows(3).any(|w| w == b"off"),
+        "CLIENT TRACKINGINFO should include 'off' flag: {}",
+        String::from_utf8_lossy(&trackinginfo)
+    );
+
+    // CLIENT GETREDIR returns -1 (no redirect)
+    let getredir = execute_command_line(&processor, "CLIENT GETREDIR").unwrap();
+    assert_eq!(getredir, b":-1\r\n");
+
     // CONFIG REWRITE returns proper error
     let rewrite = execute_command_line(&processor, "CONFIG REWRITE").unwrap();
     assert!(
@@ -12002,8 +12029,8 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     // CLIENT HELP returns bulk array
     let help = execute_command_line(&processor, "CLIENT HELP").unwrap();
     assert!(
-        help.starts_with(b"*29\r\n"),
-        "CLIENT HELP should return 29-element array"
+        help.starts_with(b"*35\r\n"),
+        "CLIENT HELP should return 35-element array"
     );
 
     // RESP3: CLIENT GETNAME returns _\r\n (null)
