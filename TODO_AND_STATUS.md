@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-04
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 533
+> **Current Iteration**: 542
 
 ---
 
@@ -531,6 +531,15 @@
 | 11.375 | CONFIG SET integer/boolean validation expansion | DONE | — | Add list-compress-depth, stream-node-max-*, maxclients, repl-backlog-ttl, cluster-node-timeout, min-*-max-lag to integer validation. Add latency-tracking, cluster-enabled to boolean validation. 373 lib tests. Commits: `3334c69cb9`, `405a736690`. |
 | 11.376 | DEBUG OBJECT encoding and serializedlength accuracy | DONE | — | Compute actual encoding (embstr/int/raw/listpack/etc) and serializedlength from value/payload instead of hardcoded raw/0. 373 lib tests. Commits: `c4c68d4cc2`, `1de7404596`. |
 | 11.377 | CLUSTER INFO standard fields enrichment | DONE | — | Add cluster_slots_ok/pfail/fail, cluster_size, epoch, messages sent/received. 373 lib tests. Commit: `8e0be8f304`. |
+| 11.378 | Align CLIENT tracking compatibility on TCP connection path and close CONFIG integer-validation gap | DONE | 11.372/11.373/11.375 | (see iteration 534) |
+| 11.379 | Fix GETDEL RESP3 null check | DONE | — | GETDEL compared against `$-1\r\n` only, missing RESP3 `_\r\n`. Caused unnecessary DEL in RESP3 mode. 375 lib tests. Commit: `403c221193`. |
+| 11.380 | Fix GEOPOS to return null array for missing members | DONE | — | GEOPOS returned null bulk string (`$-1`) instead of null array (`*-1`) for missing members in RESP2. 375 lib tests. Commit: `697d26df4a`. |
+| 11.381 | Fix LATENCY HELP arity command name and DEBUG OBJECT error pattern | DONE | — | LATENCY HELP used `"LATENCY|HELP"` pipe format in arity check. DEBUG OBJECT used manual `append_error` instead of `Err(NoSuchKey)`. 375 lib tests. Commit: `a3afde0505`. |
+| 11.382 | Fix FUNCTION unknown subcommand error pattern | DONE | — | Changed from `append_error` + `Ok()` to `Err(UnknownSubcommand)`. 375 lib tests. Commit: `8008c80007`. |
+| 11.383 | Fix SRANDMEMBER empty-set RESP3 set type | DONE | — | Empty-set path ignored `use_set_type` flag, always emitting array type. 375 lib tests. Commit: `e8ec6ae5b7`. |
+| 11.384 | Use append_error helper for CLIENT SETNAME/SETINFO errors | DONE | — | Replaced raw `extend_from_slice("-ERR ...\\r\\n")` calls with `append_error()`. 375 lib tests. Commit: `90520266d1`. |
+| 11.385 | Fix remaining LATENCY pipe-format names and DOCTOR RESP3 verbatim | DONE | — | Fixed `LATENCY|LATEST/HISTORY/DOCTOR/GRAPH` arity names. Added verbatim string (`=N\\r\\ntxt:...`) for LATENCY DOCTOR and MEMORY DOCTOR in RESP3. 375 lib tests. Commit: `230ae2eca4`. |
+| 11.386 | 5-agent code audit of all command handlers | DONE | — | Ran 5 SubAgents with different personas (Consistency, RESP Protocol, Error Handling, API Surface, Code Hygiene) across all command handler files. Identified ~30 findings; fixed highest-severity items in TODOs 11.379–11.385. | Added `CLIENT TRACKINGINFO`/`CLIENT GETREDIR` support in `connection_handler` path with per-connection tracking state (mode, redirect, bcast/prefixes, noloop, caching flag), expanded `CLIENT TRACKING` option parsing (`REDIRECT/BCAST/PREFIX/NOLOOP/OPTIN/OPTOUT`), fixed `CLIENT CACHING` to accept `YES/NO` semantics for OPTIN/OPTOUT, and updated CLIENT HELP surface accordingly. Also added `repl-min-slaves-to-write` to CONFIG SET integer validation plus regression tests. Validation: `make test-server` (`375 + 23 + 1` pass); compatibility report rerun reached step `[3/4]` and again stalled at `unit/pause` heartbeat (`ok=613 err=9 ignore=129 timeout=0`) before manual stop. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1306,3 +1315,12 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 531 | 2026-03-04 | 11.375 | DONE | CONFIG SET integer/boolean validation expansion. 373 lib tests. Commits: `3334c69cb9`, `405a736690`. |
 | 532 | 2026-03-04 | 11.376 | DONE | DEBUG OBJECT encoding and serializedlength. 373 lib tests. Commits: `c4c68d4cc2`, `1de7404596`. |
 | 533 | 2026-03-04 | 11.377 | DONE | CLUSTER INFO enrichment. 373 lib tests. Commit: `8e0be8f304`. |
+| 534 | 2026-03-04 | 11.378 | DONE | Fixed CLIENT tracking compatibility mismatch on TCP connection path: implemented TRACKINGINFO/GETREDIR, expanded TRACKING option parsing (REDIRECT/BCAST/PREFIX/NOLOOP/OPTIN/OPTOUT), corrected CACHING to YES/NO semantics with per-connection tracking state, and synced CLIENT HELP lines. Added CONFIG SET integer validation for `repl-min-slaves-to-write` and regression tests. Validation: `make test-server` (`375 + 23 + 1` pass); compatibility report rerun reached `[3/4]` then stalled at `unit/pause` (`ok=613 err=9 ignore=129 timeout=0`) before manual stop. |
+| 535 | 2026-03-04 | 11.386 | DONE | 5-agent parallel code audit across all command handler files. |
+| 536 | 2026-03-04 | 11.379 | DONE | Fix GETDEL RESP3 null check. 375 lib tests. Commit: `403c221193`. |
+| 537 | 2026-03-04 | 11.380 | DONE | Fix GEOPOS null array. 375 lib tests. Commit: `697d26df4a`. |
+| 538 | 2026-03-04 | 11.381 | DONE | Fix LATENCY HELP pipe-format and DEBUG OBJECT error pattern. 375 lib tests. Commit: `a3afde0505`. |
+| 539 | 2026-03-04 | 11.382 | DONE | Fix FUNCTION unknown subcommand error pattern. 375 lib tests. Commit: `8008c80007`. |
+| 540 | 2026-03-04 | 11.383 | DONE | Fix SRANDMEMBER empty-set RESP3 set type. 375 lib tests. Commit: `e8ec6ae5b7`. |
+| 541 | 2026-03-04 | 11.384 | DONE | Use append_error helper for CLIENT errors. 375 lib tests. Commit: `90520266d1`. |
+| 542 | 2026-03-04 | 11.385 | DONE | Fix remaining LATENCY pipe-format names and DOCTOR RESP3 verbatim. 375 lib tests. Commit: `230ae2eca4`. |
