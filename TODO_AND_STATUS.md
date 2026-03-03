@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 466
+> **Current Iteration**: 467
 
 ---
 
@@ -476,6 +476,7 @@
 | 11.316 | RESP3 push type for pubsub message delivery | DONE | 11.315 | Added per-subscriber RESP version tracking in PubSubState. Messages use `>3`/`>4` (push) for RESP3 subscribers, `*3`/`*4` (array) for RESP2. Lazily caches both variants. Updated HELLO side-effect to propagate version to pubsub state. 340 tests. Commit: `12053eeff2`. |
 | 11.317 | Emit RESP3 map type for HSCAN and ZSCAN inner data | DONE | 11.310 | HSCAN field-value pairs and ZSCAN member-score pairs use `%N` (map) in RESP3 instead of `*2N` (flat array). HSCAN NOVALUES remains array. 342 total tests. Commit: `0413d1076d`. |
 | 11.318 | Emit RESP3 map type for PUBSUB NUMSUB/SHARDNUMSUB | DONE | 11.310 | Channel-count pairs returned as `%N` (map) in RESP3 instead of `*2N` (flat array). 343 total tests. Commit: `1df8aefaad`. |
+| 11.321 | Emit RESP3 double type for sorted set scores and GEODIST | DONE | 11.310 | Sorted set score outputs (ZSCORE, ZMSCORE, ZINCRBY, WITHSCORES, ZPOP, ZSCAN, ZMPOP, BZPOP) and GEODIST return `,value\r\n` (double) in RESP3 instead of bulk string. Added `append_double` helper. 2 new tests (351 total). Commit: `9b309f0aaf`. |
 | 11.320 | Emit RESP3 set type for SMEMBERS, SUNION, SINTER, SDIFF | DONE | 11.310 | Set commands return `~N` (set type) in RESP3 instead of `*N` (array). Added `append_set_length` helper. 2 new tests (349 total). Commit: `57f3003072`. |
 | 11.319 | Emit RESP3 null type for all null bulk string and null array responses | DONE | 11.310 | Converted all 64 `append_null_bulk_string`/`append_null_array` call sites across 9 command handler files to emit RESP3 null (`_\r\n`) when connection is RESP3. Threaded `resp3: bool` through Lua value conversion chain. 4 new tests (347 total). Commit: `a79d990a08`. |
 | 11.152 | Fix introspection + transaction edge semantics from full run (`COMMAND`/`CLIENT`/`INFO`/`LATENCY`, `MULTI`/`EXEC`/`WATCH`) | IN_PROGRESS | 11.149 | Closed introspection slices for `CLIENT`/`MONITOR`/`CONFIG` (`11.152` prior scope), `COMMAND*` (`11.164`), and INFO section parsing/selection parity used by `tests/unit/info-command.tcl` (`INFO [section ...]` with `default`/`all`/`everything`/`cpu`/`commandstats` section composition and dedup). Added remaining `introspection-2` parity closure for `OBJECT IDLETIME`/`DEBUG OBJECT`, `CLIENT NO-TOUCH` idle-time behavior, command failure counters (`failed_calls`) and script-internal commandstats accounting; latest targeted `unit/introspection-2` rerun is `ok=50 err=0 ignore=0`. `LATENCY` compatibility residual is now closed via `11.167` (`HISTOGRAM`/`HISTORY`/`LATEST`/`GRAPH`/`RESET` plus expire-cycle workload closure). `MULTI` parity slice (`11.165`) is now closed, including `XGROUP CREATE/SETID ... $` handling for the blocking-timeout case; latest targeted full-mode probe `RUNTEXT_EXTRA_ARGS='--single unit/multi'` passes (`ok=53 err=0 ignore=10`). Latest broad compatibility report run (`compatibility-report-20260228-090511`) moved past latency and currently surfaces downstream non-11.152 failures in `lazyfree`/`pause`/`pubsub` (`ok=638 err=31 ignore=130`, runtest interrupted at stalled pubsub). |
@@ -1182,3 +1183,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 464 | 2026-03-03 | 11.318 | DONE | RESP3 map for PUBSUB NUMSUB/SHARDNUMSUB. Channel-count pairs use map in RESP3. 343 tests. Commit: `1df8aefaad`. |
 | 465 | 2026-03-03 | 11.319 | DONE | RESP3 null type for all null bulk string/null array responses. Converted 64 call sites across 9 files (string, hash, list, set, zset, server, stream, scripting, geo). Threaded resp3 through Lua value chain. 4 new tests (347 total). Commit: `a79d990a08`. |
 | 466 | 2026-03-03 | 11.320 | DONE | RESP3 set type for SMEMBERS/SUNION/SINTER/SDIFF. Added `append_set_length` helper. 2 new tests (349 total). Commit: `57f3003072`. |
+| 467 | 2026-03-03 | 11.321 | DONE | RESP3 double type for sorted set scores and GEODIST. Added `append_double` helper. All WITHSCORES, ZSCORE, ZINCRBY, ZPOP, ZSCAN, GEODIST now emit double in RESP3. 2 new tests (351 total). Commit: `9b309f0aaf`. |
