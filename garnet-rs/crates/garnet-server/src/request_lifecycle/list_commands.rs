@@ -14,6 +14,7 @@ impl RequestProcessor {
             list.insert(0, value.to_vec());
         }
         self.save_list_object(&key, &list)?;
+        self.notify_keyspace_event(NOTIFY_LIST, b"lpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
     }
@@ -31,6 +32,7 @@ impl RequestProcessor {
             list.push(value.to_vec());
         }
         self.save_list_object(&key, &list)?;
+        self.notify_keyspace_event(NOTIFY_LIST, b"rpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
     }
@@ -102,6 +104,12 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        let event_name: &[u8] = if matches!(side, ListSide::Left) {
+            b"lpop"
+        } else {
+            b"rpop"
+        };
+
         if let Some(count) = count {
             let mut popped: Vec<Vec<u8>> = Vec::new();
             for _ in 0..count {
@@ -110,8 +118,14 @@ impl RequestProcessor {
                 };
                 popped.push(value);
             }
+            if !popped.is_empty() {
+                self.notify_keyspace_event(NOTIFY_LIST, event_name, &key);
+            }
             if list.is_empty() {
                 let _ = self.object_delete(&key)?;
+                if !popped.is_empty() {
+                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                }
             } else {
                 self.save_list_object(&key, &list)?;
             }
@@ -133,8 +147,10 @@ impl RequestProcessor {
             }
             return Ok(());
         };
+        self.notify_keyspace_event(NOTIFY_LIST, event_name, &key);
         if list.is_empty() {
             let _ = self.object_delete(&key)?;
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
         } else {
             self.save_list_object(&key, &list)?;
         }
@@ -336,6 +352,7 @@ impl RequestProcessor {
         };
         list[index] = value;
         self.save_list_object(&key, &list)?;
+        self.notify_keyspace_event(NOTIFY_LIST, b"lset", &key);
         let max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
         if max_listpack_size > 0 && list.len() >= max_listpack_size as usize {
             self.force_list_quicklist_encoding(&key);
@@ -382,8 +399,10 @@ impl RequestProcessor {
         }
 
         let trimmed = list[normalized_start as usize..=normalized_stop as usize].to_vec();
+        self.notify_keyspace_event(NOTIFY_LIST, b"ltrim", &key);
         if trimmed.is_empty() {
             let _ = self.object_delete(&key)?;
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
         } else {
             self.save_list_object(&key, &trimmed)?;
         }
@@ -406,6 +425,7 @@ impl RequestProcessor {
             list.insert(0, value.to_vec());
         }
         self.save_list_object(&key, &list)?;
+        self.notify_keyspace_event(NOTIFY_LIST, b"lpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
     }
@@ -425,6 +445,7 @@ impl RequestProcessor {
             list.push(value.to_vec());
         }
         self.save_list_object(&key, &list)?;
+        self.notify_keyspace_event(NOTIFY_LIST, b"rpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
     }
@@ -472,8 +493,10 @@ impl RequestProcessor {
         }
 
         if removed > 0 {
+            self.notify_keyspace_event(NOTIFY_LIST, b"lrem", &key);
             if list.is_empty() {
                 let _ = self.object_delete(&key)?;
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             } else {
                 self.save_list_object(&key, &list)?;
             }
@@ -512,6 +535,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
         self.save_list_object(&key, &list)?;
+        self.notify_keyspace_event(NOTIFY_LIST, b"linsert", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
     }

@@ -50,6 +50,7 @@ impl RequestProcessor {
 
         stream.entries.insert(id, fields);
         self.save_stream_object(&key, &stream)?;
+        self.notify_keyspace_event(NOTIFY_STREAM, b"xadd", &key);
         append_bulk_string(response_out, &id.encode());
         Ok(())
     }
@@ -94,7 +95,12 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_min_arity(args, 2, "XGROUP", "XGROUP <CREATE|SETID> key group id")?;
+        ensure_min_arity(
+            args,
+            2,
+            "XGROUP",
+            "XGROUP <CREATE|SETID|DESTROY> key group [id]",
+        )?;
         let subcommand = args[1];
 
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
@@ -126,6 +132,27 @@ impl RequestProcessor {
             stream.groups.insert(group, id);
             self.save_stream_object(&key, &stream)?;
             append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"DESTROY") {
+            require_exact_arity(args, 4, "XGROUP", "XGROUP DESTROY key group")?;
+            let key = RedisKey::from(args[2]);
+            let Some(mut stream) = self.load_stream_object(&key)? else {
+                append_integer(response_out, 0);
+                return Ok(());
+            };
+            let removed = if stream.groups.remove(args[3]).is_some() {
+                1
+            } else {
+                0
+            };
+            if stream.entries.is_empty() && stream.groups.is_empty() {
+                let _ = self.object_delete(&key)?;
+            } else if removed == 1 {
+                self.save_stream_object(&key, &stream)?;
+            }
+            append_integer(response_out, removed);
             return Ok(());
         }
 

@@ -30,6 +30,7 @@ impl RequestProcessor {
         }
 
         self.save_zset_object(&key, &zset)?;
+        self.notify_keyspace_event(NOTIFY_ZSET, b"zadd", &key);
         append_integer(response_out, inserted);
         Ok(())
     }
@@ -57,8 +58,14 @@ impl RequestProcessor {
             }
         }
 
+        if removed > 0 {
+            self.notify_keyspace_event(NOTIFY_ZSET, b"zrem", &key);
+        }
         if zset.is_empty() {
             let _ = self.object_delete(&key)?;
+            if removed > 0 {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+            }
         } else {
             self.save_zset_object(&key, &zset)?;
         }
@@ -676,6 +683,7 @@ impl RequestProcessor {
         }
         zset.insert(member, updated);
         self.save_zset_object(&key, &zset)?;
+        self.notify_keyspace_event(NOTIFY_ZSET, b"zincr", &key);
         append_bulk_string(response_out, updated.to_string().as_bytes());
         Ok(())
     }
@@ -1302,9 +1310,12 @@ fn append_zset_scan_response(
     count: usize,
     entries: &[(&[u8], f64)],
 ) {
-    let start = usize::try_from(cursor)
-        .unwrap_or(usize::MAX)
-        .min(entries.len());
+    let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let start = if raw_start >= entries.len() {
+        0
+    } else {
+        raw_start
+    };
     let end = start.saturating_add(count).min(entries.len());
     let next_cursor = if end >= entries.len() { 0 } else { end };
 

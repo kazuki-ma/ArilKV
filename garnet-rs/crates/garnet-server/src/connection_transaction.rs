@@ -4,6 +4,7 @@ use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
 use std::sync::Arc;
 
+use crate::ClientId;
 use crate::RequestProcessor;
 use crate::ShardOwnerThreadPool;
 use crate::connection_protocol::ascii_eq_ignore_case;
@@ -92,6 +93,7 @@ pub(crate) fn execute_transaction_queue(
     responses: &mut Vec<u8>,
     max_resp_arguments: usize,
     client_no_touch: bool,
+    client_id: Option<ClientId>,
 ) -> TransactionExecutionOutcome {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
@@ -111,6 +113,7 @@ pub(crate) fn execute_transaction_queue(
                 queued,
                 max_resp_arguments,
                 client_no_touch,
+                client_id,
             )
         })
         .unwrap_or_else(|_| {
@@ -165,6 +168,7 @@ fn execute_transaction_queue_on_owner_thread(
     queued: Vec<Vec<u8>>,
     max_resp_arguments: usize,
     client_no_touch: bool,
+    client_id: Option<ClientId>,
 ) -> (
     Vec<ExecutedTransactionItem>,
     Option<QueuedReplicationTransition>,
@@ -203,10 +207,11 @@ fn execute_transaction_queue_on_owner_thread(
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let _command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                match processor.execute_with_client_no_touch(
+                match processor.execute_with_client_no_touch_in_transaction(
                     &args[..meta.argument_count],
                     &mut item_response,
                     client_no_touch,
+                    client_id,
                 ) {
                     Ok(()) => {}
                     Err(error) => error.append_resp_error(&mut item_response),

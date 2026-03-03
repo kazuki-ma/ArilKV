@@ -83,6 +83,9 @@ impl RequestProcessor {
             }
         }
 
+        if inserted > 0 {
+            self.notify_keyspace_event(NOTIFY_SET, b"sadd", &key);
+        }
         append_integer(response_out, inserted);
         Ok(())
     }
@@ -109,8 +112,14 @@ impl RequestProcessor {
             }
         }
 
+        if removed > 0 {
+            self.notify_keyspace_event(NOTIFY_SET, b"srem", &key);
+        }
         if set.is_empty() {
             let _ = self.object_delete(&key)?;
+            if removed > 0 {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+            }
         } else {
             self.save_set_object(&key, &set)?;
         }
@@ -311,8 +320,10 @@ impl RequestProcessor {
             let member = selected[0].clone();
             let removed = set.remove(&member);
             debug_assert!(removed, "selected member must exist in set");
+            self.notify_keyspace_event(NOTIFY_SET, b"spop", &key);
             if set.is_empty() {
                 let _ = self.object_delete(&key)?;
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             } else {
                 self.save_set_object(&key, &set)?;
             }
@@ -338,8 +349,14 @@ impl RequestProcessor {
         for member in &selected {
             set.remove(member);
         }
+        if !selected.is_empty() {
+            self.notify_keyspace_event(NOTIFY_SET, b"spop", &key);
+        }
         if set.is_empty() {
             let _ = self.object_delete(&key)?;
+            if !selected.is_empty() {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+            }
         } else {
             self.save_set_object(&key, &set)?;
         }
@@ -587,9 +604,16 @@ fn append_set_scan_response(
     count: usize,
     values: &[&[u8]],
 ) {
-    let start = usize::try_from(cursor)
-        .unwrap_or(usize::MAX)
-        .min(values.len());
+    // When the collection shrinks between iterations (elements removed), the
+    // cursor may point past the new end.  Wrap around to 0 so elements that
+    // shifted are not silently skipped — this may produce duplicates but
+    // guarantees completeness, matching Redis SCAN semantics.
+    let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let start = if raw_start >= values.len() {
+        0
+    } else {
+        raw_start
+    };
     let end = start.saturating_add(count).min(values.len());
     let next_cursor = if end >= values.len() { 0 } else { end };
 

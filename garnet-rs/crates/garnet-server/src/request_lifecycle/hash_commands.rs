@@ -89,6 +89,7 @@ impl RequestProcessor {
         }
 
         self.save_hash_object(&key, &hash)?;
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
         append_integer(response_out, inserted);
         Ok(())
     }
@@ -150,8 +151,14 @@ impl RequestProcessor {
             }
         }
 
+        if removed > 0 {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+        }
         if hash.is_empty() {
             let _ = self.object_delete(&key)?;
+            if removed > 0 {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+            }
         } else {
             self.save_hash_object(&key, &hash)?;
         }
@@ -259,6 +266,7 @@ impl RequestProcessor {
             index += 2;
         }
         self.save_hash_object(&key, &hash)?;
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -282,6 +290,7 @@ impl RequestProcessor {
         hash.insert(field, value);
         self.set_hash_field_expiration_unix_millis(&key, args[2], None);
         self.save_hash_object(&key, &hash)?;
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -393,15 +402,16 @@ impl RequestProcessor {
             args,
             3,
             "HSCAN",
-            "HSCAN key cursor [MATCH pattern] [COUNT count]",
+            "HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]",
         )?;
 
         let key = RedisKey::from(args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
+        let novalues = scan_options.novalues;
 
         let Some(hash) = self.load_hash_object(&key)? else {
-            append_hash_scan_response(response_out, cursor, scan_options.count, &[]);
+            append_hash_scan_response(response_out, cursor, scan_options.count, &[], novalues);
             return Ok(());
         };
         let mut hash = hash;
@@ -414,7 +424,7 @@ impl RequestProcessor {
         if lazy_expired {
             self.persist_hash_after_field_expiration(&key, &hash)?;
             if hash.is_empty() {
-                append_hash_scan_response(response_out, cursor, scan_options.count, &[]);
+                append_hash_scan_response(response_out, cursor, scan_options.count, &[], novalues);
                 return Ok(());
             }
         }
@@ -434,7 +444,7 @@ impl RequestProcessor {
             matched.push((field.as_slice(), value.as_slice()));
         }
 
-        append_hash_scan_response(response_out, cursor, scan_options.count, &matched);
+        append_hash_scan_response(response_out, cursor, scan_options.count, &matched, novalues);
         Ok(())
     }
 
@@ -460,6 +470,7 @@ impl RequestProcessor {
             .ok_or(RequestExecutionError::IncrementOverflow)?;
         hash.insert(field, updated.to_string().into_bytes());
         self.save_hash_object(&key, &hash)?;
+        self.notify_keyspace_event(NOTIFY_HASH, b"hincrby", &key);
         append_integer(response_out, updated);
         Ok(())
     }
@@ -488,6 +499,7 @@ impl RequestProcessor {
         let updated_text = updated.to_string().into_bytes();
         hash.insert(field, updated_text.clone());
         self.save_hash_object(&key, &hash)?;
+        self.notify_keyspace_event(NOTIFY_HASH, b"hincrbyfloat", &key);
         append_bulk_string(response_out, &updated_text);
         Ok(())
     }
@@ -1277,10 +1289,14 @@ fn append_hash_scan_response(
     cursor: u64,
     count: usize,
     pairs: &[(&[u8], &[u8])],
+    novalues: bool,
 ) {
-    let start = usize::try_from(cursor)
-        .unwrap_or(usize::MAX)
-        .min(pairs.len());
+    let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let start = if raw_start >= pairs.len() {
+        0
+    } else {
+        raw_start
+    };
     let end = start.saturating_add(count).min(pairs.len());
     let next_cursor = if end >= pairs.len() { 0 } else { end };
 
@@ -1289,11 +1305,14 @@ fn append_hash_scan_response(
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
     response_out.push(b'*');
-    response_out.extend_from_slice(((end - start) * 2).to_string().as_bytes());
+    let items_per_entry = if novalues { 1 } else { 2 };
+    response_out.extend_from_slice(((end - start) * items_per_entry).to_string().as_bytes());
     response_out.extend_from_slice(b"\r\n");
     for (field, value) in &pairs[start..end] {
         append_bulk_string(response_out, field);
-        append_bulk_string(response_out, value);
+        if !novalues {
+            append_bulk_string(response_out, value);
+        }
     }
 }
 
