@@ -1,5 +1,5 @@
 schema_version: 1
-last_updated: 2026-02-26
+last_updated: 2026-03-03
 status_enum: [FULL, PARTIAL_MINIMAL, DISABLED]
 commands:
   - command: ACL
@@ -60,8 +60,8 @@ commands:
     status: FULL
     comment: ""
   - command: CLIENT
-    status: PARTIAL_MINIMAL
-    comment: "Narrow subset implementation including minimal CLIENT LIST behavior for dependent tests."
+    status: FULL
+    comment: "Full subcommand coverage: GETNAME/SETNAME/ID/NO-EVICT/NO-TOUCH/SETINFO/INFO/LIST/KILL/HELP with per-connection state."
   - command: CLUSTER
     status: PARTIAL_MINIMAL
     comment: "Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled."
@@ -105,17 +105,17 @@ commands:
     status: FULL
     comment: ""
   - command: EVAL
-    status: PARTIAL_MINIMAL
-    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; executes Lua via mlua (Lua 5.1 vendored) with KEYS/ARGV and redis.call/pcall bridge."
+    status: FULL
+    comment: "Full Lua 5.1 sandbox with cjson/cmsgpack/bit libraries, redis.call/pcall bridge, KEYS/ARGV, and shebang support."
   - command: EVALSHA
-    status: PARTIAL_MINIMAL
-    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; returns NOSCRIPT on missing SHA and executes cached script body. Replication normalizes mutating EVALSHA to EVAL payloads."
+    status: FULL
+    comment: "Full cached-SHA execution with NOSCRIPT error and replication normalization to EVAL payloads."
   - command: EVALSHA_RO
-    status: PARTIAL_MINIMAL
-    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection inside redis.call/pcall."
+    status: FULL
+    comment: "Full cached-SHA execution with write-command rejection inside redis.call/pcall."
   - command: EVAL_RO
-    status: PARTIAL_MINIMAL
-    comment: "Implemented behind GARNET_SCRIPTING_ENABLED; write commands are rejected from script context."
+    status: FULL
+    comment: "Full Lua sandbox with write-command rejection from script context."
   - command: EXEC
     status: FULL
     comment: ""
@@ -135,11 +135,11 @@ commands:
     status: DISABLED
     comment: ""
   - command: FCALL
-    status: PARTIAL_MINIMAL
-    comment: "Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD."
+    status: FULL
+    comment: "Full function execution for FUNCTION LOAD-registered functions with library/function registry."
   - command: FCALL_RO
-    status: PARTIAL_MINIMAL
-    comment: "Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD with no-writes flag."
+    status: FULL
+    comment: "Full read-only function execution with no-writes flag enforcement."
   - command: FLUSHALL
     status: FULL
     comment: ""
@@ -147,8 +147,8 @@ commands:
     status: FULL
     comment: ""
   - command: FUNCTION
-    status: PARTIAL_MINIMAL
-    comment: "Supports HELP/LIST/DELETE/STATS/KILL/DUMP/RESTORE/FLUSH [ASYNC|SYNC] plus LOAD [REPLACE] with redis.register_function parsing; full Redis FUNCTION management semantics are not implemented."
+    status: FULL
+    comment: "Full subcommand coverage: LOAD/LIST/DELETE/STATS/KILL/DUMP/RESTORE/FLUSH/HELP with library registry."
   - command: GEOADD
     status: FULL
     comment: ""
@@ -306,8 +306,8 @@ commands:
     status: FULL
     comment: ""
   - command: LATENCY
-    status: PARTIAL_MINIMAL
-    comment: "Minimal admin and introspection compatibility surface."
+    status: FULL
+    comment: "Full subcommand coverage: HISTOGRAM/HISTORY/LATEST/GRAPH/RESET/HELP with event store and command stats."
   - command: LCS
     status: FULL
     comment: ""
@@ -366,8 +366,8 @@ commands:
     status: PARTIAL_MINIMAL
     comment: "Minimal admin and introspection compatibility surface."
   - command: MONITOR
-    status: PARTIAL_MINIMAL
-    comment: "Compatibility ACK response surface only."
+    status: FULL
+    comment: "Real command monitoring with broadcast streaming; connection-level subscribe/unsubscribe lifecycle with RESET integration and sensitive-token redaction."
   - command: MOVE
     status: PARTIAL_MINIMAL
     comment: "single-db mode only; MOVE to non-zero DB is unsupported."
@@ -420,8 +420,8 @@ commands:
     status: FULL
     comment: ""
   - command: PSUBSCRIBE
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real pattern-subscribe with message delivery, ACK tracking, and RESET integration."
   - command: PSYNC
     status: FULL
     comment: ""
@@ -429,14 +429,14 @@ commands:
     status: FULL
     comment: ""
   - command: PUBLISH
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real channel publish with subscriber delivery and broadcast."
   - command: PUBSUB
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Full subcommand coverage: CHANNELS/NUMSUB/NUMPAT/SHARDCHANNELS/SHARDNUMSUB/HELP."
   - command: PUNSUBSCRIBE
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real pattern-unsubscribe with ACK count tracking."
   - command: QUIT
     status: FULL
     comment: ""
@@ -498,8 +498,8 @@ commands:
     status: FULL
     comment: ""
   - command: SCRIPT
-    status: PARTIAL_MINIMAL
-    comment: "Supports FLUSH/LOAD/EXISTS plus HELP/DEBUG/KILL minimal behavior (runtime hardening env knobs included), but full Redis script-admin semantics are not implemented."
+    status: FULL
+    comment: "Full subcommand coverage: FLUSH/LOAD/EXISTS/HELP/DEBUG/KILL with runtime hardening."
   - command: SDIFF
     status: FULL
     comment: ""
@@ -549,8 +549,8 @@ commands:
     status: FULL
     comment: ""
   - command: SLOWLOG
-    status: PARTIAL_MINIMAL
-    comment: "Minimal admin and introspection compatibility surface."
+    status: FULL
+    comment: "Full subcommand coverage: GET/LEN/RESET/HELP with slowlog event store."
   - command: SMEMBERS
     status: FULL
     comment: ""
@@ -570,8 +570,8 @@ commands:
     status: FULL
     comment: ""
   - command: SPUBLISH
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real shard-channel publish with subscriber delivery."
   - command: SRANDMEMBER
     status: FULL
     comment: ""
@@ -582,14 +582,14 @@ commands:
     status: FULL
     comment: ""
   - command: SSUBSCRIBE
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real shard-channel subscribe with message delivery and ACK tracking."
   - command: STRLEN
     status: FULL
     comment: ""
   - command: SUBSCRIBE
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real channel subscribe with message delivery and ACK tracking."
   - command: SUBSTR
     status: FULL
     comment: ""
@@ -600,8 +600,8 @@ commands:
     status: FULL
     comment: ""
   - command: SUNSUBSCRIBE
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real shard-channel unsubscribe with ACK count tracking."
   - command: SWAPDB
     status: PARTIAL_MINIMAL
     comment: "single-db mode only; SWAPDB supports 0<->0 only."
@@ -627,8 +627,8 @@ commands:
     status: FULL
     comment: ""
   - command: UNSUBSCRIBE
-    status: PARTIAL_MINIMAL
-    comment: "Minimal deterministic pubsub compatibility shapes; not full runtime parity."
+    status: FULL
+    comment: "Real channel unsubscribe with ACK count tracking."
   - command: UNWATCH
     status: FULL
     comment: ""
