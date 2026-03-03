@@ -2316,12 +2316,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SUBSCRIBE", "SUBSCRIBE channel [channel ...]")?;
+        let resp3 = self.resp_protocol_version().is_resp3();
         if let Some(client_id) = super::current_request_client_id() {
             let acks = self.pubsub_subscribe_channels(client_id, &args[1..]);
-            append_subscription_ack_entries(response_out, b"subscribe", &acks);
+            append_subscription_ack_entries(response_out, b"subscribe", &acks, resp3);
             return Ok(());
         }
-        append_subscription_acks(response_out, &args[1..], b"subscribe");
+        append_subscription_acks(response_out, &args[1..], b"subscribe", resp3);
         Ok(())
     }
 
@@ -2331,12 +2332,13 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PSUBSCRIBE", "PSUBSCRIBE pattern [pattern ...]")?;
+        let resp3 = self.resp_protocol_version().is_resp3();
         if let Some(client_id) = super::current_request_client_id() {
             let acks = self.pubsub_subscribe_patterns(client_id, &args[1..]);
-            append_subscription_ack_entries(response_out, b"psubscribe", &acks);
+            append_subscription_ack_entries(response_out, b"psubscribe", &acks, resp3);
             return Ok(());
         }
-        append_subscription_acks(response_out, &args[1..], b"psubscribe");
+        append_subscription_acks(response_out, &args[1..], b"psubscribe", resp3);
         Ok(())
     }
 
@@ -2351,7 +2353,8 @@ impl RequestProcessor {
             "SSUBSCRIBE",
             "SSUBSCRIBE shardchannel [shardchannel ...]",
         )?;
-        append_subscription_acks(response_out, &args[1..], b"ssubscribe");
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_subscription_acks(response_out, &args[1..], b"ssubscribe", resp3);
         Ok(())
     }
 
@@ -2366,12 +2369,13 @@ impl RequestProcessor {
             "UNSUBSCRIBE",
             "UNSUBSCRIBE [channel [channel ...]]",
         )?;
+        let resp3 = self.resp_protocol_version().is_resp3();
         if let Some(client_id) = super::current_request_client_id() {
             let acks = self.pubsub_unsubscribe_channels(client_id, &args[1..]);
-            append_unsubscribe_ack_entries(response_out, b"unsubscribe", &acks);
+            append_unsubscribe_ack_entries(response_out, b"unsubscribe", &acks, resp3);
             return Ok(());
         }
-        append_unsubscribe_acks(response_out, &args[1..], b"unsubscribe");
+        append_unsubscribe_acks(response_out, &args[1..], b"unsubscribe", resp3);
         Ok(())
     }
 
@@ -2386,12 +2390,13 @@ impl RequestProcessor {
             "PUNSUBSCRIBE",
             "PUNSUBSCRIBE [pattern [pattern ...]]",
         )?;
+        let resp3 = self.resp_protocol_version().is_resp3();
         if let Some(client_id) = super::current_request_client_id() {
             let acks = self.pubsub_unsubscribe_patterns(client_id, &args[1..]);
-            append_unsubscribe_ack_entries(response_out, b"punsubscribe", &acks);
+            append_unsubscribe_ack_entries(response_out, b"punsubscribe", &acks, resp3);
             return Ok(());
         }
-        append_unsubscribe_acks(response_out, &args[1..], b"punsubscribe");
+        append_unsubscribe_acks(response_out, &args[1..], b"punsubscribe", resp3);
         Ok(())
     }
 
@@ -2406,7 +2411,8 @@ impl RequestProcessor {
             "SUNSUBSCRIBE",
             "SUNSUBSCRIBE [shardchannel [shardchannel ...]]",
         )?;
-        append_unsubscribe_acks(response_out, &args[1..], b"sunsubscribe");
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_unsubscribe_acks(response_out, &args[1..], b"sunsubscribe", resp3);
         Ok(())
     }
 
@@ -3262,9 +3268,14 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
     }
 }
 
-fn append_subscription_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: &[u8]) {
+fn append_subscription_acks(
+    response_out: &mut Vec<u8>,
+    targets: &[&[u8]],
+    kind: &[u8],
+    resp3: bool,
+) {
     for (index, &channel) in targets.iter().enumerate() {
-        append_pubsub_ack(response_out, kind, Some(channel), index + 1);
+        append_pubsub_ack(response_out, kind, Some(channel), index + 1, resp3);
     }
 }
 
@@ -3272,20 +3283,26 @@ fn append_subscription_ack_entries(
     response_out: &mut Vec<u8>,
     kind: &[u8],
     entries: &[(Vec<u8>, usize)],
+    resp3: bool,
 ) {
     for (channel, count) in entries {
-        append_pubsub_ack(response_out, kind, Some(channel), *count);
+        append_pubsub_ack(response_out, kind, Some(channel), *count, resp3);
     }
 }
 
-fn append_unsubscribe_acks(response_out: &mut Vec<u8>, targets: &[&[u8]], kind: &[u8]) {
+fn append_unsubscribe_acks(
+    response_out: &mut Vec<u8>,
+    targets: &[&[u8]],
+    kind: &[u8],
+    resp3: bool,
+) {
     if targets.is_empty() {
-        append_pubsub_ack(response_out, kind, None, 0);
+        append_pubsub_ack(response_out, kind, None, 0, resp3);
         return;
     }
     for (index, &channel) in targets.iter().enumerate() {
         let remaining = targets.len().saturating_sub(index + 1);
-        append_pubsub_ack(response_out, kind, Some(channel), remaining);
+        append_pubsub_ack(response_out, kind, Some(channel), remaining, resp3);
     }
 }
 
@@ -3293,9 +3310,10 @@ fn append_unsubscribe_ack_entries(
     response_out: &mut Vec<u8>,
     kind: &[u8],
     entries: &[(Option<Vec<u8>>, usize)],
+    resp3: bool,
 ) {
     for (channel, count) in entries {
-        append_pubsub_ack(response_out, kind, channel.as_deref(), *count);
+        append_pubsub_ack(response_out, kind, channel.as_deref(), *count, resp3);
     }
 }
 
@@ -3304,8 +3322,13 @@ fn append_pubsub_ack(
     kind: &[u8],
     channel: Option<&[u8]>,
     count: usize,
+    resp3: bool,
 ) {
-    response_out.extend_from_slice(b"*3\r\n");
+    if resp3 {
+        append_push_length(response_out, 3);
+    } else {
+        response_out.extend_from_slice(b"*3\r\n");
+    }
     append_bulk_string(response_out, kind);
     match channel {
         Some(channel) => append_bulk_string(response_out, channel),

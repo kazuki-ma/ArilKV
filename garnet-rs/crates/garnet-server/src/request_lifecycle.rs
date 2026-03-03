@@ -261,6 +261,7 @@ use self::resp::append_map_length;
 use self::resp::append_null;
 use self::resp::append_null_array;
 use self::resp::append_null_bulk_string;
+use self::resp::append_push_length;
 use self::resp::append_simple_string;
 use self::resp::ascii_eq_ignore_case;
 use self::session_functions::KvSessionFunctions;

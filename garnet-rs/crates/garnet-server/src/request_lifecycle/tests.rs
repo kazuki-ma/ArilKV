@@ -10611,3 +10611,68 @@ fn lolwut_returns_bulk_with_version_info() {
         String::from_utf8_lossy(&response_v6)
     );
 }
+
+#[test]
+fn pubsub_subscribe_acks_use_push_type_in_resp3_and_array_in_resp2() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // RESP2: subscribe ack uses *3 (array).
+    let resp2_sub = execute_command_line(&processor, "SUBSCRIBE ch1 ch2").unwrap();
+    assert!(
+        resp2_sub.starts_with(b"*3\r\n"),
+        "RESP2 subscribe ack should use *3 array, got: {:?}",
+        String::from_utf8_lossy(&resp2_sub)
+    );
+    assert_eq!(
+        resp2_sub,
+        b"*3\r\n$9\r\nsubscribe\r\n$3\r\nch1\r\n:1\r\n\
+          *3\r\n$9\r\nsubscribe\r\n$3\r\nch2\r\n:2\r\n"
+            .as_slice()
+    );
+
+    // RESP2: unsubscribe uses *3.
+    let resp2_unsub = execute_command_line(&processor, "UNSUBSCRIBE ch1").unwrap();
+    assert!(
+        resp2_unsub.starts_with(b"*3\r\n"),
+        "RESP2 unsubscribe ack should use *3 array"
+    );
+
+    // Switch to RESP3.
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+
+    // RESP3: subscribe ack uses >3 (push type).
+    let resp3_sub = execute_command_line(&processor, "SUBSCRIBE ch3").unwrap();
+    assert!(
+        resp3_sub.starts_with(b">3\r\n"),
+        "RESP3 subscribe ack should use >3 push type, got: {:?}",
+        String::from_utf8_lossy(&resp3_sub)
+    );
+    assert_eq!(
+        resp3_sub,
+        b">3\r\n$9\r\nsubscribe\r\n$3\r\nch3\r\n:1\r\n".as_slice()
+    );
+
+    // RESP3: psubscribe ack uses >3.
+    let resp3_psub = execute_command_line(&processor, "PSUBSCRIBE p*").unwrap();
+    assert!(
+        resp3_psub.starts_with(b">3\r\n"),
+        "RESP3 psubscribe ack should use >3 push type, got: {:?}",
+        String::from_utf8_lossy(&resp3_psub)
+    );
+
+    // RESP3: unsubscribe ack uses >3.
+    let resp3_unsub = execute_command_line(&processor, "UNSUBSCRIBE ch3").unwrap();
+    assert!(
+        resp3_unsub.starts_with(b">3\r\n"),
+        "RESP3 unsubscribe ack should use >3 push type, got: {:?}",
+        String::from_utf8_lossy(&resp3_unsub)
+    );
+
+    // RESP3: punsubscribe with no args uses >3.
+    let resp3_punsub = execute_command_line(&processor, "PUNSUBSCRIBE").unwrap();
+    assert!(
+        resp3_punsub.starts_with(b">3\r\n"),
+        "RESP3 punsubscribe ack should use >3 push type, got: {:?}",
+        String::from_utf8_lossy(&resp3_punsub)
+    );
+}
