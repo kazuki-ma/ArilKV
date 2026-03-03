@@ -1622,9 +1622,30 @@ impl RequestProcessor {
 
             // Callbacks use this environment's global table for `redis`; keep the runtime table
             // limited so `redis.register_function` is not available while functions are running.
-            load_env.raw_set("redis", runtime_redis_table.clone())?;
+            // We must update the backing table (not the raw env) to preserve readonly
+            // protection: writing to the raw env would let `redis = ...` bypass __newindex.
+            {
+                let readonly_runtime_redis = lua.create_table()?;
+                let runtime_keys: Vec<(LuaValue, LuaValue)> = runtime_redis_table
+                    .pairs::<LuaValue, LuaValue>()
+                    .filter_map(|entry| entry.ok())
+                    .collect();
+                for (key, value) in &runtime_keys {
+                    readonly_runtime_redis.raw_set(key.clone(), value.clone())?;
+                }
+                make_table_readonly(&lua, &readonly_runtime_redis)?;
+                set_env_backing_value(
+                    &load_env,
+                    "redis",
+                    LuaValue::Table(readonly_runtime_redis),
+                )?;
+            }
             if let Some(getmetatable) = runtime_getmetatable {
-                load_env.raw_set("getmetatable", getmetatable)?;
+                set_env_backing_value(
+                    &load_env,
+                    "getmetatable",
+                    LuaValue::Function(getmetatable),
+                )?;
             }
             globals.set("redis", runtime_redis_table)?;
 
@@ -1970,10 +1991,17 @@ fn build_strict_lua_environment(lua: &Lua, redis_table: &LuaTable) -> mlua::Resu
         if global_name == "setmetatable" {
             continue; // replaced with safe wrapper below
         }
+        if global_name == "pairs" || global_name == "next" || global_name == "ipairs" {
+            continue; // replaced with readonly-proxy-aware versions below
+        }
         if let Ok(value) = base_globals.get::<LuaValue>(global_name) {
             backing.raw_set(global_name, value)?;
         }
     }
+
+    // Override pairs/next/ipairs to iterate backing tables of readonly proxies.
+    // In Lua 5.1, __pairs is not supported, so we wrap the builtins.
+    install_readonly_aware_iterators(lua, &backing)?;
 
     // Build a table of all "protected" (readonly) tables whose metatables
     // must not be changed via setmetatable().  We register env itself plus
@@ -2783,6 +2811,10 @@ fn install_readonly_table_metatable(lua: &Lua, table: &LuaTable) -> mlua::Result
 ///
 /// After this call, `content` is empty and all lookups go through the
 /// metatable, ensuring that writes to existing keys also fail.
+/// Metatable key that stores the backing table for readonly proxy tables.
+/// Used by the overridden `pairs`/`next` to iterate the real contents.
+const READONLY_BACKING_KEY: &str = "__backing";
+
 fn make_table_readonly(lua: &Lua, content: &LuaTable) -> mlua::Result<()> {
     // Move existing raw keys to a backing table
     let backing = lua.create_table()?;
@@ -2796,9 +2828,10 @@ fn make_table_readonly(lua: &Lua, content: &LuaTable) -> mlua::Result<()> {
     for (key, _) in &keys_to_move {
         content.raw_set(key.clone(), LuaValue::Nil)?;
     }
-    // Set up metatable
+    // Set up metatable with __backing so overridden pairs/next can find keys
     let metatable = lua.create_table()?;
-    metatable.set("__index", backing)?;
+    metatable.raw_set("__index", backing.clone())?;
+    metatable.raw_set(READONLY_BACKING_KEY, backing)?;
     let newindex_fn = lua.create_function(
         |_, (_table, _key, _value): (LuaValue, LuaValue, LuaValue)| -> mlua::Result<()> {
             Err(LuaError::RuntimeError(
@@ -2806,11 +2839,33 @@ fn make_table_readonly(lua: &Lua, content: &LuaTable) -> mlua::Result<()> {
             ))
         },
     )?;
-    metatable.set("__newindex", newindex_fn)?;
+    metatable.raw_set("__newindex", newindex_fn)?;
     content.set_metatable(Some(metatable))?;
     // Register in the readonly tables set so safe_setmetatable blocks
     // setmetatable() targeting this table.
     mark_table_readonly(lua, content)?;
+    Ok(())
+}
+
+/// Get the backing table for a readonly proxy table, if it has one.
+fn get_readonly_backing<'a>(table: &'a LuaTable) -> Option<LuaTable> {
+    let metatable = table.metatable()?;
+    match metatable.raw_get::<LuaValue>(READONLY_BACKING_KEY) {
+        Ok(LuaValue::Table(backing)) => Some(backing),
+        _ => None,
+    }
+}
+
+/// Set a value in the backing table of an environment built by
+/// `build_strict_lua_environment`.  The env's metatable `__index` points to
+/// the backing table.  Writing here keeps the raw env empty so that
+/// `__newindex` protection remains effective.
+fn set_env_backing_value(env: &LuaTable, key: &str, value: LuaValue) -> mlua::Result<()> {
+    let metatable = env
+        .metatable()
+        .ok_or_else(|| LuaError::RuntimeError("env has no metatable".into()))?;
+    let backing: LuaTable = metatable.get("__index")?;
+    backing.raw_set(key, value)?;
     Ok(())
 }
 
@@ -2831,6 +2886,48 @@ fn mark_table_readonly(lua: &Lua, table: &LuaTable) -> mlua::Result<()> {
     };
     // Use the table itself as key (identity-based lookup)
     registry.raw_set(table.clone(), true)?;
+    Ok(())
+}
+
+/// Override `pairs`, `next`, and `ipairs` to be aware of readonly proxy tables.
+///
+/// Readonly proxy tables (created by `make_table_readonly`) are empty; all real
+/// keys live in the backing table stored as `__backing` in the metatable.
+/// Standard Lua 5.1 does not support `__pairs`, so we wrap the builtins to
+/// check for this backing table before iterating.
+fn install_readonly_aware_iterators(lua: &Lua, backing: &LuaTable) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let original_next: LuaFunction = globals.get("next")?;
+    let original_ipairs: LuaFunction = globals.get("ipairs")?;
+
+    // Wrap `next` to redirect to the backing table when called on a proxy.
+    let next_clone = original_next.clone();
+    let safe_next = lua.create_function(move |_, (table, key): (LuaTable, LuaValue)| {
+        let target = get_readonly_backing(&table).unwrap_or(table);
+        next_clone.call::<MultiValue>((target, key))
+    })?;
+
+    // Wrap `pairs` to use our safe `next` and the backing table.
+    let safe_next_for_pairs = safe_next.clone();
+    let safe_pairs =
+        lua.create_function(move |_, table: LuaTable| -> mlua::Result<MultiValue> {
+            let target = get_readonly_backing(&table).unwrap_or(table);
+            Ok(MultiValue::from_iter([
+                LuaValue::Function(safe_next_for_pairs.clone()),
+                LuaValue::Table(target),
+                LuaValue::Nil,
+            ]))
+        })?;
+
+    // Wrap `ipairs` to iterate the backing table when present.
+    let safe_ipairs = lua.create_function(move |_, table: LuaTable| -> mlua::Result<MultiValue> {
+        let target = get_readonly_backing(&table).unwrap_or(table);
+        original_ipairs.call::<MultiValue>(target)
+    })?;
+
+    backing.raw_set("next", safe_next)?;
+    backing.raw_set("pairs", safe_pairs)?;
+    backing.raw_set("ipairs", safe_ipairs)?;
     Ok(())
 }
 
