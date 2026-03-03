@@ -620,9 +620,7 @@ impl RequestProcessor {
 
         // HRANDFIELD without WITHVALUES: flat array of field names in both
         // RESP2 and RESP3 (Valkey emits the same shape for both protocols).
-        response_out.push(b'*');
-        response_out.extend_from_slice(sampled.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, sampled.len());
         for (field, _) in sampled {
             append_bulk_string(response_out, field);
         }
