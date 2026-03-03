@@ -106,7 +106,10 @@ pub(crate) fn execute_transaction_queue(
         .unwrap_or(ShardIndex::new(0));
     let queued_len = queued.len();
     let routed_processor = Arc::clone(processor);
-    let (items, pending_replication_transition) = owner_thread_pool
+    let TransactionExecutionOutcome {
+        items,
+        pending_replication_transition,
+    } = owner_thread_pool
         .execute_sync(owner_shard, move || {
             execute_transaction_queue_on_owner_thread(
                 &routed_processor,
@@ -116,17 +119,15 @@ pub(crate) fn execute_transaction_queue(
                 client_id,
             )
         })
-        .unwrap_or_else(|_| {
-            (
-                vec![
-                    ExecutedTransactionItem {
-                        frame: Vec::new(),
-                        response: b"-ERR owner routing execution failed\r\n".to_vec(),
-                    };
-                    queued_len
-                ],
-                None,
-            )
+        .unwrap_or_else(|_| TransactionExecutionOutcome {
+            items: vec![
+                ExecutedTransactionItem {
+                    frame: Vec::new(),
+                    response: b"-ERR owner routing execution failed\r\n".to_vec(),
+                };
+                queued_len
+            ],
+            pending_replication_transition: None,
         });
 
     responses.push(b'*');
@@ -169,10 +170,7 @@ fn execute_transaction_queue_on_owner_thread(
     max_resp_arguments: usize,
     client_no_touch: bool,
     client_id: Option<ClientId>,
-) -> (
-    Vec<ExecutedTransactionItem>,
-    Option<QueuedReplicationTransition>,
-) {
+) -> TransactionExecutionOutcome {
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     let mut items = Vec::with_capacity(queued.len());
     let mut pending_replication_transition = None;
@@ -227,7 +225,10 @@ fn execute_transaction_queue_on_owner_thread(
             response: item_response,
         });
     }
-    (items, pending_replication_transition)
+    TransactionExecutionOutcome {
+        items,
+        pending_replication_transition,
+    }
 }
 
 #[inline]
