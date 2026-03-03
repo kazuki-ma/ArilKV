@@ -1612,7 +1612,9 @@ impl RequestProcessor {
         let get_args: [&[u8]; 2] = [b"GET", args[1]];
         let mut previous_value_response = Vec::new();
         self.handle_get(&get_args, &mut previous_value_response)?;
-        if previous_value_response.as_slice() == b"$-1\r\n" {
+        let is_null = previous_value_response.as_slice() == b"$-1\r\n"
+            || previous_value_response.as_slice() == b"_\r\n";
+        if is_null {
             response_out.extend_from_slice(&previous_value_response);
             return Ok(());
         }
