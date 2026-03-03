@@ -83,15 +83,28 @@ const ACL_HELP_LINES: [&[u8]; 27] = [
     b"WHOAMI",
     b"    Return the current connection username.",
 ];
-const ACL_CATEGORIES: [&[u8]; 8] = [
+const ACL_CATEGORIES: [&[u8]; 21] = [
     b"keyspace",
     b"read",
     b"write",
-    b"string",
-    b"hash",
-    b"list",
     b"set",
+    b"sortedset",
+    b"list",
+    b"hash",
+    b"string",
+    b"bitmap",
+    b"hyperloglog",
+    b"geo",
     b"stream",
+    b"pubsub",
+    b"admin",
+    b"fast",
+    b"slow",
+    b"blocking",
+    b"dangerous",
+    b"connection",
+    b"transaction",
+    b"scripting",
 ];
 const OBJECT_HELP_LINES: [&[u8]; 11] = [
     b"OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -2498,7 +2511,7 @@ impl RequestProcessor {
             ensure_min_arity(args, 3, "ACL", "ACL DELUSER username [username ...]")?;
             // Only "default" user exists; it cannot be deleted.
             for &username in &args[2..] {
-                if username == b"default" {
+                if ascii_eq_ignore_case(username, b"DEFAULT") {
                     append_error(response_out, b"ERR The 'default' user cannot be removed");
                     return Ok(());
                 }
@@ -2566,7 +2579,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {
             require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
             let username = args[2];
-            if !ascii_eq_ignore_case(username, b"default") {
+            if !ascii_eq_ignore_case(username, b"DEFAULT") {
                 if self.resp_protocol_version().is_resp3() {
                     append_null(response_out);
                 } else {

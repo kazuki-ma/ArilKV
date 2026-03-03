@@ -12021,3 +12021,87 @@ fn cluster_reset_and_shards_stubs() {
         "CLUSTER HELP should return 24-element array"
     );
 }
+
+#[test]
+fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // ACL CAT returns all 21 categories
+    let cat = execute_command_line(&processor, "ACL CAT").unwrap();
+    assert!(
+        cat.starts_with(b"*21\r\n"),
+        "ACL CAT should return 21-element array, got: {:?}",
+        &cat[..cat.len().min(20)]
+    );
+    // Verify specific categories are present
+    let cat_str = std::str::from_utf8(&cat).unwrap();
+    for expected in &[
+        "keyspace",
+        "read",
+        "write",
+        "sortedset",
+        "bitmap",
+        "hyperloglog",
+        "geo",
+        "pubsub",
+        "admin",
+        "fast",
+        "slow",
+        "blocking",
+        "dangerous",
+        "connection",
+        "transaction",
+        "scripting",
+    ] {
+        assert!(
+            cat_str.contains(expected),
+            "ACL CAT should contain '{expected}'"
+        );
+    }
+
+    // ACL CAT with category returns empty array (stub)
+    let cat_read = execute_command_line(&processor, "ACL CAT read").unwrap();
+    assert_eq!(cat_read, b"*0\r\n");
+
+    // ACL GETUSER default returns 12-element array in RESP2
+    let getuser = execute_command_line(&processor, "ACL GETUSER default").unwrap();
+    assert!(
+        getuser.starts_with(b"*12\r\n"),
+        "ACL GETUSER default should return 12-element array in RESP2, got: {:?}",
+        std::str::from_utf8(&getuser[..getuser.len().min(60)]).unwrap_or("(non-utf8)")
+    );
+    let getuser_str = std::str::from_utf8(&getuser).unwrap();
+    assert!(
+        getuser_str.contains("flags"),
+        "ACL GETUSER should contain 'flags'"
+    );
+    assert!(
+        getuser_str.contains("nopass"),
+        "ACL GETUSER should contain 'nopass'"
+    );
+    assert!(
+        getuser_str.contains("+@all"),
+        "ACL GETUSER should contain '+@all'"
+    );
+
+    // ACL GETUSER nonexistent returns null
+    let getuser_none = execute_command_line(&processor, "ACL GETUSER unknown").unwrap();
+    assert_eq!(getuser_none, b"$-1\r\n");
+
+    // ACL GETUSER in RESP3 returns map
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let getuser_resp3 = execute_command_line(&processor, "ACL GETUSER default").unwrap();
+    assert!(
+        getuser_resp3.starts_with(b"%6\r\n"),
+        "ACL GETUSER in RESP3 should return 6-entry map"
+    );
+
+    // ACL GETUSER nonexistent in RESP3 returns _\r\n
+    let getuser_none_resp3 = execute_command_line(&processor, "ACL GETUSER nobody").unwrap();
+    assert_eq!(getuser_none_resp3, b"_\r\n");
+
+    // ACL unknown subcommand returns error
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    let unknown = execute_command_line(&processor, "ACL BADCMD");
+    assert!(unknown.is_err(), "ACL BADCMD should return error");
+}
