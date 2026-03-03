@@ -1680,17 +1680,43 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "COMMAND", "COMMAND INFO [command-name ...]")?;
+        let resp3 = self.resp_protocol_version().is_resp3();
+
         if args.len() == 2 {
-            response_out.extend_from_slice(b"*0\r\n");
+            if resp3 {
+                append_map_length(response_out, 0);
+            } else {
+                response_out.extend_from_slice(b"*0\r\n");
+            }
             return Ok(());
         }
 
-        response_out.push(b'*');
-        response_out.extend_from_slice((args.len() - 2).to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        if resp3 {
+            // RESP3: emit map keyed by command name; unknown commands are omitted.
+            // Pre-scan to count valid entries for the map header.
+            let valid_count = args[2..]
+                .iter()
+                .filter(|token| {
+                    let Some(ct) = split_command_token(token) else {
+                        return false;
+                    };
+                    let cid = command_id_from_name(ct.name);
+                    let sub_known =
+                        ct.subcommand
+                            .is_some_and(|v| command_subcommand_known(ct.name, v));
+                    cid.is_some() && (ct.subcommand.is_none() || sub_known)
+                })
+                .count();
+            append_map_length(response_out, valid_count);
+        } else {
+            append_array_length(response_out, args.len() - 2);
+        }
+
         for token in &args[2..] {
             let Some(command_token) = split_command_token(token) else {
-                response_out.extend_from_slice(b"*0\r\n");
+                if !resp3 {
+                    response_out.extend_from_slice(b"*0\r\n");
+                }
                 continue;
             };
             let command_id = command_id_from_name(command_token.name);
@@ -1698,7 +1724,9 @@ impl RequestProcessor {
                 .subcommand
                 .is_some_and(|value| command_subcommand_known(command_token.name, value));
             if command_id.is_none() || (command_token.subcommand.is_some() && !subcommand_known) {
-                response_out.extend_from_slice(b"*0\r\n");
+                if !resp3 {
+                    response_out.extend_from_slice(b"*0\r\n");
+                }
                 continue;
             }
 
@@ -1716,7 +1744,13 @@ impl RequestProcessor {
                 }
             }
 
-            append_command_info_entry(response_out, &token.to_ascii_lowercase(), arity, &flags);
+            let lowered = token.to_ascii_lowercase();
+            if resp3 {
+                // Map key: command name.
+                append_bulk_string(response_out, &lowered);
+            }
+            // Map value (RESP3) or array element (RESP2): info entry.
+            append_command_info_entry(response_out, &lowered, arity, &flags);
         }
         Ok(())
     }

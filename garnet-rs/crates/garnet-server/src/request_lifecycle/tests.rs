@@ -10987,3 +10987,56 @@ fn zincrby_returns_double_type_in_resp3() {
     let resp3 = execute_command_line(&processor, "ZINCRBY myz 1.0 alpha").unwrap();
     assert_eq!(resp3, b",4.5\r\n");
 }
+
+#[test]
+fn command_info_returns_map_in_resp3_and_array_in_resp2() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // RESP2: COMMAND INFO GET returns *1 array with one entry
+    let resp2 = execute_command_line(&processor, "COMMAND INFO GET").unwrap();
+    assert!(
+        resp2.starts_with(b"*1\r\n*3\r\n"),
+        "RESP2 COMMAND INFO should return array of entries, got: {:?}",
+        String::from_utf8_lossy(&resp2)
+    );
+
+    // RESP2: unknown command returns *0 placeholder
+    let resp2_unknown =
+        execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND").unwrap();
+    assert!(
+        resp2_unknown.starts_with(b"*2\r\n"),
+        "RESP2 should include placeholders for unknown commands"
+    );
+    // Should contain *0 placeholder for the unknown command
+    assert!(
+        resp2_unknown.ends_with(b"*0\r\n"),
+        "RESP2 unknown command should be *0 placeholder"
+    );
+
+    // RESP3: COMMAND INFO GET returns %1 map with one entry
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "COMMAND INFO GET").unwrap();
+    assert!(
+        resp3.starts_with(b"%1\r\n$3\r\nget\r\n*3\r\n"),
+        "RESP3 COMMAND INFO should return map keyed by command name, got: {:?}",
+        String::from_utf8_lossy(&resp3)
+    );
+
+    // RESP3: unknown commands are omitted from map
+    let resp3_mixed =
+        execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND SET").unwrap();
+    assert!(
+        resp3_mixed.starts_with(b"%2\r\n"),
+        "RESP3 should have map with 2 entries (unknown omitted), got: {:?}",
+        String::from_utf8_lossy(&resp3_mixed)
+    );
+
+    // RESP3: empty COMMAND INFO returns %0
+    let resp3_empty = execute_command_line(&processor, "COMMAND INFO").unwrap();
+    assert_eq!(resp3_empty, b"%0\r\n");
+
+    // RESP2: empty COMMAND INFO returns *0
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    let resp2_empty = execute_command_line(&processor, "COMMAND INFO").unwrap();
+    assert_eq!(resp2_empty, b"*0\r\n");
+}
