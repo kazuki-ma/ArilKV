@@ -4613,6 +4613,71 @@ fn flushall_clears_keys_across_string_and_object_store() {
 }
 
 #[test]
+fn flushall_modes_update_lazyfree_stats_and_info_fields() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET x 1", b"+OK\r\n");
+    assert_command_response(&processor, "SET y 2", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+
+    assert_command_response(&processor, "FLUSHALL ASYNC", b"+OK\r\n");
+    let info_after_async = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"stats"]),
+    ))
+    .unwrap();
+    let info_after_async_text = String::from_utf8_lossy(&info_after_async);
+    assert!(info_after_async_text.contains("lazyfree_pending_objects:0"));
+    assert!(info_after_async_text.contains("lazyfreed_objects:2"));
+
+    assert_command_response(&processor, "SET x 1", b"+OK\r\n");
+    assert_command_response(&processor, "SET y 2", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+
+    assert_command_response(&processor, "FLUSHALL SYNC", b"+OK\r\n");
+    let info_after_sync = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"stats"]),
+    ))
+    .unwrap();
+    let info_after_sync_text = String::from_utf8_lossy(&info_after_sync);
+    assert!(info_after_sync_text.contains("lazyfree_pending_objects:0"));
+    assert!(info_after_sync_text.contains("lazyfreed_objects:0"));
+}
+
+#[test]
+fn flushall_default_in_transaction_context_does_not_record_lazyfree() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    assert_command_response(&processor, "SET x 1", b"+OK\r\n");
+    assert_command_response(&processor, "SET y 2", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+
+    let flushall = b"*1\r\n$8\r\nFLUSHALL\r\n";
+    let meta = parse_resp_command_arg_slices(flushall, &mut args).unwrap();
+    processor
+        .execute_with_client_no_touch_in_transaction(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+        )
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    let info_stats = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"stats"]),
+    ))
+    .unwrap();
+    let info_stats_text = String::from_utf8_lossy(&info_stats);
+    assert!(info_stats_text.contains("lazyfree_pending_objects:0"));
+    assert!(info_stats_text.contains("lazyfreed_objects:0"));
+}
+
+#[test]
 fn info_dbsize_and_command_responses_are_generated() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -4805,6 +4870,51 @@ fn info_keysizes_reports_type_histograms_with_power_of_two_bins() {
     assert!(info_keysizes_text.contains("db0_distrib_sets_items:4=1"));
     assert!(info_keysizes_text.contains("db0_distrib_zsets_items:2=1"));
     assert!(info_keysizes_text.contains("db0_distrib_hashes_items:2=1"));
+}
+
+#[test]
+fn info_keyspace_reports_keys_and_expires() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Empty database: no db0 line.
+    let info_ks = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"keyspace"]),
+    ))
+    .expect("INFO keyspace returns bulk payload");
+    let info_ks_text = String::from_utf8_lossy(&info_ks);
+    assert!(info_ks_text.contains("# Keyspace"));
+    assert!(!info_ks_text.contains("db0:"));
+
+    // Add some keys.
+    execute_frame(&processor, &encode_resp(&[b"SET", b"a", b"1"]));
+    execute_frame(&processor, &encode_resp(&[b"SET", b"b", b"2"]));
+    execute_frame(&processor, &encode_resp(&[b"HSET", b"h", b"f", b"v"]));
+
+    let info_ks = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"keyspace"]),
+    ))
+    .expect("INFO keyspace returns bulk payload");
+    let info_ks_text = String::from_utf8_lossy(&info_ks);
+    assert!(info_ks_text.contains("db0:keys=3,expires=0,avg_ttl=0"));
+
+    // Set an expiration on one key.
+    execute_frame(&processor, &encode_resp(&[b"PEXPIRE", b"a", b"100000"]));
+    let info_ks = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"keyspace"]),
+    ))
+    .expect("INFO keyspace returns bulk payload");
+    let info_ks_text = String::from_utf8_lossy(&info_ks);
+    assert!(info_ks_text.contains("db0:keys=3,expires=1,avg_ttl=0"));
+
+    // Keyspace is part of default INFO output.
+    let info_default = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+        .expect("INFO returns bulk payload");
+    let info_default_text = String::from_utf8_lossy(&info_default);
+    assert!(info_default_text.contains("# Keyspace"));
+    assert!(info_default_text.contains("db0:keys=3,expires=1,avg_ttl=0"));
 }
 
 #[test]
@@ -5149,6 +5259,46 @@ fn sscan_supports_cursor_match_and_count() {
             &encode_resp(&[b"SSCAN", b"s", b"0", b"MATCH", b"c*", b"COUNT", b"10"])
         ),
         b"*2\r\n$1\r\n0\r\n*1\r\n$1\r\nc\r\n"
+    );
+}
+
+#[test]
+fn hscan_novalues_returns_only_field_names() {
+    let processor = RequestProcessor::new().unwrap();
+    execute_frame(
+        &processor,
+        &encode_resp(&[b"HSET", b"h", b"a", b"1", b"b", b"2", b"c", b"3"]),
+    );
+    // NOVALUES: returns 3 field names (no values) in one batch.
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSCAN", b"h", b"0", b"NOVALUES"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*3\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n"
+    );
+    // NOVALUES with MATCH.
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"HSCAN", b"h", b"0", b"MATCH", b"b*", b"NOVALUES"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*1\r\n$1\r\nb\r\n"
+    );
+}
+
+#[test]
+fn scan_unknown_type_returns_empty() {
+    let processor = RequestProcessor::new().unwrap();
+    execute_frame(&processor, &encode_resp(&[b"SET", b"a", b"1"]));
+    execute_frame(&processor, &encode_resp(&[b"SET", b"b", b"2"]));
+    // Unknown type "foobar" should return empty result, not error.
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SCAN", b"0", b"TYPE", b"foobar"])
+        ),
+        b"*2\r\n$1\r\n0\r\n*0\r\n"
     );
 }
 
@@ -7548,6 +7698,70 @@ fn pubsub_numpat_counts_unique_patterns_across_clients() {
 }
 
 #[test]
+fn pubsub_unsubscribe_inside_transaction_context_uses_client_id() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(99);
+    processor.register_pubsub_client(client);
+
+    // Subscribe to 3 channels.
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE foo bar baz",
+        client,
+        b"*3\r\n$9\r\nsubscribe\r\n$3\r\nfoo\r\n:1\r\n\
+          *3\r\n$9\r\nsubscribe\r\n$3\r\nbar\r\n:2\r\n\
+          *3\r\n$9\r\nsubscribe\r\n$3\r\nbaz\r\n:3\r\n",
+    );
+
+    // Execute UNSUBSCRIBE bar inside a transaction context with client_id.
+    let frame = encode_resp(&[b"UNSUBSCRIBE", b"bar"]);
+    let mut args = [ArgSlice::EMPTY; 16];
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let mut response = Vec::new();
+    processor
+        .execute_with_client_no_touch_in_transaction(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            Some(client),
+        )
+        .unwrap();
+    // After removing bar, 2 subscriptions remain (foo, baz).
+    assert_eq!(
+        response, b"*3\r\n$11\r\nunsubscribe\r\n$3\r\nbar\r\n:2\r\n",
+        "UNSUBSCRIBE bar inside transaction should report 2 remaining subscriptions"
+    );
+
+    // Execute UNSUBSCRIBE baz inside a transaction context with client_id.
+    let frame = encode_resp(&[b"UNSUBSCRIBE", b"baz"]);
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    response.clear();
+    processor
+        .execute_with_client_no_touch_in_transaction(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            Some(client),
+        )
+        .unwrap();
+    // After removing baz, 1 subscription remains (foo).
+    assert_eq!(
+        response, b"*3\r\n$11\r\nunsubscribe\r\n$3\r\nbaz\r\n:1\r\n",
+        "UNSUBSCRIBE baz inside transaction should report 1 remaining subscription"
+    );
+
+    // Publish to foo — the client still has that subscription.
+    assert_command_response(&processor, "PUBLISH foo hello", b":1\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client),
+        vec![b"*3\r\n$7\r\nmessage\r\n$3\r\nfoo\r\n$5\r\nhello\r\n".to_vec()]
+    );
+
+    // Publish to bar — nobody is subscribed anymore.
+    assert_command_response(&processor, "PUBLISH bar hello", b":0\r\n");
+}
+
+#[test]
 fn geoadd_supports_basic_options_and_validation_paths() {
     let processor = RequestProcessor::new().unwrap();
 
@@ -8349,6 +8563,21 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let xgroup_destroy = b"*4\r\n$6\r\nXGROUP\r\n$7\r\nDESTROY\r\n$7\r\nstream3\r\n$3\r\ngmk\r\n";
+    let meta = parse_resp_command_arg_slices(xgroup_destroy, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(xgroup_destroy, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
 
     response.clear();
     let xreadgroup = b"*9\r\n$10\r\nXREADGROUP\r\n$5\r\nGROUP\r\n$2\r\ng1\r\n$8\r\nconsumer\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n$7\r\nSTREAMS\r\n$7\r\nstream1\r\n$1\r\n>\r\n";
@@ -9660,12 +9889,55 @@ fn config_set_port_accepts_current_value_and_rejects_port_changes() {
 }
 
 #[test]
-fn config_set_notify_keyspace_events_returns_unsupported_error() {
+fn config_set_notify_keyspace_events_accepts_valid_flags() {
     let processor = RequestProcessor::new().unwrap();
     assert_command_response(
         &processor,
         "CONFIG SET notify-keyspace-events KEA",
-        b"-ERR CONFIG SET failed (possibly related to argument 'notify-keyspace-events') - keyspace notifications are not supported\r\n",
+        b"+OK\r\n",
+    );
+    // Verify flags are stored and can be retrieved
+    assert_command_response(
+        &processor,
+        "CONFIG GET notify-keyspace-events",
+        b"*2\r\n$22\r\nnotify-keyspace-events\r\n$3\r\nAKE\r\n",
+    );
+}
+
+#[test]
+fn config_set_notify_keyspace_events_rejects_invalid_flags() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events QQ",
+        b"-ERR Invalid event class character. Use 'g$lszhxeKEtmdn'.\r\n",
+    );
+}
+
+#[test]
+fn config_set_notify_keyspace_events_empty_disables() {
+    let processor = RequestProcessor::new().unwrap();
+    // First enable
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events KEA",
+        b"+OK\r\n",
+    );
+    // Then disable with empty string — use raw RESP frame because the test
+    // tokenizer strips empty quoted strings.
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+    let frame = b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$22\r\nnotify-keyspace-events\r\n$0\r\n\r\n";
+    let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    assert_command_response(
+        &processor,
+        "CONFIG GET notify-keyspace-events",
+        b"*2\r\n$22\r\nnotify-keyspace-events\r\n$0\r\n\r\n",
     );
 }
 
@@ -9797,4 +10069,45 @@ fn storage_capacity_exceeded_formats_distinct_resp_error() {
         response,
         b"-ERR storage capacity exceeded (increase max in-memory pages)\r\n"
     );
+}
+
+#[test]
+fn eval_unpack_with_huge_range_returns_error_instead_of_crash() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    // This previously caused SIGSEGV due to signed integer overflow in Lua's luaB_unpack.
+    let response = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"return {unpack({1,2,3}, 0, 2147483647)}", b"0"]),
+    );
+    let text = String::from_utf8_lossy(&response);
+    assert!(
+        text.contains("too many results to unpack"),
+        "expected 'too many results to unpack' error, got: {text}"
+    );
+
+    // Negative start to INT_MAX should also be caught.
+    let response2 = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"return {unpack({1,2,3}, -2, 2147483647)}", b"0"]),
+    );
+    let text2 = String::from_utf8_lossy(&response2);
+    assert!(
+        text2.contains("too many results to unpack"),
+        "expected 'too many results to unpack' error, got: {text2}"
+    );
+
+    // Valid unpack usage should still work normally.
+    assert_command_response(
+        &processor,
+        "EVAL \"return unpack({10,20,30})\" 0",
+        b":10\r\n",
+    );
+
+    // Empty range (i > j) should return empty.
+    let response3 = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"return {unpack({1,2,3}, 1, -1)}", b"0"]),
+    );
+    assert_eq!(response3, b"*0\r\n");
 }

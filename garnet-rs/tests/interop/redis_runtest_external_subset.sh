@@ -12,6 +12,8 @@ GARNET_PORT="${GARNET_PORT:-6396}"
 GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
 GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED:-1}"
 REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
+RUNTEXT_ENABLE_CORE_DUMP="${RUNTEXT_ENABLE_CORE_DUMP:-1}"
+RUNTEXT_CAPTURE_CRASH_REPORT="${RUNTEXT_CAPTURE_CRASH_REPORT:-1}"
 if [[ -z "${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES:-}" ]]; then
     if [[ "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
         # Full external probes sweep many suites in one process, so keep
@@ -72,6 +74,44 @@ kill_process_tree() {
     fi
 
     kill "-${signal}" "${pid}" >/dev/null 2>&1 || true
+}
+
+find_latest_garnet_crash_report_since() {
+    local since_epoch="$1"
+    local latest_report=""
+    local latest_mtime=0
+    local report=""
+
+    while IFS= read -r report; do
+        [[ -z "${report}" ]] && continue
+        local mtime
+        mtime="$(stat -f %m "${report}" 2>/dev/null || echo 0)"
+        if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= since_epoch )) && (( mtime > latest_mtime )); then
+            latest_report="${report}"
+            latest_mtime="${mtime}"
+        fi
+    done < <(compgen -G "${HOME}/Library/Logs/DiagnosticReports/garnet-server-*.ips" || true)
+
+    echo "${latest_report}"
+}
+
+find_latest_core_dump_since() {
+    local since_epoch="$1"
+    local latest_core=""
+    local latest_mtime=0
+    local core_file=""
+
+    while IFS= read -r core_file; do
+        [[ -z "${core_file}" ]] && continue
+        local mtime
+        mtime="$(stat -f %m "${core_file}" 2>/dev/null || echo 0)"
+        if [[ "${mtime}" =~ ^[0-9]+$ ]] && (( mtime >= since_epoch )) && (( mtime > latest_mtime )); then
+            latest_core="${core_file}"
+            latest_mtime="${mtime}"
+        fi
+    done < <(compgen -G "/cores/core.*" || true)
+
+    echo "${latest_core}"
 }
 
 run_with_watchdogs() {
@@ -194,6 +234,8 @@ run_full_runtest_case() {
         --durable
     )
     local extra_args=()
+    local case_start_epoch
+    case_start_epoch="$(date +%s)"
 
     if [[ -n "${RUNTEXT_TIMEOUT_SECONDS}" ]]; then
         cmd+=(--timeout "${RUNTEXT_TIMEOUT_SECONDS}")
@@ -304,6 +346,27 @@ run_full_runtest_case() {
 
     local details
     details="mode=full; tsavorite_pages=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
+
+    if [[ "${RUNTEXT_CAPTURE_CRASH_REPORT}" == "1" ]]; then
+        local crash_report
+        crash_report="$(find_latest_garnet_crash_report_since "${case_start_epoch}")"
+        if [[ -n "${crash_report}" ]]; then
+            local crash_copy
+            crash_copy="${RESULT_DIR}/$(basename "${crash_report}")"
+            cp -f "${crash_report}" "${crash_copy}" >/dev/null 2>&1 || true
+            details="${details}; crash_report=$(basename "${crash_copy}")"
+        fi
+    fi
+
+    local core_dump
+    core_dump="$(find_latest_core_dump_since "${case_start_epoch}")"
+    if [[ -n "${core_dump}" ]]; then
+        local core_copy
+        core_copy="${RESULT_DIR}/$(basename "${core_dump}")"
+        cp -f "${core_dump}" "${core_copy}" >/dev/null 2>&1 || true
+        details="${details}; core_dump=$(basename "${core_copy}")"
+    fi
+
     record_result "${case_name}" "${status}" "${details}"
 }
 
@@ -423,6 +486,9 @@ trap cleanup EXIT
 
 (
     cd "${GARNET_RS_ROOT}"
+    if [[ "${RUNTEXT_ENABLE_CORE_DUMP}" == "1" ]]; then
+        ulimit -c unlimited >/dev/null 2>&1 || true
+    fi
     GARNET_BIND_ADDR="127.0.0.1:${GARNET_PORT}" \
     GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED}" \
     GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}" \
