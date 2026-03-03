@@ -430,8 +430,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        append_error(response_out, b"ERR unknown subcommand");
-        Ok(())
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_script(
