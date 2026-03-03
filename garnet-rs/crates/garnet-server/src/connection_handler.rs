@@ -456,6 +456,7 @@ impl Default for ClientConnectionState {
 
 fn apply_reset_command_side_effects(
     metrics: &ServerMetrics,
+    processor: &RequestProcessor,
     client_id: ClientId,
     transaction: &mut ConnectionTransactionState,
     client_state: &mut ClientConnectionState,
@@ -467,6 +468,7 @@ fn apply_reset_command_side_effects(
     *monitor_receiver = None;
     *allow_asking_once = false;
     metrics.set_client_user(client_id, b"default".to_vec());
+    processor.unregister_pubsub_client(client_id);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1163,6 +1165,7 @@ pub(crate) async fn handle_connection(
                         } else {
                             apply_reset_command_side_effects(
                                 &metrics,
+                                &processor,
                                 client_id,
                                 &mut transaction,
                                 &mut client_state,
@@ -1354,6 +1357,7 @@ pub(crate) async fn handle_connection(
                         } else {
                             apply_reset_command_side_effects(
                                 &metrics,
+                                &processor,
                                 client_id,
                                 &mut transaction,
                                 &mut client_state,
