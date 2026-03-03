@@ -8037,12 +8037,12 @@ fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
     assert!(response.starts_with(b"*1\r\n*2\r\n$"));
     assert!(response.contains(&b'\n'));
 
-    assert_command_response(&processor, "GEOPOS sicily unknown", b"*1\r\n$-1\r\n");
-    assert_command_response(&processor, "GEOPOS missing unknown", b"*1\r\n$-1\r\n");
+    assert_command_response(&processor, "GEOPOS sicily unknown", b"*1\r\n*-1\r\n");
+    assert_command_response(&processor, "GEOPOS missing unknown", b"*1\r\n*-1\r\n");
     assert_command_response(
         &processor,
         "GEOPOS sicily palermo unknown",
-        b"*2\r\n*2\r\n$20\r\n13.36138933897018433\r\n$20\r\n38.11555639549629859\r\n$-1\r\n",
+        b"*2\r\n*2\r\n$20\r\n13.36138933897018433\r\n$20\r\n38.11555639549629859\r\n*-1\r\n",
     );
 
     assert_command_response(&processor, "SET plain value", b"+OK\r\n");
@@ -9232,7 +9232,14 @@ fn xpending_accepts_idle_filter() {
     // XPENDING with IDLE filter (no consumer)
     response.clear();
     let xpending_idle = encode_resp(&[
-        b"XPENDING", b"xs1", b"g1", b"IDLE", b"5000", b"-", b"+", b"10",
+        b"XPENDING",
+        b"xs1",
+        b"g1",
+        b"IDLE",
+        b"5000",
+        b"-",
+        b"+",
+        b"10",
     ]);
     let meta = parse_resp_command_arg_slices(&xpending_idle, &mut args).unwrap();
     processor
@@ -9243,7 +9250,15 @@ fn xpending_accepts_idle_filter() {
     // XPENDING with IDLE filter and consumer
     response.clear();
     let xpending_idle_consumer = encode_resp(&[
-        b"XPENDING", b"xs1", b"g1", b"IDLE", b"5000", b"-", b"+", b"10", b"c1",
+        b"XPENDING",
+        b"xs1",
+        b"g1",
+        b"IDLE",
+        b"5000",
+        b"-",
+        b"+",
+        b"10",
+        b"c1",
     ]);
     let meta = parse_resp_command_arg_slices(&xpending_idle_consumer, &mut args).unwrap();
     processor
@@ -9886,7 +9901,8 @@ fn function_list_supports_libraryname_filter_and_argument_errors() {
 #[test]
 fn function_list_and_stats_use_resp3_map_types() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
-    let library_source = b"#!lua name=testlib\nredis.register_function('myfn', function(keys, args) return 1 end)";
+    let library_source =
+        b"#!lua name=testlib\nredis.register_function('myfn', function(keys, args) return 1 end)";
     execute_frame(
         &processor,
         &encode_resp(&[b"FUNCTION", b"LOAD", library_source]),
@@ -10560,7 +10576,8 @@ fn config_set_validates_maxmemory_policy_loglevel_hz_and_boolean_params() {
         b"+OK\r\n",
     );
     // maxmemory-policy rejects invalid
-    let bad_policy = execute_command_line(&processor, "CONFIG SET maxmemory-policy badpolicy").unwrap();
+    let bad_policy =
+        execute_command_line(&processor, "CONFIG SET maxmemory-policy badpolicy").unwrap();
     assert!(
         bad_policy.starts_with(b"-ERR"),
         "Invalid maxmemory-policy should error"
@@ -10586,11 +10603,7 @@ fn config_set_validates_maxmemory_policy_loglevel_hz_and_boolean_params() {
 
     // Boolean params accept yes/no
     assert_command_response(&processor, "CONFIG SET dynamic-hz yes", b"+OK\r\n");
-    assert_command_response(
-        &processor,
-        "CONFIG SET lazyfree-lazy-expire no",
-        b"+OK\r\n",
-    );
+    assert_command_response(&processor, "CONFIG SET lazyfree-lazy-expire no", b"+OK\r\n");
     // Boolean params reject non-boolean
     let bad_bool = execute_command_line(&processor, "CONFIG SET dynamic-hz maybe").unwrap();
     assert!(
@@ -10610,11 +10623,22 @@ fn config_set_validates_maxmemory_policy_loglevel_hz_and_boolean_params() {
 
     // Numeric params accept integers
     assert_command_response(&processor, "CONFIG SET timeout 300", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG SET repl-min-slaves-to-write 2",
+        b"+OK\r\n",
+    );
     // Numeric params reject non-integers
     let bad_num = execute_command_line(&processor, "CONFIG SET timeout abc").unwrap();
     assert!(
         bad_num.starts_with(b"-ERR"),
         "Non-integer timeout should error"
+    );
+    let bad_repl_min_slaves_to_write =
+        execute_command_line(&processor, "CONFIG SET repl-min-slaves-to-write notnum").unwrap();
+    assert!(
+        bad_repl_min_slaves_to_write.starts_with(b"-ERR"),
+        "Non-integer repl-min-slaves-to-write should error"
     );
 }
 
@@ -11971,13 +11995,13 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     );
 
     // CLIENT SETNAME with empty string clears the name
-    let setname_empty = execute_frame(
-        &processor,
-        &encode_resp(&[b"CLIENT", b"SETNAME", b""]),
-    );
+    let setname_empty = execute_frame(&processor, &encode_resp(&[b"CLIENT", b"SETNAME", b""]));
     assert_eq!(setname_empty, b"+OK\r\n");
     let getname_cleared = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
-    assert_eq!(getname_cleared, b"$-1\r\n", "Empty SETNAME should return null GETNAME");
+    assert_eq!(
+        getname_cleared, b"$-1\r\n",
+        "Empty SETNAME should return null GETNAME"
+    );
 
     // CLIENT LIST returns bulk string in RESP2
     let list = execute_command_line(&processor, "CLIENT LIST").unwrap();
@@ -12451,14 +12475,18 @@ fn xgroup_createconsumer_delconsumer_and_help() {
     execute_command_line(&processor, "XGROUP CREATE mystream mygroup 0").unwrap();
 
     // XGROUP CREATECONSUMER on existing stream/group returns 1
-    let create_consumer =
-        execute_command_line(&processor, "XGROUP CREATECONSUMER mystream mygroup consumer1")
-            .unwrap();
+    let create_consumer = execute_command_line(
+        &processor,
+        "XGROUP CREATECONSUMER mystream mygroup consumer1",
+    )
+    .unwrap();
     assert_eq!(create_consumer, b":1\r\n");
 
     // XGROUP CREATECONSUMER on missing stream returns error (NoSuchKey)
-    let create_missing =
-        execute_command_line(&processor, "XGROUP CREATECONSUMER nostream mygroup consumer1");
+    let create_missing = execute_command_line(
+        &processor,
+        "XGROUP CREATECONSUMER nostream mygroup consumer1",
+    );
     assert!(
         create_missing.is_err(),
         "CREATECONSUMER on missing stream should fail"
@@ -12466,8 +12494,7 @@ fn xgroup_createconsumer_delconsumer_and_help() {
 
     // XGROUP DELCONSUMER on existing stream returns 0 pending entries
     let del_consumer =
-        execute_command_line(&processor, "XGROUP DELCONSUMER mystream mygroup consumer1")
-            .unwrap();
+        execute_command_line(&processor, "XGROUP DELCONSUMER mystream mygroup consumer1").unwrap();
     assert_eq!(del_consumer, b":0\r\n");
 
     // XGROUP DELCONSUMER on missing stream returns error
@@ -12505,32 +12532,25 @@ fn memory_usage_accepts_samples_option() {
     );
 
     // MEMORY USAGE with SAMPLES option (ignored but accepted)
-    let usage_samples =
-        execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES 5").unwrap();
+    let usage_samples = execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES 5").unwrap();
     assert!(
         usage_samples.starts_with(b":"),
         "MEMORY USAGE SAMPLES should return integer"
     );
 
     // MEMORY USAGE with SAMPLES 0
-    let usage_samples_0 =
-        execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES 0").unwrap();
+    let usage_samples_0 = execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES 0").unwrap();
     assert!(
         usage_samples_0.starts_with(b":"),
         "MEMORY USAGE SAMPLES 0 should return integer"
     );
 
     // MEMORY USAGE with invalid SAMPLES count
-    let usage_bad =
-        execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES abc");
-    assert!(
-        usage_bad.is_err(),
-        "MEMORY USAGE SAMPLES abc should fail"
-    );
+    let usage_bad = execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES abc");
+    assert!(usage_bad.is_err(), "MEMORY USAGE SAMPLES abc should fail");
 
     // MEMORY USAGE with wrong option name
-    let usage_wrong =
-        execute_command_line(&processor, "MEMORY USAGE mykey BADOPT 5");
+    let usage_wrong = execute_command_line(&processor, "MEMORY USAGE mykey BADOPT 5");
     assert!(
         usage_wrong.is_err(),
         "MEMORY USAGE with bad option should fail"

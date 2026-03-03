@@ -231,7 +231,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_null(response_out);
                 } else {
-                    append_null_bulk_string(response_out);
+                    append_null_array(response_out);
                 }
                 continue;
             };
@@ -239,7 +239,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_null(response_out);
                 } else {
-                    append_null_bulk_string(response_out);
+                    append_null_array(response_out);
                 }
                 continue;
             };
