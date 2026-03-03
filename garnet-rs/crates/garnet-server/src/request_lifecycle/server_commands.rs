@@ -934,7 +934,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"INFO") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT INFO")?;
             let client_id = super::current_request_client_id()
-                .map(|cid| u64::from(cid))
+                .map(u64::from)
                 .unwrap_or(1);
             let info_line = format!(
                 "id={client_id} addr=127.0.0.1:0 fd=0 name= db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name= lib-ver=\n"
@@ -986,10 +986,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "ROLE", "ROLE")?;
-        response_out.extend_from_slice(b"*3\r\n");
+        append_array_length(response_out, 3);
         append_bulk_string(response_out, b"master");
         append_integer(response_out, 0);
-        response_out.extend_from_slice(b"*0\r\n");
+        append_array_length(response_out, 0);
         Ok(())
     }
 
@@ -1830,7 +1830,7 @@ impl RequestProcessor {
             if resp3 {
                 append_map_length(response_out, 0);
             } else {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
             }
             return Ok(());
         }
@@ -1859,7 +1859,7 @@ impl RequestProcessor {
         for token in &args[2..] {
             let Some(command_token) = split_command_token(token) else {
                 if !resp3 {
-                    response_out.extend_from_slice(b"*0\r\n");
+                    append_null_array(response_out);
                 }
                 continue;
             };
@@ -1869,7 +1869,7 @@ impl RequestProcessor {
                 .is_some_and(|value| command_subcommand_known(command_token.name, value));
             if command_id.is_none() || (command_token.subcommand.is_some() && !subcommand_known) {
                 if !resp3 {
-                    response_out.extend_from_slice(b"*0\r\n");
+                    append_null_array(response_out);
                 }
                 continue;
             }
@@ -2377,7 +2377,7 @@ impl RequestProcessor {
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"LIST") {
             require_exact_arity(args, 2, "MODULE", "MODULE LIST")?;
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"HELP") {
@@ -2420,7 +2420,7 @@ impl RequestProcessor {
             if args.len() == 3 {
                 parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             }
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
         Err(RequestExecutionError::UnknownCommand)
@@ -2616,10 +2616,11 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"SLOTS") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER SLOTS")?;
-            response_out.extend_from_slice(b"*1\r\n*3\r\n");
+            append_array_length(response_out, 1);
+            append_array_length(response_out, 3);
             append_integer(response_out, 0);
             append_integer(response_out, 16_383);
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
             append_bulk_string(response_out, b"127.0.0.1");
             append_integer(response_out, 6379);
             return Ok(());

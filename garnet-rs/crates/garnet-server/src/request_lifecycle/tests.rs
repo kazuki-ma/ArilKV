@@ -6757,8 +6757,8 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
         Vec::<Vec<u8>>::new()
     );
 
-    assert_command_response(&processor, "COMMAND INFO get|key", b"*1\r\n*0\r\n");
-    assert_command_response(&processor, "COMMAND INFO config|get|key", b"*1\r\n*0\r\n");
+    assert_command_response(&processor, "COMMAND INFO get|key", b"*1\r\n*-1\r\n");
+    assert_command_response(&processor, "COMMAND INFO config|get|key", b"*1\r\n*-1\r\n");
 
     let set_info = execute_command_line(&processor, "COMMAND INFO SET").unwrap();
     assert!(!String::from_utf8_lossy(&set_info).contains("movablekeys"));
@@ -11279,16 +11279,16 @@ fn command_info_returns_map_in_resp3_and_array_in_resp2() {
         String::from_utf8_lossy(&resp2)
     );
 
-    // RESP2: unknown command returns *0 placeholder
+    // RESP2: unknown command returns null array placeholder
     let resp2_unknown = execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND").unwrap();
     assert!(
         resp2_unknown.starts_with(b"*2\r\n"),
         "RESP2 should include placeholders for unknown commands"
     );
-    // Should contain *0 placeholder for the unknown command
+    // Should contain null array placeholder for the unknown command
     assert!(
-        resp2_unknown.ends_with(b"*0\r\n"),
-        "RESP2 unknown command should be *0 placeholder"
+        resp2_unknown.ends_with(b"*-1\r\n"),
+        "RESP2 unknown command should be null array placeholder"
     );
 
     // RESP3: COMMAND INFO GET returns %1 map with one entry
