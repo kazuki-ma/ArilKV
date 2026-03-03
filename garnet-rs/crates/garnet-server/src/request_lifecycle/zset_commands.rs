@@ -625,8 +625,9 @@ impl RequestProcessor {
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
+        let resp3 = self.resp_protocol_version().is_resp3();
         let Some(zset) = self.load_zset_object(&key)? else {
-            append_zset_scan_response(response_out, cursor, scan_options.count, &[]);
+            append_zset_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
 
@@ -644,7 +645,7 @@ impl RequestProcessor {
             }
             matched.push((member.as_slice(), *score));
         }
-        append_zset_scan_response(response_out, cursor, scan_options.count, &matched);
+        append_zset_scan_response(response_out, cursor, scan_options.count, &matched, resp3);
         Ok(())
     }
 
@@ -1310,6 +1311,7 @@ fn append_zset_scan_response(
     cursor: u64,
     count: usize,
     entries: &[(&[u8], f64)],
+    resp3: bool,
 ) {
     let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
     let start = if raw_start >= entries.len() {
@@ -1319,15 +1321,20 @@ fn append_zset_scan_response(
     };
     let end = start.saturating_add(count).min(entries.len());
     let next_cursor = if end >= entries.len() { 0 } else { end };
+    let page = &entries[start..end];
 
-    response_out.push(b'*');
-    response_out.extend_from_slice(b"2\r\n");
+    response_out.extend_from_slice(b"*2\r\n");
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
-    response_out.push(b'*');
-    response_out.extend_from_slice(((end - start) * 2).to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
-    for (member, score) in &entries[start..end] {
+
+    // In RESP3, emit member-score pairs as a map.
+    if resp3 {
+        append_map_length(response_out, page.len());
+    } else {
+        append_array_length(response_out, page.len() * 2);
+    }
+
+    for (member, score) in page {
         append_bulk_string(response_out, member);
         append_bulk_string(response_out, score.to_string().as_bytes());
     }

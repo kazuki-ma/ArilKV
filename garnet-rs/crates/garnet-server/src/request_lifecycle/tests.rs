@@ -10746,3 +10746,69 @@ fn pubsub_message_delivery_uses_push_type_for_resp3_subscribers() {
         "RESP3 pattern message should use >4 push type"
     );
 }
+
+#[test]
+fn hscan_returns_map_in_resp3_and_flat_array_in_resp2() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Populate a hash.
+    assert_command_response(&processor, "HSET myhash f1 v1 f2 v2", b":2\r\n");
+
+    // RESP2: HSCAN inner data is a flat array (*4 for 2 pairs).
+    let resp2 = execute_command_line(&processor, "HSCAN myhash 0").unwrap();
+    assert!(
+        resp2.starts_with(b"*2\r\n"),
+        "HSCAN outer should be *2 array"
+    );
+    assert!(
+        resp2.windows(4).any(|w| w == b"*4\r\n"),
+        "RESP2 HSCAN inner data should be *4 flat array, got: {:?}",
+        String::from_utf8_lossy(&resp2)
+    );
+
+    // RESP3: HSCAN inner data is a map (%2 for 2 pairs).
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "HSCAN myhash 0").unwrap();
+    assert!(
+        resp3.starts_with(b"*2\r\n"),
+        "HSCAN outer should remain *2 array in RESP3"
+    );
+    assert!(
+        resp3.windows(4).any(|w| w == b"%2\r\n"),
+        "RESP3 HSCAN inner data should be %2 map, got: {:?}",
+        String::from_utf8_lossy(&resp3)
+    );
+
+    // HSCAN NOVALUES: always an array even in RESP3.
+    let resp3_novalues = execute_command_line(&processor, "HSCAN myhash 0 NOVALUES").unwrap();
+    assert!(
+        !resp3_novalues.windows(1).any(|w| w == b"%"),
+        "HSCAN NOVALUES should not use map in RESP3, got: {:?}",
+        String::from_utf8_lossy(&resp3_novalues)
+    );
+}
+
+#[test]
+fn zscan_returns_map_in_resp3_and_flat_array_in_resp2() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Populate a sorted set.
+    assert_command_response(&processor, "ZADD myzset 1.5 alpha 2.5 beta", b":2\r\n");
+
+    // RESP2: ZSCAN inner data is a flat array (*4 for 2 members).
+    let resp2 = execute_command_line(&processor, "ZSCAN myzset 0").unwrap();
+    assert!(
+        resp2.windows(4).any(|w| w == b"*4\r\n"),
+        "RESP2 ZSCAN inner data should be *4 flat array, got: {:?}",
+        String::from_utf8_lossy(&resp2)
+    );
+
+    // RESP3: ZSCAN inner data is a map (%2).
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "ZSCAN myzset 0").unwrap();
+    assert!(
+        resp3.windows(4).any(|w| w == b"%2\r\n"),
+        "RESP3 ZSCAN inner data should be %2 map, got: {:?}",
+        String::from_utf8_lossy(&resp3)
+    );
+}

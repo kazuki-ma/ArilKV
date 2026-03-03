@@ -415,9 +415,17 @@ impl RequestProcessor {
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
         let novalues = scan_options.novalues;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         let Some(hash) = self.load_hash_object(&key)? else {
-            append_hash_scan_response(response_out, cursor, scan_options.count, &[], novalues);
+            append_hash_scan_response(
+                response_out,
+                cursor,
+                scan_options.count,
+                &[],
+                novalues,
+                resp3,
+            );
             return Ok(());
         };
         let mut hash = hash;
@@ -430,7 +438,14 @@ impl RequestProcessor {
         if lazy_expired {
             self.persist_hash_after_field_expiration(&key, &hash)?;
             if hash.is_empty() {
-                append_hash_scan_response(response_out, cursor, scan_options.count, &[], novalues);
+                append_hash_scan_response(
+                    response_out,
+                    cursor,
+                    scan_options.count,
+                    &[],
+                    novalues,
+                    resp3,
+                );
                 return Ok(());
             }
         }
@@ -450,7 +465,15 @@ impl RequestProcessor {
             matched.push((field.as_slice(), value.as_slice()));
         }
 
-        append_hash_scan_response(response_out, cursor, scan_options.count, &matched, novalues);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_hash_scan_response(
+            response_out,
+            cursor,
+            scan_options.count,
+            &matched,
+            novalues,
+            resp3,
+        );
         Ok(())
     }
 
@@ -1293,6 +1316,7 @@ fn append_hash_scan_response(
     count: usize,
     pairs: &[(&[u8], &[u8])],
     novalues: bool,
+    resp3: bool,
 ) {
     let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
     let start = if raw_start >= pairs.len() {
@@ -1302,16 +1326,22 @@ fn append_hash_scan_response(
     };
     let end = start.saturating_add(count).min(pairs.len());
     let next_cursor = if end >= pairs.len() { 0 } else { end };
+    let page = &pairs[start..end];
 
-    response_out.push(b'*');
-    response_out.extend_from_slice(b"2\r\n");
+    response_out.extend_from_slice(b"*2\r\n");
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
-    response_out.push(b'*');
-    let items_per_entry = if novalues { 1 } else { 2 };
-    response_out.extend_from_slice(((end - start) * items_per_entry).to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
-    for (field, value) in &pairs[start..end] {
+
+    // In RESP3 with values, emit a map instead of a flat array.
+    if resp3 && !novalues {
+        append_map_length(response_out, page.len());
+    } else if novalues {
+        append_array_length(response_out, page.len());
+    } else {
+        append_array_length(response_out, page.len() * 2);
+    }
+
+    for (field, value) in page {
         append_bulk_string(response_out, field);
         if !novalues {
             append_bulk_string(response_out, value);
