@@ -543,7 +543,11 @@ impl RequestProcessor {
             }
         }
 
-        append_bulk_string(response_out, payload.as_bytes());
+        if self.resp_protocol_version().is_resp3() {
+            append_verbatim_string(response_out, b"txt", payload.as_bytes());
+        } else {
+            append_bulk_string(response_out, payload.as_bytes());
+        }
         Ok(())
     }
 
@@ -1195,7 +1199,7 @@ impl RequestProcessor {
             }
             if ascii_eq_ignore_case(protocol_subcommand, b"VERBATIM") {
                 if resp3 {
-                    append_resp3_verbatim_string(
+                    append_verbatim_string(
                         response_out,
                         b"txt",
                         DEBUG_PROTOCOL_VERBATIM_VALUE,
@@ -1221,7 +1225,11 @@ impl RequestProcessor {
                 "Value at:0x0 refcount:1 encoding:raw serializedlength:0 lru:{} lru_seconds_idle:{}",
                 lru, idle
             );
-            append_bulk_string(response_out, payload.as_bytes());
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(response_out, b"txt", payload.as_bytes());
+            } else {
+                append_bulk_string(response_out, payload.as_bytes());
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"PAUSE-CRON") {
@@ -2118,8 +2126,13 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GRAPH") {
             require_exact_arity(args, 3, "LATENCY", "LATENCY GRAPH event")?;
+            let resp3 = self.resp_protocol_version().is_resp3();
             let Some(range) = self.latency_graph_range(args[2]) else {
-                append_bulk_string(response_out, b"");
+                if resp3 {
+                    append_verbatim_string(response_out, b"txt", b"");
+                } else {
+                    append_bulk_string(response_out, b"");
+                }
                 return Ok(());
             };
             let normalized_event = args[2]
@@ -2132,7 +2145,11 @@ impl RequestProcessor {
                 range.max_millis,
                 range.min_millis
             );
-            append_bulk_string(response_out, graph.as_bytes());
+            if resp3 {
+                append_verbatim_string(response_out, b"txt", graph.as_bytes());
+            } else {
+                append_bulk_string(response_out, graph.as_bytes());
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"HISTOGRAM") {
@@ -2334,10 +2351,13 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"INFO") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER INFO")?;
-            append_bulk_string(
-                response_out,
-                b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_known_nodes:1\r\n",
-            );
+            let info_payload =
+                b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_known_nodes:1\r\n";
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(response_out, b"txt", info_payload);
+            } else {
+                append_bulk_string(response_out, info_payload);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"MYID") {
@@ -4122,17 +4142,6 @@ fn append_resp3_boolean(response_out: &mut Vec<u8>, value: bool) {
 
 fn append_resp3_bignum(response_out: &mut Vec<u8>, value: &[u8]) {
     response_out.push(b'(');
-    response_out.extend_from_slice(value);
-    response_out.extend_from_slice(b"\r\n");
-}
-
-fn append_resp3_verbatim_string(response_out: &mut Vec<u8>, format: &[u8], value: &[u8]) {
-    response_out.push(b'=');
-    let payload_len = format.len().saturating_add(1).saturating_add(value.len());
-    response_out.extend_from_slice(payload_len.to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
-    response_out.extend_from_slice(format);
-    response_out.push(b':');
     response_out.extend_from_slice(value);
     response_out.extend_from_slice(b"\r\n");
 }

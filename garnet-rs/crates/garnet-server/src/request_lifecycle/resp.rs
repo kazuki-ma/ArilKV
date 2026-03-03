@@ -89,6 +89,18 @@ pub(super) fn append_null(response_out: &mut Vec<u8>) {
     response_out.extend_from_slice(b"_\r\n");
 }
 
+/// Emit RESP3 verbatim string: `=<payload_len>\r\n<format>:<value>\r\n`.
+pub(super) fn append_verbatim_string(response_out: &mut Vec<u8>, format: &[u8], value: &[u8]) {
+    response_out.push(b'=');
+    let payload_len = format.len().saturating_add(1).saturating_add(value.len());
+    response_out.extend_from_slice(payload_len.to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+    response_out.extend_from_slice(format);
+    response_out.push(b':');
+    response_out.extend_from_slice(value);
+    response_out.extend_from_slice(b"\r\n");
+}
+
 pub(super) fn append_integer(response_out: &mut Vec<u8>, value: i64) {
     response_out.push(b':');
     response_out.extend_from_slice(value.to_string().as_bytes());

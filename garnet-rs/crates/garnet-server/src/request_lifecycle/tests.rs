@@ -11146,3 +11146,50 @@ fn srandmember_and_spop_with_count_return_set_type_in_resp3() {
         String::from_utf8_lossy(&resp3_spop)
     );
 }
+
+#[test]
+fn info_and_cluster_info_return_verbatim_string_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // RESP2: INFO returns bulk string ($N)
+    let resp2_info = execute_command_line(&processor, "INFO server").unwrap();
+    assert!(
+        resp2_info.starts_with(b"$"),
+        "RESP2 INFO should return bulk string"
+    );
+
+    // RESP3: INFO returns verbatim string (=N\r\ntxt:...)
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3_info = execute_command_line(&processor, "INFO server").unwrap();
+    assert!(
+        resp3_info.starts_with(b"="),
+        "RESP3 INFO should return verbatim string, got: {:?}",
+        String::from_utf8_lossy(&resp3_info[..resp3_info.len().min(40)])
+    );
+    // Verify format prefix is "txt:"
+    let after_crlf_pos = resp3_info
+        .windows(2)
+        .position(|w| w == b"\r\n")
+        .unwrap()
+        + 2;
+    assert!(
+        resp3_info[after_crlf_pos..].starts_with(b"txt:"),
+        "RESP3 verbatim string should use txt format"
+    );
+
+    // RESP2: CLUSTER INFO returns bulk string
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    let resp2_cluster = execute_command_line(&processor, "CLUSTER INFO").unwrap();
+    assert!(
+        resp2_cluster.starts_with(b"$"),
+        "RESP2 CLUSTER INFO should return bulk string"
+    );
+
+    // RESP3: CLUSTER INFO returns verbatim string
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3_cluster = execute_command_line(&processor, "CLUSTER INFO").unwrap();
+    assert!(
+        resp3_cluster.starts_with(b"="),
+        "RESP3 CLUSTER INFO should return verbatim string"
+    );
+}
