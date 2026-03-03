@@ -325,8 +325,12 @@ impl RequestProcessor {
 
         let meters = geo_distance_meters(lon_a, lat_a, lon_b, lat_b);
         let unit_value = meters / unit_to_meters;
-        let text = format_geo_distance(unit_value);
-        append_bulk_string(response_out, text.as_bytes());
+        if resp3 {
+            append_double(response_out, unit_value);
+        } else {
+            let text = format_geo_distance(unit_value);
+            append_bulk_string(response_out, text.as_bytes());
+        }
         Ok(())
     }
 

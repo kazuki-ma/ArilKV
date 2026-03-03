@@ -57,6 +57,19 @@ pub(super) fn append_set_length(response_out: &mut Vec<u8>, len: usize) {
     response_out.extend_from_slice(b"\r\n");
 }
 
+/// Emit RESP3 double value: `,<value>\r\n`.
+pub(super) fn append_double(response_out: &mut Vec<u8>, value: f64) {
+    response_out.push(b',');
+    if value == f64::INFINITY {
+        response_out.extend_from_slice(b"inf");
+    } else if value == f64::NEG_INFINITY {
+        response_out.extend_from_slice(b"-inf");
+    } else {
+        response_out.extend_from_slice(value.to_string().as_bytes());
+    }
+    response_out.extend_from_slice(b"\r\n");
+}
+
 /// Emit RESP3 push length prefix: `><count>\r\n`.
 pub(super) fn append_push_length(response_out: &mut Vec<u8>, len: usize) {
     response_out.push(b'>');

@@ -2440,7 +2440,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .unwrap();
     assert_eq!(
         response,
-        b"*2\r\n*2\r\n$3\r\ntwo\r\n$1\r\n2\r\n*2\r\n$3\r\none\r\n$1\r\n3\r\n"
+        b"*2\r\n*2\r\n$3\r\ntwo\r\n,2\r\n*2\r\n$3\r\none\r\n,3\r\n"
     );
     processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 
@@ -10956,4 +10956,34 @@ fn sunion_sinter_sdiff_return_set_type_in_resp3() {
         "RESP3 SDIFF should use set type, got: {:?}",
         String::from_utf8_lossy(&sdiff)
     );
+}
+
+#[test]
+fn zscore_returns_double_type_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "ZADD myz 1.5 alpha", b":1\r\n");
+
+    // RESP2: ZSCORE returns bulk string
+    let resp2 = execute_command_line(&processor, "ZSCORE myz alpha").unwrap();
+    assert_eq!(resp2, b"$3\r\n1.5\r\n");
+
+    // RESP3: ZSCORE returns double type
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "ZSCORE myz alpha").unwrap();
+    assert_eq!(resp3, b",1.5\r\n");
+}
+
+#[test]
+fn zincrby_returns_double_type_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "ZADD myz 1.0 alpha", b":1\r\n");
+
+    // RESP2: ZINCRBY returns bulk string
+    let resp2 = execute_command_line(&processor, "ZINCRBY myz 2.5 alpha").unwrap();
+    assert_eq!(resp2, b"$3\r\n3.5\r\n");
+
+    // RESP3: ZINCRBY returns double type
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "ZINCRBY myz 1.0 alpha").unwrap();
+    assert_eq!(resp3, b",4.5\r\n");
 }
