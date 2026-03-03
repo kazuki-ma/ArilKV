@@ -12105,3 +12105,51 @@ fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
     let unknown = execute_command_line(&processor, "ACL BADCMD");
     assert!(unknown.is_err(), "ACL BADCMD should return error");
 }
+
+#[test]
+fn xgroup_createconsumer_delconsumer_and_help() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Set up a stream with a group
+    execute_command_line(&processor, "XADD mystream * field1 value1").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream mygroup 0").unwrap();
+
+    // XGROUP CREATECONSUMER on existing stream/group returns 1
+    let create_consumer =
+        execute_command_line(&processor, "XGROUP CREATECONSUMER mystream mygroup consumer1")
+            .unwrap();
+    assert_eq!(create_consumer, b":1\r\n");
+
+    // XGROUP CREATECONSUMER on missing stream returns error (NoSuchKey)
+    let create_missing =
+        execute_command_line(&processor, "XGROUP CREATECONSUMER nostream mygroup consumer1");
+    assert!(
+        create_missing.is_err(),
+        "CREATECONSUMER on missing stream should fail"
+    );
+
+    // XGROUP DELCONSUMER on existing stream returns 0 pending entries
+    let del_consumer =
+        execute_command_line(&processor, "XGROUP DELCONSUMER mystream mygroup consumer1")
+            .unwrap();
+    assert_eq!(del_consumer, b":0\r\n");
+
+    // XGROUP DELCONSUMER on missing stream returns error
+    let del_missing =
+        execute_command_line(&processor, "XGROUP DELCONSUMER nostream mygroup consumer1");
+    assert!(
+        del_missing.is_err(),
+        "DELCONSUMER on missing stream should fail"
+    );
+
+    // XGROUP HELP returns updated count (12 entries)
+    let help = execute_command_line(&processor, "XGROUP HELP").unwrap();
+    assert!(
+        help.starts_with(b"*12\r\n"),
+        "XGROUP HELP should return 12-element array"
+    );
+
+    // XGROUP unknown subcommand returns error
+    let unknown = execute_command_line(&processor, "XGROUP BADCMD mystream mygroup");
+    assert!(unknown.is_err(), "XGROUP BADCMD should return error");
+}

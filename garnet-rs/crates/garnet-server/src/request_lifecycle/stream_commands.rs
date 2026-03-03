@@ -161,7 +161,43 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        Err(RequestExecutionError::UnknownCommand)
+        if ascii_eq_ignore_case(subcommand, b"CREATECONSUMER") {
+            require_exact_arity(
+                args,
+                5,
+                "XGROUP",
+                "XGROUP CREATECONSUMER key group consumer",
+            )?;
+            // Consumer creation is implicit in our model; return 1 (created)
+            // if the stream and group exist. Redis returns 0 if consumer
+            // already exists, but we have no consumer tracking.
+            let key = RedisKey::from(args[2]);
+            let stream = self.load_stream_object(&key)?;
+            if stream.is_none() {
+                return Err(RequestExecutionError::NoSuchKey);
+            }
+            append_integer(response_out, 1);
+            return Ok(());
+        }
+
+        if ascii_eq_ignore_case(subcommand, b"DELCONSUMER") {
+            require_exact_arity(
+                args,
+                5,
+                "XGROUP",
+                "XGROUP DELCONSUMER key group consumer",
+            )?;
+            let key = RedisKey::from(args[2]);
+            let stream = self.load_stream_object(&key)?;
+            if stream.is_none() {
+                return Err(RequestExecutionError::NoSuchKey);
+            }
+            // Consumer deletion: return 0 pending entries (no consumer tracking).
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_xreadgroup(
@@ -1346,9 +1382,13 @@ fn append_xinfo_stream_full(
     }
 }
 
-const XGROUP_HELP_LINES: [&[u8]; 8] = [
+const XGROUP_HELP_LINES: [&[u8]; 12] = [
     b"CREATE <key> <groupname> <id|$> [MKSTREAM]",
     b"    Create a new consumer group.",
+    b"CREATECONSUMER <key> <groupname> <consumer>",
+    b"    Create a consumer in a consumer group.",
+    b"DELCONSUMER <key> <groupname> <consumer>",
+    b"    Delete a consumer from a consumer group.",
     b"SETID <key> <groupname> <id|$>",
     b"    Set the current group ID.",
     b"DESTROY <key> <groupname>",
