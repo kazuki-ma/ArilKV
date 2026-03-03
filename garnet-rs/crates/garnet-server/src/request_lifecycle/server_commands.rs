@@ -836,6 +836,9 @@ impl RequestProcessor {
         if numlocal > 0 {
             return Err(RequestExecutionError::WaitAofAppendOnlyDisabled);
         }
+        // WAITAOF returns an array of two integers: [numlocal_synced, numreplicas_synced]
+        append_array_length(response_out, 2);
+        append_integer(response_out, 0);
         append_integer(response_out, 0);
         Ok(())
     }

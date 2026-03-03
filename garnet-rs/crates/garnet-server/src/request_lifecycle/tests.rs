@@ -7164,7 +7164,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert_eq!(response, b":0\r\n");
+    assert_eq!(response, b"*2\r\n:0\r\n:0\r\n");
 
     response.clear();
     let waitaof_err = b"*4\r\n$7\r\nWAITAOF\r\n$1\r\n1\r\n$1\r\n1\r\n$2\r\n10\r\n";
