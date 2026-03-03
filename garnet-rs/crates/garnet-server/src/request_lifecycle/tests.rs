@@ -8973,8 +8973,11 @@ fn scripting_eval_ro_rejects_write_calls() {
         &encode_resp(&[b"EVAL_RO", b"return redis.call('SET','k','v')", b"0"]),
     );
     let response_text = String::from_utf8_lossy(&response);
-    assert!(response_text.starts_with("-ERR Error running script:"));
-    assert!(response_text.contains("Write commands are not allowed from read-only scripts"));
+    assert!(
+        response_text.contains("Write commands are not allowed from read-only scripts"),
+        "expected write-reject error, got: {}",
+        response_text
+    );
 }
 
 #[test]

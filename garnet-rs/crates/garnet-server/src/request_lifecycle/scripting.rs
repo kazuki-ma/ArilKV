@@ -1434,10 +1434,8 @@ impl RequestProcessor {
                     append_error(response_out, SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes());
                     return;
                 }
-                let message = format!(
-                    "ERR Error running script: {}",
-                    sanitize_error_text(&error.to_string())
-                );
+                let normalized = normalize_lua_runtime_error_text(&error);
+                let message = format_script_error_for_client(&normalized, "script");
                 append_error(response_out, message.as_bytes());
             }
         }
@@ -1666,10 +1664,7 @@ impl RequestProcessor {
                     append_error(response_out, normalized_error.as_bytes());
                     return;
                 }
-                let message = format!(
-                    "ERR Error running function: {}",
-                    sanitize_error_text(&error.to_string())
-                );
+                let message = format_script_error_for_client(&normalized_error, "function");
                 append_error(response_out, message.as_bytes());
             }
         }
@@ -1849,6 +1844,27 @@ fn normalize_lua_runtime_error_text(error: &LuaError) -> String {
     let text = function_load_error_text(error);
     let primary = text.split(" stack traceback:").next().unwrap_or(&text);
     primary.trim().to_string()
+}
+
+/// Format a script/function runtime error for the RESP client.
+///
+/// When the error message itself already carries a standard Redis error
+/// prefix (`ERR`, `WRONGTYPE`, `NOPERM`, etc.) we return it as-is so the
+/// client sees the canonical error.  Otherwise we wrap it in
+/// `"ERR Error running <kind>: ..."` to match Redis convention.
+fn format_script_error_for_client(normalized_error: &str, kind: &str) -> String {
+    // Error messages produced by redis.call / the command layer already
+    // carry a prefix like "ERR ...", "WRONGTYPE ...", etc.  Return those
+    // directly so the test assertions match Redis behaviour.
+    let known_prefixes = [
+        "ERR ", "WRONGTYPE", "OOM ", "NOPERM", "READONLY", "NOTBUSY", "BUSY",
+    ];
+    for prefix in known_prefixes {
+        if normalized_error.starts_with(prefix) {
+            return normalized_error.to_string();
+        }
+    }
+    format!("ERR Error running {kind}: {normalized_error}")
 }
 
 fn append_function_load_compile_error(response_out: &mut Vec<u8>, message: &str) {
