@@ -1397,7 +1397,7 @@ impl RequestProcessor {
                 Ok(table)
             })?;
             let error_reply_fn = scope.create_function(|lua, value: mlua::String| {
-                let normalized = normalize_error_reply(value.to_str().unwrap_or("ERR"));
+                let normalized = normalize_error_reply(&value.to_string_lossy());
                 let table = lua.create_table()?;
                 table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
@@ -1565,7 +1565,7 @@ impl RequestProcessor {
                 Ok(table)
             })?;
             let error_reply_fn = scope.create_function(|lua, value: mlua::String| {
-                let normalized = normalize_error_reply(value.to_str().unwrap_or("ERR"));
+                let normalized = normalize_error_reply(&value.to_string_lossy());
                 let table = lua.create_table()?;
                 table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
@@ -1635,7 +1635,7 @@ impl RequestProcessor {
                 Ok(table)
             })?;
             let runtime_error_reply_fn = scope.create_function(|lua, value: mlua::String| {
-                let normalized = normalize_error_reply(value.to_str().unwrap_or("ERR"));
+                let normalized = normalize_error_reply(&value.to_string_lossy());
                 let table = lua.create_table()?;
                 table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
@@ -3092,16 +3092,15 @@ fn install_safe_pcall(lua: &Lua) -> mlua::Result<()> {
     let safe_pcall = lua.create_function(move |lua, args: MultiValue| {
         let mut results = original_pcall.call::<MultiValue>(args)?;
         // If the call failed (first return value is false) and the error object
-        // is userdata, convert it to a string via tostring().
+        // is not a plain Lua string, convert it to a string so that scripts
+        // which concatenate or pattern-match on the error value work correctly.
+        //
+        // mlua represents Rust-callback errors as `Value::Error(...)`, which is
+        // distinct from `Value::UserData(...)`.  Both must be handled.
         if results.len() >= 2
             && let Some(LuaValue::Boolean(false)) = results.front()
         {
-            let err_val = &results[1];
-            if matches!(err_val, LuaValue::UserData(_)) {
-                let tostring: LuaFunction = lua.globals().get("tostring")?;
-                let stringified: mlua::String = tostring.call::<mlua::String>(err_val.clone())?;
-                results[1] = LuaValue::String(stringified);
-            }
+            pcall_coerce_error_to_string(lua, &mut results)?;
         }
         Ok(results)
     })?;
@@ -3114,17 +3113,34 @@ fn install_safe_pcall(lua: &Lua) -> mlua::Result<()> {
         if results.len() >= 2
             && let Some(LuaValue::Boolean(false)) = results.front()
         {
-            let err_val = &results[1];
-            if matches!(err_val, LuaValue::UserData(_)) {
-                let tostring: LuaFunction = lua.globals().get("tostring")?;
-                let stringified: mlua::String = tostring.call::<mlua::String>(err_val.clone())?;
-                results[1] = LuaValue::String(stringified);
-            }
+            pcall_coerce_error_to_string(lua, &mut results)?;
         }
         Ok(results)
     })?;
     globals.set("xpcall", safe_xpcall)?;
 
+    Ok(())
+}
+
+/// If `results[1]` is a non-string error value (mlua `Error` variant or
+/// userdata), replace it with its string representation so Lua scripts can
+/// concatenate and pattern-match the error message.
+fn pcall_coerce_error_to_string(lua: &Lua, results: &mut MultiValue) -> mlua::Result<()> {
+    let err_val = &results[1];
+    match err_val {
+        LuaValue::Error(err) => {
+            // mlua wraps Rust callback errors (e.g. LuaError::RuntimeError) in
+            // a Value::Error box.  Extract the message directly.
+            let msg = err.to_string();
+            results[1] = LuaValue::String(lua.create_string(&msg)?);
+        }
+        LuaValue::UserData(_) => {
+            let tostring: LuaFunction = lua.globals().get("tostring")?;
+            let stringified: mlua::String = tostring.call::<mlua::String>(err_val.clone())?;
+            results[1] = LuaValue::String(stringified);
+        }
+        _ => {}
+    }
     Ok(())
 }
 
@@ -3210,7 +3226,7 @@ fn lua_call_error_or_pcall_error(
     }
 }
 
-fn lua_argument_to_bytes(value: LuaValue, index: usize) -> mlua::Result<Vec<u8>> {
+fn lua_argument_to_bytes(value: LuaValue, _index: usize) -> mlua::Result<Vec<u8>> {
     match value {
         LuaValue::String(value) => Ok(value.as_bytes().to_vec()),
         LuaValue::Integer(value) => Ok(value.to_string().into_bytes()),
