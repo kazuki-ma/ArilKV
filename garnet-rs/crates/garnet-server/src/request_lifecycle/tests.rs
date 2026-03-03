@@ -9053,6 +9053,51 @@ fn stream_range_orders_entries_by_numeric_stream_id() {
 }
 
 #[test]
+fn xrange_returns_map_entries_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    // Add a stream entry with a fixed ID and two fields.
+    assert_command_response(
+        &processor,
+        "XADD smap 1-0 name Alice age 30",
+        b"$3\r\n1-0\r\n",
+    );
+
+    // RESP2: flat array entries → *2\r\n <id> *4\r\n <f> <v> <f> <v>
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    let resp2 = execute_command_line(&processor, "XRANGE smap - +").unwrap();
+    let resp2_str = String::from_utf8_lossy(&resp2);
+    // Outer array with 1 entry, inner entry has *2 (id + flat field array)
+    assert!(
+        resp2_str.starts_with("*1\r\n*2\r\n"),
+        "RESP2 XRANGE should start with *1 array: {resp2_str}"
+    );
+    // Field-value pairs as flat array: *4 (2 fields × 2)
+    assert!(
+        resp2_str.contains("*4\r\n"),
+        "RESP2 XRANGE should have *4 flat field array: {resp2_str}"
+    );
+
+    // RESP3: map entries → *2\r\n <id> %2\r\n <f> <v> <f> <v>
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "XRANGE smap - +").unwrap();
+    let resp3_str = String::from_utf8_lossy(&resp3);
+    assert!(
+        resp3_str.starts_with("*1\r\n*2\r\n"),
+        "RESP3 XRANGE should start with *1 array: {resp3_str}"
+    );
+    // Field-value pairs as map: %2 (2 entries)
+    assert!(
+        resp3_str.contains("%2\r\n"),
+        "RESP3 XRANGE should have %2 map for fields: {resp3_str}"
+    );
+    assert!(
+        !resp3_str.contains("*4\r\n"),
+        "RESP3 XRANGE should NOT have *4 flat array: {resp3_str}"
+    );
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+}
+
+#[test]
 fn script_flush_returns_ok() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 4];

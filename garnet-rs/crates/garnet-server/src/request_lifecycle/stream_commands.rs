@@ -261,22 +261,19 @@ impl RequestProcessor {
         stream.groups.insert(group, last_seen);
         self.save_stream_object(&key, &stream)?;
 
-        response_out.extend_from_slice(b"*1\r\n");
-        response_out.extend_from_slice(b"*2\r\n");
+        let resp3 = self.resp_protocol_version().is_resp3();
+        if resp3 {
+            append_map_length(response_out, 1);
+        } else {
+            append_array_length(response_out, 1);
+            response_out.extend_from_slice(b"*2\r\n");
+        }
         append_bulk_string(response_out, key.as_slice());
-        response_out.push(b'*');
-        response_out.extend_from_slice(selected.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, selected.len());
         for (id, fields) in selected {
             response_out.extend_from_slice(b"*2\r\n");
             append_bulk_string(response_out, &id.encode());
-            response_out.push(b'*');
-            response_out.extend_from_slice((fields.len() * 2).to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
-            for (field, value) in fields {
-                append_bulk_string(response_out, &field);
-                append_bulk_string(response_out, &value);
-            }
+            append_stream_entry_fields(response_out, &fields, resp3);
         }
         Ok(())
     }
@@ -376,13 +373,18 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        response_out.push(b'*');
-        response_out.extend_from_slice(stream_results.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        let resp3 = self.resp_protocol_version().is_resp3();
+        if resp3 {
+            append_map_length(response_out, stream_results.len());
+        } else {
+            append_array_length(response_out, stream_results.len());
+        }
         for (key, entries) in stream_results {
-            response_out.extend_from_slice(b"*2\r\n");
+            if !resp3 {
+                response_out.extend_from_slice(b"*2\r\n");
+            }
             append_bulk_string(response_out, key.as_slice());
-            append_stream_entry_array(response_out, &entries);
+            append_stream_entry_array(response_out, &entries, resp3);
         }
         Ok(())
     }
@@ -705,7 +707,8 @@ impl RequestProcessor {
         };
 
         let entries = collect_stream_range_entries(&stream, start, end, false, count);
-        append_stream_entry_array(response_out, &entries);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_stream_entry_array(response_out, &entries, resp3);
         Ok(())
     }
 
@@ -738,7 +741,8 @@ impl RequestProcessor {
         };
 
         let entries = collect_stream_range_entries(&stream, start, end, true, count);
-        append_stream_entry_array(response_out, &entries);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_stream_entry_array(response_out, &entries, resp3);
         Ok(())
     }
 
@@ -995,20 +999,38 @@ fn collect_stream_range_entries(
 fn append_stream_entry_array(
     response_out: &mut Vec<u8>,
     entries: &[(StreamId, Vec<(Vec<u8>, Vec<u8>)>)],
+    resp3: bool,
 ) {
-    response_out.push(b'*');
-    response_out.extend_from_slice(entries.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, entries.len());
     for (id, fields) in entries {
         response_out.extend_from_slice(b"*2\r\n");
         append_bulk_string(response_out, &id.encode());
-        response_out.push(b'*');
-        response_out.extend_from_slice((fields.len() * 2).to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        if resp3 {
+            append_map_length(response_out, fields.len());
+        } else {
+            append_array_length(response_out, fields.len() * 2);
+        }
         for (field, value) in fields {
             append_bulk_string(response_out, field);
             append_bulk_string(response_out, value);
         }
+    }
+}
+
+/// Emit a single stream entry's field-value pairs.
+fn append_stream_entry_fields(
+    response_out: &mut Vec<u8>,
+    fields: &[(Vec<u8>, Vec<u8>)],
+    resp3: bool,
+) {
+    if resp3 {
+        append_map_length(response_out, fields.len());
+    } else {
+        append_array_length(response_out, fields.len() * 2);
+    }
+    for (field, value) in fields {
+        append_bulk_string(response_out, field);
+        append_bulk_string(response_out, value);
     }
 }
 
