@@ -3394,7 +3394,8 @@ impl RequestProcessor {
                         return Ok(());
                     }
                 }
-                if (parameter == b"dynamic-hz"
+                if (parameter == b"appendonly"
+                    || parameter == b"dynamic-hz"
                     || parameter == b"lazyfree-lazy-expire"
                     || parameter == b"lazyfree-lazy-eviction"
                     || parameter == b"lazyfree-lazy-user-del"
