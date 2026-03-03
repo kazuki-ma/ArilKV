@@ -169,6 +169,34 @@ const CLIENT_HELP_LINES: [&[u8]; 19] = [
     b"NO-TOUCH (ON|OFF)",
     b"    Avoid touching LRU/LFU stats for current client connection commands.",
 ];
+const DEBUG_HELP_LINES: [&[u8]; 12] = [
+    b"DEBUG <subcommand> [<arg> [value] [opt] ...]",
+    b"Available subcommands:",
+    b"SET-ACTIVE-EXPIRE <0|1>",
+    b"    Enable or disable active expiration sweeps.",
+    b"SLEEP <seconds>",
+    b"    Sleep for the specified number of seconds.",
+    b"RELOAD",
+    b"    Trigger a no-op reload.",
+    b"OBJECT <key>",
+    b"    Show low-level info about the given key.",
+    b"DIGEST",
+    b"    Compute a dataset digest.",
+];
+const CLUSTER_HELP_LINES: [&[u8]; 12] = [
+    b"CLUSTER <subcommand> [<arg> [value] [opt] ...]",
+    b"Available subcommands:",
+    b"INFO",
+    b"    Return information about the cluster.",
+    b"KEYSLOT <key>",
+    b"    Return the hash slot for <key>.",
+    b"MYID",
+    b"    Return the node ID.",
+    b"NODES",
+    b"    Return cluster configuration of nodes.",
+    b"SLOTS",
+    b"    Return information about slots range mappings.",
+];
 const DEBUG_PROTOCOL_ATTRIB_REPLY: &[u8] = b"Some real reply following the attribute";
 const DEBUG_PROTOCOL_BIGNUM_VALUE: &[u8] = b"1234567999999999999999999999999999999";
 const DEBUG_PROTOCOL_VERBATIM_VALUE: &[u8] = b"This is a verbatim\nstring";
@@ -1088,6 +1116,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "DEBUG", "DEBUG subcommand [arguments...]")?;
         let subcommand = args[1];
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            append_bulk_array(response_out, &DEBUG_HELP_LINES);
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"SET-ACTIVE-EXPIRE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG SET-ACTIVE-EXPIRE <0|1>")?;
             let enabled = args[2];
@@ -2394,6 +2426,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "CLUSTER", "CLUSTER <subcommand> [arguments...]")?;
         let subcommand = args[1];
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            append_bulk_array(response_out, &CLUSTER_HELP_LINES);
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"KEYSLOT") {
             require_exact_arity(args, 3, "CLUSTER", "CLUSTER KEYSLOT key")?;
             let key = args[2];

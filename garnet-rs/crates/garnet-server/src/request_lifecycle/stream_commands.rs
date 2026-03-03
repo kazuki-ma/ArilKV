@@ -103,6 +103,11 @@ impl RequestProcessor {
         )?;
         let subcommand = args[1];
 
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            append_bulk_array(response_out, &XGROUP_HELP_LINES);
+            return Ok(());
+        }
+
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
             ensure_one_of_arities(
                 args,
@@ -1344,6 +1349,17 @@ fn append_xinfo_stream_full(
         append_array_length(response_out, 0);
     }
 }
+
+const XGROUP_HELP_LINES: [&[u8]; 8] = [
+    b"CREATE <key> <groupname> <id|$> [MKSTREAM]",
+    b"    Create a new consumer group.",
+    b"SETID <key> <groupname> <id|$>",
+    b"    Set the current group ID.",
+    b"DESTROY <key> <groupname>",
+    b"    Remove the specified consumer group.",
+    b"HELP",
+    b"    Print this help.",
+];
 
 const XINFO_HELP_LINES: [&[u8]; 6] = [
     b"CONSUMERS <key> <groupname>",
