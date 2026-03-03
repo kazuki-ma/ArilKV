@@ -1434,11 +1434,7 @@ impl RequestProcessor {
             }
             env.raw_set("ARGV", argv_table)?;
 
-            let value: LuaValue = lua
-                .load(lua_source)
-                .set_name("@user_script")
-                .set_environment(env)
-                .eval()?;
+            let value: LuaValue = eval_script_with_table_error_handler(&lua, lua_source, env)?;
             Ok::<LuaValue, LuaError>(value)
         });
 
@@ -1691,7 +1687,8 @@ impl RequestProcessor {
             for (index, arg) in argv.iter().enumerate() {
                 argv_table.set(index + 1, lua.create_string(arg)?)?;
             }
-            let value: LuaValue = callback.call((keys_table, argv_table))?;
+            let value: LuaValue =
+                call_function_with_table_error_handler(&lua, callback, keys_table, argv_table)?;
             Ok::<LuaValue, LuaError>(value)
         });
 
@@ -1920,6 +1917,141 @@ fn normalize_lua_runtime_error_text(error: &LuaError) -> String {
     primary.trim().to_string()
 }
 
+/// Evaluate a Lua script chunk with a safe error handler that converts
+/// table-type errors to their `err` field string.
+///
+/// Redis scripts can raise errors with `error({err='ERR msg'})`.  Without
+/// an error handler, Lua would convert the table to its `tostring()`
+/// representation (e.g. `"table: 0xdeadbeef"`), losing the error message.
+///
+/// This function installs a Lua-level error handler via `xpcall` that:
+/// - For table errors: extracts `rawget(err, 'err')` or returns `"ERR unknown error"`
+/// - For all other error types (string, userdata): passes through unchanged
+///
+/// The handler intentionally avoids calling `tostring()` on non-table values
+/// to prevent triggering mlua's `__tostring` metamethod on WrappedFailure
+/// userdata, which would cause "error in error handling".
+fn eval_script_with_table_error_handler(
+    lua: &Lua,
+    source: &[u8],
+    env: LuaTable,
+) -> mlua::Result<LuaValue> {
+    // Load the user script as a callable function.
+    let script_fn: LuaFunction = lua
+        .load(source)
+        .set_name("@user_script")
+        .set_environment(env)
+        .into_function()?;
+
+    // Install a minimal error handler that transforms table errors to their
+    // `err` field and passes strings through unchanged.  Intentionally avoids
+    // calling `tostring()` on non-table/non-string values to prevent mlua's
+    // WrappedFailure `__tostring` from triggering "error in error handling".
+    //
+    // This mirrors Redis's `__redis__err__handler` from eval.c.
+    let xpcall_wrapper: LuaFunction = lua
+        .load(
+            r#"
+            return function(fn)
+                local eh = function(err)
+                    if type(err) == 'table' then
+                        local e = rawget(err, 'err')
+                        if type(e) ~= 'string' then e = 'ERR unknown error' end
+                        return e
+                    end
+                    return err
+                end
+                return xpcall(fn, eh)
+            end
+            "#,
+        )
+        .eval()?;
+
+    // Use xpcall to run the script with the error handler.
+    let mut results: MultiValue = xpcall_wrapper.call(script_fn)?;
+
+    let ok = match results.pop_front() {
+        Some(LuaValue::Boolean(b)) => b,
+        _ => false,
+    };
+
+    if ok {
+        // Script succeeded: return the first result value (or nil if none).
+        Ok(results.pop_front().unwrap_or(LuaValue::Nil))
+    } else {
+        // Script failed: the error value has been processed by our handler.
+        let err_val = results.pop_front().unwrap_or(LuaValue::Nil);
+        let err_msg = match err_val {
+            LuaValue::String(s) => s
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "ERR unknown error".to_string()),
+            LuaValue::Error(ref e) => extract_lua_error_message(e),
+            _ => "ERR unknown error".to_string(),
+        };
+        Err(LuaError::RuntimeError(err_msg))
+    }
+}
+
+/// Call a registered Lua function with a safe error handler that converts
+/// table-type errors to their `err` field string.
+///
+/// This is the FUNCTION (FCALL) counterpart to
+/// [`eval_script_with_table_error_handler`].  The function receives
+/// (keys_table, argv_table) as arguments.
+///
+/// In Lua 5.1, `xpcall` only takes 2 arguments (no arg-passing), so we
+/// wrap the callback in a closure that captures the arguments.
+fn call_function_with_table_error_handler(
+    lua: &Lua,
+    callback: LuaFunction,
+    keys_table: LuaTable,
+    argv_table: LuaTable,
+) -> mlua::Result<LuaValue> {
+    // Create a Lua wrapper function that calls xpcall with the error handler.
+    // The wrapper captures callback, keys, and argv as arguments since
+    // Lua 5.1's xpcall doesn't pass extra arguments to the function.
+    let wrapper: LuaFunction = lua
+        .load(
+            r#"
+            return function(fn, keys, argv)
+                local eh = function(err)
+                    if type(err) == 'table' then
+                        local e = rawget(err, 'err')
+                        if type(e) == 'string' then return e end
+                        return 'ERR unknown error'
+                    end
+                    return err
+                end
+                return xpcall(function() return fn(keys, argv) end, eh)
+            end
+            "#,
+        )
+        .eval()?;
+
+    let mut results: MultiValue = wrapper.call((callback, keys_table, argv_table))?;
+
+    let ok = match results.pop_front() {
+        Some(LuaValue::Boolean(b)) => b,
+        _ => false,
+    };
+
+    if ok {
+        Ok(results.pop_front().unwrap_or(LuaValue::Nil))
+    } else {
+        let err_val = results.pop_front().unwrap_or(LuaValue::Nil);
+        let err_msg = match err_val {
+            LuaValue::String(s) => s
+                .to_str()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|_| "ERR unknown error".to_string()),
+            LuaValue::Error(ref e) => extract_lua_error_message(e),
+            _ => "ERR unknown error".to_string(),
+        };
+        Err(LuaError::RuntimeError(err_msg))
+    }
+}
+
 /// Format a script/function runtime error for the RESP client.
 ///
 /// When the error message itself already carries a standard Redis error
@@ -1959,12 +2091,16 @@ fn format_script_error_for_client(normalized_error: &str, kind: &str, funcname: 
         format!("ERR Error running {kind}: {normalized_error}")
     };
 
-    // Append the Redis-style source location suffix when we have a funcname
-    // and the error contains a source:line location.
-    if !funcname.is_empty()
-        && let Some(location) = extract_script_error_location(&message)
-    {
-        write!(message, " script: {funcname}, on {location}.").unwrap();
+    // Append the Redis-style script identification suffix when we have a
+    // funcname.  Redis's `luaCallFunction` always appends this when the
+    // error handler provides source/line info.  We extract the location
+    // from the error message if available, otherwise just add `script: SHA`.
+    if !funcname.is_empty() {
+        if let Some(location) = extract_script_error_location(&message) {
+            write!(message, " script: {funcname}, on {location}.").unwrap();
+        } else {
+            write!(message, " script: {funcname}").unwrap();
+        }
     }
 
     message
