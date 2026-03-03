@@ -2878,7 +2878,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"INFO") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER INFO")?;
             let info_payload =
-                b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_known_nodes:1\r\n";
+                b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_slots_ok:16384\r\ncluster_slots_pfail:0\r\ncluster_slots_fail:0\r\ncluster_known_nodes:1\r\ncluster_size:1\r\ncluster_current_epoch:1\r\ncluster_my_epoch:1\r\ncluster_stats_messages_sent:0\r\ncluster_stats_messages_received:0\r\ntotal_cluster_links_buffer_limit_exceeded:0\r\n";
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", info_payload);
             } else {
