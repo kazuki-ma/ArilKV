@@ -10461,6 +10461,80 @@ fn config_set_notify_keyspace_events_empty_disables() {
 }
 
 #[test]
+fn config_set_validates_maxmemory_policy_loglevel_hz_and_boolean_params() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // maxmemory-policy accepts valid policies
+    assert_command_response(
+        &processor,
+        "CONFIG SET maxmemory-policy allkeys-lru",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG SET maxmemory-policy noeviction",
+        b"+OK\r\n",
+    );
+    // maxmemory-policy rejects invalid
+    let bad_policy = execute_command_line(&processor, "CONFIG SET maxmemory-policy badpolicy").unwrap();
+    assert!(
+        bad_policy.starts_with(b"-ERR"),
+        "Invalid maxmemory-policy should error"
+    );
+
+    // loglevel accepts valid levels
+    assert_command_response(&processor, "CONFIG SET loglevel debug", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG SET loglevel warning", b"+OK\r\n");
+    // loglevel rejects invalid
+    let bad_level = execute_command_line(&processor, "CONFIG SET loglevel trace").unwrap();
+    assert!(
+        bad_level.starts_with(b"-ERR"),
+        "Invalid loglevel should error"
+    );
+
+    // hz accepts valid range
+    assert_command_response(&processor, "CONFIG SET hz 100", b"+OK\r\n");
+    // hz rejects out-of-range
+    let bad_hz = execute_command_line(&processor, "CONFIG SET hz 0").unwrap();
+    assert!(bad_hz.starts_with(b"-ERR"), "hz=0 should error");
+    let big_hz = execute_command_line(&processor, "CONFIG SET hz 999").unwrap();
+    assert!(big_hz.starts_with(b"-ERR"), "hz=999 should error");
+
+    // Boolean params accept yes/no
+    assert_command_response(&processor, "CONFIG SET dynamic-hz yes", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG SET lazyfree-lazy-expire no",
+        b"+OK\r\n",
+    );
+    // Boolean params reject non-boolean
+    let bad_bool = execute_command_line(&processor, "CONFIG SET dynamic-hz maybe").unwrap();
+    assert!(
+        bad_bool.starts_with(b"-ERR"),
+        "dynamic-hz=maybe should error"
+    );
+
+    // appendfsync accepts valid values
+    assert_command_response(&processor, "CONFIG SET appendfsync always", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG SET appendfsync everysec", b"+OK\r\n");
+    // appendfsync rejects invalid
+    let bad_sync = execute_command_line(&processor, "CONFIG SET appendfsync sometimes").unwrap();
+    assert!(
+        bad_sync.starts_with(b"-ERR"),
+        "Invalid appendfsync should error"
+    );
+
+    // Numeric params accept integers
+    assert_command_response(&processor, "CONFIG SET timeout 300", b"+OK\r\n");
+    // Numeric params reject non-integers
+    let bad_num = execute_command_line(&processor, "CONFIG SET timeout abc").unwrap();
+    assert!(
+        bad_num.starts_with(b"-ERR"),
+        "Non-integer timeout should error"
+    );
+}
+
+#[test]
 fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 16];

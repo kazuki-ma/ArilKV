@@ -3170,6 +3170,117 @@ impl RequestProcessor {
                     );
                     return Ok(());
                 }
+                if parameter == b"maxmemory-policy" {
+                    let valid = [
+                        &b"noeviction"[..],
+                        b"allkeys-lru",
+                        b"volatile-lru",
+                        b"allkeys-lfu",
+                        b"volatile-lfu",
+                        b"allkeys-random",
+                        b"volatile-random",
+                        b"volatile-ttl",
+                    ];
+                    if !valid.iter().any(|v| value.eq_ignore_ascii_case(v)) {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'maxmemory-policy') - Invalid maxmemory policy",
+                        );
+                        return Ok(());
+                    }
+                }
+                if parameter == b"loglevel" {
+                    let valid = [
+                        &b"debug"[..],
+                        b"verbose",
+                        b"notice",
+                        b"warning",
+                    ];
+                    if !valid.iter().any(|v| value.eq_ignore_ascii_case(v)) {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'loglevel') - Invalid argument 'loglevel' - must be one of debug verbose notice warning",
+                        );
+                        return Ok(());
+                    }
+                }
+                if parameter == b"hz" {
+                    let Some(hz_val) = parse_u64_ascii(&value) else {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'hz') - argument must be between 1 and 500",
+                        );
+                        return Ok(());
+                    };
+                    if hz_val < 1 || hz_val > 500 {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'hz') - argument must be between 1 and 500",
+                        );
+                        return Ok(());
+                    }
+                }
+                if (parameter == b"dynamic-hz"
+                    || parameter == b"lazyfree-lazy-expire"
+                    || parameter == b"lazyfree-lazy-eviction"
+                    || parameter == b"lazyfree-lazy-user-del"
+                    || parameter == b"lazyfree-lazy-server-del"
+                    || parameter == b"rdbcompression"
+                    || parameter == b"rdbchecksum"
+                    || parameter == b"activedefrag"
+                    || parameter == b"aof-use-rdb-preamble"
+                    || parameter == b"stop-writes-on-bgsave-error"
+                    || parameter == b"replica-read-only"
+                    || parameter == b"repl-diskless-sync")
+                    && !value.eq_ignore_ascii_case(b"yes")
+                    && !value.eq_ignore_ascii_case(b"no")
+                {
+                    append_error(
+                        response_out,
+                        format!(
+                            "ERR CONFIG SET failed (possibly related to argument '{}') - argument must be 'yes' or 'no'",
+                            String::from_utf8_lossy(&parameter)
+                        )
+                        .as_bytes(),
+                    );
+                    return Ok(());
+                }
+                if (parameter == b"timeout"
+                    || parameter == b"tcp-keepalive"
+                    || parameter == b"databases"
+                    || parameter == b"lua-time-limit"
+                    || parameter == b"slowlog-max-len"
+                    || parameter == b"slowlog-log-slower-than"
+                    || parameter == b"repl-backlog-size"
+                    || parameter == b"repl-diskless-sync-delay"
+                    || parameter == b"hash-max-listpack-entries"
+                    || parameter == b"hash-max-listpack-value"
+                    || parameter == b"set-max-intset-entries"
+                    || parameter == b"set-max-listpack-entries"
+                    || parameter == b"proto-max-bulk-len"
+                    || parameter == b"client-query-buffer-limit")
+                    && parse_u64_ascii(&value).is_none()
+                {
+                    append_error(
+                        response_out,
+                        format!(
+                            "ERR CONFIG SET failed (possibly related to argument '{}') - argument must be a valid integer",
+                            String::from_utf8_lossy(&parameter)
+                        )
+                        .as_bytes(),
+                    );
+                    return Ok(());
+                }
+                if parameter == b"appendfsync" {
+                    let valid = [&b"always"[..], b"everysec", b"no"];
+                    if !valid.iter().any(|v| value.eq_ignore_ascii_case(v)) {
+                        append_error(
+                            response_out,
+                            b"ERR CONFIG SET failed (possibly related to argument 'appendfsync') - argument must be 'always', 'everysec' or 'no'",
+                        );
+                        return Ok(());
+                    }
+                }
                 pending.push((parameter, value));
                 index += 2;
             }
