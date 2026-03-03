@@ -70,6 +70,7 @@ impl RequestProcessor {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub(super) fn load_hash_object(
         &self,
         key: &[u8],

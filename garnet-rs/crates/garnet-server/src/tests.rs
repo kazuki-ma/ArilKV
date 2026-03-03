@@ -3190,8 +3190,8 @@ async fn run_listener_with_cluster_control_plane_runs_server_and_detected_migrat
         .await
         .unwrap();
         assert!(report.failover_report.failover_records.is_empty());
-        assert!(report.failover_report.gossip_reports.len() > 0);
-        assert!(report.migration_reports.len() > 0);
+        assert!(!report.failover_report.gossip_reports.is_empty());
+        assert!(!report.migration_reports.is_empty());
         assert!(repl_rx.try_recv().is_err());
         report
     });
@@ -3394,7 +3394,7 @@ async fn run_with_cluster_control_plane_binds_and_serves_requests() {
     .unwrap();
     client.await.unwrap();
 
-    assert!(report.failover_report.gossip_reports.len() > 0);
+    assert!(!report.failover_report.gossip_reports.is_empty());
     assert!(report.failover_report.failover_records.is_empty());
     assert!(report.migration_reports.is_empty());
     assert!(repl_rx.try_recv().is_err());
@@ -5572,7 +5572,7 @@ fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     let mut owned = Vec::with_capacity(meta.argument_count);
     for arg in &args[..meta.argument_count] {
-        owned.push(arg_slice_bytes(&arg).to_vec());
+        owned.push(arg_slice_bytes(arg).to_vec());
     }
     owned
 }

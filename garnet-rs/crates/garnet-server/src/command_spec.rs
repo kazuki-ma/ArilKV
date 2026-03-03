@@ -2792,10 +2792,10 @@ pub fn command_is_write_pause_affected_with_script(
     }
     // Write-capable scripting commands: check shebang flags.
     if matches!(command, CommandId::Eval | CommandId::Evalsha) {
-        if let Some(body) = script_body {
-            if eval_script_has_no_writes_flag(body) {
-                return false;
-            }
+        if let Some(body) = script_body
+            && eval_script_has_no_writes_flag(body)
+        {
+            return false;
         }
         return true;
     }
@@ -2990,9 +2990,13 @@ mod tests {
         assert!(!eval_script_has_no_writes_flag(b"return 1"));
         // Shebang without flags → not flagged
         assert!(!eval_script_has_no_writes_flag(b"#!lua\nreturn 1"));
-        assert!(!eval_script_has_no_writes_flag(b"#!lua name=mylib\nreturn 1"));
+        assert!(!eval_script_has_no_writes_flag(
+            b"#!lua name=mylib\nreturn 1"
+        ));
         // Shebang with flags=no-writes → flagged
-        assert!(eval_script_has_no_writes_flag(b"#!lua flags=no-writes\nreturn 1"));
+        assert!(eval_script_has_no_writes_flag(
+            b"#!lua flags=no-writes\nreturn 1"
+        ));
         assert!(eval_script_has_no_writes_flag(
             b"#!lua name=mylib flags=no-writes\nreturn 1"
         ));

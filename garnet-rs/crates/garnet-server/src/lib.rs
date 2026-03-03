@@ -308,11 +308,11 @@ impl ServerMetrics {
     }
 
     pub fn set_client_name(&self, client_id: ClientId, name: Option<Vec<u8>>) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.name = name;
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.name = name;
+            client.last_activity = Instant::now();
         }
     }
 
@@ -330,34 +330,34 @@ impl ServerMetrics {
         command_name: &[u8],
         subcommand_name: Option<&[u8]>,
     ) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.last_command = command_name
-                    .iter()
-                    .map(|byte| byte.to_ascii_lowercase())
-                    .collect();
-                if let Some(subcommand) = subcommand_name {
-                    if !subcommand.is_empty() {
-                        client.last_command.push(b'|');
-                        client.last_command.extend(
-                            subcommand
-                                .iter()
-                                .map(|byte| byte.to_ascii_lowercase())
-                                .collect::<Vec<u8>>(),
-                        );
-                    }
-                }
-                client.last_activity = Instant::now();
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.last_command = command_name
+                .iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect();
+            if let Some(subcommand) = subcommand_name
+                && !subcommand.is_empty()
+            {
+                client.last_command.push(b'|');
+                client.last_command.extend(
+                    subcommand
+                        .iter()
+                        .map(|byte| byte.to_ascii_lowercase())
+                        .collect::<Vec<u8>>(),
+                );
             }
+            client.last_activity = Instant::now();
         }
     }
 
     pub fn set_client_blocked(&self, client_id: ClientId, blocked: bool) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.blocked = blocked;
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.blocked = blocked;
+            client.last_activity = Instant::now();
         }
     }
 
@@ -370,55 +370,54 @@ impl ServerMetrics {
     }
 
     pub fn set_client_user(&self, client_id: ClientId, user: Vec<u8>) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.user = user;
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.user = user;
+            client.last_activity = Instant::now();
         }
     }
 
     pub fn client_user(&self, client_id: ClientId) -> Option<Vec<u8>> {
-        self.clients.lock().ok().and_then(|clients| {
-            clients
-                .get(&client_id)
-                .and_then(|client| Some(client.user.clone()))
-        })
+        self.clients
+            .lock()
+            .ok()
+            .and_then(|clients| clients.get(&client_id).map(|client| client.user.clone()))
     }
 
     pub fn set_client_library_name(&self, client_id: ClientId, value: Option<Vec<u8>>) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.library_name = value;
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.library_name = value;
+            client.last_activity = Instant::now();
         }
     }
 
     pub fn set_client_library_version(&self, client_id: ClientId, value: Option<Vec<u8>>) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.library_version = value;
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.library_version = value;
+            client.last_activity = Instant::now();
         }
     }
 
     pub fn add_client_input_bytes(&self, client_id: ClientId, bytes: u64) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.total_input_bytes = client.total_input_bytes.saturating_add(bytes);
+            client.last_activity = Instant::now();
         }
     }
 
     pub fn add_client_output_bytes(&self, client_id: ClientId, bytes: u64) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.total_output_bytes = client.total_output_bytes.saturating_add(bytes);
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.total_output_bytes = client.total_output_bytes.saturating_add(bytes);
+            client.last_activity = Instant::now();
         }
     }
 
@@ -429,12 +428,12 @@ impl ServerMetrics {
         query_buffer_free: usize,
         read_buffer_size: usize,
     ) {
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.query_buffer_used = query_buffer_used;
-                client.query_buffer_free = query_buffer_free;
-                client.read_buffer_size = read_buffer_size;
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.query_buffer_used = query_buffer_used;
+            client.query_buffer_free = query_buffer_free;
+            client.read_buffer_size = read_buffer_size;
         }
     }
 
@@ -442,11 +441,11 @@ impl ServerMetrics {
         if delta == 0 {
             return;
         }
-        if let Ok(mut clients) = self.clients.lock() {
-            if let Some(client) = clients.get_mut(&client_id) {
-                client.total_commands = client.total_commands.saturating_add(delta);
-                client.last_activity = Instant::now();
-            }
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.total_commands = client.total_commands.saturating_add(delta);
+            client.last_activity = Instant::now();
         }
     }
 
@@ -482,30 +481,30 @@ impl ServerMetrics {
             if filter.skip_current_connection && *client_id == current_client_id {
                 continue;
             }
-            if let Some(expected_type) = filter.client_type {
-                if expected_type != ClientTypeFilter::Normal {
-                    continue;
-                }
+            if let Some(expected_type) = filter.client_type
+                && expected_type != ClientTypeFilter::Normal
+            {
+                continue;
             }
-            if let Some(expected_id) = filter.id {
-                if *client_id != expected_id {
-                    continue;
-                }
+            if let Some(expected_id) = filter.id
+                && *client_id != expected_id
+            {
+                continue;
             }
-            if let Some(expected_user) = filter.user.as_ref() {
-                if client.user.as_slice() != expected_user.as_slice() {
-                    continue;
-                }
+            if let Some(expected_user) = filter.user.as_ref()
+                && client.user.as_slice() != expected_user.as_slice()
+            {
+                continue;
             }
-            if let Some(expected_addr) = filter.addr.as_ref() {
-                if client.addr.as_slice() != expected_addr.as_slice() {
-                    continue;
-                }
+            if let Some(expected_addr) = filter.addr.as_ref()
+                && client.addr.as_slice() != expected_addr.as_slice()
+            {
+                continue;
             }
-            if let Some(expected_laddr) = filter.laddr.as_ref() {
-                if client.laddr.as_slice() != expected_laddr.as_slice() {
-                    continue;
-                }
+            if let Some(expected_laddr) = filter.laddr.as_ref()
+                && client.laddr.as_slice() != expected_laddr.as_slice()
+            {
+                continue;
             }
             if let Some(max_age_seconds) = filter.max_age_seconds {
                 let age_seconds = now.duration_since(client.connect_time).as_secs();
@@ -565,10 +564,10 @@ impl ServerMetrics {
             if client.killed {
                 continue;
             }
-            if let Some(expected_id) = filter_id {
-                if *id != expected_id {
-                    continue;
-                }
+            if let Some(expected_id) = filter_id
+                && *id != expected_id
+            {
+                continue;
             }
             if !out.is_empty() {
                 out.extend_from_slice(b"\r\n");

@@ -100,7 +100,7 @@ impl<T> DerefMut for OrderedMutexGuard<'_, T> {
 #[cfg(any(debug_assertions, test))]
 thread_local! {
     static HELD_LOCKS: std::cell::RefCell<Vec<(LockClass, &'static str)>> =
-        std::cell::RefCell::new(Vec::new());
+        const { std::cell::RefCell::new(Vec::new()) };
 }
 
 #[inline]

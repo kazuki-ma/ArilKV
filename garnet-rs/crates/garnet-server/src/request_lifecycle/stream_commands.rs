@@ -241,6 +241,7 @@ impl RequestProcessor {
             StreamId::parse(&start_id).ok_or(RequestExecutionError::SyntaxError)?
         };
 
+        #[allow(clippy::type_complexity)]
         let mut selected: Vec<(StreamId, Vec<(Vec<u8>, Vec<u8>)>)> = Vec::new();
         for (id, fields) in &stream.entries {
             if *id > pivot {
@@ -327,7 +328,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
         let trailing = args.len() - streams_index;
-        if trailing < 2 || trailing % 2 != 0 {
+        if trailing < 2 || !trailing.is_multiple_of(2) {
             return Err(RequestExecutionError::SyntaxError);
         }
         let stream_count = trailing / 2;
@@ -472,8 +473,8 @@ impl RequestProcessor {
         parse_u64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
 
         let mut option_start = args.len();
-        for i in 6..args.len() {
-            let token = args[i];
+        for (i, token) in args.iter().enumerate().skip(6) {
+            let token = *token;
             if is_xclaim_option_token(token) {
                 option_start = i;
                 break;
@@ -782,10 +783,10 @@ impl RequestProcessor {
                     if entry_id >= minid {
                         break;
                     }
-                    if let Some(limit) = spec.limit {
-                        if removed >= limit {
-                            break;
-                        }
+                    if let Some(limit) = spec.limit
+                        && removed >= limit
+                    {
+                        break;
                     }
                     if stream.entries.remove(&entry_id).is_some() {
                         removed += 1;
@@ -823,6 +824,7 @@ fn next_auto_stream_id(stream: &StreamObject) -> StreamId {
     StreamId::new(now, 0)
 }
 
+#[allow(clippy::type_complexity)]
 fn collect_stream_entries_after_id(
     stream: &StreamObject,
     pivot: StreamId,
@@ -930,6 +932,7 @@ fn parse_xtrim_spec(args: &[&[u8]]) -> Result<XtrimSpec, RequestExecutionError> 
     Ok(XtrimSpec { strategy, limit })
 }
 
+#[allow(clippy::type_complexity)]
 fn collect_stream_range_entries(
     stream: &StreamObject,
     lower_bound: &[u8],
@@ -988,6 +991,7 @@ fn collect_stream_range_entries(
     selected
 }
 
+#[allow(clippy::type_complexity)]
 fn append_stream_entry_array(
     response_out: &mut Vec<u8>,
     entries: &[(StreamId, Vec<(Vec<u8>, Vec<u8>)>)],

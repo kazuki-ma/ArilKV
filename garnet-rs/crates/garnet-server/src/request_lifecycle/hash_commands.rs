@@ -431,15 +431,15 @@ impl RequestProcessor {
 
         let mut matched = Vec::new();
         for (field, value) in &hash {
-            if let Some(pattern) = scan_options.pattern {
-                if !super::server_commands::redis_glob_match(
+            if let Some(pattern) = scan_options.pattern
+                && !super::server_commands::redis_glob_match(
                     pattern,
                     field,
                     super::server_commands::CaseSensitivity::Sensitive,
                     0,
-                ) {
-                    continue;
-                }
+                )
+            {
+                continue;
             }
             matched.push((field.as_slice(), value.as_slice()));
         }
@@ -688,14 +688,12 @@ impl RequestProcessor {
             );
         }
 
-        if expire_options.expire_if_past_immediately {
-            if let Some(expiration) = expire_options.expiration_unix_millis {
-                if expiration
-                    <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
-                {
-                    self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
-                }
-            }
+        if expire_options.expire_if_past_immediately
+            && let Some(expiration) = expire_options.expiration_unix_millis
+            && expiration
+                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+        {
+            self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
         }
 
         if hash.is_empty() {
@@ -763,14 +761,12 @@ impl RequestProcessor {
             }
         }
 
-        if expire_options.expire_if_past_immediately {
-            if let Some(expiration) = expire_options.expiration_unix_millis {
-                if expiration
-                    <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
-                {
-                    self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
-                }
-            }
+        if expire_options.expire_if_past_immediately
+            && let Some(expiration) = expire_options.expiration_unix_millis
+            && expiration
+                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+        {
+            self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
         }
 
         if lazy_expired || expire_options.expiration_unix_millis.is_some() {
@@ -1207,6 +1203,7 @@ impl RequestProcessor {
         self.persist_hash_after_field_expiration(key, &hash)
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn handle_hash_field_expire_common(
         &self,
         args: &[&[u8]],
@@ -1462,6 +1459,7 @@ fn parse_hash_fields<'a>(
     Ok(args[first_field_index..last_field_index].to_vec())
 }
 
+#[allow(clippy::type_complexity)]
 fn parse_hash_fields_with_values<'a>(
     args: &'a [&'a [u8]],
     fields_index: usize,

@@ -69,6 +69,7 @@ pub enum RequestExecutionError {
     ScriptExecutionTimedOut,
     NoScript,
     ScriptingDisabled,
+    NegativeKeyCount,
 }
 
 impl RequestExecutionError {
@@ -207,6 +208,9 @@ impl RequestExecutionError {
             ),
             Self::ScriptingDisabled => {
                 append_error(response_out, "ERR scripting is disabled in this server")
+            }
+            Self::NegativeKeyCount => {
+                append_error(response_out, "ERR Number of keys can't be negative")
             }
         }
     }

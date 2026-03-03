@@ -68,7 +68,7 @@ pub(crate) fn cluster_error_for_command(
             let config = cluster_store.load();
             let mut first_slot = None;
             for arg in &args[1..] {
-                let key = arg_slice_bytes(&arg);
+                let key = arg_slice_bytes(arg);
                 let slot = redis_hash_slot(key);
 
                 if let Some(existing) = first_slot {
@@ -85,11 +85,8 @@ pub(crate) fn cluster_error_for_command(
                 }
 
                 if let Some(redirection_error) =
-                    cluster_redirection_for_slot(&config, slot, asking_allowed).map_err(
-                        |error| {
-                            io::Error::new(io::ErrorKind::Other, format!("cluster error: {error}"))
-                        },
-                    )?
+                    cluster_redirection_for_slot(&config, slot, asking_allowed)
+                        .map_err(|error| io::Error::other(format!("cluster error: {error}")))?
                 {
                     return Ok((Some(redirection_error), true));
                 }
@@ -101,10 +98,7 @@ pub(crate) fn cluster_error_for_command(
             let slot = redis_hash_slot(key);
             let error = cluster_redirection_for_slot(&cluster_store.load(), slot, asking_allowed)
                 .map_err(|cluster_error| {
-                io::Error::new(
-                    io::ErrorKind::Other,
-                    format!("cluster error: {cluster_error}"),
-                )
+                io::Error::other(format!("cluster error: {cluster_error}"))
             })?;
             Ok((error, asking_allowed))
         }

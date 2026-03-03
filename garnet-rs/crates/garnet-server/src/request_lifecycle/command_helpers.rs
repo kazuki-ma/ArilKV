@@ -71,7 +71,7 @@ pub(super) fn ensure_paired_arity_after(
     if args.len() < min_count || args.len() < pair_start_index {
         return Err(RequestExecutionError::WrongArity { command, expected });
     }
-    if (args.len() - pair_start_index) % 2 == 0 {
+    if (args.len() - pair_start_index).is_multiple_of(2) {
         return Ok(());
     }
     Err(RequestExecutionError::WrongArity { command, expected })

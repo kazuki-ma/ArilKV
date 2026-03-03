@@ -227,8 +227,7 @@ mod tests {
     fn execute_command_line_reports_parse_error() {
         let processor = RequestProcessor::new().unwrap();
         let error = execute_command_line(&processor, "SET \"broken")
-            .err()
-            .expect("unterminated quote must fail");
+            .expect_err("unterminated quote must fail");
         assert!(matches!(
             error,
             CommandHarnessError::Parse(CommandLineParseError::UnterminatedQuote('"'))

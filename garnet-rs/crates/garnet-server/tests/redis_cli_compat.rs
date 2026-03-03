@@ -279,10 +279,10 @@ async fn redis_cli_available() -> Result<(), String> {
 
 async fn wait_for_server(port: u16) {
     for _ in 0..30 {
-        if let Ok(result) = run_redis_cli(port, &["PING"]).await {
-            if result == "PONG" {
-                return;
-            }
+        if let Ok(result) = run_redis_cli(port, &["PING"]).await
+            && result == "PONG"
+        {
+            return;
         }
         sleep(Duration::from_millis(50)).await;
     }

@@ -281,12 +281,10 @@ impl RequestProcessor {
 
         let mut positions = Vec::new();
         if rank > 0 {
-            let mut scanned = 0usize;
-            for (index, value) in list.iter().enumerate() {
+            for (scanned, (index, value)) in list.iter().enumerate().enumerate() {
                 if scanned >= max_scan {
                     break;
                 }
-                scanned += 1;
                 if value.as_slice() != element {
                     continue;
                 }
@@ -300,12 +298,10 @@ impl RequestProcessor {
                 }
             }
         } else {
-            let mut scanned = 0usize;
-            for (index, value) in list.iter().enumerate().rev() {
+            for (scanned, (index, value)) in list.iter().enumerate().rev().enumerate() {
                 if scanned >= max_scan {
                     break;
                 }
-                scanned += 1;
                 if value.as_slice() != element {
                     continue;
                 }

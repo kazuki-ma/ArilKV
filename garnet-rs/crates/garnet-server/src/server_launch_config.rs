@@ -219,6 +219,7 @@ fn parse_bind_addrs_from_values(
     expand_bind_addrs_from_base(base, owner_node_count)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn parse_server_launch_config_from_values(
     bind_addr: Option<&str>,
     bind_addrs: Option<&str>,

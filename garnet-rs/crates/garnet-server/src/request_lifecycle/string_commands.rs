@@ -599,6 +599,7 @@ impl RequestProcessor {
             }
         } else if let Some(range) = normalize_string_range(value.len(), start, end) {
             let mut found = None;
+            #[allow(clippy::needless_range_loop)]
             for byte_index in range.start..=range.end_inclusive {
                 let byte = value[byte_index];
                 if target_bit == 1 {
@@ -1223,10 +1224,14 @@ impl RequestProcessor {
         session
             .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
             .map_err(map_upsert_error)?;
-        drop(object_session);
-        drop(object_store);
-        drop(session);
-        drop(store);
+        // Explicit drops to end borrows before subsequent metadata locks.
+        #[allow(clippy::drop_non_drop)]
+        {
+            drop(object_session);
+            drop(object_store);
+            drop(session);
+            drop(store);
+        }
 
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
@@ -1470,10 +1475,14 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::StorageBusy);
             }
         }
-        drop(object_session);
-        drop(object_store);
-        drop(session);
-        drop(store);
+        // Explicit drops to end borrows before subsequent metadata locks.
+        #[allow(clippy::drop_non_drop)]
+        {
+            drop(object_session);
+            drop(object_store);
+            drop(session);
+            drop(store);
+        }
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
         if object_exists {
@@ -1903,14 +1912,14 @@ impl RequestProcessor {
         delta: i64,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.expire_key_if_needed(&key)?;
-        if !self.key_exists(&key)? && self.object_key_exists(&key)? {
+        self.expire_key_if_needed(key)?;
+        if !self.key_exists(key)? && self.object_key_exists(key)? {
             return Err(RequestExecutionError::WrongType);
         }
         let input = delta.to_string().into_bytes();
         let mut output = Vec::new();
         let mut info = RmwInfo::default();
-        let mut store = self.lock_string_store_for_key(&key);
+        let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let status = session.rmw(&key.to_vec(), &input, &mut output, &mut info);
 
@@ -1920,15 +1929,15 @@ impl RequestProcessor {
             | Ok(RmwOperationStatus::Inserted) => {
                 let parsed =
                     parse_i64_ascii(&output).ok_or(RequestExecutionError::ValueNotInteger)?;
-                self.track_string_key(&key);
-                self.bump_watch_version(&key);
+                self.track_string_key(key);
+                self.bump_watch_version(key);
                 self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
                 append_integer(response_out, parsed);
                 Ok(())
             }
             Ok(RmwOperationStatus::RetryLater) => Err(RequestExecutionError::StorageBusy),
             Ok(RmwOperationStatus::NotFound) => {
-                if self.object_key_exists(&key)? {
+                if self.object_key_exists(key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 let mut upsert_info = UpsertInfo::default();
@@ -1942,8 +1951,8 @@ impl RequestProcessor {
                         &mut upsert_info,
                     )
                     .map_err(map_upsert_error)?;
-                self.track_string_key(&key);
-                self.bump_watch_version(&key);
+                self.track_string_key(key);
+                self.bump_watch_version(key);
                 self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
                 append_integer(response_out, delta);
                 Ok(())
@@ -2285,10 +2294,14 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::StorageBusy);
             }
         }
-        drop(object_session);
-        drop(object_store);
-        drop(session);
-        drop(store);
+        // Explicit drops to end borrows before subsequent metadata locks.
+        #[allow(clippy::drop_non_drop)]
+        {
+            drop(object_session);
+            drop(object_store);
+            drop(session);
+            drop(store);
+        }
 
         if object_exists {
             self.untrack_object_key_in_shard(&key_vec, shard_index);
@@ -2874,12 +2887,11 @@ fn should_apply_expire_condition(
             return false;
         }
     }
-    if options.lt {
-        if let Some(current) = current_expiration_unix_millis {
-            if target_unix_millis >= i128::from(current) {
-                return false;
-            }
-        }
+    if options.lt
+        && let Some(current) = current_expiration_unix_millis
+        && target_unix_millis >= i128::from(current)
+    {
+        return false;
     }
     true
 }
@@ -3468,11 +3480,7 @@ fn parse_sort_options(
     })
 }
 
-fn apply_sort_limit<'a>(
-    values: &'a [Vec<u8>],
-    offset: usize,
-    count: Option<usize>,
-) -> &'a [Vec<u8>] {
+fn apply_sort_limit(values: &[Vec<u8>], offset: usize, count: Option<usize>) -> &[Vec<u8>] {
     if offset >= values.len() {
         return &values[values.len()..values.len()];
     }
@@ -3538,7 +3546,7 @@ fn resolve_sort_lookup_value(
         return processor.hash_get_field_for_sort_lookup(&key, &field);
     }
 
-    Ok(processor.read_string_value(&key)?)
+    processor.read_string_value(&key)
 }
 
 struct SortPatternSplit<'a> {
@@ -3584,9 +3592,9 @@ fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> 
     }
     let max_len = source_values.iter().map(Vec::len).max().unwrap_or(0);
     let mut result = vec![0u8; max_len];
-    for index in 0..max_len {
+    for (index, result_byte) in result.iter_mut().enumerate().take(max_len) {
         let first = source_values[0].get(index).copied().unwrap_or(0);
-        result[index] = match operation {
+        *result_byte = match operation {
             BitopOperation::Not => !first,
             BitopOperation::And => source_values[1..].iter().fold(first, |acc, source| {
                 acc & source.get(index).copied().unwrap_or(0)
@@ -3816,7 +3824,7 @@ fn hll_record_too_large_fallback_value<'a>(
     None
 }
 
-fn canonicalize_oversized_hyll_value<'a>(user_value: &'a [u8]) -> &'a [u8] {
+fn canonicalize_oversized_hyll_value(user_value: &[u8]) -> &[u8] {
     const OVERSIZED_HYLL_CANONICALIZE_BYTES: usize = 256 * 1024;
     if user_value.starts_with(PF_REDIS_HLL_PREFIX)
         && user_value.len() > OVERSIZED_HYLL_CANONICALIZE_BYTES

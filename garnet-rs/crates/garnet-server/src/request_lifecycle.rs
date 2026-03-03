@@ -716,6 +716,7 @@ pub struct MigrationEntry {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 struct StreamObject {
+    #[allow(clippy::type_complexity)]
     entries: BTreeMap<StreamId, Vec<(Vec<u8>, Vec<u8>)>>,
     groups: BTreeMap<Vec<u8>, StreamId>,
 }
@@ -1496,10 +1497,7 @@ impl RequestProcessor {
         let Ok(values) = self.config_overrides.lock() else {
             return true;
         };
-        match values.get(b"lazyexpire-nested-arbitrary-keys".as_slice()) {
-            Some(value) if value.eq_ignore_ascii_case(b"no") => false,
-            _ => true,
-        }
+        !matches!(values.get(b"lazyexpire-nested-arbitrary-keys".as_slice()), Some(value) if value.eq_ignore_ascii_case(b"no"))
     }
 
     pub(crate) fn record_command_call(&self, command_name: &[u8]) {
@@ -1986,9 +1984,7 @@ impl RequestProcessor {
         let new_end = now_millis.saturating_add(timeout_millis);
 
         let current_type = self.client_pause_type.load(Ordering::Acquire);
-        let new_type = if pause_all {
-            CLIENT_PAUSE_TYPE_ALL
-        } else if current_type == CLIENT_PAUSE_TYPE_ALL {
+        let new_type = if pause_all || current_type == CLIENT_PAUSE_TYPE_ALL {
             CLIENT_PAUSE_TYPE_ALL
         } else {
             CLIENT_PAUSE_TYPE_WRITE

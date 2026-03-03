@@ -209,7 +209,7 @@ impl LimitedFixedBufferPool {
         if requested_size < self.min_allocation_size
             || requested_size > self.max_allocation_size
             || !requested_size.is_power_of_two()
-            || requested_size % self.min_allocation_size != 0
+            || !requested_size.is_multiple_of(self.min_allocation_size)
         {
             return Err(LimitedFixedBufferPoolError::InvalidRequestSize {
                 requested_size,

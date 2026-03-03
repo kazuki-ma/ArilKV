@@ -1071,63 +1071,61 @@ pub(crate) async fn handle_connection(
                                                 b"-EXECABORT Transaction discarded because of previous errors.\r\n",
                                             );
                                         }
+                                    } else if let Some(reason) = transaction_runtime_abort_reason(
+                                        &processor,
+                                        &replication,
+                                        &transaction.queued_frames,
+                                        max_resp_arguments,
+                                    ) {
+                                        transaction.reset();
+                                        responses.extend_from_slice(
+                                            transaction_runtime_execabort_message(reason),
+                                        );
                                     } else {
-                                        if let Some(reason) = transaction_runtime_abort_reason(
+                                        // CLIENT PAUSE gating at EXEC: if the transaction
+                                        // contains write-pause-affected commands, block until
+                                        // the pause expires or is cancelled.
+                                        let exec_write_affected =
+                                            transaction_has_write_pause_affected_commands(
+                                                &transaction.queued_frames,
+                                                max_resp_arguments,
+                                            );
+                                        if processor.is_client_paused(exec_write_affected) {
+                                            if !responses.is_empty() {
+                                                stream.write_all(&responses).await?;
+                                                responses.clear();
+                                            }
+                                            wait_for_client_unpause(
+                                                &processor,
+                                                &metrics,
+                                                client_id,
+                                                exec_write_affected,
+                                            )
+                                            .await;
+                                        }
+                                        let transaction_outcome = execute_transaction_queue(
+                                            &processor,
+                                            &owner_thread_pool,
+                                            &mut transaction,
+                                            &mut responses,
+                                            max_resp_arguments,
+                                            client_state.no_touch,
+                                            Some(client_id),
+                                        );
+                                        publish_transaction_replication_frames(
                                             &processor,
                                             &replication,
-                                            &transaction.queued_frames,
+                                            &transaction_outcome,
                                             max_resp_arguments,
-                                        ) {
-                                            transaction.reset();
-                                            responses.extend_from_slice(
-                                                transaction_runtime_execabort_message(reason),
-                                            );
-                                        } else {
-                                            // CLIENT PAUSE gating at EXEC: if the transaction
-                                            // contains write-pause-affected commands, block until
-                                            // the pause expires or is cancelled.
-                                            let exec_write_affected =
-                                                transaction_has_write_pause_affected_commands(
-                                                    &transaction.queued_frames,
-                                                    max_resp_arguments,
-                                                );
-                                            if processor.is_client_paused(exec_write_affected) {
-                                                if !responses.is_empty() {
-                                                    stream.write_all(&responses).await?;
-                                                    responses.clear();
-                                                }
-                                                wait_for_client_unpause(
-                                                    &processor,
-                                                    &metrics,
-                                                    client_id,
-                                                    exec_write_affected,
-                                                )
-                                                .await;
-                                            }
-                                            let transaction_outcome = execute_transaction_queue(
-                                                &processor,
-                                                &owner_thread_pool,
-                                                &mut transaction,
-                                                &mut responses,
-                                                max_resp_arguments,
-                                                client_state.no_touch,
-                                                Some(client_id),
-                                            );
-                                            publish_transaction_replication_frames(
-                                                &processor,
+                                        );
+                                        if let Some(replication_transition) =
+                                            transaction_outcome.pending_replication_transition
+                                        {
+                                            apply_queued_replication_transition(
                                                 &replication,
-                                                &transaction_outcome,
-                                                max_resp_arguments,
-                                            );
-                                            if let Some(replication_transition) =
-                                                transaction_outcome.pending_replication_transition
-                                            {
-                                                apply_queued_replication_transition(
-                                                    &replication,
-                                                    replication_transition,
-                                                )
-                                                .await;
-                                            }
+                                                replication_transition,
+                                            )
+                                            .await;
                                         }
                                     }
                                 }
@@ -1320,31 +1318,29 @@ pub(crate) async fn handle_connection(
                             }
                             continue;
                         }
-                        if cluster_config.is_some() {
-                            if let Some(slot) =
+                        if cluster_config.is_some()
+                            && let Some(slot) =
                                 command_hash_slot_for_transaction(&args[..argument_count], command)
-                            {
-                                if !transaction.set_transaction_slot_or_abort(slot) {
-                                    responses.extend_from_slice(
-                                        b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
-                                    );
-                                    disconnect_after_write |= finalize_client_command(
-                                        &metrics,
-                                        client_id,
-                                        &mut responses,
-                                        response_mark,
-                                        &mut client_state,
-                                        command,
-                                        command_outcome,
-                                        commands_processed,
-                                    );
-                                    consumed += frame_bytes_consumed;
-                                    if disconnect_after_write {
-                                        break;
-                                    }
-                                    continue;
-                                }
+                            && !transaction.set_transaction_slot_or_abort(slot)
+                        {
+                            responses.extend_from_slice(
+                                b"-CROSSSLOT Keys in request don't hash to the same slot\r\n",
+                            );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
                             }
+                            continue;
                         }
                         transaction.queued_frames.push(frame.to_vec());
                         append_simple_string(&mut responses, b"QUEUED");
@@ -1388,7 +1384,7 @@ pub(crate) async fn handle_connection(
                             let mut watch_error: Option<RequestExecutionError> = None;
                             for key_arg in &args[1..argument_count] {
                                 // SAFETY: `args` points to the live command frame.
-                                let key = arg_slice_bytes(&key_arg);
+                                let key = arg_slice_bytes(key_arg);
                                 if let Err(error) = processor.expire_watch_key_if_needed(key) {
                                     watch_error = Some(error);
                                     break;
@@ -1632,7 +1628,9 @@ pub(crate) async fn handle_connection(
         metrics.update_client_buffer_info(
             client_id,
             receive_buffer.len(),
-            receive_buffer.capacity().saturating_sub(receive_buffer.len()),
+            receive_buffer
+                .capacity()
+                .saturating_sub(receive_buffer.len()),
             read_buffer.len(),
         );
 
@@ -1762,6 +1760,7 @@ async fn execute_frame_on_owner_thread_async(
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_blocking_frame_on_owner_thread(
     processor: &Arc<RequestProcessor>,
     metrics: &Arc<ServerMetrics>,
@@ -1807,22 +1806,18 @@ async fn execute_blocking_frame_on_owner_thread(
             });
         }
 
-        if blocked {
-            if let Some(unblock_mode) = processor.take_client_unblock_request(client_id) {
-                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
-                let response = match unblock_mode {
-                    ClientUnblockMode::Timeout => {
-                        blocking_empty_response_for_command(command).to_vec()
-                    }
-                    ClientUnblockMode::Error => {
-                        b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
-                    }
-                };
-                return Ok(BlockingExecutionOutcome {
-                    frame_response: response,
-                    should_replicate: false,
-                });
-            }
+        if blocked && let Some(unblock_mode) = processor.take_client_unblock_request(client_id) {
+            clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+            let response = match unblock_mode {
+                ClientUnblockMode::Timeout => blocking_empty_response_for_command(command).to_vec(),
+                ClientUnblockMode::Error => {
+                    b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
+                }
+            };
+            return Ok(BlockingExecutionOutcome {
+                frame_response: response,
+                should_replicate: false,
+            });
         }
 
         if !processor.is_blocking_wait_turn(client_id, &blocking_keys) {
@@ -2460,7 +2455,7 @@ fn extract_script_set_literal(script: &str, script_lower: &str) -> Option<Vec<u8
         let delimiter = if marker.ends_with('"') { '"' } else { '\'' };
         let tail = &script[value_start..];
         let end = tail.find(delimiter)?;
-        return Some(tail[..end].as_bytes().to_vec());
+        return Some(tail.as_bytes()[..end].to_vec());
     }
     None
 }
@@ -2512,7 +2507,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
                 .map(|arg| {
                     // SAFETY: The argument slice was parsed from a live request frame and stays valid
                     // while the request is being executed.
-                    RedisKey::from(arg_slice_bytes(&arg))
+                    RedisKey::from(arg_slice_bytes(arg))
                 })
                 .collect()
         }
@@ -2546,7 +2541,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
                 .map(|arg| {
                     // SAFETY: The argument slice was parsed from a live request frame and stays valid
                     // while the request is being executed.
-                    RedisKey::from(arg_slice_bytes(&arg))
+                    RedisKey::from(arg_slice_bytes(arg))
                 })
                 .collect()
         }
@@ -2647,7 +2642,12 @@ fn handle_client_command(
             );
             return outcome;
         }
-        metrics.set_client_name(client_id, Some(new_name.to_vec()));
+        let name_value = if new_name.is_empty() {
+            None
+        } else {
+            Some(new_name.to_vec())
+        };
+        metrics.set_client_name(client_id, name_value);
         append_simple_string(response_out, b"OK");
         return outcome;
     }
@@ -2737,7 +2737,7 @@ fn handle_client_command(
             filter.addr = Some(first.to_vec());
         } else {
             let options_len = args.len() - 2;
-            if options_len % 2 != 0 {
+            if !options_len.is_multiple_of(2) {
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
                 return outcome;
             }
@@ -2806,11 +2806,11 @@ fn handle_client_command(
             }
         }
 
-        if let Some(user) = filter.user.as_ref() {
-            if !metrics.acl_user_exists(user) {
-                append_error_line(response_out, b"ERR No such user");
-                return outcome;
-            }
+        if let Some(user) = filter.user.as_ref()
+            && !metrics.acl_user_exists(user)
+        {
+            append_error_line(response_out, b"ERR No such user");
+            return outcome;
         }
 
         let killed_clients = metrics.kill_clients(client_id, &filter);
@@ -3287,6 +3287,7 @@ fn maybe_update_client_resp_protocol_version_after_hello(
     client_state.resp_protocol_version = version;
 }
 
+#[allow(clippy::too_many_arguments)]
 fn finalize_client_command(
     metrics: &ServerMetrics,
     client_id: ClientId,
@@ -3570,9 +3571,7 @@ fn rewrite_getex_replication_frame(
         None => return Some(original_frame.to_vec()),
     };
 
-    let Some(option) = args.get(2).map(arg_slice_bytes) else {
-        return None;
-    };
+    let option = args.get(2).map(arg_slice_bytes)?;
 
     if ascii_eq_ignore_case(option, b"PERSIST") {
         return Some(encode_resp_frame(&[b"PERSIST".to_vec(), key.to_vec()]));
@@ -3794,25 +3793,19 @@ pub(crate) fn build_owner_thread_pool(
     let shard_count = processor.string_store_shard_count();
     if inline_owner_execution {
         let pool = ShardOwnerThreadPool::new_inline(shard_count).map_err(|error| {
-            io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "owner-thread inline initialization failed (shards={}): {}",
-                    shard_count, error
-                ),
-            )
+            io::Error::other(format!(
+                "owner-thread inline initialization failed (shards={}): {}",
+                shard_count, error
+            ))
         })?;
         return Ok(Arc::new(pool));
     }
     let owner_threads = owner_threads.min(shard_count);
     let pool = ShardOwnerThreadPool::new(owner_threads, shard_count).map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "owner-thread pool initialization failed (threads={}, shards={}): {}",
-                owner_threads, shard_count, error
-            ),
-        )
+        io::Error::other(format!(
+            "owner-thread pool initialization failed (threads={}, shards={}): {}",
+            owner_threads, shard_count, error
+        ))
     })?;
     Ok(Arc::new(pool))
 }
@@ -4476,5 +4469,174 @@ mod tests {
             "unexpected CLIENT HELP payload: {}",
             String::from_utf8_lossy(&response)
         );
+    }
+
+    #[test]
+    fn client_id_returns_connection_id() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"ID".to_vec()]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        handle_client_command(
+            &processor,
+            &metrics,
+            ClientId::new(42),
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b":42\r\n");
+    }
+
+    #[test]
+    fn client_setname_and_getname_round_trip() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        // GETNAME returns null before any name is set.
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"GETNAME".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"$-1\r\n");
+
+        // SETNAME sets the connection name.
+        response.clear();
+        let frame =
+            encode_resp_frame(&[b"CLIENT".to_vec(), b"SETNAME".to_vec(), b"myconn".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        // GETNAME returns the name that was set.
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"GETNAME".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"$6\r\nmyconn\r\n");
+
+        // SETNAME with empty string clears the name.
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"SETNAME".to_vec(), b"".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        // GETNAME returns null after name is cleared.
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"GETNAME".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"$-1\r\n");
+    }
+
+    #[test]
+    fn client_setname_rejects_spaces() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"SETNAME".to_vec(),
+            b"bad name".to_vec(),
+        ]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        handle_client_command(
+            &processor,
+            &metrics,
+            ClientId::new(1),
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with("-ERR"),
+            "expected error for name with space: {}",
+            response_str,
+        );
+    }
+
+    #[test]
+    fn client_no_evict_on_off() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let mut client_state = ClientConnectionState::default();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        assert!(!client_state.no_evict);
+
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"NO-EVICT".to_vec(), b"ON".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            ClientId::new(1),
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+        assert!(client_state.no_evict);
+
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"NO-EVICT".to_vec(), b"OFF".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            ClientId::new(1),
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+        assert!(!client_state.no_evict);
     }
 }

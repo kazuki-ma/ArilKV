@@ -88,10 +88,7 @@ where
     F: Future<Output = ()> + Send,
 {
     let processor = Arc::new(RequestProcessor::new().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("request processor initialization failed: {err}"),
-        )
+        io::Error::other(format!("request processor initialization failed: {err}"))
     })?);
     run_listener_with_shutdown_and_cluster_with_processor(
         listener,

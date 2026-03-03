@@ -7143,6 +7143,22 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
+    let client_no_evict = b"*3\r\n$6\r\nCLIENT\r\n$8\r\nNO-EVICT\r\n$2\r\nON\r\n";
+    let meta = parse_resp_command_arg_slices(client_no_evict, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let client_no_evict_off = b"*3\r\n$6\r\nCLIENT\r\n$8\r\nNO-EVICT\r\n$3\r\nOFF\r\n";
+    let meta = parse_resp_command_arg_slices(client_no_evict_off, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
     let role = b"*1\r\n$4\r\nROLE\r\n";
     let meta = parse_resp_command_arg_slices(role, &mut args).unwrap();
     processor
@@ -8937,7 +8953,7 @@ fn scripting_eval_and_fcall_commands_validate_numkeys_then_return_disabled() {
     assert_command_error(
         &processor,
         "EVAL \"return 1\" -1",
-        b"-ERR value is out of range\r\n",
+        b"-ERR Number of keys can't be negative\r\n",
     );
     assert_command_error(
         &processor,
@@ -10113,4 +10129,86 @@ fn eval_unpack_with_huge_range_returns_error_instead_of_crash() {
         &encode_resp(&[b"EVAL", b"return {unpack({1,2,3}, 1, -1)}", b"0"]),
     );
     assert_eq!(response3, b"*0\r\n");
+}
+
+#[test]
+fn evalsha_honours_no_writes_shebang_flag() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    // SCRIPT LOAD a script with a no-writes shebang.
+    let script = b"#!lua flags=no-writes\nreturn 1";
+    let load_frame = encode_resp(&[b"SCRIPT", b"LOAD", script.as_slice()]);
+    let sha_response = execute_frame(&processor, &load_frame);
+    let sha = parse_bulk_payload(&sha_response).expect("SCRIPT LOAD returns sha1 bulk string");
+    assert_eq!(sha.len(), 40);
+
+    // EVALSHA with the returned SHA should succeed and return 1.
+    let evalsha_frame = encode_resp(&[b"EVALSHA", sha.as_slice(), b"0"]);
+    assert_eq!(execute_frame(&processor, &evalsha_frame), b":1\r\n");
+
+    // The no-writes flag should block write commands from within the script.
+    let write_script = b"#!lua flags=no-writes\nreturn redis.call('SET', KEYS[1], 'val')";
+    let write_load = encode_resp(&[b"SCRIPT", b"LOAD", write_script.as_slice()]);
+    let write_sha_response = execute_frame(&processor, &write_load);
+    let write_sha =
+        parse_bulk_payload(&write_sha_response).expect("SCRIPT LOAD returns sha1 bulk string");
+
+    let evalsha_write = encode_resp(&[b"EVALSHA", write_sha.as_slice(), b"1", b"mykey"]);
+    let response = execute_frame(&processor, &evalsha_write);
+    let response_text = String::from_utf8_lossy(&response);
+    assert!(
+        response_text.contains("Write commands are not allowed"),
+        "expected write-reject error from EVALSHA no-writes script, got: {response_text}"
+    );
+}
+
+#[test]
+fn eval_with_no_writes_shebang_allows_read_commands() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    // First, SET a key so we can read it back.
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+
+    // EVAL a script with no-writes shebang that calls GET (a read command).
+    let script = b"#!lua flags=no-writes\nreturn redis.call('GET', KEYS[1])";
+    let eval_frame = encode_resp(&[b"EVAL", script.as_slice(), b"1", b"mykey"]);
+    assert_eq!(execute_frame(&processor, &eval_frame), b"$5\r\nhello\r\n");
+}
+
+#[test]
+fn script_exists_returns_array_for_multiple_shas() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    // Load two scripts.
+    let script_a = b"return 'a'";
+    let script_b = b"return 'b'";
+    let sha_a = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"SCRIPT", b"LOAD", script_a.as_slice()]),
+    ))
+    .expect("SCRIPT LOAD returns sha1");
+    let sha_b = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"SCRIPT", b"LOAD", script_b.as_slice()]),
+    ))
+    .expect("SCRIPT LOAD returns sha1");
+
+    let bogus_sha = b"0000000000000000000000000000000000000000";
+
+    // SCRIPT EXISTS with three SHAs: loaded, bogus, loaded.
+    let exists_frame = encode_resp(&[
+        b"SCRIPT",
+        b"EXISTS",
+        sha_a.as_slice(),
+        bogus_sha.as_slice(),
+        sha_b.as_slice(),
+    ]);
+    assert_eq!(
+        execute_frame(&processor, &exists_frame),
+        b"*3\r\n:1\r\n:0\r\n:1\r\n"
+    );
+
+    // SCRIPT EXISTS with a single SHA also works.
+    let exists_single = encode_resp(&[b"SCRIPT", b"EXISTS", sha_a.as_slice()]);
+    assert_eq!(execute_frame(&processor, &exists_single), b"*1\r\n:1\r\n");
 }

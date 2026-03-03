@@ -64,10 +64,7 @@ async fn main() -> std::io::Result<()> {
                     .into_iter()
                     .next()
                     .ok_or_else(|| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            "failed to build cluster store for single-port mode",
-                        )
+                        std::io::Error::other("failed to build cluster store for single-port mode")
                     })?;
             return run_with_cluster(config, metrics, cluster_store).await;
         }

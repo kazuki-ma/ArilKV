@@ -1112,6 +1112,7 @@ impl RequestProcessor {
         let lua = Lua::new();
         install_safe_unpack(&lua)
             .and_then(|()| install_safe_loadstring(&lua))
+            .and_then(|()| install_safe_pcall(&lua))
             .map_err(|error| {
                 FunctionRegistrationCollectError::Compile(function_load_error_text(&error))
             })?;
@@ -1331,7 +1332,10 @@ impl RequestProcessor {
                 }
             };
         let lua = Lua::new();
-        if let Err(error) = install_safe_unpack(&lua).and_then(|()| install_safe_loadstring(&lua)) {
+        if let Err(error) = install_safe_unpack(&lua)
+            .and_then(|()| install_safe_loadstring(&lua))
+            .and_then(|()| install_safe_pcall(&lua))
+        {
             let message = format!(
                 "ERR Error running script: {}",
                 sanitize_error_text(&error.to_string())
@@ -1393,8 +1397,9 @@ impl RequestProcessor {
                 Ok(table)
             })?;
             let error_reply_fn = scope.create_function(|lua, value: mlua::String| {
+                let normalized = normalize_error_reply(value.to_str().unwrap_or("ERR"));
                 let table = lua.create_table()?;
-                table.set("err", value)?;
+                table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
             })?;
             let log_fn =
@@ -1492,7 +1497,10 @@ impl RequestProcessor {
         };
 
         let lua = Lua::new();
-        if let Err(error) = install_safe_unpack(&lua).and_then(|()| install_safe_loadstring(&lua)) {
+        if let Err(error) = install_safe_unpack(&lua)
+            .and_then(|()| install_safe_loadstring(&lua))
+            .and_then(|()| install_safe_pcall(&lua))
+        {
             let message = format!(
                 "ERR Error running function: {}",
                 sanitize_error_text(&error.to_string())
@@ -1557,8 +1565,9 @@ impl RequestProcessor {
                 Ok(table)
             })?;
             let error_reply_fn = scope.create_function(|lua, value: mlua::String| {
+                let normalized = normalize_error_reply(value.to_str().unwrap_or("ERR"));
                 let table = lua.create_table()?;
-                table.set("err", value)?;
+                table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
             })?;
             let log_fn =
@@ -1626,8 +1635,9 @@ impl RequestProcessor {
                 Ok(table)
             })?;
             let runtime_error_reply_fn = scope.create_function(|lua, value: mlua::String| {
+                let normalized = normalize_error_reply(value.to_str().unwrap_or("ERR"));
                 let table = lua.create_table()?;
-                table.set("err", value)?;
+                table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
             })?;
             let runtime_log_fn =
@@ -3066,6 +3076,58 @@ fn install_safe_loadstring(lua: &Lua) -> mlua::Result<()> {
     Ok(())
 }
 
+/// Replace the Lua `pcall` and `xpcall` globals with wrappers that convert
+/// mlua userdata error objects to plain Lua strings.
+///
+/// mlua wraps Rust callback errors as userdata objects on the Lua stack. When
+/// Lua code uses `pcall(f)` and the call raises an error from a Rust callback,
+/// the second return value is userdata instead of a string. Redis's native Lua
+/// always returns string error objects from `pcall`, so scripts that concatenate
+/// or pattern-match on the error value would break without this conversion.
+fn install_safe_pcall(lua: &Lua) -> mlua::Result<()> {
+    let globals = lua.globals();
+
+    // Wrap pcall: pcall(f, ...) -> status, result...
+    let original_pcall: LuaFunction = globals.get("pcall")?;
+    let safe_pcall = lua.create_function(move |lua, args: MultiValue| {
+        let mut results = original_pcall.call::<MultiValue>(args)?;
+        // If the call failed (first return value is false) and the error object
+        // is userdata, convert it to a string via tostring().
+        if results.len() >= 2
+            && let Some(LuaValue::Boolean(false)) = results.front()
+        {
+            let err_val = &results[1];
+            if matches!(err_val, LuaValue::UserData(_)) {
+                let tostring: LuaFunction = lua.globals().get("tostring")?;
+                let stringified: mlua::String = tostring.call::<mlua::String>(err_val.clone())?;
+                results[1] = LuaValue::String(stringified);
+            }
+        }
+        Ok(results)
+    })?;
+    globals.set("pcall", safe_pcall)?;
+
+    // Wrap xpcall: xpcall(f, handler) -> status, result...
+    let original_xpcall: LuaFunction = globals.get("xpcall")?;
+    let safe_xpcall = lua.create_function(move |lua, args: MultiValue| {
+        let mut results = original_xpcall.call::<MultiValue>(args)?;
+        if results.len() >= 2
+            && let Some(LuaValue::Boolean(false)) = results.front()
+        {
+            let err_val = &results[1];
+            if matches!(err_val, LuaValue::UserData(_)) {
+                let tostring: LuaFunction = lua.globals().get("tostring")?;
+                let stringified: mlua::String = tostring.call::<mlua::String>(err_val.clone())?;
+                results[1] = LuaValue::String(stringified);
+            }
+        }
+        Ok(results)
+    })?;
+    globals.set("xpcall", safe_xpcall)?;
+
+    Ok(())
+}
+
 /// Replace the Lua `unpack` global with a safe wrapper that validates the
 /// requested range before delegating to the original C implementation.
 ///
@@ -3161,14 +3223,9 @@ fn lua_argument_to_bytes(value: LuaValue, index: usize) -> mlua::Result<Vec<u8>>
             Ok(value.to_string().into_bytes())
         }
         LuaValue::Boolean(value) => Ok(if value { b"1".to_vec() } else { b"0".to_vec() }),
-        LuaValue::Nil => Err(LuaError::RuntimeError(format!(
-            "ERR redis.call argument at position {} is nil",
-            index + 1
-        ))),
-        _ => Err(LuaError::RuntimeError(format!(
-            "ERR redis.call argument at position {} has unsupported type",
-            index + 1
-        ))),
+        _ => Err(LuaError::RuntimeError(
+            "Lua redis lib command arguments must be strings or integers".to_string(),
+        )),
     }
 }
 
@@ -3908,7 +3965,7 @@ fn validate_scripting_numkeys(
     let numkeys_raw = args[2];
     let numkeys = parse_i64_ascii(numkeys_raw).ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys < 0 {
-        return Err(RequestExecutionError::ValueOutOfRange);
+        return Err(RequestExecutionError::NegativeKeyCount);
     }
     let key_count = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
     if key_count > args.len().saturating_sub(3) {
@@ -3961,6 +4018,35 @@ fn script_sha1_hex(script: &[u8]) -> String {
         let _ = write!(&mut output, "{byte:02x}");
     }
     output
+}
+
+/// Normalize an error reply string to match Redis's `luaPushErrorBuff`
+/// convention.  The returned string is suitable for the `err` field of
+/// a Lua error-reply table and always has the form `"<CODE> <msg>"`.
+///
+/// Redis's `redis.error_reply(arg)` prepends `-` if absent, then
+/// `luaPushErrorBuff` strips the leading `-`, splits on the first space
+/// to extract code and message, and reassembles as `"{code} {msg}"`.
+/// If there is no space after the dash, the code defaults to `"ERR"`.
+fn normalize_error_reply(raw: &str) -> String {
+    let trimmed = raw.trim_end_matches(['\r', '\n']);
+    // Redis's luaRedisErrorReplyCommand prepends `-` if not present.
+    let with_dash = if trimmed.starts_with('-') {
+        trimmed.to_string()
+    } else {
+        format!("-{trimmed}")
+    };
+    // Strip the leading dash.
+    let after_dash = &with_dash[1..];
+    // Split on the first space to get error code and message.
+    if let Some(space_idx) = after_dash.find(' ') {
+        let code = &after_dash[..space_idx];
+        let msg = &after_dash[space_idx + 1..];
+        format!("{code} {msg}")
+    } else {
+        // No space: error_code = "ERR", msg = after_dash.
+        format!("ERR {after_dash}")
+    }
 }
 
 fn sanitize_error_text(input: &str) -> String {

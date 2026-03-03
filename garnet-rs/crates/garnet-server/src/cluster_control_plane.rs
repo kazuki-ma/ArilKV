@@ -182,13 +182,17 @@ fn resolve_migration_peer_ids(
         .iter()
         .find(|worker| worker.node_id == target_local_node_id)
         .map(|worker| worker.id)
-        .ok_or_else(|| LiveSlotMigrationError::MissingSourcePeerNode(target_local_node_id))?;
+        .ok_or(LiveSlotMigrationError::MissingSourcePeerNode(
+            target_local_node_id,
+        ))?;
     let source_worker_id_in_target = target_snapshot
         .workers()
         .iter()
         .find(|worker| worker.node_id == source_local_node_id)
         .map(|worker| worker.id)
-        .ok_or_else(|| LiveSlotMigrationError::MissingTargetPeerNode(source_local_node_id))?;
+        .ok_or(LiveSlotMigrationError::MissingTargetPeerNode(
+            source_local_node_id,
+        ))?;
     Ok(MigrationPeerIds::new(
         target_worker_id_in_source,
         source_worker_id_in_target,
@@ -303,6 +307,7 @@ pub fn execute_live_slot_migration(
     Ok(total_moved)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_live_slot_migration_until_complete<F>(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
@@ -358,6 +363,7 @@ where
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_live_slot_migrations_until_complete<F>(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
@@ -470,6 +476,7 @@ where
     .await
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_detected_live_slot_migrations_until_shutdown<F>(
     source_store: &ClusterConfigStore,
     target_store: &ClusterConfigStore,
@@ -529,6 +536,7 @@ async fn wait_for_watch_shutdown(mut shutdown: tokio::sync::watch::Receiver<bool
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_cluster_manager_with_config_updates_failover_and_detected_migrations<F, T, R>(
     manager: &mut garnet_cluster::ClusterManager<T>,
     source_store: &ClusterConfigStore,
@@ -596,6 +604,7 @@ where
     })
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_listener_with_cluster_control_plane<F, T, R>(
     listener: TcpListener,
     read_buffer_size: usize,
@@ -620,10 +629,7 @@ where
     R: garnet_cluster::AsyncReplicationTransport,
 {
     let processor = Arc::new(RequestProcessor::new().map_err(|err| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("request processor initialization failed: {err}"),
-        )
+        io::Error::other(format!("request processor initialization failed: {err}"))
     })?);
 
     let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
@@ -670,18 +676,16 @@ where
 
     let _ = shutdown_tx.send(true);
     shutdown_task.abort();
-    let server_result = server_task.await.map_err(|join_error| {
-        io::Error::new(
-            io::ErrorKind::Other,
-            format!("server task join failed: {join_error}"),
-        )
-    })?;
+    let server_result = server_task
+        .await
+        .map_err(|join_error| io::Error::other(format!("server task join failed: {join_error}")))?;
 
     let control_plane_report = control_plane_result?;
     server_result?;
     Ok(control_plane_report)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn run_with_cluster_control_plane<F, T, R>(
     config: ServerConfig,
     metrics: Arc<ServerMetrics>,

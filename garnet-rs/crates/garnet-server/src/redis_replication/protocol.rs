@@ -70,9 +70,7 @@ pub(super) fn parse_bulk_length(raw: &[u8]) -> io::Result<usize> {
     let value = std::str::from_utf8(raw)
         .ok()
         .and_then(|text| text.parse::<i64>().ok())
-        .ok_or_else(|| {
-            io::Error::new(io::ErrorKind::Other, "invalid bulk length in replication")
-        })?;
+        .ok_or_else(|| io::Error::other("invalid bulk length in replication"))?;
     if value < 0 {
         return Ok(0);
     }

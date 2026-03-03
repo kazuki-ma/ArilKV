@@ -29,22 +29,24 @@ pub(super) fn tsavorite_config_from_values(
     page_size_bits: Option<u8>,
     max_in_memory_pages: Option<usize>,
 ) -> TsavoriteKvConfig {
-    let mut config = TsavoriteKvConfig::default();
-    config.hash_index_size_bits = DEFAULT_SERVER_HASH_INDEX_SIZE_BITS;
-    if let Some(bits) = hash_index_size_bits {
-        if (1..=30).contains(&bits) {
-            config.hash_index_size_bits = bits;
-        }
+    let mut config = TsavoriteKvConfig {
+        hash_index_size_bits: DEFAULT_SERVER_HASH_INDEX_SIZE_BITS,
+        ..TsavoriteKvConfig::default()
+    };
+    if let Some(bits) = hash_index_size_bits
+        && (1..=30).contains(&bits)
+    {
+        config.hash_index_size_bits = bits;
     }
-    if let Some(bits) = page_size_bits {
-        if (1..=30).contains(&bits) {
-            config.page_size_bits = bits;
-        }
+    if let Some(bits) = page_size_bits
+        && (1..=30).contains(&bits)
+    {
+        config.page_size_bits = bits;
     }
-    if let Some(max_pages) = max_in_memory_pages {
-        if max_pages > 0 {
-            config.max_in_memory_pages = max_pages;
-        }
+    if let Some(max_pages) = max_in_memory_pages
+        && max_pages > 0
+    {
+        config.max_in_memory_pages = max_pages;
     }
     config
 }

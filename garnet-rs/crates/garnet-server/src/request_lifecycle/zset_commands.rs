@@ -632,15 +632,15 @@ impl RequestProcessor {
 
         let mut matched = Vec::new();
         for (member, score) in &zset {
-            if let Some(pattern) = scan_options.pattern {
-                if !super::server_commands::redis_glob_match(
+            if let Some(pattern) = scan_options.pattern
+                && !super::server_commands::redis_glob_match(
                     pattern,
                     member,
                     super::server_commands::CaseSensitivity::Sensitive,
                     0,
-                ) {
-                    continue;
-                }
+                )
+            {
+                continue;
             }
             matched.push((member.as_slice(), *score));
         }
@@ -1200,6 +1200,7 @@ impl RequestProcessor {
         Ok(())
     }
 
+    #[allow(clippy::type_complexity)]
     fn pop_zset_entries_from_key(
         &self,
         key: &[u8],

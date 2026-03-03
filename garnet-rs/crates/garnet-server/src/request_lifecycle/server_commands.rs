@@ -323,16 +323,15 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 1, 2, "PING", "PING [message]")?;
-        if self.resp_protocol_version() == RespProtocolVersion::Resp2 {
-            if let Some(client_id) = super::current_request_client_id() {
-                if self.pubsub_subscription_count(client_id) > 0 {
-                    response_out.extend_from_slice(b"*2\r\n");
-                    append_bulk_string(response_out, b"pong");
-                    let payload = if args.len() == 1 { b"" } else { args[1] };
-                    append_bulk_string(response_out, payload);
-                    return Ok(());
-                }
-            }
+        if self.resp_protocol_version() == RespProtocolVersion::Resp2
+            && let Some(client_id) = super::current_request_client_id()
+            && self.pubsub_subscription_count(client_id) > 0
+        {
+            response_out.extend_from_slice(b"*2\r\n");
+            append_bulk_string(response_out, b"pong");
+            let payload = if args.len() == 1 { b"" } else { args[1] };
+            append_bulk_string(response_out, payload);
+            return Ok(());
         }
         if args.len() == 1 {
             append_simple_string(response_out, b"PONG");
@@ -614,7 +613,7 @@ impl RequestProcessor {
             .unwrap_or_else(|e| e.into_inner())
             .entry(target_db)
             .or_default()
-            .insert(RedisKey::from(key), moved_entry);
+            .insert(key, moved_entry);
 
         append_integer(response_out, 1);
         Ok(())
@@ -716,7 +715,7 @@ impl RequestProcessor {
             args,
             2,
             "CLIENT",
-            "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-TOUCH|HELP> [arguments...]",
+            "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-EVICT|NO-TOUCH|HELP> [arguments...]",
         )?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
@@ -726,7 +725,10 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"ID") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT ID")?;
-            append_integer(response_out, 1);
+            let id = super::current_request_client_id()
+                .map(|cid| i64::try_from(u64::from(cid)).unwrap_or(i64::MAX))
+                .unwrap_or(1);
+            append_integer(response_out, id);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GETNAME") {
@@ -779,6 +781,15 @@ impl RequestProcessor {
             self.client_unpause();
             append_simple_string(response_out, b"OK");
             return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"NO-EVICT") {
+            require_exact_arity(args, 3, "CLIENT", "CLIENT NO-EVICT on|off")?;
+            let mode = args[2];
+            if ascii_eq_ignore_case(mode, b"ON") || ascii_eq_ignore_case(mode, b"OFF") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
         }
         if ascii_eq_ignore_case(subcommand, b"NO-TOUCH") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT NO-TOUCH on|off")?;
@@ -1161,12 +1172,11 @@ impl RequestProcessor {
                 // garnet-rs does not yet implement reply-buffer peak tracking,
                 // so this is a compatibility stub that accepts all valid inputs.
                 let value = args[3];
-                if !ascii_eq_ignore_case(value, b"NEVER")
-                    && !ascii_eq_ignore_case(value, b"RESET")
+                if !ascii_eq_ignore_case(value, b"NEVER") && !ascii_eq_ignore_case(value, b"RESET")
                 {
                     // Validate that the value is a valid integer.
-                    let _millis = parse_i64_ascii(value)
-                        .ok_or(RequestExecutionError::ValueNotInteger)?;
+                    let _millis =
+                        parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
                 }
                 append_simple_string(response_out, b"OK");
                 return Ok(());
@@ -1220,8 +1230,9 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
-            if self.key_exists(&key)? {
-                append_bulk_string(response_out, b"raw");
+            if let Some(value) = self.read_string_value(&key)? {
+                let encoding = string_encoding_name(&value);
+                append_bulk_string(response_out, encoding);
                 return Ok(());
             }
             let Some(object) = self.object_read(&key)? else {
@@ -1431,10 +1442,10 @@ impl RequestProcessor {
             // Keys that don't match the pattern are skipped without triggering
             // expiry.  Keys that match the pattern are lazily expired, then
             // type-filtered.
-            if let Some(pattern) = pattern {
-                if !redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
-                    continue;
-                }
+            if let Some(pattern) = pattern
+                && !redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0)
+            {
+                continue;
             }
 
             self.expire_key_if_needed(key.as_slice())?;
@@ -3244,6 +3255,25 @@ fn saturating_usize_to_i64(value: usize) -> i64 {
     i64::try_from(value).unwrap_or(i64::MAX)
 }
 
+/// Determine the Redis-compatible encoding name for a string value.
+///
+/// Redis uses three string encodings:
+/// - "int": the value is representable as a 64-bit signed integer
+/// - "embstr": the value is at most 44 bytes (fits in Redis embedded string)
+/// - "raw": all other strings
+const EMBSTR_MAX_LEN: usize = 44;
+
+fn string_encoding_name(value: &[u8]) -> &'static [u8] {
+    if parse_i64_ascii(value).is_some() {
+        return b"int";
+    }
+    if value.len() <= EMBSTR_MAX_LEN {
+        b"embstr"
+    } else {
+        b"raw"
+    }
+}
+
 fn object_encoding_name(
     object_type: ObjectTypeTag,
     payload: &[u8],
@@ -3756,7 +3786,7 @@ pub(super) fn redis_glob_match(
     // Guard against pathological wildcard patterns that can trigger excessive backtracking.
     // Redis keyspace regression tests rely on this returning quickly instead of hanging.
     const MAX_MATCH_WORK: usize = 1_000_000;
-    let estimated_work = pattern.len().checked_mul(text.len()).unwrap_or(usize::MAX);
+    let estimated_work = pattern.len().saturating_mul(text.len());
     if estimated_work > MAX_MATCH_WORK {
         return false;
     }

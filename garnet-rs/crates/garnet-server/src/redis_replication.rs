@@ -296,37 +296,28 @@ async fn sync_once_from_upstream(
     write_resp_command(&mut stream, &[b"PING"]).await?;
     let ping_reply = read_line(&mut stream, &mut receive_buffer, &mut read_scratch).await?;
     if !starts_with_ascii_no_case(&ping_reply, b"+PONG") {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "upstream did not reply to PING with +PONG (reply={})",
-                String::from_utf8_lossy(&ping_reply)
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "upstream did not reply to PING with +PONG (reply={})",
+            String::from_utf8_lossy(&ping_reply)
+        )));
     }
 
     write_resp_command(&mut stream, &[b"REPLCONF", b"listening-port", b"0"]).await?;
     let replconf_reply = read_line(&mut stream, &mut receive_buffer, &mut read_scratch).await?;
     if !starts_with_ascii_no_case(&replconf_reply, b"+OK") {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "upstream did not accept REPLCONF listening-port (reply={})",
-                String::from_utf8_lossy(&replconf_reply)
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "upstream did not accept REPLCONF listening-port (reply={})",
+            String::from_utf8_lossy(&replconf_reply)
+        )));
     }
 
     write_resp_command(&mut stream, &[b"REPLCONF", b"capa", b"psync2"]).await?;
     let replconf_reply = read_line(&mut stream, &mut receive_buffer, &mut read_scratch).await?;
     if !starts_with_ascii_no_case(&replconf_reply, b"+OK") {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "upstream did not accept REPLCONF capa psync2 (reply={})",
-                String::from_utf8_lossy(&replconf_reply)
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "upstream did not accept REPLCONF capa psync2 (reply={})",
+            String::from_utf8_lossy(&replconf_reply)
+        )));
     }
 
     write_resp_command(&mut stream, &[b"PSYNC", b"?", b"-1"]).await?;
@@ -334,25 +325,19 @@ async fn sync_once_from_upstream(
     if starts_with_ascii_no_case(&psync_reply, b"+FULLRESYNC") {
         let rdb_header = read_line(&mut stream, &mut receive_buffer, &mut read_scratch).await?;
         if !rdb_header.starts_with(b"$") {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                format!(
-                    "invalid FULLRESYNC payload header: {}",
-                    String::from_utf8_lossy(&rdb_header)
-                ),
-            ));
+            return Err(io::Error::other(format!(
+                "invalid FULLRESYNC payload header: {}",
+                String::from_utf8_lossy(&rdb_header)
+            )));
         }
 
         let rdb_len = parse_bulk_length(&rdb_header[1..])?;
         discard_bulk_payload(&mut stream, &mut receive_buffer, &mut read_scratch, rdb_len).await?;
     } else if !starts_with_ascii_no_case(&psync_reply, b"+CONTINUE") {
-        return Err(io::Error::new(
-            io::ErrorKind::Other,
-            format!(
-                "upstream PSYNC reply is not FULLRESYNC/CONTINUE (reply={})",
-                String::from_utf8_lossy(&psync_reply)
-            ),
-        ));
+        return Err(io::Error::other(format!(
+            "upstream PSYNC reply is not FULLRESYNC/CONTINUE (reply={})",
+            String::from_utf8_lossy(&psync_reply)
+        )));
     }
 
     inner.upstream_link_up.store(true, Ordering::Relaxed);
@@ -385,24 +370,18 @@ async fn sync_once_from_upstream(
                 }
                 Err(RespParseError::Incomplete) => break,
                 Err(RespParseError::ArgumentCapacityExceeded { required, capacity }) => {
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "upstream frame has too many arguments (required={}, max={})",
-                            required, capacity
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "upstream frame has too many arguments (required={}, max={})",
+                        required, capacity
+                    )));
                 }
                 Err(_) => {
                     let preview_len = receive_buffer.len().saturating_sub(consumed).min(96);
                     let preview = &receive_buffer[consumed..consumed + preview_len];
-                    return Err(io::Error::new(
-                        io::ErrorKind::Other,
-                        format!(
-                            "invalid RESP frame in upstream replication stream (preview={:?})",
-                            String::from_utf8_lossy(preview)
-                        ),
-                    ));
+                    return Err(io::Error::other(format!(
+                        "invalid RESP frame in upstream replication stream (preview={:?})",
+                        String::from_utf8_lossy(preview)
+                    )));
                 }
             }
         }
@@ -482,14 +461,10 @@ async fn process_upstream_frame(
             eprintln!("replication apply command failed: {error:?}");
         }
         Err(OwnerThreadExecutionError::Protocol) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
-                "replication apply failed: protocol error",
-            ));
+            return Err(io::Error::other("replication apply failed: protocol error"));
         }
         Err(OwnerThreadExecutionError::OwnerThreadUnavailable) => {
-            return Err(io::Error::new(
-                io::ErrorKind::Other,
+            return Err(io::Error::other(
                 "replication apply failed: owner routing execution failed",
             ));
         }

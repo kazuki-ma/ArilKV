@@ -167,8 +167,12 @@ impl RequestProcessor {
         session
             .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
             .map_err(map_upsert_error)?;
-        drop(session);
-        drop(store);
+        // Explicit drops to end borrows before subsequent metadata locks.
+        #[allow(clippy::drop_non_drop)]
+        {
+            drop(session);
+            drop(store);
+        }
 
         let expiration = expiration_unix_millis.and_then(|unix_millis| {
             let deadline = instant_from_unix_millis(unix_millis)?;
@@ -633,10 +637,10 @@ impl RequestProcessor {
 
         let mut expired_fields = Vec::new();
         for field in fields {
-            if let Some(metadata) = per_key.get(*field) {
-                if metadata.deadline <= now {
-                    expired_fields.push(HashField::from(*field));
-                }
+            if let Some(metadata) = per_key.get(*field)
+                && metadata.deadline <= now
+            {
+                expired_fields.push(HashField::from(*field));
             }
         }
         for field in &expired_fields {

@@ -37,12 +37,11 @@ impl ISessionFunctions for KvSessionFunctions {
         _read_info: &ReadInfo,
     ) -> bool {
         let decoded = decode_stored_value(value);
-        if let Some(expiration) = decoded.expiration_unix_millis {
-            if let Some(now) = current_unix_time_millis() {
-                if now >= expiration {
-                    return false;
-                }
-            }
+        if let Some(expiration) = decoded.expiration_unix_millis
+            && let Some(now) = current_unix_time_millis()
+            && now >= expiration
+        {
+            return false;
         }
         *output = decoded.user_value.to_vec();
         true
@@ -58,12 +57,11 @@ impl ISessionFunctions for KvSessionFunctions {
         _record_info: &RecordInfo,
     ) -> bool {
         let decoded = decode_stored_value(value);
-        if let Some(expiration) = decoded.expiration_unix_millis {
-            if let Some(now) = current_unix_time_millis() {
-                if now >= expiration {
-                    return false;
-                }
-            }
+        if let Some(expiration) = decoded.expiration_unix_millis
+            && let Some(now) = current_unix_time_millis()
+            && now >= expiration
+        {
+            return false;
         }
         *output = decoded.user_value.to_vec();
         true

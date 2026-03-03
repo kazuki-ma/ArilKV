@@ -29,7 +29,7 @@ struct ListenerThreadResult {
 }
 
 fn cluster_config_error_to_io(context: &str, error: impl core::fmt::Display) -> std::io::Error {
-    std::io::Error::new(std::io::ErrorKind::Other, format!("{context}: {error}"))
+    std::io::Error::other(format!("{context}: {error}"))
 }
 
 fn build_cluster_store_for_local_index(
@@ -129,8 +129,7 @@ pub(super) fn resolve_core_assignments_from_available(
         return Ok(vec![None; listener_count]);
     }
     if available_core_ids.is_empty() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
+        return Err(std::io::Error::other(
             "owner-thread pinning requested, but no CPU cores were reported",
         ));
     }
@@ -168,10 +167,7 @@ fn resolve_core_assignments(
         return Ok(vec![None; listener_count]);
     }
     let available = core_affinity::get_core_ids().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "owner-thread pinning requested, but CPU enumeration failed",
-        )
+        std::io::Error::other("owner-thread pinning requested, but CPU enumeration failed")
     })?;
     let available_ids: Vec<usize> = available.iter().map(|core| core.id).collect();
     resolve_core_assignments_from_available(&available_ids, listener_count, pinning)
@@ -179,10 +175,7 @@ fn resolve_core_assignments(
 
 fn pin_current_thread_to_cpu(cpu_id: usize) -> std::io::Result<()> {
     let available = core_affinity::get_core_ids().ok_or_else(|| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "failed to enumerate CPU cores for owner-thread pinning",
-        )
+        std::io::Error::other("failed to enumerate CPU cores for owner-thread pinning")
     })?;
     let core = available
         .into_iter()
@@ -196,10 +189,9 @@ fn pin_current_thread_to_cpu(cpu_id: usize) -> std::io::Result<()> {
     if core_affinity::set_for_current(core) {
         return Ok(());
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!("failed to pin current thread to CPU `{cpu_id}`"),
-    ))
+    Err(std::io::Error::other(format!(
+        "failed to pin current thread to CPU `{cpu_id}`"
+    )))
 }
 
 fn spawn_listener_thread(
@@ -213,13 +205,12 @@ fn spawn_listener_thread(
     let join_handle = std::thread::Builder::new()
         .name(format!("garnet-node-{bind_addr}"))
         .spawn(move || {
-            if let Some(cpu_id) = pinned_cpu {
-                if let Err(error) = pin_current_thread_to_cpu(cpu_id) {
+            if let Some(cpu_id) = pinned_cpu
+                && let Err(error) = pin_current_thread_to_cpu(cpu_id) {
                     eprintln!(
                         "warning: listener {bind_addr} could not pin to CPU `{cpu_id}` ({error}); continuing without affinity"
                     );
                 }
-            }
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build();
@@ -240,16 +231,14 @@ fn spawn_listener_thread(
                     )
                     .await
                 }),
-                Err(error) => Err(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Err(error) => Err(std::io::Error::other(
                     format!("failed to build runtime for listener {bind_addr}: {error}"),
                 )),
             };
             let _ = result_tx.send(ListenerThreadResult { bind_addr, result });
         })
         .map_err(|error| {
-            std::io::Error::new(
-                std::io::ErrorKind::Other,
+            std::io::Error::other(
                 format!("failed to spawn listener thread for {bind_addr}: {error}"),
             )
         })?;
@@ -272,17 +261,14 @@ fn shutdown_and_join_listener_threads(listeners: Vec<ListenerThread>) -> std::io
     if panicked.is_empty() {
         return Ok(());
     }
-    Err(std::io::Error::new(
-        std::io::ErrorKind::Other,
-        format!(
-            "listener thread panicked for {}",
-            panicked
-                .iter()
-                .map(ToString::to_string)
-                .collect::<Vec<_>>()
-                .join(", ")
-        ),
-    ))
+    Err(std::io::Error::other(format!(
+        "listener thread panicked for {}",
+        panicked
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )))
 }
 
 pub(super) fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Result<()> {
@@ -322,19 +308,16 @@ pub(super) fn run_multi_bind_addrs(launch: ServerLaunchConfig) -> std::io::Resul
     drop(result_tx);
 
     let first = result_rx.recv().map_err(|_| {
-        std::io::Error::new(
-            std::io::ErrorKind::Other,
-            "all listener threads exited before reporting a result",
-        )
+        std::io::Error::other("all listener threads exited before reporting a result")
     })?;
 
     shutdown_and_join_listener_threads(listeners)?;
 
     match first.result {
-        Ok(()) => Err(std::io::Error::new(
-            std::io::ErrorKind::Other,
-            format!("listener {} exited unexpectedly", first.bind_addr),
-        )),
+        Ok(()) => Err(std::io::Error::other(format!(
+            "listener {} exited unexpectedly",
+            first.bind_addr
+        ))),
         Err(error) => Err(std::io::Error::new(
             error.kind(),
             format!("listener {} failed: {error}", first.bind_addr),
