@@ -4000,7 +4000,7 @@ fn object_encoding_name(
 ) -> Result<&'static [u8], RequestExecutionError> {
     const SMALL_ELEMENT_BYTES: usize = 64;
     const SET_LISTPACK_MAX_ENTRIES: usize = 128;
-    const HASH_LISTPACK_MAX_ENTRIES: usize = 32;
+    const HASH_LISTPACK_MAX_ENTRIES: usize = 128;
 
     match object_type {
         LIST_OBJECT_TYPE_TAG => {
