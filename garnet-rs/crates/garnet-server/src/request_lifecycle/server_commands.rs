@@ -1189,7 +1189,20 @@ impl RequestProcessor {
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
             return Err(RequestExecutionError::UnknownSubcommand);
         }
-        require_exact_arity(args, 3, "MEMORY", "MEMORY USAGE key")?;
+        ensure_one_of_arities(
+            args,
+            &[3, 5],
+            "MEMORY",
+            "MEMORY USAGE key [SAMPLES count]",
+        )?;
+        if args.len() == 5 {
+            if !ascii_eq_ignore_case(args[3], b"SAMPLES") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // Validate count is an integer; we ignore the value since our
+            // estimation doesn't sample.
+            parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        }
 
         let key = RedisKey::from(args[2]);
         self.expire_key_if_needed(&key)?;

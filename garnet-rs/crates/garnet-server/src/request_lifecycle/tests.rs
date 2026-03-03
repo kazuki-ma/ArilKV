@@ -12153,3 +12153,50 @@ fn xgroup_createconsumer_delconsumer_and_help() {
     let unknown = execute_command_line(&processor, "XGROUP BADCMD mystream mygroup");
     assert!(unknown.is_err(), "XGROUP BADCMD should return error");
 }
+
+#[test]
+fn memory_usage_accepts_samples_option() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Set up a key
+    execute_command_line(&processor, "SET mykey hello").unwrap();
+
+    // MEMORY USAGE without SAMPLES
+    let usage = execute_command_line(&processor, "MEMORY USAGE mykey").unwrap();
+    assert!(
+        usage.starts_with(b":"),
+        "MEMORY USAGE should return integer"
+    );
+
+    // MEMORY USAGE with SAMPLES option (ignored but accepted)
+    let usage_samples =
+        execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES 5").unwrap();
+    assert!(
+        usage_samples.starts_with(b":"),
+        "MEMORY USAGE SAMPLES should return integer"
+    );
+
+    // MEMORY USAGE with SAMPLES 0
+    let usage_samples_0 =
+        execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES 0").unwrap();
+    assert!(
+        usage_samples_0.starts_with(b":"),
+        "MEMORY USAGE SAMPLES 0 should return integer"
+    );
+
+    // MEMORY USAGE with invalid SAMPLES count
+    let usage_bad =
+        execute_command_line(&processor, "MEMORY USAGE mykey SAMPLES abc");
+    assert!(
+        usage_bad.is_err(),
+        "MEMORY USAGE SAMPLES abc should fail"
+    );
+
+    // MEMORY USAGE with wrong option name
+    let usage_wrong =
+        execute_command_line(&processor, "MEMORY USAGE mykey BADOPT 5");
+    assert!(
+        usage_wrong.is_err(),
+        "MEMORY USAGE with bad option should fail"
+    );
+}
