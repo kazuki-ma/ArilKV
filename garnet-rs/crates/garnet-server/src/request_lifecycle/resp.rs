@@ -50,6 +50,13 @@ pub(super) fn append_map_length(response_out: &mut Vec<u8>, len: usize) {
     response_out.extend_from_slice(b"\r\n");
 }
 
+/// Emit RESP3 set length prefix: `~<count>\r\n`.
+pub(super) fn append_set_length(response_out: &mut Vec<u8>, len: usize) {
+    response_out.push(b'~');
+    response_out.extend_from_slice(len.to_string().as_bytes());
+    response_out.extend_from_slice(b"\r\n");
+}
+
 /// Emit RESP3 push length prefix: `><count>\r\n`.
 pub(super) fn append_push_length(response_out: &mut Vec<u8>, len: usize) {
     response_out.push(b'>');

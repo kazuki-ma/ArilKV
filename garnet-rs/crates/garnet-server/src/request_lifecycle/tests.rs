@@ -10887,3 +10887,73 @@ fn hget_returns_resp3_null_for_missing_field() {
     let resp3 = execute_command_line(&processor, "HGET h1 nofield").unwrap();
     assert_eq!(resp3, b"_\r\n");
 }
+
+#[test]
+fn smembers_returns_set_type_in_resp3_and_array_in_resp2() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SADD myset a b c", b":3\r\n");
+
+    // RESP2: SMEMBERS returns *N array
+    let resp2 = execute_command_line(&processor, "SMEMBERS myset").unwrap();
+    assert!(
+        resp2.starts_with(b"*3\r\n"),
+        "RESP2 SMEMBERS should start with *3, got: {:?}",
+        String::from_utf8_lossy(&resp2)
+    );
+
+    // RESP3: SMEMBERS returns ~N set type
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "SMEMBERS myset").unwrap();
+    assert!(
+        resp3.starts_with(b"~3\r\n"),
+        "RESP3 SMEMBERS should start with ~3, got: {:?}",
+        String::from_utf8_lossy(&resp3)
+    );
+
+    // RESP3: SMEMBERS on missing key returns ~0
+    let resp3_empty = execute_command_line(&processor, "SMEMBERS nokey").unwrap();
+    assert_eq!(resp3_empty, b"~0\r\n");
+
+    // RESP2: SMEMBERS on missing key returns *0
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    let resp2_empty = execute_command_line(&processor, "SMEMBERS nokey").unwrap();
+    assert_eq!(resp2_empty, b"*0\r\n");
+}
+
+#[test]
+fn sunion_sinter_sdiff_return_set_type_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SADD s1 a b", b":2\r\n");
+    assert_command_response(&processor, "SADD s2 b c", b":2\r\n");
+
+    // RESP2: returns *N array
+    let resp2 = execute_command_line(&processor, "SUNION s1 s2").unwrap();
+    assert!(
+        resp2.starts_with(b"*3\r\n"),
+        "RESP2 SUNION should use array type"
+    );
+
+    // RESP3: returns ~N set type
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+
+    let sunion = execute_command_line(&processor, "SUNION s1 s2").unwrap();
+    assert!(
+        sunion.starts_with(b"~3\r\n"),
+        "RESP3 SUNION should use set type, got: {:?}",
+        String::from_utf8_lossy(&sunion)
+    );
+
+    let sinter = execute_command_line(&processor, "SINTER s1 s2").unwrap();
+    assert!(
+        sinter.starts_with(b"~1\r\n"),
+        "RESP3 SINTER should use set type, got: {:?}",
+        String::from_utf8_lossy(&sinter)
+    );
+
+    let sdiff = execute_command_line(&processor, "SDIFF s1 s2").unwrap();
+    assert!(
+        sdiff.starts_with(b"~1\r\n"),
+        "RESP3 SDIFF should use set type, got: {:?}",
+        String::from_utf8_lossy(&sdiff)
+    );
+}

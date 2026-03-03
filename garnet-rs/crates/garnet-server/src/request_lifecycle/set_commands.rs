@@ -135,17 +135,26 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "SMEMBERS", "SMEMBERS key")?;
 
         let key = RedisKey::from(args[1]);
+        let resp3 = self.resp_protocol_version().is_resp3();
         let set = match self.load_set_object(&key)? {
             Some(set) => set,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                if resp3 {
+                    response_out.extend_from_slice(b"~0\r\n");
+                } else {
+                    response_out.extend_from_slice(b"*0\r\n");
+                }
                 return Ok(());
             }
         };
 
-        response_out.push(b'*');
-        response_out.extend_from_slice(set.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        if resp3 {
+            append_set_length(response_out, set.len());
+        } else {
+            response_out.push(b'*');
+            response_out.extend_from_slice(set.len().to_string().as_bytes());
+            response_out.extend_from_slice(b"\r\n");
+        }
         for member in &set {
             append_bulk_string(response_out, member);
         }
@@ -437,7 +446,8 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "SUNION", "SUNION key [key ...]")?;
         let keys = collect_set_keys(args, 1);
         let union = compute_sunion(self, &keys)?;
-        append_set_members(response_out, &union);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_set_members(response_out, &union, resp3);
         Ok(())
     }
 
@@ -449,7 +459,8 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "SINTER", "SINTER key [key ...]")?;
         let keys = collect_set_keys(args, 1);
         let inter = compute_sinter(self, &keys)?;
-        append_set_members(response_out, &inter);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_set_members(response_out, &inter, resp3);
         Ok(())
     }
 
@@ -512,7 +523,8 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "SDIFF", "SDIFF key [key ...]")?;
         let keys = collect_set_keys(args, 1);
         let diff = compute_sdiff(self, &keys)?;
-        append_set_members(response_out, &diff);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_set_members(response_out, &diff, resp3);
         Ok(())
     }
 
@@ -647,10 +659,14 @@ fn append_set_scan_response(
     }
 }
 
-fn append_set_members(response_out: &mut Vec<u8>, set: &BTreeSet<Vec<u8>>) {
-    response_out.push(b'*');
-    response_out.extend_from_slice(set.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+fn append_set_members(response_out: &mut Vec<u8>, set: &BTreeSet<Vec<u8>>, resp3: bool) {
+    if resp3 {
+        append_set_length(response_out, set.len());
+    } else {
+        response_out.push(b'*');
+        response_out.extend_from_slice(set.len().to_string().as_bytes());
+        response_out.extend_from_slice(b"\r\n");
+    }
     for member in set {
         append_bulk_string(response_out, member);
     }
