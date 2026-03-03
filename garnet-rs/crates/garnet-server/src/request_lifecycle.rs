@@ -2917,6 +2917,7 @@ struct SetOptions {
     only_if_present: bool,
     expiration: Option<ExpirationMetadata>,
     keep_ttl: bool,
+    return_old_value: bool,
 }
 
 fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError> {
@@ -2940,6 +2941,15 @@ fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError
                 return Err(RequestExecutionError::SyntaxError);
             }
             options.only_if_present = true;
+            index += 1;
+            continue;
+        }
+
+        if ascii_eq_ignore_case(option, b"GET") {
+            if options.return_old_value {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            options.return_old_value = true;
             index += 1;
             continue;
         }

@@ -11549,8 +11549,7 @@ fn acl_deluser_genpass_log_save_load_stubs() {
     assert_eq!(del_unknown, b":0\r\n");
 
     // ACL DELUSER of multiple unknown users returns integer 0
-    let del_multi =
-        execute_command_line(&processor, "ACL DELUSER userA userB userC").unwrap();
+    let del_multi = execute_command_line(&processor, "ACL DELUSER userA userB userC").unwrap();
     assert_eq!(del_multi, b":0\r\n");
 
     // ACL DELUSER of "default" returns error
@@ -11560,9 +11559,7 @@ fn acl_deluser_genpass_log_save_load_stubs() {
         "ACL DELUSER default should return error"
     );
     assert!(
-        del_default
-            .windows(7)
-            .any(|w| w == b"default"),
+        del_default.windows(7).any(|w| w == b"default"),
         "error should mention 'default'"
     );
 
@@ -11636,9 +11633,7 @@ fn memory_doctor_and_stats_stubs() {
         "MEMORY DOCTOR should return bulk string"
     );
     assert!(
-        doctor
-            .windows(10)
-            .any(|w| w == b"no memory "),
+        doctor.windows(10).any(|w| w == b"no memory "),
         "MEMORY DOCTOR should mention 'no memory'"
     );
 
@@ -11649,15 +11644,11 @@ fn memory_doctor_and_stats_stubs() {
         "MEMORY STATS should return 8-element array in RESP2"
     );
     assert!(
-        stats
-            .windows(14)
-            .any(|w| w == b"peak.allocated"),
+        stats.windows(14).any(|w| w == b"peak.allocated"),
         "MEMORY STATS should contain peak.allocated"
     );
     assert!(
-        stats
-            .windows(15)
-            .any(|w| w == b"total.allocated"),
+        stats.windows(15).any(|w| w == b"total.allocated"),
         "MEMORY STATS should contain total.allocated"
     );
 
@@ -11676,18 +11667,14 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
 
     // CLIENT ID returns integer
     let id = execute_command_line(&processor, "CLIENT ID").unwrap();
-    assert!(
-        id.starts_with(b":"),
-        "CLIENT ID should return integer"
-    );
+    assert!(id.starts_with(b":"), "CLIENT ID should return integer");
 
     // CLIENT GETNAME returns null bulk string in RESP2
     let getname = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
     assert_eq!(getname, b"$-1\r\n", "CLIENT GETNAME should return null");
 
     // CLIENT SETNAME returns OK
-    let setname =
-        execute_command_line(&processor, "CLIENT SETNAME myconn").unwrap();
+    let setname = execute_command_line(&processor, "CLIENT SETNAME myconn").unwrap();
     assert_eq!(setname, b"+OK\r\n");
 
     // CLIENT LIST returns bulk string in RESP2
@@ -11698,13 +11685,11 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     );
 
     // CLIENT UNBLOCK returns integer 0
-    let unblock =
-        execute_command_line(&processor, "CLIENT UNBLOCK 123").unwrap();
+    let unblock = execute_command_line(&processor, "CLIENT UNBLOCK 123").unwrap();
     assert_eq!(unblock, b":0\r\n");
 
     // CLIENT UNBLOCK with TIMEOUT flag
-    let unblock_timeout =
-        execute_command_line(&processor, "CLIENT UNBLOCK 123 TIMEOUT").unwrap();
+    let unblock_timeout = execute_command_line(&processor, "CLIENT UNBLOCK 123 TIMEOUT").unwrap();
     assert_eq!(unblock_timeout, b":0\r\n");
 
     // CLIENT PAUSE returns OK
@@ -11712,13 +11697,11 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     assert_eq!(pause, b"+OK\r\n");
 
     // CLIENT PAUSE with WRITE mode
-    let pause_write =
-        execute_command_line(&processor, "CLIENT PAUSE 100 WRITE").unwrap();
+    let pause_write = execute_command_line(&processor, "CLIENT PAUSE 100 WRITE").unwrap();
     assert_eq!(pause_write, b"+OK\r\n");
 
     // CLIENT PAUSE with ALL mode
-    let pause_all =
-        execute_command_line(&processor, "CLIENT PAUSE 100 ALL").unwrap();
+    let pause_all = execute_command_line(&processor, "CLIENT PAUSE 100 ALL").unwrap();
     assert_eq!(pause_all, b"+OK\r\n");
 
     // CLIENT UNPAUSE returns OK
@@ -11726,23 +11709,19 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     assert_eq!(unpause, b"+OK\r\n");
 
     // CLIENT NO-EVICT ON returns OK
-    let noevict_on =
-        execute_command_line(&processor, "CLIENT NO-EVICT ON").unwrap();
+    let noevict_on = execute_command_line(&processor, "CLIENT NO-EVICT ON").unwrap();
     assert_eq!(noevict_on, b"+OK\r\n");
 
     // CLIENT NO-EVICT OFF returns OK
-    let noevict_off =
-        execute_command_line(&processor, "CLIENT NO-EVICT OFF").unwrap();
+    let noevict_off = execute_command_line(&processor, "CLIENT NO-EVICT OFF").unwrap();
     assert_eq!(noevict_off, b"+OK\r\n");
 
     // CLIENT NO-TOUCH ON returns OK
-    let notouch_on =
-        execute_command_line(&processor, "CLIENT NO-TOUCH ON").unwrap();
+    let notouch_on = execute_command_line(&processor, "CLIENT NO-TOUCH ON").unwrap();
     assert_eq!(notouch_on, b"+OK\r\n");
 
     // CLIENT NO-TOUCH OFF returns OK
-    let notouch_off =
-        execute_command_line(&processor, "CLIENT NO-TOUCH OFF").unwrap();
+    let notouch_off = execute_command_line(&processor, "CLIENT NO-TOUCH OFF").unwrap();
     assert_eq!(notouch_off, b"+OK\r\n");
 
     // CLIENT HELP returns bulk array
@@ -11754,8 +11733,7 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
 
     // RESP3: CLIENT GETNAME returns _\r\n (null)
     processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
-    let getname_resp3 =
-        execute_command_line(&processor, "CLIENT GETNAME").unwrap();
+    let getname_resp3 = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
     assert_eq!(
         getname_resp3, b"_\r\n",
         "RESP3 CLIENT GETNAME should return null"
@@ -11808,7 +11786,10 @@ fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
 
     // CLUSTER COUNTKEYSINSLOT non-integer returns error
     let count_nan = execute_command_line(&processor, "CLUSTER COUNTKEYSINSLOT abc");
-    assert!(count_nan.is_err(), "CLUSTER COUNTKEYSINSLOT abc should fail");
+    assert!(
+        count_nan.is_err(),
+        "CLUSTER COUNTKEYSINSLOT abc should fail"
+    );
 
     // CLUSTER GETKEYSINSLOT returns empty array for valid slot
     let keys_0 = execute_command_line(&processor, "CLUSTER GETKEYSINSLOT 0 10").unwrap();
@@ -11826,5 +11807,106 @@ fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
     assert!(
         cluster_help.starts_with(b"*20\r\n"),
         "CLUSTER HELP should return 20-element array"
+    );
+}
+
+#[test]
+fn set_get_option_returns_old_value() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // SET GET on nonexistent key → returns null, sets value
+    let r1 = execute_command_line(&processor, "SET mykey hello GET").unwrap();
+    assert_eq!(
+        r1, b"$-1\r\n",
+        "SET GET on missing key should return null bulk string"
+    );
+
+    // Verify the key was set
+    let get1 = execute_command_line(&processor, "GET mykey").unwrap();
+    assert_eq!(get1, b"$5\r\nhello\r\n");
+
+    // SET GET on existing key → returns old value, overwrites
+    let r2 = execute_command_line(&processor, "SET mykey world GET").unwrap();
+    assert_eq!(
+        r2, b"$5\r\nhello\r\n",
+        "SET GET on existing key should return old value"
+    );
+
+    let get2 = execute_command_line(&processor, "GET mykey").unwrap();
+    assert_eq!(get2, b"$5\r\nworld\r\n");
+
+    // SET NX GET: key exists → NX fails, returns old value
+    let r3 = execute_command_line(&processor, "SET mykey newval NX GET").unwrap();
+    assert_eq!(
+        r3, b"$5\r\nworld\r\n",
+        "SET NX GET on existing key should return old value without setting"
+    );
+
+    let get3 = execute_command_line(&processor, "GET mykey").unwrap();
+    assert_eq!(
+        get3, b"$5\r\nworld\r\n",
+        "Value should not have changed with NX"
+    );
+
+    // SET NX GET: key does not exist → NX succeeds, returns null
+    let r4 = execute_command_line(&processor, "SET nxkey val1 NX GET").unwrap();
+    assert_eq!(
+        r4, b"$-1\r\n",
+        "SET NX GET on missing key should return null"
+    );
+
+    let get4 = execute_command_line(&processor, "GET nxkey").unwrap();
+    assert_eq!(get4, b"$4\r\nval1\r\n");
+
+    // SET XX GET: key exists → XX succeeds, returns old value
+    let r5 = execute_command_line(&processor, "SET mykey replaced XX GET").unwrap();
+    assert_eq!(
+        r5, b"$5\r\nworld\r\n",
+        "SET XX GET on existing key should return old value"
+    );
+
+    let get5 = execute_command_line(&processor, "GET mykey").unwrap();
+    assert_eq!(get5, b"$8\r\nreplaced\r\n");
+
+    // SET XX GET: key does not exist → XX fails, returns null
+    let r6 = execute_command_line(&processor, "SET nokey val2 XX GET").unwrap();
+    assert_eq!(
+        r6, b"$-1\r\n",
+        "SET XX GET on missing key should return null"
+    );
+
+    // SET GET with expiration
+    let r7 = execute_command_line(&processor, "SET mykey withttl GET EX 100").unwrap();
+    assert_eq!(
+        r7, b"$8\r\nreplaced\r\n",
+        "SET GET with EX should return old value"
+    );
+
+    // SET GET with KEEPTTL
+    let r8 = execute_command_line(&processor, "SET mykey keepit GET KEEPTTL").unwrap();
+    assert_eq!(
+        r8, b"$7\r\nwithttl\r\n",
+        "SET GET with KEEPTTL should return old value"
+    );
+
+    // SET GET on non-string type → WRONGTYPE
+    execute_command_line(&processor, "RPUSH mylist a b c").unwrap();
+    let r9 = execute_command_line(&processor, "SET mylist val GET");
+    assert!(
+        r9.is_err() || {
+            let resp = r9.unwrap();
+            resp.starts_with(b"-WRONGTYPE")
+        },
+        "SET GET on list key should return WRONGTYPE error"
+    );
+
+    // Duplicate GET → syntax error
+    let r10 = execute_command_line(&processor, "SET k v GET GET");
+    assert!(
+        r10.is_err() || {
+            let resp = r10.unwrap();
+            resp.starts_with(b"-ERR")
+        },
+        "SET with duplicate GET should return syntax error"
     );
 }

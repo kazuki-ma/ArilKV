@@ -1411,12 +1411,12 @@ impl RequestProcessor {
         let mut object_store = self.lock_object_store_for_shard(shard_index);
         let mut object_session = object_store.session(&self.object_functions);
 
-        let mut existence_output = Vec::new();
+        let mut old_string_value = Vec::new();
         let string_exists = match session
             .read(
                 &key,
                 &Vec::new(),
-                &mut existence_output,
+                &mut old_string_value,
                 &ReadInfo::default(),
             )
             .map_err(map_read_error)?
@@ -1426,34 +1426,29 @@ impl RequestProcessor {
             ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
         };
 
-        existence_output.clear();
+        let mut object_output = Vec::new();
         let object_exists = match object_session
-            .read(
-                &key,
-                &Vec::new(),
-                &mut existence_output,
-                &ReadInfo::default(),
-            )
+            .read(&key, &Vec::new(), &mut object_output, &ReadInfo::default())
             .map_err(map_read_error)?
         {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
             ReadOperationStatus::NotFound => false,
             ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
         };
+
+        // SET GET on a non-string key returns WRONGTYPE and aborts.
+        if options.return_old_value && object_exists {
+            return Err(RequestExecutionError::WrongType);
+        }
 
         if options.only_if_absent || options.only_if_present {
-            let resp3 = self.resp_protocol_version().is_resp3();
             let exists_any = string_exists || object_exists;
-            if options.only_if_absent && exists_any {
-                if resp3 {
-                    append_null(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
-                }
-                return Ok(());
-            }
-            if options.only_if_present && !exists_any {
-                if resp3 {
+            let abort =
+                (options.only_if_absent && exists_any) || (options.only_if_present && !exists_any);
+            if abort {
+                if options.return_old_value && string_exists {
+                    append_bulk_string(response_out, &old_string_value);
+                } else if self.resp_protocol_version().is_resp3() {
                     append_null(response_out);
                 } else {
                     append_null_bulk_string(response_out);
@@ -1537,7 +1532,17 @@ impl RequestProcessor {
 
         // TLA+ : ServerProcessSetApply
         // This ACK is emitted only after the write path and metadata updates complete.
-        append_simple_string(response_out, b"OK");
+        if options.return_old_value {
+            if string_exists {
+                append_bulk_string(response_out, &old_string_value);
+            } else if self.resp_protocol_version().is_resp3() {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
+        } else {
+            append_simple_string(response_out, b"OK");
+        }
         Ok(())
     }
 
