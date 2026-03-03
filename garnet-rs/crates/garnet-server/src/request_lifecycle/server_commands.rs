@@ -3405,6 +3405,8 @@ impl RequestProcessor {
                     || parameter == b"stop-writes-on-bgsave-error"
                     || parameter == b"set-proc-title"
                     || parameter == b"jemalloc-bg-thread"
+                    || parameter == b"latency-tracking"
+                    || parameter == b"cluster-enabled"
                     || parameter == b"replica-read-only"
                     || parameter == b"repl-diskless-sync")
                     && !value.eq_ignore_ascii_case(b"yes")
