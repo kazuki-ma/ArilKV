@@ -571,15 +571,23 @@ impl RequestProcessor {
                 InfoSection::Clients => {
                     payload.push_str(
                         format!(
-                            "# Clients\r\nconnected_clients:{}\r\nblocked_clients:{}\r\nwatching_clients:{}\r\n",
-                            connected_clients, blocked_clients, watching_clients
+                            "# Clients\r\nconnected_clients:{}\r\nblocked_clients:{}\r\ntracking_clients:0\r\nclients_in_timeout_table:0\r\ntotal_blocking_clients:{}\r\nwatching_clients:{}\r\n",
+                            connected_clients, blocked_clients, blocked_clients, watching_clients
                         )
                         .as_str(),
                     );
                 }
                 InfoSection::Memory => {
-                    payload
-                        .push_str(format!("# Memory\r\nused_memory:{}\r\n", used_memory).as_str());
+                    payload.push_str(
+                        format!(
+                            "# Memory\r\nused_memory:{used_memory}\r\nused_memory_human:{used_memory_human}\r\nused_memory_rss:{used_memory}\r\nused_memory_peak:{used_memory}\r\nused_memory_peak_human:{used_memory_human}\r\nmaxmemory:{maxmemory}\r\nmaxmemory_human:{maxmemory_human}\r\nmaxmemory_policy:noeviction\r\nmem_fragmentation_ratio:1.00\r\n",
+                            used_memory = used_memory,
+                            used_memory_human = format_human_bytes(used_memory),
+                            maxmemory = self.maxmemory_limit_bytes.load(Ordering::Acquire),
+                            maxmemory_human = format_human_bytes(self.maxmemory_limit_bytes.load(Ordering::Acquire)),
+                        )
+                        .as_str(),
+                    );
                 }
                 InfoSection::Stats => {
                     payload.push_str(
@@ -4677,6 +4685,18 @@ impl ClassMatchResult {
             matched,
             next_pattern_index,
         }
+    }
+}
+
+fn format_human_bytes(bytes: u64) -> String {
+    if bytes >= 1024 * 1024 * 1024 {
+        format!("{:.2}G", bytes as f64 / (1024.0 * 1024.0 * 1024.0))
+    } else if bytes >= 1024 * 1024 {
+        format!("{:.2}M", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.2}K", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes}B")
     }
 }
 
