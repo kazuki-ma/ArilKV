@@ -767,7 +767,7 @@ impl RequestProcessor {
         }
 
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
-            return Err(RequestExecutionError::UnknownCommand);
+            return Err(RequestExecutionError::UnknownSubcommand);
         }
 
         let key = RedisKey::from(args[2]);

@@ -2271,7 +2271,7 @@ impl RequestProcessor {
             }
             return Err(RequestExecutionError::SyntaxError);
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_pfselftest(

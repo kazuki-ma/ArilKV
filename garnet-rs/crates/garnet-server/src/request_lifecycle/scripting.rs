@@ -484,7 +484,7 @@ impl RequestProcessor {
                 if !ascii_eq_ignore_case(flush_mode, b"ASYNC")
                     && !ascii_eq_ignore_case(flush_mode, b"SYNC")
                 {
-                    return Err(RequestExecutionError::UnknownCommand);
+                    return Err(RequestExecutionError::SyntaxError);
                 }
             }
             self.clear_script_cache();
@@ -514,7 +514,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_eval(
