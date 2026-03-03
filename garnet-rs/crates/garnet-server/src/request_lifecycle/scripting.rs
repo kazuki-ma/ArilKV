@@ -2695,15 +2695,15 @@ fn msgpack_value_to_lua(lua: &Lua, value: rmpv::Value) -> mlua::Result<LuaValue>
 fn build_lua_cmsgpack_table(lua: &Lua) -> mlua::Result<LuaTable> {
     let cmsgpack = lua.create_table()?;
 
-    // cmsgpack.pack(...) — encode one or more values to msgpack
-    let pack_fn = lua.create_function(|_, args: MultiValue| {
+    // cmsgpack.pack(...) — encode one or more values to msgpack binary string
+    let pack_fn = lua.create_function(|lua, args: MultiValue| {
         let mut buf = Vec::new();
         for arg in args {
             let value = lua_value_to_msgpack(arg, 0)?;
             rmpv::encode::write_value(&mut buf, &value)
                 .map_err(|e| LuaError::RuntimeError(format!("cmsgpack.pack error: {e}")))?;
         }
-        Ok(buf)
+        lua.create_string(&buf)
     })?;
 
     // cmsgpack.unpack(string) — decode first value from msgpack
