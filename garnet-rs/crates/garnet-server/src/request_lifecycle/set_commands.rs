@@ -151,9 +151,7 @@ impl RequestProcessor {
         if resp3 {
             append_set_length(response_out, set.len());
         } else {
-            response_out.push(b'*');
-            response_out.extend_from_slice(set.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, set.len());
         }
         for member in &set {
             append_bulk_string(response_out, member);
@@ -247,9 +245,7 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let set = self.load_set_object(&key)?;
         let members = &args[2..];
-        response_out.push(b'*');
-        response_out.extend_from_slice(members.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, members.len());
         for member in members {
             let exists = set.as_ref().is_some_and(|set| set.contains(*member));
             append_integer(response_out, if exists { 1 } else { 0 });
@@ -688,9 +684,7 @@ fn append_set_members(response_out: &mut Vec<u8>, set: &BTreeSet<Vec<u8>>, resp3
     if resp3 {
         append_set_length(response_out, set.len());
     } else {
-        response_out.push(b'*');
-        response_out.extend_from_slice(set.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, set.len());
     }
     for member in set {
         append_bulk_string(response_out, member);

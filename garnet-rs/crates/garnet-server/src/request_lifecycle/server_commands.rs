@@ -1559,9 +1559,7 @@ impl RequestProcessor {
             }
         }
 
-        response_out.push(b'*');
-        response_out.extend_from_slice(matched.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, matched.len());
         for key in matched {
             append_bulk_string(response_out, key.as_slice());
         }
@@ -2253,9 +2251,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"LATEST") {
             require_exact_arity(args, 2, "LATENCY", "LATENCY LATEST")?;
             let latest = self.latency_latest();
-            response_out.push(b'*');
-            response_out.extend_from_slice(latest.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, latest.len());
             for event in latest {
                 append_array_length(response_out, 4);
                 append_bulk_string(response_out, &event.event_name);
@@ -2268,9 +2264,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"HISTORY") {
             require_exact_arity(args, 3, "LATENCY", "LATENCY HISTORY event")?;
             let history = self.latency_history(args[2]);
-            response_out.push(b'*');
-            response_out.extend_from_slice(history.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, history.len());
             for sample in history {
                 append_array_length(response_out, 2);
                 append_integer(response_out, sample.unix_seconds as i64);
@@ -2361,9 +2355,7 @@ impl RequestProcessor {
                 }
             }
 
-            response_out.push(b'*');
-            response_out.extend_from_slice((selected.len() * 2).to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, selected.len() * 2);
             for command_name in selected {
                 append_bulk_string(response_out, command_name.as_bytes());
                 let count = command_counts
@@ -4093,9 +4085,7 @@ fn append_command_getkeysandflags(
     response_out: &mut Vec<u8>,
     entries: &[(Vec<u8>, &'static [&'static [u8]])],
 ) {
-    response_out.push(b'*');
-    response_out.extend_from_slice(entries.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, entries.len());
     for (key, flags) in entries {
         append_array_length(response_out, 2);
         append_bulk_string(response_out, key);

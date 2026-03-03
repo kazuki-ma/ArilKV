@@ -506,9 +506,7 @@ impl RequestProcessor {
 
         if ascii_eq_ignore_case(subcommand, b"EXISTS") {
             ensure_min_arity(args, 3, "SCRIPT", SCRIPT_EXISTS_USAGE)?;
-            response_out.push(b'*');
-            response_out.extend_from_slice((args.len() - 2).to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, args.len() - 2);
             for sha1 in &args[2..] {
                 let exists = self.get_cached_script(sha1).is_some();
                 append_integer(response_out, if exists { 1 } else { 0 });
@@ -962,9 +960,7 @@ impl RequestProcessor {
             .collect::<Vec<String>>();
         library_names.sort_unstable();
 
-        response_out.push(b'*');
-        response_out.extend_from_slice(library_names.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, library_names.len());
 
         for library_name in library_names {
             let mut function_names = registry
@@ -974,18 +970,14 @@ impl RequestProcessor {
                 .unwrap_or_default();
             function_names.sort_unstable();
             let entry_pairs = if with_code { 4 } else { 3 };
-            response_out.push(b'*');
-            response_out.extend_from_slice((entry_pairs * 2).to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, entry_pairs * 2);
 
             append_bulk_string(response_out, b"library_name");
             append_bulk_string(response_out, library_name.as_bytes());
             append_bulk_string(response_out, b"engine");
             append_bulk_string(response_out, b"LUA");
             append_bulk_string(response_out, b"functions");
-            response_out.push(b'*');
-            response_out.extend_from_slice(function_names.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, function_names.len());
             for function_name in function_names {
                 let descriptor = registry.functions.get(&function_name);
                 let (description, flags) = if let Some(entry) = descriptor {
@@ -3585,9 +3577,7 @@ fn append_lua_table_as_resp_depth(
             .map_err(|error| sanitize_error_text(&error.to_string()))?;
         values.push(value);
     }
-    response_out.push(b'*');
-    response_out.extend_from_slice(values.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, values.len());
     for value in values {
         append_lua_value_as_resp_depth(value, response_out, depth + 1, resp3)?;
     }

@@ -926,9 +926,7 @@ impl RequestProcessor {
         } else {
             matched
         };
-        response_out.push(b'*');
-        response_out.extend_from_slice(selected.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, selected.len());
         for member in selected {
             append_bulk_string(response_out, member);
         }
@@ -946,9 +944,7 @@ impl RequestProcessor {
         let members = &args[2..];
 
         let resp3 = self.resp_protocol_version().is_resp3();
-        response_out.push(b'*');
-        response_out.extend_from_slice(members.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, members.len());
         for member in members {
             let score = zset.as_ref().and_then(|zset| zset.get(*member));
             match score {
@@ -1046,9 +1042,7 @@ impl RequestProcessor {
         } else {
             sampled.len()
         };
-        response_out.push(b'*');
-        response_out.extend_from_slice(response_items.to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, response_items);
         for (member, score) in sampled {
             if emit_pair_array {
                 append_array_length(response_out, 2);
@@ -1192,17 +1186,12 @@ impl RequestProcessor {
 
         let resp3 = self.resp_protocol_version().is_resp3();
         let emit_pair_array = args.len() == 3 && self.emit_resp3_zset_pairs();
-        response_out.push(b'*');
-        response_out.extend_from_slice(
-            if emit_pair_array {
-                selected.len()
-            } else {
-                selected.len() * 2
-            }
-            .to_string()
-            .as_bytes(),
-        );
-        response_out.extend_from_slice(b"\r\n");
+        let array_len = if emit_pair_array {
+            selected.len()
+        } else {
+            selected.len() * 2
+        };
+        append_array_length(response_out, array_len);
         for (member, score) in selected {
             if emit_pair_array {
                 append_array_length(response_out, 2);
@@ -1480,9 +1469,7 @@ fn append_zrange_score_entries(
     resp3_double: bool,
 ) {
     if with_scores && emit_pair_array {
-        response_out.push(b'*');
-        response_out.extend_from_slice(entries.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, entries.len());
         for (member, score) in entries {
             append_array_length(response_out, 2);
             append_bulk_string(response_out, member);
@@ -1500,9 +1487,7 @@ fn append_zrange_score_entries(
     } else {
         entries.len()
     };
-    response_out.push(b'*');
-    response_out.extend_from_slice(item_count.to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, item_count);
     for (member, score) in entries {
         append_bulk_string(response_out, member);
         if with_scores {
@@ -1860,9 +1845,7 @@ fn append_zmpop_response(
 ) {
     append_array_length(response_out, 2);
     append_bulk_string(response_out, key);
-    response_out.push(b'*');
-    response_out.extend_from_slice(entries.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, entries.len());
     for (member, score) in entries {
         append_array_length(response_out, 2);
         append_bulk_string(response_out, member);

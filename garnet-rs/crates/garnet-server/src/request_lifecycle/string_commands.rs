@@ -2051,9 +2051,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "MGET", "MGET key [key ...]")?;
 
         let resp3 = self.resp_protocol_version().is_resp3();
-        response_out.push(b'*');
-        response_out.extend_from_slice((args.len() - 1).to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, args.len() - 1);
         for arg in &args[1..] {
             let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
@@ -2254,9 +2252,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG GETREG key")?;
             let key = RedisKey::from(args[2]);
             let state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
-            response_out.push(b'*');
-            response_out.extend_from_slice(PFDEBUG_REGISTER_COUNT.to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, PFDEBUG_REGISTER_COUNT);
             for register in state.registers {
                 append_integer(response_out, i64::from(register));
             }

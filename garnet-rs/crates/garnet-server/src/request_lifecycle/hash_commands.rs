@@ -187,9 +187,7 @@ impl RequestProcessor {
         }
         let resp3 = self.resp_protocol_version().is_resp3();
         let field_count = args.len() - 2;
-        response_out.push(b'*');
-        response_out.extend_from_slice(field_count.to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, field_count);
         for field in &args[2..] {
             match hash.as_ref().and_then(|hash| hash.get(*field)) {
                 Some(value) => append_bulk_string(response_out, value),
@@ -303,9 +301,7 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        response_out.push(b'*');
-        response_out.extend_from_slice(hash.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, hash.len());
         for field in hash.keys() {
             append_bulk_string(response_out, field);
         }
@@ -327,9 +323,7 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        response_out.push(b'*');
-        response_out.extend_from_slice(hash.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, hash.len());
         for value in hash.values() {
             append_bulk_string(response_out, value);
         }
@@ -608,18 +602,14 @@ impl RequestProcessor {
 
         if with_values {
             if resp3 {
-                response_out.push(b'*');
-                response_out.extend_from_slice(sampled.len().to_string().as_bytes());
-                response_out.extend_from_slice(b"\r\n");
+                append_array_length(response_out, sampled.len());
                 for (field, value) in sampled {
                     append_array_length(response_out, 2);
                     append_bulk_string(response_out, field);
                     append_bulk_string(response_out, value);
                 }
             } else {
-                response_out.push(b'*');
-                response_out.extend_from_slice((sampled.len() * 2).to_string().as_bytes());
-                response_out.extend_from_slice(b"\r\n");
+                append_array_length(response_out, sampled.len() * 2);
                 for (field, value) in sampled {
                     append_bulk_string(response_out, field);
                     append_bulk_string(response_out, value);
@@ -720,9 +710,7 @@ impl RequestProcessor {
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
-                response_out.push(b'*');
-                response_out.extend_from_slice(fields.len().to_string().as_bytes());
-                response_out.extend_from_slice(b"\r\n");
+                append_array_length(response_out, fields.len());
                 for _ in 0..fields.len() {
                     if resp3 {
                         append_null(response_out);
@@ -735,9 +723,7 @@ impl RequestProcessor {
         };
 
         let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
-        response_out.push(b'*');
-        response_out.extend_from_slice(fields.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, fields.len());
         for field in &fields {
             match hash.get(*field) {
                 Some(value) => append_bulk_string(response_out, value),
@@ -800,9 +786,7 @@ impl RequestProcessor {
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
-                response_out.push(b'*');
-                response_out.extend_from_slice(fields.len().to_string().as_bytes());
-                response_out.extend_from_slice(b"\r\n");
+                append_array_length(response_out, fields.len());
                 for _ in 0..fields.len() {
                     if resp3 {
                         append_null(response_out);
@@ -815,9 +799,7 @@ impl RequestProcessor {
         };
 
         self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
-        response_out.push(b'*');
-        response_out.extend_from_slice(fields.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, fields.len());
         for field in &fields {
             match hash.remove(*field) {
                 Some(value) => {
@@ -1520,18 +1502,14 @@ fn parse_hash_fields_with_values<'a>(
 }
 
 fn append_integer_array(response_out: &mut Vec<u8>, values: &[i64]) {
-    response_out.push(b'*');
-    response_out.extend_from_slice(values.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, values.len());
     for value in values {
         append_integer(response_out, *value);
     }
 }
 
 fn append_hash_integer_array(response_out: &mut Vec<u8>, len: usize, value: i64) {
-    response_out.push(b'*');
-    response_out.extend_from_slice(len.to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, len);
     for _ in 0..len {
         append_integer(response_out, value);
     }
