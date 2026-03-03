@@ -1628,6 +1628,14 @@ pub(crate) async fn handle_connection(
             receive_buffer.drain(..consumed);
         }
 
+        // Update CLIENT LIST buffer tracking fields after draining consumed bytes.
+        metrics.update_client_buffer_info(
+            client_id,
+            receive_buffer.len(),
+            receive_buffer.capacity().saturating_sub(receive_buffer.len()),
+            read_buffer.len(),
+        );
+
         if !responses.is_empty() {
             // TLA+ : ServerProcessOne (reply publication)
             // Makes command replies visible to the client-side read loop.

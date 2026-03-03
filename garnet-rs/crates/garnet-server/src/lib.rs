@@ -179,6 +179,12 @@ struct ClientRuntimeInfo {
     total_input_bytes: u64,
     total_output_bytes: u64,
     total_commands: u64,
+    /// Current bytes used in the client's query (receive) buffer.
+    query_buffer_used: usize,
+    /// Free bytes in the client's query (receive) buffer (capacity - len).
+    query_buffer_free: usize,
+    /// Allocated size of the client's read buffer.
+    read_buffer_size: usize,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +244,9 @@ impl ClientRuntimeInfo {
             total_input_bytes: 0,
             total_output_bytes: 0,
             total_commands: 0,
+            query_buffer_used: 0,
+            query_buffer_free: 0,
+            read_buffer_size: 0,
         }
     }
 }
@@ -413,6 +422,22 @@ impl ServerMetrics {
         }
     }
 
+    pub fn update_client_buffer_info(
+        &self,
+        client_id: ClientId,
+        query_buffer_used: usize,
+        query_buffer_free: usize,
+        read_buffer_size: usize,
+    ) {
+        if let Ok(mut clients) = self.clients.lock() {
+            if let Some(client) = clients.get_mut(&client_id) {
+                client.query_buffer_used = query_buffer_used;
+                client.query_buffer_free = query_buffer_free;
+                client.read_buffer_size = read_buffer_size;
+            }
+        }
+    }
+
     pub fn add_client_commands_processed(&self, client_id: ClientId, delta: u64) {
         if delta == 0 {
             return;
@@ -575,8 +600,18 @@ fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Inst
         .as_ref()
         .map(|value| String::from_utf8_lossy(value).to_string())
         .unwrap_or_default();
+    let qbuf = client.query_buffer_used;
+    let qbuf_free = client.query_buffer_free;
+    let rbs = if client.read_buffer_size > 0 {
+        client.read_buffer_size
+    } else {
+        1024
+    };
+    // Approximate total client memory: query buffer allocation + read buffer + base overhead.
+    let query_buffer_alloc = qbuf + qbuf_free;
+    let tot_mem = query_buffer_alloc + rbs + 20480;
     format!(
-        "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=20480 events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
+        "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf={} qbuf-free={} argv-mem=0 multi-mem=0 rbs={} rbp=0 obl=0 oll=0 omem=0 tot-mem={} events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
         u64::from(client_id),
         String::from_utf8_lossy(&client.addr),
         String::from_utf8_lossy(&client.laddr),
@@ -584,6 +619,10 @@ fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Inst
         age_seconds,
         idle_seconds,
         flags,
+        qbuf,
+        qbuf_free,
+        rbs,
+        tot_mem,
         command,
         user,
         library_name,
