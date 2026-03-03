@@ -7613,7 +7613,7 @@ fn latency_histogram_and_event_queries_cover_compatibility_shapes() {
     assert_command_error(
         &processor,
         "LATENCY HELP extra",
-        b"-ERR wrong number of arguments for 'latency|help' command\r\n",
+        b"-ERR wrong number of arguments for 'latency' command\r\n",
     );
 }
 
@@ -11002,7 +11002,7 @@ fn debug_object_reports_metadata_for_existing_key() {
     let processor = RequestProcessor::new().unwrap();
 
     // Missing key returns an error.
-    assert_command_response(
+    assert_command_error(
         &processor,
         "DEBUG OBJECT nosuchkey",
         b"-ERR no such key\r\n",
