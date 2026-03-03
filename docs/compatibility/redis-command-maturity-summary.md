@@ -5,10 +5,10 @@
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
 
 - Supported declared commands: `241`
-- `FULL`: `225`
-- `PARTIAL_MINIMAL`: `11`
+- `FULL`: `226`
+- `PARTIAL_MINIMAL`: `10`
 - `DISABLED`: `5`
-- Full implementation ratio over declared commands: `93.36%`
+- Full implementation ratio over declared commands: `93.78%`
 
 ## Non-Full Commands
 
@@ -17,10 +17,9 @@
 | `ACL` | `PARTIAL_MINIMAL` | Minimal ACL subcommand surface only. |
 | `BGREWRITEAOF` | `PARTIAL_MINIMAL` | Compatibility response surface only; full AOF rewrite lifecycle semantics are not implemented. |
 | `BGSAVE` | `PARTIAL_MINIMAL` | Compatibility response surface only; does not provide full Redis background-save lifecycle behavior. |
-| `CLUSTER` | `PARTIAL_MINIMAL` | Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled. |
+| `CLUSTER` | `PARTIAL_MINIMAL` | Core subcommands implemented (HELP INFO KEYSLOT MYID NODES SLOTS SHARDS RESET SAVECONFIG COUNTKEYSINSLOT GETKEYSINSLOT); cluster-management subcommands (SETSLOT ADDSLOTS etc.) disabled. |
 | `FAILOVER` | `DISABLED` | - |
 | `MIGRATE` | `DISABLED` | - |
-| `MODULE` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `MOVE` | `PARTIAL_MINIMAL` | single-db mode only; MOVE to non-zero DB is unsupported. |
 | `READONLY` | `DISABLED` | - |
 | `READWRITE` | `DISABLED` | - |
