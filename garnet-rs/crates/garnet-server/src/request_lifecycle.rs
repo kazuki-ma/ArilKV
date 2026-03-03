@@ -1408,10 +1408,6 @@ impl RequestProcessor {
         }
     }
 
-    pub(super) fn notify_keyspace_events_flags(&self) -> u32 {
-        self.notify_keyspace_events_flags.load(Ordering::Acquire)
-    }
-
     pub(super) fn set_notify_keyspace_events_flags(&self, flags: u32) {
         self.notify_keyspace_events_flags
             .store(flags, Ordering::Release);
@@ -2063,18 +2059,6 @@ impl RequestProcessor {
     }
 
     /// Returns the remaining pause duration, or None if not paused.
-    pub(crate) fn client_pause_remaining(&self) -> Option<Duration> {
-        let end_millis = self.client_pause_end_millis.load(Ordering::Acquire);
-        if end_millis == 0 {
-            return None;
-        }
-        let now_millis = current_unix_time_millis().unwrap_or(0);
-        if now_millis >= end_millis {
-            return None;
-        }
-        Some(Duration::from_millis(end_millis - now_millis))
-    }
-
     /// Look up a cached script by SHA1 and return its body for shebang inspection.
     pub(crate) fn cached_script_body(&self, sha1: &[u8]) -> Option<Vec<u8>> {
         let normalized: String = sha1
