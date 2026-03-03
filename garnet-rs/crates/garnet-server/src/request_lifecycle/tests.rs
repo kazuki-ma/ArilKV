@@ -10441,13 +10441,20 @@ fn debug_object_reports_metadata_for_existing_key() {
     let processor = RequestProcessor::new().unwrap();
 
     // Missing key returns an error.
-    assert_command_response(&processor, "DEBUG OBJECT nosuchkey", b"-ERR no such key\r\n");
+    assert_command_response(
+        &processor,
+        "DEBUG OBJECT nosuchkey",
+        b"-ERR no such key\r\n",
+    );
 
     // Set a key and verify DEBUG OBJECT returns a bulk string with expected metadata.
     assert_command_response(&processor, "SET mykey myvalue", b"+OK\r\n");
     let response = execute_command_line(&processor, "DEBUG OBJECT mykey").unwrap();
     let response_str = std::str::from_utf8(&response).expect("valid UTF-8 response");
-    assert!(response_str.starts_with('$'), "expected bulk string, got: {response_str}");
+    assert!(
+        response_str.starts_with('$'),
+        "expected bulk string, got: {response_str}"
+    );
     assert!(
         response_str.contains("Value at:"),
         "expected 'Value at:' in response: {response_str}"

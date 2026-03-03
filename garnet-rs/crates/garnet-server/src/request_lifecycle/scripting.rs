@@ -1728,7 +1728,7 @@ impl RequestProcessor {
     ) -> mlua::Result<LuaValue> {
         if values.is_empty() {
             return Err(LuaError::RuntimeError(
-                "Please specify at least one argument for this call".to_string(),
+                "ERR Please specify at least one argument for this redis lib call".to_string(),
             ));
         }
 
@@ -3130,8 +3130,10 @@ fn pcall_coerce_error_to_string(lua: &Lua, results: &mut MultiValue) -> mlua::Re
     match err_val {
         LuaValue::Error(err) => {
             // mlua wraps Rust callback errors (e.g. LuaError::RuntimeError) in
-            // a Value::Error box.  Extract the message directly.
-            let msg = err.to_string();
+            // a Value::Error box.  Extract the core message without traceback,
+            // matching the behavior of native Lua's pcall which returns just
+            // the error string.
+            let msg = extract_lua_error_message(err);
             results[1] = LuaValue::String(lua.create_string(&msg)?);
         }
         LuaValue::UserData(_) => {
@@ -3142,6 +3144,27 @@ fn pcall_coerce_error_to_string(lua: &Lua, results: &mut MultiValue) -> mlua::Re
         _ => {}
     }
     Ok(())
+}
+
+/// Extract the core error message from an mlua Error, stripping the
+/// `runtime error: ` prefix, traceback, and unwinding `CallbackError`
+/// wrappers to find the root cause message.
+fn extract_lua_error_message(error: &LuaError) -> String {
+    match error {
+        LuaError::RuntimeError(msg) => msg.clone(),
+        LuaError::CallbackError { cause, .. } => extract_lua_error_message(cause),
+        other => {
+            // For other error types, use the Display implementation but
+            // strip the common prefixes that mlua adds.
+            let text = other.to_string();
+            text.strip_prefix("runtime error: ")
+                .unwrap_or(&text)
+                .split(" stack traceback:")
+                .next()
+                .unwrap_or(&text)
+                .to_string()
+        }
+    }
 }
 
 /// Replace the Lua `unpack` global with a safe wrapper that validates the
@@ -3240,7 +3263,7 @@ fn lua_argument_to_bytes(value: LuaValue, _index: usize) -> mlua::Result<Vec<u8>
         }
         LuaValue::Boolean(value) => Ok(if value { b"1".to_vec() } else { b"0".to_vec() }),
         _ => Err(LuaError::RuntimeError(
-            "Lua redis lib command arguments must be strings or integers".to_string(),
+            "ERR Lua redis lib command arguments must be strings or integers".to_string(),
         )),
     }
 }
