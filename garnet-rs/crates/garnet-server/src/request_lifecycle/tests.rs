@@ -11910,3 +11910,106 @@ fn set_get_option_returns_old_value() {
         "SET with duplicate GET should return syntax error"
     );
 }
+
+#[test]
+fn module_load_loadex_unload_stubs() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // MODULE LIST → empty array
+    let list = execute_command_line(&processor, "MODULE LIST").unwrap();
+    assert_eq!(list, b"*0\r\n");
+
+    // MODULE LOAD → error (not supported)
+    let load = execute_command_line(&processor, "MODULE LOAD /path/to/mod.so").unwrap();
+    assert!(load.starts_with(b"-ERR"), "MODULE LOAD should return error");
+
+    // MODULE LOADEX → error (not supported)
+    let loadex = execute_command_line(&processor, "MODULE LOADEX /path/to/mod.so").unwrap();
+    assert!(
+        loadex.starts_with(b"-ERR"),
+        "MODULE LOADEX should return error"
+    );
+
+    // MODULE UNLOAD → error (no such module)
+    let unload = execute_command_line(&processor, "MODULE UNLOAD mymod").unwrap();
+    assert!(
+        unload.starts_with(b"-ERR"),
+        "MODULE UNLOAD should return error about no such module"
+    );
+
+    // MODULE LOAD arity check
+    let load_noargs = execute_command_line(&processor, "MODULE LOAD");
+    assert!(
+        load_noargs.is_err(),
+        "MODULE LOAD without path should be arity error"
+    );
+
+    // MODULE UNLOAD arity check
+    let unload_noargs = execute_command_line(&processor, "MODULE UNLOAD");
+    assert!(
+        unload_noargs.is_err(),
+        "MODULE UNLOAD without name should be arity error"
+    );
+
+    // MODULE unknown subcommand → UnknownSubcommand
+    let unknown = execute_command_line(&processor, "MODULE NOPE");
+    assert!(unknown.is_err(), "MODULE unknown subcommand should error");
+
+    // MODULE HELP → 11-element array
+    let help = execute_command_line(&processor, "MODULE HELP").unwrap();
+    assert!(
+        help.starts_with(b"*11\r\n"),
+        "MODULE HELP should return 11-element array"
+    );
+}
+
+#[test]
+fn cluster_reset_and_shards_stubs() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // CLUSTER RESET (no mode) → OK
+    let reset = execute_command_line(&processor, "CLUSTER RESET").unwrap();
+    assert_eq!(reset, b"+OK\r\n");
+
+    // CLUSTER RESET SOFT → OK
+    let reset_soft = execute_command_line(&processor, "CLUSTER RESET SOFT").unwrap();
+    assert_eq!(reset_soft, b"+OK\r\n");
+
+    // CLUSTER RESET HARD → OK
+    let reset_hard = execute_command_line(&processor, "CLUSTER RESET HARD").unwrap();
+    assert_eq!(reset_hard, b"+OK\r\n");
+
+    // CLUSTER RESET INVALID → syntax error
+    let reset_bad = execute_command_line(&processor, "CLUSTER RESET INVALID");
+    assert!(
+        reset_bad.is_err(),
+        "CLUSTER RESET with invalid mode should error"
+    );
+
+    // CLUSTER SHARDS → returns shard topology
+    let shards = execute_command_line(&processor, "CLUSTER SHARDS").unwrap();
+    assert!(
+        shards.starts_with(b"*1\r\n"),
+        "CLUSTER SHARDS should return 1-element array (single shard)"
+    );
+    // Verify the response contains expected fields
+    assert!(
+        shards.windows(b"slots".len()).any(|w| w == b"slots"),
+        "CLUSTER SHARDS should contain 'slots' field"
+    );
+    assert!(
+        shards.windows(b"nodes".len()).any(|w| w == b"nodes"),
+        "CLUSTER SHARDS should contain 'nodes' field"
+    );
+    assert!(
+        shards.windows(b"master".len()).any(|w| w == b"master"),
+        "CLUSTER SHARDS should contain 'master' role"
+    );
+
+    // CLUSTER HELP reflects updated count
+    let help = execute_command_line(&processor, "CLUSTER HELP").unwrap();
+    assert!(
+        help.starts_with(b"*24\r\n"),
+        "CLUSTER HELP should return 24-element array"
+    );
+}
