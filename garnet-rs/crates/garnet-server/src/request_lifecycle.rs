@@ -795,6 +795,7 @@ struct PubSubState {
     client_channels: HashMap<ClientId, HashSet<Vec<u8>>>,
     client_patterns: HashMap<ClientId, HashSet<Vec<u8>>>,
     pending_messages: HashMap<ClientId, VecDeque<Vec<u8>>>,
+    client_resp_versions: HashMap<ClientId, RespProtocolVersion>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1133,6 +1134,17 @@ impl RequestProcessor {
         state.pending_messages.entry(client_id).or_default();
     }
 
+    pub(crate) fn update_pubsub_client_resp_version(
+        &self,
+        client_id: ClientId,
+        version: RespProtocolVersion,
+    ) {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return;
+        };
+        state.client_resp_versions.insert(client_id, version);
+    }
+
     pub(crate) fn unregister_pubsub_client(&self, client_id: ClientId) {
         let Ok(mut state) = self.pubsub_state.lock() else {
             return;
@@ -1140,6 +1152,7 @@ impl RequestProcessor {
         remove_all_pubsub_client_subscriptions(&mut state, client_id, PubSubTargetKind::Channel);
         remove_all_pubsub_client_subscriptions(&mut state, client_id, PubSubTargetKind::Pattern);
         let _ = state.pending_messages.remove(&client_id);
+        let _ = state.client_resp_versions.remove(&client_id);
     }
 
     pub(crate) fn pubsub_subscription_count(&self, client_id: ClientId) -> usize {
@@ -1175,6 +1188,9 @@ impl RequestProcessor {
             return Vec::new();
         };
         state.pending_messages.entry(client_id).or_default();
+        state
+            .client_resp_versions
+            .insert(client_id, self.resp_protocol_version());
         let mut acks = Vec::with_capacity(targets.len());
         for target in targets {
             let target_vec = (*target).to_vec();
@@ -1295,17 +1311,43 @@ impl RequestProcessor {
             return 0;
         }
 
-        let message_frame = encode_pubsub_message_frame(b"message", None, channel, message);
+        // Pre-encode RESP2 and RESP3 variants lazily to avoid redundant encoding.
+        let mut resp2_message_frame: Option<Vec<u8>> = None;
+        let mut resp3_message_frame: Option<Vec<u8>> = None;
         for target in channel_targets {
+            let resp3 = state
+                .client_resp_versions
+                .get(&target)
+                .map(|v| v.is_resp3())
+                .unwrap_or(false);
+            let frame = if resp3 {
+                resp3_message_frame
+                    .get_or_insert_with(|| {
+                        encode_pubsub_message_frame(b"message", None, channel, message, true)
+                    })
+                    .clone()
+            } else {
+                resp2_message_frame
+                    .get_or_insert_with(|| {
+                        encode_pubsub_message_frame(b"message", None, channel, message, false)
+                    })
+                    .clone()
+            };
             state
                 .pending_messages
                 .entry(target)
                 .or_default()
-                .push_back(message_frame.clone());
+                .push_back(frame);
         }
 
         for (target, pattern) in pattern_targets {
-            let frame = encode_pubsub_message_frame(b"pmessage", Some(&pattern), channel, message);
+            let resp3 = state
+                .client_resp_versions
+                .get(&target)
+                .map(|v| v.is_resp3())
+                .unwrap_or(false);
+            let frame =
+                encode_pubsub_message_frame(b"pmessage", Some(&pattern), channel, message, resp3);
             state
                 .pending_messages
                 .entry(target)
@@ -2722,18 +2764,27 @@ fn encode_pubsub_message_frame(
     pattern: Option<&[u8]>,
     channel: &[u8],
     payload: &[u8],
+    resp3: bool,
 ) -> Vec<u8> {
     let mut frame = Vec::new();
     match pattern {
         Some(pattern) => {
-            frame.extend_from_slice(b"*4\r\n");
+            if resp3 {
+                append_push_length(&mut frame, 4);
+            } else {
+                frame.extend_from_slice(b"*4\r\n");
+            }
             append_bulk_string(&mut frame, kind);
             append_bulk_string(&mut frame, pattern);
             append_bulk_string(&mut frame, channel);
             append_bulk_string(&mut frame, payload);
         }
         None => {
-            frame.extend_from_slice(b"*3\r\n");
+            if resp3 {
+                append_push_length(&mut frame, 3);
+            } else {
+                frame.extend_from_slice(b"*3\r\n");
+            }
             append_bulk_string(&mut frame, kind);
             append_bulk_string(&mut frame, channel);
             append_bulk_string(&mut frame, payload);

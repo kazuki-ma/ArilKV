@@ -1515,6 +1515,7 @@ pub(crate) async fn handle_connection(
                                     &blocking_outcome.frame_response,
                                     &mut client_state,
                                     &metrics,
+                                    &processor,
                                     client_id,
                                 );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);
@@ -3274,6 +3275,7 @@ fn maybe_apply_hello_side_effects(
     frame_response: &[u8],
     client_state: &mut ClientConnectionState,
     metrics: &ServerMetrics,
+    processor: &RequestProcessor,
     client_id: ClientId,
 ) {
     if command != CommandId::Hello {
@@ -3289,6 +3291,7 @@ fn maybe_apply_hello_side_effects(
         && let Some(version) = RespProtocolVersion::from_u64(raw_version)
     {
         client_state.resp_protocol_version = version;
+        processor.update_pubsub_client_resp_version(client_id, version);
     }
     // Scan for SETNAME option and apply the client name.
     let mut idx = 2;

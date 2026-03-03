@@ -10676,3 +10676,73 @@ fn pubsub_subscribe_acks_use_push_type_in_resp3_and_array_in_resp2() {
         String::from_utf8_lossy(&resp3_punsub)
     );
 }
+
+#[test]
+fn pubsub_message_delivery_uses_push_type_for_resp3_subscribers() {
+    let processor = RequestProcessor::new().unwrap();
+    let resp2_client = ClientId::new(10);
+    let resp3_client = ClientId::new(20);
+
+    processor.register_pubsub_client(resp2_client);
+    processor.register_pubsub_client(resp3_client);
+
+    // Subscribe resp2_client on RESP2 (default).
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE news",
+        resp2_client,
+        b"*3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n",
+    );
+
+    // Switch resp3_client to RESP3 and subscribe.
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    processor.update_pubsub_client_resp_version(resp3_client, RespProtocolVersion::Resp3);
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE news",
+        resp3_client,
+        b">3\r\n$9\r\nsubscribe\r\n$4\r\nnews\r\n:1\r\n",
+    );
+
+    // Publish a message — both clients receive it.
+    assert_command_response(&processor, "PUBLISH news hello", b":2\r\n");
+
+    // RESP2 subscriber gets *3 (array).
+    let resp2_msgs = processor.take_pending_pubsub_messages(resp2_client);
+    assert_eq!(resp2_msgs.len(), 1);
+    assert_eq!(
+        resp2_msgs[0],
+        b"*3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n".to_vec()
+    );
+
+    // RESP3 subscriber gets >3 (push type).
+    let resp3_msgs = processor.take_pending_pubsub_messages(resp3_client);
+    assert_eq!(resp3_msgs.len(), 1);
+    assert_eq!(
+        resp3_msgs[0],
+        b">3\r\n$7\r\nmessage\r\n$4\r\nnews\r\n$5\r\nhello\r\n".to_vec()
+    );
+
+    // Pattern subscribe on RESP3 client.
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE new*",
+        resp3_client,
+        b">3\r\n$10\r\npsubscribe\r\n$4\r\nnew*\r\n:2\r\n",
+    );
+
+    // Publish again — resp3_client gets both channel and pattern messages.
+    assert_command_response(&processor, "PUBLISH news world", b":3\r\n");
+    let resp3_msgs2 = processor.take_pending_pubsub_messages(resp3_client);
+    assert_eq!(resp3_msgs2.len(), 2);
+    // Channel message: >3
+    assert!(
+        resp3_msgs2[0].starts_with(b">3\r\n"),
+        "RESP3 channel message should use >3 push type"
+    );
+    // Pattern message: >4
+    assert!(
+        resp3_msgs2[1].starts_with(b">4\r\n"),
+        "RESP3 pattern message should use >4 push type"
+    );
+}
