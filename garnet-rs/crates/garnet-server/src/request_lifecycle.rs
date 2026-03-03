@@ -2399,11 +2399,6 @@ impl RequestProcessor {
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
         }
-        if command == CommandId::Unknown
-            && self.maybe_handle_hash_field_expire_extension(args, response_out)?
-        {
-            return Ok(());
-        }
         match command {
             CommandId::Get => self.handle_get(args, response_out),
             CommandId::Set => self.handle_set(args, response_out),
@@ -2474,6 +2469,18 @@ impl RequestProcessor {
             CommandId::Hincrby => self.handle_hincrby(args, response_out),
             CommandId::Hincrbyfloat => self.handle_hincrbyfloat(args, response_out),
             CommandId::Hrandfield => self.handle_hrandfield(args, response_out),
+            CommandId::Hsetex => self.handle_hsetex(args, response_out),
+            CommandId::Hgetex => self.handle_hgetex(args, response_out),
+            CommandId::Hgetdel => self.handle_hgetdel(args, response_out),
+            CommandId::Hexpire => self.handle_hexpire(args, response_out),
+            CommandId::Hpexpire => self.handle_hpexpire(args, response_out),
+            CommandId::Hpexpireat => self.handle_hpexpireat(args, response_out),
+            CommandId::Hexpireat => self.handle_hexpireat(args, response_out),
+            CommandId::Hpersist => self.handle_hpersist(args, response_out),
+            CommandId::Hpttl => self.handle_hpttl(args, response_out),
+            CommandId::Httl => self.handle_httl(args, response_out),
+            CommandId::Hpexpiretime => self.handle_hpexpiretime(args, response_out),
+            CommandId::Hexpiretime => self.handle_hexpiretime(args, response_out),
             CommandId::Lpush => self.handle_lpush(args, response_out),
             CommandId::Rpush => self.handle_rpush(args, response_out),
             CommandId::Lpop => self.handle_lpop(args, response_out),

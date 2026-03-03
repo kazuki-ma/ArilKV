@@ -1,66 +1,6 @@
 use super::*;
 
 impl RequestProcessor {
-    pub(super) fn maybe_handle_hash_field_expire_extension(
-        &self,
-        args: &[&[u8]],
-        response_out: &mut Vec<u8>,
-    ) -> Result<bool, RequestExecutionError> {
-        if args.is_empty() {
-            return Ok(false);
-        }
-        let command = args[0];
-        if ascii_eq_ignore_case(command, b"HSETEX") {
-            self.handle_hsetex(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HGETEX") {
-            self.handle_hgetex(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HGETDEL") {
-            self.handle_hgetdel(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HEXPIRE") {
-            self.handle_hexpire(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HPEXPIRE") {
-            self.handle_hpexpire(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HPEXPIREAT") {
-            self.handle_hpexpireat(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HEXPIREAT") {
-            self.handle_hexpireat(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HPERSIST") {
-            self.handle_hpersist(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HPTTL") {
-            self.handle_hpttl(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HTTL") {
-            self.handle_httl(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HPEXPIRETIME") {
-            self.handle_hpexpiretime(args, response_out)?;
-            return Ok(true);
-        }
-        if ascii_eq_ignore_case(command, b"HEXPIRETIME") {
-            self.handle_hexpiretime(args, response_out)?;
-            return Ok(true);
-        }
-        Ok(false)
-    }
-
     pub(super) fn handle_hset(
         &self,
         args: &[&[u8]],
