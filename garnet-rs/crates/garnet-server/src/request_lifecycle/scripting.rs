@@ -1810,12 +1810,32 @@ impl RequestProcessor {
         };
         if timeout.is_some() || kill_flag.is_some() {
             let started = Instant::now();
+            // Track whether the kill escalation has been armed.  Once armed,
+            // the hook fires on every line so that pcall cannot suppress the
+            // kill error (matching Redis's `lua_sethook(LUA_MASKLINE)`
+            // escalation strategy).
+            let kill_escalated = Arc::new(AtomicBool::new(false));
+            let kill_escalated_clone = Arc::clone(&kill_escalated);
             lua.set_hook(
                 HookTriggers::new().every_nth_instruction(LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE),
-                move |_lua, _debug| {
+                move |lua, _debug| {
                     if let Some(flag) = &kill_flag
                         && flag.load(Ordering::Acquire)
                     {
+                        // On first kill detection, escalate the hook to fire
+                        // on every line so pcall cannot loop indefinitely
+                        // catching the kill error.
+                        if !kill_escalated_clone.load(Ordering::Relaxed) {
+                            kill_escalated_clone.store(true, Ordering::Relaxed);
+                            let _ = lua.set_hook(
+                                HookTriggers::new().every_line(),
+                                move |_lua, _debug| {
+                                    Err(LuaError::RuntimeError(
+                                        SCRIPT_KILLED_ERROR_TEXT.to_string(),
+                                    ))
+                                },
+                            );
+                        }
                         return Err(LuaError::RuntimeError(SCRIPT_KILLED_ERROR_TEXT.to_string()));
                     }
                     if let Some(timeout) = timeout
