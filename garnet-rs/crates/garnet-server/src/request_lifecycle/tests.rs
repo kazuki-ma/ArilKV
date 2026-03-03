@@ -11768,3 +11768,63 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
         "RESP3 CLIENT LIST should return verbatim string"
     );
 }
+
+#[test]
+fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // ACL DRYRUN returns OK for any user/command
+    let dryrun = execute_command_line(&processor, "ACL DRYRUN default GET key").unwrap();
+    assert_eq!(dryrun, b"+OK\r\n");
+
+    // ACL DRYRUN requires at least username + command
+    let dryrun_short = execute_command_line(&processor, "ACL DRYRUN default");
+    assert!(dryrun_short.is_err(), "ACL DRYRUN needs username + command");
+
+    // ACL HELP reflects new count
+    let help = execute_command_line(&processor, "ACL HELP").unwrap();
+    assert!(
+        help.starts_with(b"*27\r\n"),
+        "ACL HELP should return 27-element array"
+    );
+
+    // CLUSTER SAVECONFIG returns OK
+    let saveconfig = execute_command_line(&processor, "CLUSTER SAVECONFIG").unwrap();
+    assert_eq!(saveconfig, b"+OK\r\n");
+
+    // CLUSTER COUNTKEYSINSLOT returns 0 for valid slot
+    let count_0 = execute_command_line(&processor, "CLUSTER COUNTKEYSINSLOT 0").unwrap();
+    assert_eq!(count_0, b":0\r\n");
+
+    let count_max = execute_command_line(&processor, "CLUSTER COUNTKEYSINSLOT 16383").unwrap();
+    assert_eq!(count_max, b":0\r\n");
+
+    // CLUSTER COUNTKEYSINSLOT out of range returns error
+    let count_bad = execute_command_line(&processor, "CLUSTER COUNTKEYSINSLOT 16384").unwrap();
+    assert!(
+        count_bad.starts_with(b"-ERR"),
+        "CLUSTER COUNTKEYSINSLOT 16384 should return error"
+    );
+
+    // CLUSTER COUNTKEYSINSLOT non-integer returns error
+    let count_nan = execute_command_line(&processor, "CLUSTER COUNTKEYSINSLOT abc");
+    assert!(count_nan.is_err(), "CLUSTER COUNTKEYSINSLOT abc should fail");
+
+    // CLUSTER GETKEYSINSLOT returns empty array for valid slot
+    let keys_0 = execute_command_line(&processor, "CLUSTER GETKEYSINSLOT 0 10").unwrap();
+    assert_eq!(keys_0, b"*0\r\n");
+
+    // CLUSTER GETKEYSINSLOT out of range returns error
+    let keys_bad = execute_command_line(&processor, "CLUSTER GETKEYSINSLOT 20000 10").unwrap();
+    assert!(
+        keys_bad.starts_with(b"-ERR"),
+        "CLUSTER GETKEYSINSLOT 20000 should return error"
+    );
+
+    // CLUSTER HELP reflects new count
+    let cluster_help = execute_command_line(&processor, "CLUSTER HELP").unwrap();
+    assert!(
+        cluster_help.starts_with(b"*20\r\n"),
+        "CLUSTER HELP should return 20-element array"
+    );
+}
