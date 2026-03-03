@@ -9035,6 +9035,41 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .unwrap();
     assert!(response.starts_with(b"%10\r\n"));
     processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+
+    // XINFO GROUPS: returns array with 1 group, each group is 12-element flat array (6 fields).
+    response.clear();
+    let xinfo_groups = b"*3\r\n$5\r\nXINFO\r\n$6\r\nGROUPS\r\n$4\r\nxkey\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_groups, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*1\r\n*12\r\n"));
+    // Verify group name "mg" is present.
+    assert!(
+        response
+            .windows(b"$2\r\nmg\r\n".len())
+            .any(|w| w == b"$2\r\nmg\r\n")
+    );
+
+    // XINFO CONSUMERS: returns empty array (no consumer tracking).
+    response.clear();
+    let xinfo_consumers = b"*4\r\n$5\r\nXINFO\r\n$9\r\nCONSUMERS\r\n$4\r\nxkey\r\n$2\r\nmg\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_consumers, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    // XINFO CONSUMERS on non-existent group: error.
+    response.clear();
+    let xinfo_consumers_bad =
+        b"*4\r\n$5\r\nXINFO\r\n$9\r\nCONSUMERS\r\n$4\r\nxkey\r\n$6\r\nnosuch\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_consumers_bad, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert!(response.starts_with(b"-NOGROUP"));
 }
 
 #[test]

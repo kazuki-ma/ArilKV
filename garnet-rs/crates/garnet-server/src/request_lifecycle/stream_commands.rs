@@ -658,6 +658,16 @@ impl RequestProcessor {
             "XINFO <subcommand> [<arg> [value] [opt] ...]",
         )?;
         let subcommand = args[1];
+
+        if ascii_eq_ignore_case(subcommand, b"GROUPS") {
+            require_exact_arity(args, 3, "XINFO", "XINFO GROUPS key")?;
+            return self.handle_xinfo_groups(args, response_out);
+        }
+        if ascii_eq_ignore_case(subcommand, b"CONSUMERS") {
+            require_exact_arity(args, 4, "XINFO", "XINFO CONSUMERS key group")?;
+            return self.handle_xinfo_consumers(args, response_out);
+        }
+
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
             return Err(RequestExecutionError::UnknownCommand);
         }
@@ -724,6 +734,65 @@ impl RequestProcessor {
                 resp3,
             );
         }
+        Ok(())
+    }
+
+    fn handle_xinfo_groups(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let key = RedisKey::from(args[2]);
+        let stream = match self.load_stream_object(&key)? {
+            Some(stream) => stream,
+            None => return Err(RequestExecutionError::NoSuchKey),
+        };
+
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_array_length(response_out, stream.groups.len());
+        for (group_name, last_id) in &stream.groups {
+            // Valkey emits 6-field map per group.
+            if resp3 {
+                append_map_length(response_out, 6);
+            } else {
+                append_array_length(response_out, 12);
+            }
+            append_bulk_string(response_out, b"name");
+            append_bulk_string(response_out, group_name);
+            append_bulk_string(response_out, b"consumers");
+            append_integer(response_out, 0);
+            append_bulk_string(response_out, b"pending");
+            append_integer(response_out, 0);
+            append_bulk_string(response_out, b"last-delivered-id");
+            append_bulk_string(response_out, &last_id.encode());
+            append_bulk_string(response_out, b"entries-read");
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
+            append_bulk_string(response_out, b"lag");
+            append_integer(response_out, 0);
+        }
+        Ok(())
+    }
+
+    fn handle_xinfo_consumers(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let key = RedisKey::from(args[2]);
+        let group = args[3];
+        let stream = match self.load_stream_object(&key)? {
+            Some(stream) => stream,
+            None => return Err(RequestExecutionError::NoSuchKey),
+        };
+        if !stream.groups.contains_key(group) {
+            return Err(RequestExecutionError::NoGroup);
+        }
+        // No consumer tracking — return empty array.
+        append_array_length(response_out, 0);
         Ok(())
     }
 
