@@ -1870,10 +1870,18 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
+        let resp3 = self.resp_protocol_version().is_resp3();
         let entries = command_list_entries();
         if args.len() == 2 {
             let refs: Vec<&[u8]> = entries.iter().map(Vec::as_slice).collect();
-            append_bulk_array(response_out, &refs);
+            if resp3 {
+                append_set_length(response_out, refs.len());
+                for item in &refs {
+                    append_bulk_string(response_out, item);
+                }
+            } else {
+                append_bulk_array(response_out, &refs);
+            }
             return Ok(());
         }
 
@@ -1900,7 +1908,14 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        append_bulk_array(response_out, &filtered);
+        if resp3 {
+            append_set_length(response_out, filtered.len());
+            for item in &filtered {
+                append_bulk_string(response_out, item);
+            }
+        } else {
+            append_bulk_array(response_out, &filtered);
+        }
         Ok(())
     }
 
