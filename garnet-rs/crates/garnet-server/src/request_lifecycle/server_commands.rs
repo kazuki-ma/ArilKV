@@ -592,7 +592,7 @@ impl RequestProcessor {
                 InfoSection::Stats => {
                     payload.push_str(
                         format!(
-                            "# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
+                            "# Stats\r\ntotal_connections_received:0\r\ntotal_commands_processed:0\r\ninstantaneous_ops_per_sec:0\r\ntotal_net_input_bytes:0\r\ntotal_net_output_bytes:0\r\ninstantaneous_input_kbps:0.00\r\ninstantaneous_output_kbps:0.00\r\nrejected_connections:0\r\nkeyspace_hits:0\r\nkeyspace_misses:0\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
                             dbsize,
                             rdb_bgsave_in_progress,
                             rdb_changes_since_last_save,
