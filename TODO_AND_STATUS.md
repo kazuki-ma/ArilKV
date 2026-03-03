@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 474
+> **Current Iteration**: 475
 
 ---
 
@@ -481,6 +481,7 @@
 | 11.325 | Emit RESP3 verbatim string for CLIENT LIST | DONE | 11.324 | CLIENT LIST returns verbatim string in RESP3. Commit: `2c2e9fa41b`. |
 | 11.326 | Register hash field expiration commands in standard dispatch | DONE | — | Moved 12 commands (HSETEX, HGETEX, HGETDEL, HEXPIRE, HPEXPIRE, HPEXPIREAT, HEXPIREAT, HPERSIST, HPTTL, HTTL, HPEXPIRETIME, HEXPIRETIME) from secondary `maybe_handle_hash_field_expire_extension` fallback into CommandId enum, COMMAND_SPECS table, and match dispatch. Now visible via COMMAND/COMMAND INFO with proper arity, key-access-pattern, and mutation tracking. 355 tests. Commit: `27fc2616da`. |
 | 11.327 | Add tests for HSETEX, HGETEX, HGETDEL, HEXPIRE, HPEXPIRE | DONE | 11.326 | Added functional test covering basic operations: HSETEX with PXAT expiration, HGETEX get-and-expire, HGETDEL atomic delete, HEXPIRE/HPEXPIRE seconds/millis TTL. Includes missing-key and error edge cases. 356 tests. Commit: `14bc09f913`. |
+| 11.328 | Add generic FirstKey fallback for COMMAND GETKEYS/GETKEYSANDFLAGS | DONE | 11.326 | Instead of SyntaxError for unrecognized commands, resolve via `command_id_from_name` and emit first-key for commands with `KeyAccessPattern::FirstKey`. Covers all 12 hash field expire commands and future FirstKey commands automatically. GETKEYSANDFLAGS uses write/read flags based on `is_mutating`. 356 tests. Commit: `4c9be617ec`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1197,3 +1198,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 472 | 2026-03-03 | 11.325 | DONE | RESP3 verbatim string for CLIENT LIST. Commit: `2c2e9fa41b`. |
 | 473 | 2026-03-03 | 11.326 | DONE | Registered 12 hash field expiration commands (HSETEX, HGETEX, HGETDEL, HEXPIRE, HPEXPIRE, HPEXPIREAT, HEXPIREAT, HPERSIST, HPTTL, HTTL, HPEXPIRETIME, HEXPIRETIME) in CommandId enum, COMMAND_SPECS table, and standard match dispatch. Removed `maybe_handle_hash_field_expire_extension` fallback. 355 tests, 0 clippy warnings. Commit: `27fc2616da`. |
 | 474 | 2026-03-03 | 11.327 | DONE | Added functional test for HSETEX, HGETEX, HGETDEL, HEXPIRE, HPEXPIRE covering basic operations, missing-key paths, and error edge cases. 356 tests. Commit: `14bc09f913`. |
+| 475 | 2026-03-03 | 11.328 | DONE | Added generic FirstKey fallback for COMMAND GETKEYS/GETKEYSANDFLAGS. Covers all 12 hash field expire commands automatically. GETKEYSANDFLAGS uses write/read flags from is_mutating. 356 tests. Commit: `4c9be617ec`. |
