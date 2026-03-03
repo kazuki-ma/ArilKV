@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 479
+> **Current Iteration**: 482
 
 ---
 
@@ -485,6 +485,8 @@
 | 11.329 | Fix HRANDFIELD RESP3 without-values to emit flat array (not nested `*1` arrays) | DONE | 11.310 | HRANDFIELD with count but without WITHVALUES was wrapping each field in `*1` nested array in RESP3 mode. Valkey emits flat array of bulk strings for both RESP2/RESP3. Removed unnecessary wrappers, added test assertion. 356 tests. Commit: `9776afaf82`. |
 | 11.330 | Use `TransactionExecutionOutcome` struct in internal transaction executor return | DONE | — | Replaced tuple return `(Vec<ExecutedTransactionItem>, Option<QueuedReplicationTransition>)` from `execute_transaction_queue_on_owner_thread` with existing named struct. Destructure at callsite. 356 tests. Commit: `b2fa5e7295`. |
 | 11.331 | Emit RESP3 double type for GEOPOS and GEOSEARCH WITHCOORD coordinates | DONE | 11.321 | GEOPOS/GEOSEARCH/GEORADIUS/GEORADIUSBYMEMBER WITHCOORD coordinates now emit `,value\r\n` (RESP3 double) instead of bulk strings in RESP3 mode. Matches Valkey `addReplyHumanLongDouble`. Added `resp3: bool` through `execute_geo_query` and `append_geosearch_response`. Test assertion for GEOPOS RESP3. 356 tests. Commit: `771a070e63`. |
+| 11.332 | Implement structured XINFO STREAM response replacing digest hash | DONE | — | XINFO STREAM now returns proper 10-field summary (non-FULL) or 9-field detailed response (FULL with COUNT) matching Valkey semantics. Non-existent key returns ERR. RESP3 map type for both modes. Removed unused `fnv_hex_digest` from `stream_commands.rs`. 357 tests. Commit: `886b045719`. |
+| 11.333 | Add XINFO GROUPS and XINFO CONSUMERS subcommand handlers | DONE | 11.332 | XINFO GROUPS returns per-group 6-field map (name, consumers=0, pending=0, last-delivered-id, entries-read=null, lag=0) matching Valkey shape. XINFO CONSUMERS returns empty array (no consumer tracking). Non-existent group returns NOGROUP error. 357 tests. Commit: `966dc31f82`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1206,3 +1208,6 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 477 | 2026-03-03 | 11.330 | DONE | Replaced tuple return from `execute_transaction_queue_on_owner_thread` with existing `TransactionExecutionOutcome` named struct, removing positional-access ambiguity at callsite. 356 tests, 0 clippy warnings. Commit: `b2fa5e7295`. |
 | 478 | 2026-03-03 | 11.331 | DONE | Emitted RESP3 double type for GEOPOS and GEOSEARCH/GEORADIUS WITHCOORD coordinate values (longitude/latitude), matching Valkey `addReplyHumanLongDouble`. Threaded `resp3: bool` through `execute_geo_query` and `append_geosearch_response`. Added GEOPOS RESP3 test assertion. 356 tests, 0 clippy warnings. Commit: `771a070e63`. |
 | 479 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 476-479 and added TODOs 11.329-11.331. |
+| 480 | 2026-03-03 | 11.332 | DONE | Implemented structured XINFO STREAM response replacing digest hash: non-FULL 10-field summary, FULL 9-field with entries array and detailed group info, RESP3 map type, ERR for missing key. 357 tests. Commit: `886b045719`. |
+| 481 | 2026-03-03 | 11.333 | DONE | Added XINFO GROUPS (6-field per-group map) and XINFO CONSUMERS (empty array) subcommand handlers with NOGROUP error handling. 357 tests. Commit: `966dc31f82`. |
+| 482 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 480-482 and added TODOs 11.332-11.333. |
