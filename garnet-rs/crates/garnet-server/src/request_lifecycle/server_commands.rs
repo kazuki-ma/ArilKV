@@ -54,14 +54,26 @@ const SLOWLOG_HELP_LINES: [&[u8]; 12] = [
     b"HELP",
     b"    Print this help.",
 ];
-const ACL_HELP_LINES: [&[u8]; 13] = [
+const ACL_HELP_LINES: [&[u8]; 25] = [
     b"ACL <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"CAT [<category>]",
     b"    List ACL categories and the commands inside them.",
+    b"DELUSER <username> [<username> ...]",
+    b"    Delete ACL users and associated rules.",
+    b"GENPASS [<bits>]",
+    b"    Generate a secure password for ACL users.",
     b"GETUSER <username>",
     b"    Get user details.",
+    b"HELP",
+    b"    Print this help.",
     b"LIST",
     b"    List ACL rules in ACL file format.",
+    b"LOAD",
+    b"    Reload users from the ACL file.",
+    b"LOG [<count> | RESET]",
+    b"    Show ACL log entries.",
+    b"SAVE",
+    b"    Save the current ACL rules to the ACL file.",
     b"SETUSER <username> [<rule> ...]",
     b"    Modify ACL rules for a user.",
     b"USERS",
@@ -92,14 +104,20 @@ const OBJECT_HELP_LINES: [&[u8]; 11] = [
     b"HELP",
     b"    Print this help.",
 ];
-const MEMORY_HELP_LINES: [&[u8]; 7] = [
+const MEMORY_HELP_LINES: [&[u8]; 13] = [
     b"MEMORY <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
-    b"USAGE <key>",
-    b"    Estimate memory usage for a key.",
+    b"DOCTOR",
+    b"    Return memory problems reports.",
+    b"HELP",
+    b"    Print this help.",
     b"MALLOC-STATS",
     b"    Return allocator statistics.",
     b"PURGE",
     b"    Attempt to purge allocator caches.",
+    b"STATS",
+    b"    Return information about memory usage.",
+    b"USAGE <key> [SAMPLES <count>]",
+    b"    Estimate memory usage for a key.",
 ];
 const PUBSUB_HELP_LINES: [&[u8]; 13] = [
     b"PUBSUB <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -1116,6 +1134,29 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"PURGE") {
             require_exact_arity(args, 2, "MEMORY", "MEMORY PURGE")?;
             append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
+            require_exact_arity(args, 2, "MEMORY", "MEMORY DOCTOR")?;
+            append_bulk_string(response_out, b"Sam, I have no memory problems");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"STATS") {
+            require_exact_arity(args, 2, "MEMORY", "MEMORY STATS")?;
+            let resp3 = self.resp_protocol_version().is_resp3();
+            if resp3 {
+                append_map_length(response_out, 4);
+            } else {
+                append_array_length(response_out, 8);
+            }
+            append_bulk_string(response_out, b"peak.allocated");
+            append_integer(response_out, 0);
+            append_bulk_string(response_out, b"total.allocated");
+            append_integer(response_out, 0);
+            append_bulk_string(response_out, b"startup.allocated");
+            append_integer(response_out, 0);
+            append_bulk_string(response_out, b"dataset.bytes");
+            append_integer(response_out, 0);
             return Ok(());
         }
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
@@ -2427,6 +2468,60 @@ impl RequestProcessor {
             }
             require_exact_arity(args, 3, "ACL", "ACL CAT [category]")?;
             append_bulk_array(response_out, &[]);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"DELUSER") {
+            ensure_min_arity(args, 3, "ACL", "ACL DELUSER username [username ...]")?;
+            // Only "default" user exists; it cannot be deleted.
+            for &username in &args[2..] {
+                if ascii_eq_ignore_case(username, b"default") {
+                    append_error(response_out, b"ERR The 'default' user cannot be removed");
+                    return Ok(());
+                }
+            }
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GENPASS") {
+            ensure_ranged_arity(args, 2, 3, "ACL", "ACL GENPASS [bits]")?;
+            if args.len() == 3 {
+                let bits =
+                    parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+                if bits == 0 || bits > 4096 {
+                    append_error(
+                        response_out,
+                        b"ERR ACL GENPASS argument must be the number of bits for the output password, a positive number up to 4096",
+                    );
+                    return Ok(());
+                }
+            }
+            // Return a fixed-length 64-char hex string (256 bits).
+            append_bulk_string(
+                response_out,
+                b"0000000000000000000000000000000000000000000000000000000000000000",
+            );
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"LOG") {
+            ensure_ranged_arity(args, 2, 3, "ACL", "ACL LOG [count | RESET]")?;
+            if args.len() == 3 {
+                if ascii_eq_ignore_case(args[2], b"RESET") {
+                    append_simple_string(response_out, b"OK");
+                    return Ok(());
+                }
+                parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            }
+            append_array_length(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SAVE") {
+            require_exact_arity(args, 2, "ACL", "ACL SAVE")?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"LOAD") {
+            require_exact_arity(args, 2, "ACL", "ACL LOAD")?;
+            append_simple_string(response_out, b"OK");
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {

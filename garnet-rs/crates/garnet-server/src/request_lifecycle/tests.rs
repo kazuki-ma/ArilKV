@@ -5177,7 +5177,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert!(response.starts_with(b"*7\r\n"));
+    assert!(response.starts_with(b"*13\r\n"));
     assert!(
         String::from_utf8_lossy(&response).contains("MEMORY <subcommand>"),
         "unexpected MEMORY HELP payload: {}",
