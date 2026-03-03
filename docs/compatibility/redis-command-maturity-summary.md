@@ -5,10 +5,10 @@
 - Maturity matrix: `docs/compatibility/redis-command-maturity.csv`
 
 - Supported declared commands: `241`
-- `FULL`: `224`
-- `PARTIAL_MINIMAL`: `12`
+- `FULL`: `225`
+- `PARTIAL_MINIMAL`: `11`
 - `DISABLED`: `5`
-- Full implementation ratio over declared commands: `92.95%`
+- Full implementation ratio over declared commands: `93.36%`
 
 ## Non-Full Commands
 
@@ -21,7 +21,6 @@
 | `FAILOVER` | `DISABLED` | - |
 | `MIGRATE` | `DISABLED` | - |
 | `MODULE` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
-| `MONITOR` | `PARTIAL_MINIMAL` | Compatibility ACK response surface only. |
 | `MOVE` | `PARTIAL_MINIMAL` | single-db mode only; MOVE to non-zero DB is unsupported. |
 | `READONLY` | `DISABLED` | - |
 | `READWRITE` | `DISABLED` | - |

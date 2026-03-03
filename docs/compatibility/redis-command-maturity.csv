@@ -120,7 +120,7 @@ MEMORY,SUPPORTED_DECLARED,1,1,FULL,
 MGET,SUPPORTED_DECLARED,1,1,FULL,
 MIGRATE,SUPPORTED_DECLARED,1,1,DISABLED,
 MODULE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal admin and introspection compatibility surface.
-MONITOR,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Compatibility ACK response surface only.
+MONITOR,SUPPORTED_DECLARED,1,1,FULL,Real command monitoring with broadcast streaming; connection-level subscribe/unsubscribe lifecycle with RESET integration and sensitive-token redaction.
 MOVE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,single-db mode only; MOVE to non-zero DB is unsupported.
 MSET,SUPPORTED_DECLARED,1,1,FULL,
 MSETEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
