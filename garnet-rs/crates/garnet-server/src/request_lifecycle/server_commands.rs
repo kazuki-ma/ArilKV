@@ -2349,20 +2349,39 @@ impl RequestProcessor {
                 }
                 return Ok(());
             }
-            append_bulk_array(
-                response_out,
-                &[
-                    b"flags",
-                    b"on",
-                    b"nopass",
-                    b"commands",
-                    b"+@all",
-                    b"keys",
-                    b"~*",
-                    b"channels",
-                    b"&*",
-                ],
-            );
+            let resp3 = self.resp_protocol_version().is_resp3();
+            // Valkey emits a 6-field map: flags, passwords, commands, keys,
+            // channels, selectors.
+            if resp3 {
+                append_map_length(response_out, 6);
+            } else {
+                append_array_length(response_out, 12);
+            }
+
+            append_bulk_string(response_out, b"flags");
+            if resp3 {
+                append_set_length(response_out, 2);
+            } else {
+                append_array_length(response_out, 2);
+            }
+            append_bulk_string(response_out, b"on");
+            append_bulk_string(response_out, b"nopass");
+
+            append_bulk_string(response_out, b"passwords");
+            append_array_length(response_out, 0);
+
+            append_bulk_string(response_out, b"commands");
+            append_bulk_string(response_out, b"+@all");
+
+            append_bulk_string(response_out, b"keys");
+            append_bulk_string(response_out, b"~*");
+
+            append_bulk_string(response_out, b"channels");
+            append_bulk_string(response_out, b"&*");
+
+            append_bulk_string(response_out, b"selectors");
+            append_array_length(response_out, 0);
+
             return Ok(());
         }
         Err(RequestExecutionError::UnknownCommand)
