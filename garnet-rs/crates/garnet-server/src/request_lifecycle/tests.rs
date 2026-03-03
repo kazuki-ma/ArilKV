@@ -11097,3 +11097,52 @@ fn scan_and_sscan_return_set_type_in_resp3() {
         "RESP3 SSCAN inner data should use set type"
     );
 }
+
+#[test]
+fn srandmember_and_spop_with_count_return_set_type_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SADD s a b c d e", b":5\r\n");
+
+    // RESP2: SRANDMEMBER with positive count returns *N array
+    let resp2 = execute_command_line(&processor, "SRANDMEMBER s 2").unwrap();
+    assert!(
+        resp2.starts_with(b"*2\r\n"),
+        "RESP2 SRANDMEMBER +count should use array type"
+    );
+
+    // RESP3: SRANDMEMBER with positive count returns ~N set type
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "SRANDMEMBER s 2").unwrap();
+    assert!(
+        resp3.starts_with(b"~2\r\n"),
+        "RESP3 SRANDMEMBER +count should use set type, got: {:?}",
+        String::from_utf8_lossy(&resp3)
+    );
+
+    // RESP3: SRANDMEMBER with negative count stays *N (may have duplicates)
+    let resp3_neg = execute_command_line(&processor, "SRANDMEMBER s -3").unwrap();
+    assert!(
+        resp3_neg.starts_with(b"*3\r\n"),
+        "RESP3 SRANDMEMBER -count should use array type (duplicates possible), got: {:?}",
+        String::from_utf8_lossy(&resp3_neg)
+    );
+
+    // RESP2: SPOP with count returns *N array
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    assert_command_response(&processor, "SADD s2 x y z", b":3\r\n");
+    let resp2_spop = execute_command_line(&processor, "SPOP s2 2").unwrap();
+    assert!(
+        resp2_spop.starts_with(b"*2\r\n"),
+        "RESP2 SPOP with count should use array type"
+    );
+
+    // RESP3: SPOP with count returns ~N set type
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    assert_command_response(&processor, "SADD s3 p q r", b":3\r\n");
+    let resp3_spop = execute_command_line(&processor, "SPOP s3 2").unwrap();
+    assert!(
+        resp3_spop.starts_with(b"~2\r\n"),
+        "RESP3 SPOP with count should use set type, got: {:?}",
+        String::from_utf8_lossy(&resp3_spop)
+    );
+}

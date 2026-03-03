@@ -290,12 +290,19 @@ impl RequestProcessor {
         }
 
         let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        // Positive count: distinct sampling → set type in RESP3.
+        // Negative count: with-replacement → array type (may have duplicates).
+        let use_set_type = resp3 && count > 0;
         let Some(set) = set else {
-            response_out.extend_from_slice(b"*0\r\n");
+            if use_set_type {
+                append_set_length(response_out, 0);
+            } else {
+                append_array_length(response_out, 0);
+            }
             return Ok(());
         };
         if set.is_empty() || count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
@@ -307,9 +314,11 @@ impl RequestProcessor {
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
             select_random_members_with_replacement(self, &set, requested)
         };
-        response_out.push(b'*');
-        response_out.extend_from_slice(sampled.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        if use_set_type {
+            append_set_length(response_out, sampled.len());
+        } else {
+            append_array_length(response_out, sampled.len());
+        }
         for member in sampled {
             append_bulk_string(response_out, &member);
         }
@@ -365,11 +374,19 @@ impl RequestProcessor {
         }
         let count = usize::try_from(count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         let Some(mut set) = set else {
-            response_out.extend_from_slice(b"*0\r\n");
+            if resp3 {
+                append_set_length(response_out, 0);
+            } else {
+                append_array_length(response_out, 0);
+            }
             return Ok(());
         };
         if set.is_empty() || count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            if resp3 {
+                append_set_length(response_out, 0);
+            } else {
+                append_array_length(response_out, 0);
+            }
             return Ok(());
         }
 
@@ -389,9 +406,11 @@ impl RequestProcessor {
             self.save_set_object(&key, &set)?;
         }
 
-        response_out.push(b'*');
-        response_out.extend_from_slice(selected.len().to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        if resp3 {
+            append_set_length(response_out, selected.len());
+        } else {
+            append_array_length(response_out, selected.len());
+        }
         for member in selected {
             append_bulk_string(response_out, &member);
         }
