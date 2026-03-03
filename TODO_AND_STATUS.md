@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 519
+> **Current Iteration**: 523
 
 ---
 
@@ -517,6 +517,10 @@
 | 11.361 | RESP3 map/set types for FUNCTION LIST and FUNCTION STATS | DONE | — | Library entries use map, function entries use map, flags use set in RESP3. STATS uses maps for top-level, running_script, engines, and engine details. 372 lib tests. Commit: `d837004bc3`. |
 | 11.362 | Fix COMMAND handler unknown subcommand error type | DONE | 11.360 | Changed COMMAND fallback from SyntaxError to UnknownSubcommand. 372 lib tests. Commit: `342541a64a`. |
 | 11.363 | Fix hash listpack encoding threshold to match Redis default | DONE | — | HASH_LISTPACK_MAX_ENTRIES 32→128 to match Redis default. 372 lib tests. Commit: `ffcb212444`. |
+| 11.364 | LATENCY HISTOGRAM RESP3 map types | DONE | — | Top-level map, per-command map with "calls" and "histogram_usec" keys matching Valkey. 373 lib tests. Commit: `67ad8611b1`. |
+| 11.365 | Add missing CONFIG GET default parameters | DONE | — | 15 parameters: list-compress-depth, zset-max-*-value, stream-node-*, maxclients, repl-backlog-ttl, cluster-*, latency-tracking-*, etc. 373 lib tests. Commit: `89dd463997`. |
+| 11.366 | Enrich INFO Server and Replication sections | DONE | — | Server: redis_mode, os, tcp_port, uptime, hz. Replication: role, connected_slaves, replid, backlog fields. 373 lib tests. Commit: `a1ec58e76e`. |
+| 11.367 | COMMAND LIST RESP3 set type | DONE | — | Returns set (~N) instead of array in RESP3 for both filtered and unfiltered paths. 373 lib tests. Commit: `9b862d79e7`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1278,3 +1282,7 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 517 | 2026-03-03 | 11.361 | DONE | FUNCTION LIST/STATS RESP3 map/set types. 372 lib tests. Commit: `d837004bc3`. |
 | 518 | 2026-03-03 | 11.362 | DONE | COMMAND unknown subcommand fix. 372 lib tests. Commit: `342541a64a`. |
 | 519 | 2026-03-03 | 11.363 | DONE | Hash listpack threshold 32→128. 372 lib tests. Commit: `ffcb212444`. |
+| 520 | 2026-03-03 | 11.364 | DONE | LATENCY HISTOGRAM RESP3 map types. 373 lib tests. Commit: `67ad8611b1`. |
+| 521 | 2026-03-03 | 11.365 | DONE | CONFIG GET defaults: 15 new parameters. 373 lib tests. Commit: `89dd463997`. |
+| 522 | 2026-03-03 | 11.366 | DONE | INFO Server/Replication section enrichment. 373 lib tests. Commit: `a1ec58e76e`. |
+| 523 | 2026-03-03 | 11.367 | DONE | COMMAND LIST RESP3 set type. 373 lib tests. Commit: `9b862d79e7`. |
