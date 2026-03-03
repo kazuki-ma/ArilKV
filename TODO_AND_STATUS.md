@@ -1,8 +1,8 @@
 # TODO & Status Tracker — garnet-rs
 
-> **Last Updated**: 2026-03-03
+> **Last Updated**: 2026-03-04
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 523
+> **Current Iteration**: 530
 
 ---
 
@@ -521,6 +521,13 @@
 | 11.365 | Add missing CONFIG GET default parameters | DONE | — | 15 parameters: list-compress-depth, zset-max-*-value, stream-node-*, maxclients, repl-backlog-ttl, cluster-*, latency-tracking-*, etc. 373 lib tests. Commit: `89dd463997`. |
 | 11.366 | Enrich INFO Server and Replication sections | DONE | — | Server: redis_mode, os, tcp_port, uptime, hz. Replication: role, connected_slaves, replid, backlog fields. 373 lib tests. Commit: `a1ec58e76e`. |
 | 11.367 | COMMAND LIST RESP3 set type | DONE | — | Returns set (~N) instead of array in RESP3 for both filtered and unfiltered paths. 373 lib tests. Commit: `9b862d79e7`. |
+| 11.368 | CLIENT SETNAME/GETNAME with name storage and validation | DONE | — | Store connection name in Mutex<Vec<u8>>. SETNAME validates no spaces/newlines. GETNAME returns stored name or null. CLIENT LIST/INFO include name. HELLO SETNAME stores name. 373 lib tests. Commit: `7d59c3e706`. |
+| 11.369 | Hash/set encoding thresholds configurable via CONFIG SET | DONE | — | hash-max-listpack-entries, set-max-listpack-entries, set-max-intset-entries as AtomicUsize. CONFIG SET updates atomics; CONFIG GET returns live values; OBJECT ENCODING reads from atomics. 373 lib tests. Commit: `5156d2a02a`. |
+| 11.370 | CLIENT REPLY ON/OFF/SKIP state tracking | DONE | — | AtomicU8 field with constants ON(0)/OFF(1)/SKIP(2). pub(crate) accessors for connection handler. clear_client_reply_skip() for one-shot semantics. 373 lib tests. Commit: `573d14a4bf`. |
+| 11.371 | CLIENT SETINFO LIB-NAME/LIB-VER with storage and validation | DONE | — | Mutex<Vec<u8>> per-connection fields. LIB-NAME validates no spaces/newlines. CLIENT LIST/INFO output includes stored lib-name/lib-ver. 373 lib tests. Commit: `a6b949c898`. |
+| 11.372 | CLIENT TRACKING/TRACKINGINFO/GETREDIR compatibility stubs | DONE | — | TRACKING ON/OFF accepts optional flags. TRACKINGINFO returns off/no-redirect/no-prefixes. GETREDIR returns -1. 373 lib tests. Commit: `3d5a1eab96`. |
+| 11.373 | CONFIG GET/SET defaults for commonly queried parameters | DONE | — | lfu-log-factor, lfu-decay-time, lazyfree-lazy-user-flush, jemalloc-bg-thread, activerehashing, no-appendfsync-on-rewrite, set-proc-title, repl-min-slaves-*. 373 lib tests. Commit: `0ec513c2ed`. |
+| 11.374 | INFO Clients/Memory/Stats section enrichment | DONE | — | Clients: tracking_clients, total_blocking_clients. Memory: used_memory_human, rss, peak, maxmemory, fragmentation_ratio. Stats: total_connections/commands, ops/sec, net bytes, hits/misses. 373 lib tests. Commits: `da0f07b71b`, `1ad17b6bf2`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1286,3 +1293,10 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 521 | 2026-03-03 | 11.365 | DONE | CONFIG GET defaults: 15 new parameters. 373 lib tests. Commit: `89dd463997`. |
 | 522 | 2026-03-03 | 11.366 | DONE | INFO Server/Replication section enrichment. 373 lib tests. Commit: `a1ec58e76e`. |
 | 523 | 2026-03-03 | 11.367 | DONE | COMMAND LIST RESP3 set type. 373 lib tests. Commit: `9b862d79e7`. |
+| 524 | 2026-03-04 | 11.368 | DONE | CLIENT SETNAME/GETNAME with name storage. 373 lib tests. Commit: `7d59c3e706`. |
+| 525 | 2026-03-04 | 11.369 | DONE | Hash/set encoding thresholds configurable via CONFIG SET. 373 lib tests. Commit: `5156d2a02a`. |
+| 526 | 2026-03-04 | 11.370 | DONE | CLIENT REPLY ON/OFF/SKIP state tracking. 373 lib tests. Commit: `573d14a4bf`. |
+| 527 | 2026-03-04 | 11.371 | DONE | CLIENT SETINFO LIB-NAME/LIB-VER. 373 lib tests. Commit: `a6b949c898`. |
+| 528 | 2026-03-04 | 11.372 | DONE | CLIENT TRACKING/TRACKINGINFO/GETREDIR stubs. 373 lib tests. Commit: `3d5a1eab96`. |
+| 529 | 2026-03-04 | 11.373 | DONE | CONFIG GET/SET defaults expansion. 373 lib tests. Commit: `0ec513c2ed`. |
+| 530 | 2026-03-04 | 11.374 | DONE | INFO Clients/Memory/Stats enrichment. 373 lib tests. Commits: `da0f07b71b`, `1ad17b6bf2`. |
