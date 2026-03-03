@@ -653,11 +653,24 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
-            3,
+            2,
             "XINFO",
             "XINFO <subcommand> [<arg> [value] [opt] ...]",
         )?;
         let subcommand = args[1];
+
+        if ascii_eq_ignore_case(subcommand, b"HELP") {
+            append_bulk_array(response_out, &XINFO_HELP_LINES);
+            return Ok(());
+        }
+
+        // All non-HELP subcommands require at least 3 args.
+        ensure_min_arity(
+            args,
+            3,
+            "XINFO",
+            "XINFO <subcommand> [<arg> [value] [opt] ...]",
+        )?;
 
         if ascii_eq_ignore_case(subcommand, b"GROUPS") {
             require_exact_arity(args, 3, "XINFO", "XINFO GROUPS key")?;
@@ -1331,3 +1344,12 @@ fn append_xinfo_stream_full(
         append_array_length(response_out, 0);
     }
 }
+
+const XINFO_HELP_LINES: [&[u8]; 6] = [
+    b"CONSUMERS <key> <groupname>",
+    b"    Show consumers of <groupname>.",
+    b"GROUPS <key>",
+    b"    Show the stream consumer groups.",
+    b"STREAM <key> [FULL [COUNT <count>]]",
+    b"    Show information about the stream.",
+];
