@@ -1150,6 +1150,45 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"REPLYBUFFER") {
+            require_exact_arity(args, 4, "DEBUG", "DEBUG REPLYBUFFER <subcommand> <value>")?;
+            let rb_sub = args[2];
+            if ascii_eq_ignore_case(rb_sub, b"PEAK-RESET-TIME") {
+                // Accepts "never", "reset", or a numeric millisecond value.
+                // garnet-rs does not yet implement reply-buffer peak tracking,
+                // so this is a compatibility stub that accepts all valid inputs.
+                let value = args[3];
+                if !ascii_eq_ignore_case(value, b"NEVER")
+                    && !ascii_eq_ignore_case(value, b"RESET")
+                {
+                    // Validate that the value is a valid integer.
+                    let _millis = parse_i64_ascii(value)
+                        .ok_or(RequestExecutionError::ValueNotInteger)?;
+                }
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(rb_sub, b"RESIZING") {
+                let flag = args[3];
+                if flag != b"0" && flag != b"1" {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // Compatibility stub: garnet-rs does not yet resize reply buffers.
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::UnknownSubcommand);
+        }
+        if ascii_eq_ignore_case(subcommand, b"REPLY-COPY-AVOIDANCE") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG REPLY-COPY-AVOIDANCE <0|1>")?;
+            let flag = args[2];
+            if flag != b"0" && flag != b"1" {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            // Compatibility stub: garnet-rs does not use copy-avoidance for replies.
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         Err(RequestExecutionError::UnknownSubcommand)
     }
 
