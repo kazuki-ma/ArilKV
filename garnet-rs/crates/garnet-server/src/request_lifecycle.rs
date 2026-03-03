@@ -293,6 +293,27 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
         b"min-slaves-max-lag".to_vec(),
         b"10".to_vec(),
     );
+    values.insert(b"lfu-log-factor".to_vec(), b"10".to_vec());
+    values.insert(b"lfu-decay-time".to_vec(), b"1".to_vec());
+    values.insert(
+        b"lazyfree-lazy-user-flush".to_vec(),
+        b"no".to_vec(),
+    );
+    values.insert(b"jemalloc-bg-thread".to_vec(), b"yes".to_vec());
+    values.insert(b"activerehashing".to_vec(), b"yes".to_vec());
+    values.insert(
+        b"no-appendfsync-on-rewrite".to_vec(),
+        b"no".to_vec(),
+    );
+    values.insert(b"set-proc-title".to_vec(), b"yes".to_vec());
+    values.insert(
+        b"repl-min-slaves-to-write".to_vec(),
+        b"0".to_vec(),
+    );
+    values.insert(
+        b"repl-min-slaves-max-lag".to_vec(),
+        b"10".to_vec(),
+    );
     values
 }
 

@@ -3365,11 +3365,16 @@ impl RequestProcessor {
                     || parameter == b"lazyfree-lazy-eviction"
                     || parameter == b"lazyfree-lazy-user-del"
                     || parameter == b"lazyfree-lazy-server-del"
+                    || parameter == b"lazyfree-lazy-user-flush"
                     || parameter == b"rdbcompression"
                     || parameter == b"rdbchecksum"
                     || parameter == b"activedefrag"
+                    || parameter == b"activerehashing"
                     || parameter == b"aof-use-rdb-preamble"
+                    || parameter == b"no-appendfsync-on-rewrite"
                     || parameter == b"stop-writes-on-bgsave-error"
+                    || parameter == b"set-proc-title"
+                    || parameter == b"jemalloc-bg-thread"
                     || parameter == b"replica-read-only"
                     || parameter == b"repl-diskless-sync")
                     && !value.eq_ignore_ascii_case(b"yes")
@@ -3398,7 +3403,9 @@ impl RequestProcessor {
                     || parameter == b"set-max-intset-entries"
                     || parameter == b"set-max-listpack-entries"
                     || parameter == b"proto-max-bulk-len"
-                    || parameter == b"client-query-buffer-limit")
+                    || parameter == b"client-query-buffer-limit"
+                    || parameter == b"lfu-log-factor"
+                    || parameter == b"lfu-decay-time")
                     && parse_u64_ascii(&value).is_none()
                 {
                     append_error(
