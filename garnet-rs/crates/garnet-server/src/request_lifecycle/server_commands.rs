@@ -1860,7 +1860,7 @@ impl RequestProcessor {
             return self.handle_command_getkeysandflags(args, response_out);
         }
 
-        Err(RequestExecutionError::SyntaxError)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     fn handle_command_list(
