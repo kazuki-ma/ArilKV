@@ -976,6 +976,8 @@ pub struct RequestProcessor {
     client_pause_end_millis: AtomicU64,
     /// CLIENT PAUSE type: 0 = none, 1 = WRITE, 2 = ALL.
     client_pause_type: AtomicU8,
+    /// CLIENT SETNAME connection name (empty = no name set).
+    client_name: Mutex<Vec<u8>>,
 }
 
 const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
@@ -1164,6 +1166,7 @@ impl RequestProcessor {
             object_functions: ObjectSessionFunctions,
             client_pause_end_millis: AtomicU64::new(0),
             client_pause_type: AtomicU8::new(CLIENT_PAUSE_TYPE_NONE),
+            client_name: Mutex::new(Vec::new()),
         })
     }
 

@@ -11851,9 +11851,41 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     let getname = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
     assert_eq!(getname, b"$-1\r\n", "CLIENT GETNAME should return null");
 
-    // CLIENT SETNAME returns OK
+    // CLIENT SETNAME returns OK and stores the name
     let setname = execute_command_line(&processor, "CLIENT SETNAME myconn").unwrap();
     assert_eq!(setname, b"+OK\r\n");
+
+    // CLIENT GETNAME returns the stored name after SETNAME
+    let getname_after = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
+    assert_eq!(getname_after, b"$6\r\nmyconn\r\n");
+
+    // CLIENT SETNAME rejects names with spaces (use frame to send space in single arg)
+    let setname_space = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"SETNAME", b"bad name"]),
+    );
+    assert!(
+        setname_space.starts_with(b"-ERR Client names cannot contain"),
+        "CLIENT SETNAME should reject names with spaces: {}",
+        String::from_utf8_lossy(&setname_space)
+    );
+
+    // CLIENT LIST should include the stored name in output
+    let list_with_name = execute_command_line(&processor, "CLIENT LIST").unwrap();
+    let list_text = String::from_utf8_lossy(&list_with_name);
+    assert!(
+        list_text.contains("name=myconn"),
+        "CLIENT LIST should include stored name: {list_text}"
+    );
+
+    // CLIENT SETNAME with empty string clears the name
+    let setname_empty = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"SETNAME", b""]),
+    );
+    assert_eq!(setname_empty, b"+OK\r\n");
+    let getname_cleared = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
+    assert_eq!(getname_cleared, b"$-1\r\n", "Empty SETNAME should return null GETNAME");
 
     // CLIENT LIST returns bulk string in RESP2
     let list = execute_command_line(&processor, "CLIENT LIST").unwrap();

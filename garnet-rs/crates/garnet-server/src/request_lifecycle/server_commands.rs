@@ -472,13 +472,11 @@ impl RequestProcessor {
                 if idx + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // SETNAME is validated here for syntax; the actual name
-                // application is performed by connection_handler after
-                // successful command execution.
                 let name = args[idx + 1];
                 if name.iter().any(|&b| b == b' ' || b == b'\n') {
                     return Err(RequestExecutionError::SyntaxError);
                 }
+                *self.client_name.lock().unwrap_or_else(|e| e.into_inner()) = name.to_vec();
                 idx += 2;
             } else {
                 return Err(RequestExecutionError::SyntaxError);
@@ -896,15 +894,28 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GETNAME") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT GETNAME")?;
-            if self.resp_protocol_version().is_resp3() {
-                append_null(response_out);
+            let name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
+            if name.is_empty() {
+                if self.resp_protocol_version().is_resp3() {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
             } else {
-                append_null_bulk_string(response_out);
+                append_bulk_string(response_out, &name);
             }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"SETNAME") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT SETNAME connection-name")?;
+            let name = args[2];
+            if name.iter().any(|&b| b == b' ' || b == b'\n') {
+                response_out.extend_from_slice(
+                    b"-ERR Client names cannot contain spaces, newlines or special characters.\r\n",
+                );
+                return Ok(());
+            }
+            *self.client_name.lock().unwrap_or_else(|e| e.into_inner()) = name.to_vec();
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -939,8 +950,10 @@ impl RequestProcessor {
             let client_id = super::current_request_client_id()
                 .map(u64::from)
                 .unwrap_or(1);
+            let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
+            let name_str = String::from_utf8_lossy(&client_name);
             let client_info = format!(
-                "id={client_id} addr=127.0.0.1:0 fd=0 name= db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name= lib-ver=\n"
+                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name= lib-ver=\n"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", client_info.as_bytes());
@@ -1011,8 +1024,10 @@ impl RequestProcessor {
             let client_id = super::current_request_client_id()
                 .map(u64::from)
                 .unwrap_or(1);
+            let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
+            let name_str = String::from_utf8_lossy(&client_name);
             let info_line = format!(
-                "id={client_id} addr=127.0.0.1:0 fd=0 name= db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name= lib-ver=\n"
+                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name= lib-ver=\n"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", info_line.as_bytes());
