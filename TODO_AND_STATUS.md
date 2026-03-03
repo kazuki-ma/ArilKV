@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 494
+> **Current Iteration**: 501
 
 ---
 
@@ -495,6 +495,11 @@
 | 11.339 | Add ACL DELUSER/GENPASS/LOG/SAVE/LOAD and MEMORY DOCTOR/STATS stubs | DONE | — | ACL DELUSER rejects default user. ACL GENPASS validates bit range. ACL LOG returns empty/RESET. ACL SAVE/LOAD no-op. MEMORY DOCTOR returns healthy status. MEMORY STATS returns 4-field RESP3 map. Updated help constants. 358 tests. Commit: `797138acfd`. |
 | 11.340 | Replace hardcoded RESP arrays with helper functions | DONE | — | ROLE, SLOWLOG GET, MODULE LIST, COMMAND INFO, CLUSTER SLOTS now use append_array_length/append_null_array helpers. COMMAND INFO returns null array for unknown commands (Valkey-compatible). 358 tests. Commit: `7814114f69`. |
 | 11.341 | Eliminate format!() RESP array encoding in hot paths | DONE | 11.340 | Replaced format!("*{}\r\n") allocations with append_array_length in string_commands (MSET, LCS), scripting (FUNCTION LIST), geo_commands (GEOPOS, GEOHASH, GEOSEARCH), and server_commands (PUBSUB CHANNELS). Removed duplicate append_resp_array_len. 358 tests. Commit: `1dff4fda56`. |
+| 11.342 | Fix ACL DELUSER default comparison and add ACL/MEMORY/CLIENT tests | DONE | 11.339 | Fixed case-sensitive username comparison (was using ascii_eq_ignore_case with lowercase expected). Added 3 test functions covering ACL DELUSER/GENPASS/LOG/SAVE/LOAD, MEMORY DOCTOR/STATS (RESP2+RESP3), CLIENT ID/GETNAME/SETNAME/LIST/UNBLOCK/PAUSE/UNPAUSE/NO-EVICT/NO-TOUCH/HELP (RESP2+RESP3). 385 tests. Commit: `ae7a8a80a3`. |
+| 11.343 | Add ACL DRYRUN and CLUSTER SAVECONFIG/COUNTKEYSINSLOT/GETKEYSINSLOT stubs | DONE | 11.342 | ACL DRYRUN single-user stub returns OK. CLUSTER SAVECONFIG no-op OK. CLUSTER COUNTKEYSINSLOT/GETKEYSINSLOT validate slot range 0-16383. Updated ACL_HELP_LINES (27) and CLUSTER_HELP_LINES (20). 385 tests. Commit: `9519236936`. |
+| 11.344 | Add tests for ACL DRYRUN and CLUSTER stubs | DONE | 11.343 | Covers valid/invalid slot ranges, arity errors, HELP line counts. 386 tests. Commit: `284c4860d2`. |
+| 11.345 | Replace hardcoded RESP array/null patterns with helpers (batch 2) | DONE | 11.341 | Systematic *0, *2, *3, *4, *6, *-1, ~0 replacement with append_array_length/append_null_array/append_set_length across all 9 request_lifecycle modules. Removed duplicate append_null_array in stream_commands. 386 tests. Commit: `7802b1ad10`. |
+| 11.346 | Replace dynamic push/to_string array length with append_array_length (batch 3) | DONE | 11.345 | Eliminated 3-line push(b'*')+to_string()+extend("\r\n") patterns across hash_commands, zset_commands, set_commands, string_commands, server_commands, scripting. Net -69 lines. 386 tests. Commit: `692b3ed35d`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1231,3 +1236,9 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 492 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 488-492 and added TODOs 11.338-11.340. |
 | 493 | 2026-03-03 | 11.341 | DONE | Eliminated format!() RESP array encoding allocations across 4 files. Removed duplicate append_resp_array_len. 358 tests. Commit: `1dff4fda56`. |
 | 494 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iteration 493-494 and added TODO 11.341. |
+| 495 | 2026-03-03 | 11.342 | DONE | Fixed ACL DELUSER default username comparison (case-sensitive). Added 3 test functions for ACL/MEMORY/CLIENT stubs. 385 tests. Commit: `ae7a8a80a3`. |
+| 496 | 2026-03-03 | 11.343 | DONE | Added ACL DRYRUN and CLUSTER SAVECONFIG/COUNTKEYSINSLOT/GETKEYSINSLOT stubs. 385 tests. Commit: `9519236936`. |
+| 497 | 2026-03-03 | 11.344 | DONE | Added tests for ACL DRYRUN and CLUSTER stubs. 386 tests. Commit: `284c4860d2`. |
+| 498 | 2026-03-03 | 11.345 | DONE | Batch 2: replaced hardcoded RESP *0/*2/*3/*4/*6/*-1/~0 with helper functions across 9 modules. 386 tests. Commit: `7802b1ad10`. |
+| 499 | 2026-03-03 | 11.346 | DONE | Batch 3: replaced dynamic push/to_string array length encoding with append_array_length across 6 files. Net -69 lines. 386 tests. Commit: `692b3ed35d`. |
+| 500 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 495-501 and TODOs 11.342-11.346. |
