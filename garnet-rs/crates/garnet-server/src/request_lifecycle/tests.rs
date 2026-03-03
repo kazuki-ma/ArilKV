@@ -12412,3 +12412,44 @@ fn memory_usage_accepts_samples_option() {
         "MEMORY USAGE with bad option should fail"
     );
 }
+
+#[test]
+fn latency_histogram_uses_resp3_map_types() {
+    let processor = RequestProcessor::new().unwrap();
+    processor.record_command_call(b"set");
+    processor.record_command_call(b"set");
+    processor.record_command_call(b"get");
+
+    // RESP2: flat array with key-value pairs as bulk strings.
+    let resp2 = execute_frame(&processor, &encode_resp(&[b"LATENCY", b"HISTOGRAM"]));
+    let resp2_text = String::from_utf8_lossy(&resp2);
+    assert!(
+        resp2_text.starts_with("*"),
+        "RESP2 LATENCY HISTOGRAM should start with array: {resp2_text}"
+    );
+    assert!(
+        resp2_text.contains("calls 2 histogram_usec"),
+        "RESP2 SET should show calls 2: {resp2_text}"
+    );
+
+    // RESP3: top-level map, each value is a map with "calls" and "histogram_usec" keys.
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_frame(&processor, &encode_resp(&[b"LATENCY", b"HISTOGRAM"]));
+    let resp3_text = String::from_utf8_lossy(&resp3);
+    assert!(
+        resp3_text.starts_with("%"),
+        "RESP3 LATENCY HISTOGRAM should start with map: {resp3_text}"
+    );
+    assert!(
+        resp3_text.contains("%2\r\n"),
+        "RESP3 each command entry should be a map with 2 keys: {resp3_text}"
+    );
+    assert!(
+        resp3_text.contains("$5\r\ncalls\r\n"),
+        "RESP3 entry should contain 'calls' key: {resp3_text}"
+    );
+    assert!(
+        resp3_text.contains("$14\r\nhistogram_usec\r\n"),
+        "RESP3 entry should contain 'histogram_usec' key: {resp3_text}"
+    );
+}

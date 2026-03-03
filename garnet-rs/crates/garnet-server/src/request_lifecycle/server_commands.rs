@@ -2431,15 +2431,31 @@ impl RequestProcessor {
                 }
             }
 
-            append_array_length(response_out, selected.len() * 2);
+            let resp3 = self.resp_protocol_version().is_resp3();
+            if resp3 {
+                append_map_length(response_out, selected.len());
+            } else {
+                append_array_length(response_out, selected.len() * 2);
+            }
             for command_name in selected {
                 append_bulk_string(response_out, command_name.as_bytes());
                 let count = command_counts
                     .get(&command_name)
                     .copied()
                     .unwrap_or_default();
-                let histogram = format!("calls {count} histogram_usec 1 1 1");
-                append_bulk_string(response_out, histogram.as_bytes());
+                if resp3 {
+                    // RESP3: each command value is a map with "calls" and "histogram_usec" keys.
+                    append_map_length(response_out, 2);
+                    append_bulk_string(response_out, b"calls");
+                    append_integer(response_out, count as i64);
+                    append_bulk_string(response_out, b"histogram_usec");
+                    append_map_length(response_out, 1);
+                    append_integer(response_out, 1);
+                    append_integer(response_out, count as i64);
+                } else {
+                    let histogram = format!("calls {count} histogram_usec 1 1 1");
+                    append_bulk_string(response_out, histogram.as_bytes());
+                }
             }
             return Ok(());
         }
