@@ -1342,7 +1342,11 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
             require_exact_arity(args, 2, "MEMORY", "MEMORY DOCTOR")?;
-            append_bulk_string(response_out, b"Sam, I have no memory problems");
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(response_out, b"txt", b"Sam, I have no memory problems");
+            } else {
+                append_bulk_string(response_out, b"Sam, I have no memory problems");
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"STATS") {
@@ -2497,7 +2501,7 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LATEST") {
-            require_exact_arity(args, 2, "LATENCY|LATEST", "LATENCY LATEST")?;
+            require_exact_arity(args, 2, "LATENCY", "LATENCY LATEST")?;
             let latest = self.latency_latest();
             append_array_length(response_out, latest.len());
             for event in latest {
@@ -2510,7 +2514,7 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"HISTORY") {
-            require_exact_arity(args, 3, "LATENCY|HISTORY", "LATENCY HISTORY event")?;
+            require_exact_arity(args, 3, "LATENCY", "LATENCY HISTORY event")?;
             let history = self.latency_history(args[2]);
             append_array_length(response_out, history.len());
             for sample in history {
@@ -2536,12 +2540,20 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
-            require_exact_arity(args, 2, "LATENCY|DOCTOR", "LATENCY DOCTOR")?;
-            append_bulk_string(response_out, LATENCY_DOCTOR_DISABLED_MESSAGE);
+            require_exact_arity(args, 2, "LATENCY", "LATENCY DOCTOR")?;
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(
+                    response_out,
+                    b"txt",
+                    LATENCY_DOCTOR_DISABLED_MESSAGE,
+                );
+            } else {
+                append_bulk_string(response_out, LATENCY_DOCTOR_DISABLED_MESSAGE);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GRAPH") {
-            require_exact_arity(args, 3, "LATENCY|GRAPH", "LATENCY GRAPH event")?;
+            require_exact_arity(args, 3, "LATENCY", "LATENCY GRAPH event")?;
             let resp3 = self.resp_protocol_version().is_resp3();
             let Some(range) = self.latency_graph_range(args[2]) else {
                 if resp3 {
