@@ -1,6 +1,7 @@
 use super::*;
 use crate::CommandId;
-use crate::command_spec::{command_is_mutating, eval_script_has_no_writes_flag};
+use crate::command_spec::command_is_mutating;
+use crate::command_spec::eval_script_has_no_writes_flag;
 use crate::dispatch_command_name;
 use mlua::Error as LuaError;
 use mlua::Function as LuaFunction;
@@ -1333,9 +1334,7 @@ impl RequestProcessor {
                 }
             };
         let lua = Lua::new();
-        if let Err(error) = install_safe_unpack(&lua)
-            .and_then(|()| install_safe_loadstring(&lua))
-        {
+        if let Err(error) = install_safe_unpack(&lua).and_then(|()| install_safe_loadstring(&lua)) {
             let message = format!(
                 "ERR Error running script: {}",
                 sanitize_error_text(&error.to_string())
@@ -1495,9 +1494,7 @@ impl RequestProcessor {
         };
 
         let lua = Lua::new();
-        if let Err(error) = install_safe_unpack(&lua)
-            .and_then(|()| install_safe_loadstring(&lua))
-        {
+        if let Err(error) = install_safe_unpack(&lua).and_then(|()| install_safe_loadstring(&lua)) {
             let message = format!(
                 "ERR Error running function: {}",
                 sanitize_error_text(&error.to_string())
@@ -1664,18 +1661,10 @@ impl RequestProcessor {
                     readonly_runtime_redis.raw_set(key.clone(), value.clone())?;
                 }
                 make_table_readonly(&lua, &readonly_runtime_redis)?;
-                set_env_backing_value(
-                    &load_env,
-                    "redis",
-                    LuaValue::Table(readonly_runtime_redis),
-                )?;
+                set_env_backing_value(&load_env, "redis", LuaValue::Table(readonly_runtime_redis))?;
             }
             if let Some(getmetatable) = runtime_getmetatable {
-                set_env_backing_value(
-                    &load_env,
-                    "getmetatable",
-                    LuaValue::Function(getmetatable),
-                )?;
+                set_env_backing_value(&load_env, "getmetatable", LuaValue::Function(getmetatable))?;
             }
             globals.set("redis", runtime_redis_table)?;
 
@@ -1908,7 +1897,13 @@ fn format_script_error_for_client(normalized_error: &str, kind: &str) -> String 
     // carry a prefix like "ERR ...", "WRONGTYPE ...", etc.  Return those
     // directly so the test assertions match Redis behaviour.
     let known_prefixes = [
-        "ERR ", "WRONGTYPE", "OOM ", "NOPERM", "READONLY", "NOTBUSY", "BUSY",
+        "ERR ",
+        "WRONGTYPE",
+        "OOM ",
+        "NOPERM",
+        "READONLY",
+        "NOTBUSY",
+        "BUSY",
     ];
     for prefix in known_prefixes {
         if normalized_error.starts_with(prefix) {
@@ -2102,7 +2097,7 @@ fn build_lua_bit_table(lua: &Lua) -> mlua::Result<LuaTable> {
                 _ => {
                     return Err(LuaError::RuntimeError(
                         "bad argument to 'band' (number expected)".to_string(),
-                    ))
+                    ));
                 }
             };
             result &= v as u32;
@@ -2120,7 +2115,7 @@ fn build_lua_bit_table(lua: &Lua) -> mlua::Result<LuaTable> {
                 _ => {
                     return Err(LuaError::RuntimeError(
                         "bad argument to 'bor' (number expected)".to_string(),
-                    ))
+                    ));
                 }
             };
             result |= v as u32;
@@ -2138,7 +2133,7 @@ fn build_lua_bit_table(lua: &Lua) -> mlua::Result<LuaTable> {
                 _ => {
                     return Err(LuaError::RuntimeError(
                         "bad argument to 'bxor' (number expected)".to_string(),
-                    ))
+                    ));
                 }
             };
             result ^= v as u32;
@@ -2189,7 +2184,7 @@ fn build_lua_bit_table(lua: &Lua) -> mlua::Result<LuaTable> {
             _ => {
                 return Err(LuaError::RuntimeError(
                     "bad argument #1 to 'tohex' (number expected)".to_string(),
-                ))
+                ));
             }
         };
         let n = match args.get(1) {
@@ -2416,13 +2411,7 @@ fn lua_value_to_json(
                     };
                     map.insert(
                         key_str,
-                        lua_value_to_json(
-                            lua,
-                            val,
-                            depth + 1,
-                            max_depth,
-                            allow_invalid_numbers,
-                        )?,
+                        lua_value_to_json(lua, val, depth + 1, max_depth, allow_invalid_numbers)?,
                     );
                 }
                 Ok(serde_json::Value::Object(map))
@@ -2468,10 +2457,7 @@ fn json_value_to_lua(
                 )?;
             }
             if use_array_mt {
-                if let Ok(array_mt) = lua
-                    .globals()
-                    .raw_get::<LuaTable>(CJSON_ARRAY_MT_KEY)
-                {
+                if let Ok(array_mt) = lua.globals().raw_get::<LuaTable>(CJSON_ARRAY_MT_KEY) {
                     let _ = table.set_metatable(Some(array_mt));
                 }
             }
@@ -2513,19 +2499,16 @@ fn build_lua_cjson_table(lua: &Lua) -> mlua::Result<LuaTable> {
             config.encode_max_depth,
             config.encode_invalid_numbers,
         )?;
-        let json_string = serde_json::to_string(&json_value).map_err(|e| {
-            LuaError::RuntimeError(format!("Cannot serialise: {e}"))
-        })?;
+        let json_string = serde_json::to_string(&json_value)
+            .map_err(|e| LuaError::RuntimeError(format!("Cannot serialise: {e}")))?;
         Ok(json_string)
     })?;
 
     // cjson.decode(string)
     let decode_fn = lua.create_function(|lua, s: mlua::String| {
         let config = get_cjson_config(lua);
-        let json_value: serde_json::Value =
-            serde_json::from_slice(s.as_bytes().as_ref()).map_err(|e| {
-                LuaError::RuntimeError(format!("Invalid JSON: {e}"))
-            })?;
+        let json_value: serde_json::Value = serde_json::from_slice(s.as_bytes().as_ref())
+            .map_err(|e| LuaError::RuntimeError(format!("Invalid JSON: {e}")))?;
         json_value_to_lua(
             lua,
             json_value,
@@ -2617,9 +2600,9 @@ fn lua_value_to_msgpack(value: LuaValue, depth: usize) -> mlua::Result<rmpv::Val
                 Ok(rmpv::Value::F64(n))
             }
         }
-        LuaValue::String(s) => Ok(rmpv::Value::String(
-            rmpv::Utf8String::from(s.to_string_lossy().as_ref()),
-        )),
+        LuaValue::String(s) => Ok(rmpv::Value::String(rmpv::Utf8String::from(
+            s.to_string_lossy().as_ref(),
+        ))),
         LuaValue::Table(table) => {
             let len = table.raw_len();
             // Check if it's an array-like table
@@ -2731,24 +2714,23 @@ fn build_lua_cmsgpack_table(lua: &Lua) -> mlua::Result<LuaTable> {
 
     // cmsgpack.unpack_one(string, offset) — decode one value from offset, return (offset, value)
     // offset is 0-based, returns -1 when at end
-    let unpack_one_fn =
-        lua.create_function(|lua, (s, offset): (mlua::String, i64)| {
-            let bytes = s.as_bytes();
-            let start = offset.max(0) as usize;
-            if start >= bytes.len() {
-                return Ok((-1i64, LuaValue::Nil));
-            }
-            let mut cursor = std::io::Cursor::new(&bytes.as_ref()[start..]);
-            let value = rmpv::decode::read_value(&mut cursor)
-                .map_err(|e| LuaError::RuntimeError(format!("cmsgpack.unpack_one error: {e}")))?;
-            let new_offset = start + cursor.position() as usize;
-            let return_offset = if new_offset >= bytes.len() {
-                -1i64
-            } else {
-                new_offset as i64
-            };
-            Ok((return_offset, msgpack_value_to_lua(lua, value)?))
-        })?;
+    let unpack_one_fn = lua.create_function(|lua, (s, offset): (mlua::String, i64)| {
+        let bytes = s.as_bytes();
+        let start = offset.max(0) as usize;
+        if start >= bytes.len() {
+            return Ok((-1i64, LuaValue::Nil));
+        }
+        let mut cursor = std::io::Cursor::new(&bytes.as_ref()[start..]);
+        let value = rmpv::decode::read_value(&mut cursor)
+            .map_err(|e| LuaError::RuntimeError(format!("cmsgpack.unpack_one error: {e}")))?;
+        let new_offset = start + cursor.position() as usize;
+        let return_offset = if new_offset >= bytes.len() {
+            -1i64
+        } else {
+            new_offset as i64
+        };
+        Ok((return_offset, msgpack_value_to_lua(lua, value)?))
+    })?;
 
     // cmsgpack.unpack_limit(string, limit, offset) — decode up to limit values
     let unpack_limit_fn =
@@ -2950,10 +2932,11 @@ fn install_readonly_aware_iterators(lua: &Lua, backing: &LuaTable) -> mlua::Resu
         })?;
 
     // Wrap `ipairs` to iterate the backing table when present.
-    let safe_ipairs = lua.create_function(move |_, table: LuaTable| -> mlua::Result<MultiValue> {
-        let target = get_readonly_backing(&table).unwrap_or(table);
-        original_ipairs.call::<MultiValue>(target)
-    })?;
+    let safe_ipairs =
+        lua.create_function(move |_, table: LuaTable| -> mlua::Result<MultiValue> {
+            let target = get_readonly_backing(&table).unwrap_or(table);
+            original_ipairs.call::<MultiValue>(target)
+        })?;
 
     backing.raw_set("next", safe_next)?;
     backing.raw_set("pairs", safe_pairs)?;
@@ -2985,9 +2968,7 @@ fn install_safe_setmetatable(
                     .globals()
                     .raw_get::<LuaValue>(READONLY_TABLES_REGISTRY_KEY)
                 {
-                    if let Ok(LuaValue::Boolean(true)) =
-                        registry.raw_get::<LuaValue>(t.clone())
-                    {
+                    if let Ok(LuaValue::Boolean(true)) = registry.raw_get::<LuaValue>(t.clone()) {
                         return Err(LuaError::RuntimeError(
                             "Attempt to modify a readonly table".to_string(),
                         ));
@@ -3006,23 +2987,30 @@ fn install_safe_setmetatable(
 /// so the test checks for either "attempt to index a nil value" or
 /// "Attempt to modify a readonly table".
 fn install_basic_type_metatable_protection(lua: &Lua) -> mlua::Result<()> {
-    // The string metatable is the only one that exists in Lua 5.1.
-    // We need to make its metatable readonly so that
-    // `getmetatable('').__index = function() return 1 end` fails.
+    // The string metatable is the only basic-type metatable in Lua 5.1.
+    //
+    // Redis uses a C-level readonly flag to protect it.  We emulate this by
+    // setting `__metatable` on the real string metatable to a readonly proxy.
+    // This makes `getmetatable('')` return the proxy (per Lua 5.1 semantics),
+    // so `getmetatable('').__index = ...` hits `__newindex` and errors.
+    // Meanwhile, the real metatable still functions normally for string
+    // method dispatch (`s:upper()` etc.).
     lua.load(
         r#"
-        local mt = getmetatable('')
-        if mt then
-            local readonly_mt = {}
-            readonly_mt.__newindex = function()
+        local real_mt = getmetatable('')
+        if real_mt then
+            -- Build a readonly proxy: empty table whose __index reads from
+            -- the real metatable and whose __newindex always errors.
+            local proxy = {}
+            local proxy_mt = {}
+            proxy_mt.__index = real_mt
+            proxy_mt.__newindex = function()
                 error('Attempt to modify a readonly table')
             end
-            -- Use debug.setmetatable if available, otherwise rawset
-            if debug and debug.setmetatable then
-                debug.setmetatable(mt, readonly_mt)
-            else
-                setmetatable(mt, readonly_mt)
-            end
+            setmetatable(proxy, proxy_mt)
+            -- Intercept getmetatable('') to return the proxy instead of
+            -- the real metatable.
+            real_mt.__metatable = proxy
         end
         "#,
     )
