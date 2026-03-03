@@ -8040,6 +8040,16 @@ fn geopos_returns_coordinates_for_geo_members_and_null_for_missing_entries() {
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
     );
     assert_command_response(&processor, "GEOPOS sicily", b"*0\r\n");
+
+    // RESP3: GEOPOS coordinates should use double type (,value\r\n).
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let response = execute_frame(
+        &processor,
+        &encode_resp(&[b"GEOPOS", b"sicily", b"palermo"]),
+    );
+    // Expect *1 outer array, *2 coordinate pair, then ,<lon>\r\n,<lat>\r\n.
+    assert!(response.starts_with(b"*1\r\n*2\r\n,"));
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 }
 
 #[test]

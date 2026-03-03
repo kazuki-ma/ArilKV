@@ -247,10 +247,15 @@ impl RequestProcessor {
             let latitude = decoded_score.latitude;
 
             response_out.extend_from_slice(b"*2\r\n");
-            let longitude_text = format_geo_coordinate(longitude);
-            let latitude_text = format_geo_coordinate(latitude);
-            append_bulk_string(response_out, longitude_text.as_bytes());
-            append_bulk_string(response_out, latitude_text.as_bytes());
+            if resp3 {
+                append_double(response_out, longitude);
+                append_double(response_out, latitude);
+            } else {
+                let longitude_text = format_geo_coordinate(longitude);
+                let latitude_text = format_geo_coordinate(latitude);
+                append_bulk_string(response_out, longitude_text.as_bytes());
+                append_bulk_string(response_out, latitude_text.as_bytes());
+            }
         }
         Ok(())
     }
@@ -461,12 +466,14 @@ impl RequestProcessor {
             any: radius_options.any,
             store_dist: radius_options.store_dist,
         };
+        let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
             source_key,
             &query_options,
             radius_options.store_key.as_deref(),
             response_out,
+            resp3,
         )
     }
 
@@ -503,12 +510,14 @@ impl RequestProcessor {
             any: radius_options.any,
             store_dist: radius_options.store_dist,
         };
+        let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
             source_key,
             &query_options,
             radius_options.store_key.as_deref(),
             response_out,
+            resp3,
         )
     }
 
@@ -520,7 +529,8 @@ impl RequestProcessor {
         ensure_min_arity(args, 7, "GEOSEARCH", GEOSEARCH_USAGE)?;
         let options = parse_geosearch_options(args, 2, true, false)?;
         let source_key = args[1];
-        execute_geo_query(self, source_key, &options, None, response_out)
+        let resp3 = self.resp_protocol_version().is_resp3();
+        execute_geo_query(self, source_key, &options, None, response_out, resp3)
     }
 
     pub(super) fn handle_geosearchstore(
@@ -533,12 +543,14 @@ impl RequestProcessor {
 
         let destination_key = RedisKey::from(args[1]);
         let source_key = args[2];
+        let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
             source_key,
             &options,
             Some(destination_key.as_slice()),
             response_out,
+            resp3,
         )
     }
 }
@@ -848,6 +860,7 @@ fn execute_geo_query(
     options: &GeoSearchOptions,
     store_key: Option<&[u8]>,
     response_out: &mut Vec<u8>,
+    resp3: bool,
 ) -> Result<(), RequestExecutionError> {
     let source_zset = match processor.load_zset_object(source_key)? {
         Some(entries) => entries,
@@ -893,7 +906,7 @@ fn execute_geo_query(
         return Ok(());
     }
 
-    append_geosearch_response(response_out, &matches, options);
+    append_geosearch_response(response_out, &matches, options, resp3);
     Ok(())
 }
 
@@ -1052,6 +1065,7 @@ fn append_geosearch_response(
     response_out: &mut Vec<u8>,
     matches: &[GeoSearchMatch],
     options: &GeoSearchOptions,
+    resp3: bool,
 ) {
     let option_count =
         options.with_dist as usize + options.with_hash as usize + options.with_coord as usize;
@@ -1073,10 +1087,15 @@ fn append_geosearch_response(
         }
         if options.with_coord {
             response_out.extend_from_slice(b"*2\r\n");
-            let longitude_text = format_geo_coordinate(entry.longitude);
-            let latitude_text = format_geo_coordinate(entry.latitude);
-            append_bulk_string(response_out, longitude_text.as_bytes());
-            append_bulk_string(response_out, latitude_text.as_bytes());
+            if resp3 {
+                append_double(response_out, entry.longitude);
+                append_double(response_out, entry.latitude);
+            } else {
+                let longitude_text = format_geo_coordinate(entry.longitude);
+                let latitude_text = format_geo_coordinate(entry.latitude);
+                append_bulk_string(response_out, longitude_text.as_bytes());
+                append_bulk_string(response_out, latitude_text.as_bytes());
+            }
         }
     }
 }
