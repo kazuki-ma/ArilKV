@@ -11466,3 +11466,76 @@ fn info_and_cluster_info_return_verbatim_string_in_resp3() {
         "RESP3 CLUSTER INFO should return verbatim string"
     );
 }
+
+#[test]
+fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // CLIENT INFO returns bulk string with id= field
+    let info = execute_command_line(&processor, "CLIENT INFO").unwrap();
+    assert!(
+        info.starts_with(b"$"),
+        "CLIENT INFO should return bulk string"
+    );
+    assert!(
+        info.windows(3).any(|w| w == b"id="),
+        "CLIENT INFO should contain id= field"
+    );
+
+    // CLIENT KILL returns integer 0
+    let kill = execute_command_line(&processor, "CLIENT KILL 127.0.0.1:1234").unwrap();
+    assert_eq!(kill, b":0\r\n");
+
+    // CLIENT CACHING YES returns OK
+    let caching = execute_command_line(&processor, "CLIENT CACHING YES").unwrap();
+    assert_eq!(caching, b"+OK\r\n");
+
+    // CLIENT CACHING NO returns OK
+    let caching_no = execute_command_line(&processor, "CLIENT CACHING NO").unwrap();
+    assert_eq!(caching_no, b"+OK\r\n");
+
+    // CLIENT REPLY ON returns OK
+    let reply = execute_command_line(&processor, "CLIENT REPLY ON").unwrap();
+    assert_eq!(reply, b"+OK\r\n");
+
+    // CLIENT REPLY OFF returns OK
+    let reply_off = execute_command_line(&processor, "CLIENT REPLY OFF").unwrap();
+    assert_eq!(reply_off, b"+OK\r\n");
+
+    // CLIENT REPLY SKIP returns OK
+    let reply_skip = execute_command_line(&processor, "CLIENT REPLY SKIP").unwrap();
+    assert_eq!(reply_skip, b"+OK\r\n");
+
+    // CONFIG REWRITE returns proper error
+    let rewrite = execute_command_line(&processor, "CONFIG REWRITE").unwrap();
+    assert!(
+        rewrite.starts_with(b"-ERR"),
+        "CONFIG REWRITE should return error"
+    );
+    assert!(
+        rewrite.windows(11).any(|w| w == b"config file"),
+        "CONFIG REWRITE should mention config file"
+    );
+
+    // COMMAND DOCS returns empty map/array
+    let docs = execute_command_line(&processor, "COMMAND DOCS").unwrap();
+    assert_eq!(
+        docs, b"*0\r\n",
+        "COMMAND DOCS should return empty array in RESP2"
+    );
+
+    // RESP3: CLIENT INFO returns verbatim string
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let info_resp3 = execute_command_line(&processor, "CLIENT INFO").unwrap();
+    assert!(
+        info_resp3.starts_with(b"="),
+        "RESP3 CLIENT INFO should return verbatim string"
+    );
+
+    // RESP3: COMMAND DOCS returns empty map
+    let docs_resp3 = execute_command_line(&processor, "COMMAND DOCS").unwrap();
+    assert_eq!(
+        docs_resp3, b"%0\r\n",
+        "RESP3 COMMAND DOCS should return empty map"
+    );
+}
