@@ -2820,7 +2820,7 @@ pub fn command_is_write_pause_affected(command: CommandId, subcommand: Option<&[
 
 /// Check if a Lua script body declares `flags=no-writes` in its shebang line.
 /// Returns true if the script has a shebang header with the no-writes flag.
-fn eval_script_has_no_writes_flag(body: &[u8]) -> bool {
+pub(crate) fn eval_script_has_no_writes_flag(body: &[u8]) -> bool {
     if !body.starts_with(b"#!") {
         // No shebang = eval-compat-mode = treated as may-replicate.
         return false;

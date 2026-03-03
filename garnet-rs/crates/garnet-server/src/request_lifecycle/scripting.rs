@@ -1,6 +1,6 @@
 use super::*;
 use crate::CommandId;
-use crate::command_spec::command_is_mutating;
+use crate::command_spec::{command_is_mutating, eval_script_has_no_writes_flag};
 use crate::dispatch_command_name;
 use mlua::Error as LuaError;
 use mlua::Function as LuaFunction;
@@ -1310,6 +1310,20 @@ impl RequestProcessor {
         mutability: ScriptMutability,
         response_out: &mut Vec<u8>,
     ) {
+        // Strip the shebang header before loading into Lua.  The shebang
+        // carries metadata (engine, flags) but is not valid Lua syntax.
+        let lua_source = strip_lua_shebang(script);
+
+        // Scripts declaring `flags=no-writes` in their shebang are read-only
+        // even when invoked via EVAL (not only EVAL_RO).
+        let mutability = if mutability == ScriptMutability::ReadWrite
+            && eval_script_has_no_writes_flag(script)
+        {
+            ScriptMutability::ReadOnly
+        } else {
+            mutability
+        };
+
         let _running_script_guard =
             match self.enter_running_script(RunningScriptKind::Script, "", "eval".to_string()) {
                 Ok(guard) => guard,
@@ -1416,7 +1430,7 @@ impl RequestProcessor {
             env.raw_set("ARGV", argv_table)?;
 
             let value: LuaValue = lua
-                .load(script)
+                .load(lua_source)
                 .set_name("user_script")
                 .set_environment(env)
                 .eval()?;
