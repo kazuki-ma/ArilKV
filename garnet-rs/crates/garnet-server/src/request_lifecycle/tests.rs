@@ -11539,3 +11539,232 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
         "RESP3 COMMAND DOCS should return empty map"
     );
 }
+
+#[test]
+fn acl_deluser_genpass_log_save_load_stubs() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // ACL DELUSER of unknown user returns integer 0
+    let del_unknown = execute_command_line(&processor, "ACL DELUSER nonexistent").unwrap();
+    assert_eq!(del_unknown, b":0\r\n");
+
+    // ACL DELUSER of multiple unknown users returns integer 0
+    let del_multi =
+        execute_command_line(&processor, "ACL DELUSER userA userB userC").unwrap();
+    assert_eq!(del_multi, b":0\r\n");
+
+    // ACL DELUSER of "default" returns error
+    let del_default = execute_command_line(&processor, "ACL DELUSER default").unwrap();
+    assert!(
+        del_default.starts_with(b"-ERR"),
+        "ACL DELUSER default should return error"
+    );
+    assert!(
+        del_default
+            .windows(7)
+            .any(|w| w == b"default"),
+        "error should mention 'default'"
+    );
+
+    // ACL DELUSER with no username is arity error
+    let del_no_arg = execute_command_line(&processor, "ACL DELUSER");
+    assert!(del_no_arg.is_err(), "ACL DELUSER without args should fail");
+
+    // ACL GENPASS returns 64-char hex string
+    let genpass = execute_command_line(&processor, "ACL GENPASS").unwrap();
+    // $64\r\n<64 zeros>\r\n
+    assert!(
+        genpass.starts_with(b"$64\r\n"),
+        "ACL GENPASS should return 64-byte bulk string"
+    );
+
+    // ACL GENPASS with valid bits
+    let genpass_128 = execute_command_line(&processor, "ACL GENPASS 128").unwrap();
+    assert!(genpass_128.starts_with(b"$64\r\n"));
+
+    // ACL GENPASS with bits=0 returns error
+    let genpass_0 = execute_command_line(&processor, "ACL GENPASS 0").unwrap();
+    assert!(
+        genpass_0.starts_with(b"-ERR"),
+        "ACL GENPASS 0 should return error"
+    );
+
+    // ACL GENPASS with bits > 4096 returns error
+    let genpass_big = execute_command_line(&processor, "ACL GENPASS 5000").unwrap();
+    assert!(
+        genpass_big.starts_with(b"-ERR"),
+        "ACL GENPASS 5000 should return error"
+    );
+
+    // ACL GENPASS with non-integer returns error
+    let genpass_nan = execute_command_line(&processor, "ACL GENPASS abc");
+    assert!(genpass_nan.is_err(), "ACL GENPASS abc should fail");
+
+    // ACL LOG returns empty array
+    let log_empty = execute_command_line(&processor, "ACL LOG").unwrap();
+    assert_eq!(log_empty, b"*0\r\n");
+
+    // ACL LOG with count returns empty array
+    let log_count = execute_command_line(&processor, "ACL LOG 10").unwrap();
+    assert_eq!(log_count, b"*0\r\n");
+
+    // ACL LOG RESET returns OK
+    let log_reset = execute_command_line(&processor, "ACL LOG RESET").unwrap();
+    assert_eq!(log_reset, b"+OK\r\n");
+
+    // ACL LOG with non-integer count returns error
+    let log_nan = execute_command_line(&processor, "ACL LOG abc");
+    assert!(log_nan.is_err(), "ACL LOG abc should fail");
+
+    // ACL SAVE returns OK
+    let save = execute_command_line(&processor, "ACL SAVE").unwrap();
+    assert_eq!(save, b"+OK\r\n");
+
+    // ACL LOAD returns OK
+    let load = execute_command_line(&processor, "ACL LOAD").unwrap();
+    assert_eq!(load, b"+OK\r\n");
+}
+
+#[test]
+fn memory_doctor_and_stats_stubs() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // MEMORY DOCTOR returns bulk string
+    let doctor = execute_command_line(&processor, "MEMORY DOCTOR").unwrap();
+    assert!(
+        doctor.starts_with(b"$"),
+        "MEMORY DOCTOR should return bulk string"
+    );
+    assert!(
+        doctor
+            .windows(10)
+            .any(|w| w == b"no memory "),
+        "MEMORY DOCTOR should mention 'no memory'"
+    );
+
+    // MEMORY STATS returns 8-element array in RESP2 (4 field-value pairs)
+    let stats = execute_command_line(&processor, "MEMORY STATS").unwrap();
+    assert!(
+        stats.starts_with(b"*8\r\n"),
+        "MEMORY STATS should return 8-element array in RESP2"
+    );
+    assert!(
+        stats
+            .windows(14)
+            .any(|w| w == b"peak.allocated"),
+        "MEMORY STATS should contain peak.allocated"
+    );
+    assert!(
+        stats
+            .windows(15)
+            .any(|w| w == b"total.allocated"),
+        "MEMORY STATS should contain total.allocated"
+    );
+
+    // RESP3: MEMORY STATS returns map
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let stats_resp3 = execute_command_line(&processor, "MEMORY STATS").unwrap();
+    assert!(
+        stats_resp3.starts_with(b"%4\r\n"),
+        "RESP3 MEMORY STATS should return map with 4 entries"
+    );
+}
+
+#[test]
+fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // CLIENT ID returns integer
+    let id = execute_command_line(&processor, "CLIENT ID").unwrap();
+    assert!(
+        id.starts_with(b":"),
+        "CLIENT ID should return integer"
+    );
+
+    // CLIENT GETNAME returns null bulk string in RESP2
+    let getname = execute_command_line(&processor, "CLIENT GETNAME").unwrap();
+    assert_eq!(getname, b"$-1\r\n", "CLIENT GETNAME should return null");
+
+    // CLIENT SETNAME returns OK
+    let setname =
+        execute_command_line(&processor, "CLIENT SETNAME myconn").unwrap();
+    assert_eq!(setname, b"+OK\r\n");
+
+    // CLIENT LIST returns bulk string in RESP2
+    let list = execute_command_line(&processor, "CLIENT LIST").unwrap();
+    assert!(
+        list.starts_with(b"$"),
+        "CLIENT LIST should return bulk string"
+    );
+
+    // CLIENT UNBLOCK returns integer 0
+    let unblock =
+        execute_command_line(&processor, "CLIENT UNBLOCK 123").unwrap();
+    assert_eq!(unblock, b":0\r\n");
+
+    // CLIENT UNBLOCK with TIMEOUT flag
+    let unblock_timeout =
+        execute_command_line(&processor, "CLIENT UNBLOCK 123 TIMEOUT").unwrap();
+    assert_eq!(unblock_timeout, b":0\r\n");
+
+    // CLIENT PAUSE returns OK
+    let pause = execute_command_line(&processor, "CLIENT PAUSE 100").unwrap();
+    assert_eq!(pause, b"+OK\r\n");
+
+    // CLIENT PAUSE with WRITE mode
+    let pause_write =
+        execute_command_line(&processor, "CLIENT PAUSE 100 WRITE").unwrap();
+    assert_eq!(pause_write, b"+OK\r\n");
+
+    // CLIENT PAUSE with ALL mode
+    let pause_all =
+        execute_command_line(&processor, "CLIENT PAUSE 100 ALL").unwrap();
+    assert_eq!(pause_all, b"+OK\r\n");
+
+    // CLIENT UNPAUSE returns OK
+    let unpause = execute_command_line(&processor, "CLIENT UNPAUSE").unwrap();
+    assert_eq!(unpause, b"+OK\r\n");
+
+    // CLIENT NO-EVICT ON returns OK
+    let noevict_on =
+        execute_command_line(&processor, "CLIENT NO-EVICT ON").unwrap();
+    assert_eq!(noevict_on, b"+OK\r\n");
+
+    // CLIENT NO-EVICT OFF returns OK
+    let noevict_off =
+        execute_command_line(&processor, "CLIENT NO-EVICT OFF").unwrap();
+    assert_eq!(noevict_off, b"+OK\r\n");
+
+    // CLIENT NO-TOUCH ON returns OK
+    let notouch_on =
+        execute_command_line(&processor, "CLIENT NO-TOUCH ON").unwrap();
+    assert_eq!(notouch_on, b"+OK\r\n");
+
+    // CLIENT NO-TOUCH OFF returns OK
+    let notouch_off =
+        execute_command_line(&processor, "CLIENT NO-TOUCH OFF").unwrap();
+    assert_eq!(notouch_off, b"+OK\r\n");
+
+    // CLIENT HELP returns bulk array
+    let help = execute_command_line(&processor, "CLIENT HELP").unwrap();
+    assert!(
+        help.starts_with(b"*23\r\n"),
+        "CLIENT HELP should return 23-element array"
+    );
+
+    // RESP3: CLIENT GETNAME returns _\r\n (null)
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let getname_resp3 =
+        execute_command_line(&processor, "CLIENT GETNAME").unwrap();
+    assert_eq!(
+        getname_resp3, b"_\r\n",
+        "RESP3 CLIENT GETNAME should return null"
+    );
+
+    // RESP3: CLIENT LIST returns verbatim string
+    let list_resp3 = execute_command_line(&processor, "CLIENT LIST").unwrap();
+    assert!(
+        list_resp3.starts_with(b"="),
+        "RESP3 CLIENT LIST should return verbatim string"
+    );
+}

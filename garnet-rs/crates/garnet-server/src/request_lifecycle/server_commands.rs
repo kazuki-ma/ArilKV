@@ -2474,7 +2474,7 @@ impl RequestProcessor {
             ensure_min_arity(args, 3, "ACL", "ACL DELUSER username [username ...]")?;
             // Only "default" user exists; it cannot be deleted.
             for &username in &args[2..] {
-                if ascii_eq_ignore_case(username, b"default") {
+                if username == b"default" {
                     append_error(response_out, b"ERR The 'default' user cannot be removed");
                     return Ok(());
                 }
