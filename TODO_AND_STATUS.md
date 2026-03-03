@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 504
+> **Current Iteration**: 508
 
 ---
 
@@ -503,6 +503,10 @@
 | 11.347 | Implement SET GET option to return old value before replacement | DONE | — | Added return_old_value to SetOptions, parse GET token. Returns old string value or null. Handles NX/XX+GET combinations and WRONGTYPE for non-string keys (per Valkey semantics). 387 tests. Commit: `3cf7d017f8`. |
 | 11.348 | Add MODULE LOAD/LOADEX/UNLOAD and CLUSTER RESET/SHARDS stubs | DONE | — | MODULE: LOAD/LOADEX return "not supported" error, UNLOAD returns "no such module". Changed MODULE unknown-subcommand from UnknownCommand to UnknownSubcommand. CLUSTER: RESET validates HARD/SOFT mode, SHARDS returns single-shard topology. CLUSTER_HELP_LINES 20→24. 387 tests. Commit: `e027dd873e`. |
 | 11.349 | Add tests for MODULE LOAD/LOADEX/UNLOAD and CLUSTER RESET/SHARDS | DONE | 11.348 | Tests MODULE stubs (LOAD/LOADEX/UNLOAD error responses, arity, unknown subcommand, HELP count), CLUSTER RESET modes, CLUSTER SHARDS topology fields. 389 tests. Commit: `065542f65e`. |
+| 11.350 | Implement ACL GENPASS random hex and fix ACL unknown subcommand | DONE | — | ACL GENPASS now generates random hex via next_random_u64() (was fixed zeros). Respects bits parameter. ACL fallback changed to UnknownSubcommand. 389 tests. Commit: `826510adf4`. |
+| 11.351 | Expand ACL CAT to 21 categories and fix GETUSER/DELUSER case bug | DONE | 11.350 | ACL CAT now returns all 21 Redis categories (was 8). Fixed ascii_eq_ignore_case call for GETUSER (used lowercase "default" instead of "DEFAULT"). Added ACL CAT/GETUSER RESP2/RESP3 tests. 366 lib tests. Commit: `7040bf1f34`. |
+| 11.352 | Fix OBJECT/LATENCY/SLOWLOG/PUBSUB unknown subcommand error type | DONE | — | Changed 4 handlers from UnknownCommand to UnknownSubcommand. Updated test assertions. 366 lib tests. Commit: `f6a8738e36`. |
+| 11.353 | Add XGROUP CREATECONSUMER/DELCONSUMER and fix subcommand error type | DONE | — | CREATECONSUMER returns 1 on existing stream/group. DELCONSUMER returns 0 pending entries. Updated XGROUP_HELP_LINES 8→12. Fixed XGROUP fallback to UnknownSubcommand. 367 lib tests. Commit: `71dc8ac6d7`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1248,3 +1252,8 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 501 | 2026-03-03 | 11.347 | DONE | Implemented SET GET option. Added return_old_value to SetOptions, parse GET token, return old value/null. Handles NX/XX+GET, WRONGTYPE. 387 tests. Commit: `3cf7d017f8`. |
 | 502 | 2026-03-03 | 11.348 | DONE | Added MODULE LOAD/LOADEX/UNLOAD stubs and CLUSTER RESET/SHARDS stubs. Updated CLUSTER_HELP_LINES 20→24. 387 tests. Commit: `e027dd873e`. |
 | 503 | 2026-03-03 | 11.349 | DONE | Added tests for MODULE/CLUSTER stubs. 389 tests. Commit: `065542f65e`. |
+| 504 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 501-503 and TODOs 11.347-11.349. Commit: `e442628079`. |
+| 505 | 2026-03-03 | 11.350 | DONE | ACL GENPASS random hex + ACL UnknownSubcommand fix. 389 tests. Commit: `826510adf4`. |
+| 506 | 2026-03-03 | 11.351 | DONE | ACL CAT 21 categories + GETUSER/DELUSER case fix. Promoted ACL to FULL. 366 lib tests. Commits: `7040bf1f34`, `dbcd5fd985`. |
+| 507 | 2026-03-03 | 11.352 | DONE | OBJECT/LATENCY/SLOWLOG/PUBSUB UnknownSubcommand fix. 366 lib tests. Commit: `f6a8738e36`. |
+| 508 | 2026-03-03 | 11.353 | DONE | XGROUP CREATECONSUMER/DELCONSUMER + UnknownSubcommand fix. 367 lib tests. Commit: `71dc8ac6d7`. |
