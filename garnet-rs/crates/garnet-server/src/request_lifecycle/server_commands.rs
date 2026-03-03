@@ -561,7 +561,7 @@ impl RequestProcessor {
             match section {
                 InfoSection::Server => {
                     payload.push_str(
-                        "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\n",
+                        "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
                     );
                 }
                 InfoSection::Clients => {
@@ -593,7 +593,9 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Replication => {
-                    payload.push_str("# Replication\r\nmaster_repl_offset:0\r\n");
+                    payload.push_str(
+                        "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_replid:0000000000000000000000000000000000000000\r\nmaster_replid2:0000000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_size:1048576\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n",
+                    );
                 }
                 InfoSection::Cpu => {
                     payload.push_str(
