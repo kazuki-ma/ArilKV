@@ -11567,17 +11567,25 @@ fn acl_deluser_genpass_log_save_load_stubs() {
     let del_no_arg = execute_command_line(&processor, "ACL DELUSER");
     assert!(del_no_arg.is_err(), "ACL DELUSER without args should fail");
 
-    // ACL GENPASS returns 64-char hex string
+    // ACL GENPASS returns 64-char hex string (256 bits default)
     let genpass = execute_command_line(&processor, "ACL GENPASS").unwrap();
-    // $64\r\n<64 zeros>\r\n
     assert!(
         genpass.starts_with(b"$64\r\n"),
         "ACL GENPASS should return 64-byte bulk string"
     );
+    // Verify it's valid hex
+    let hex_part = &genpass[5..5 + 64];
+    assert!(
+        hex_part.iter().all(|b| b.is_ascii_hexdigit()),
+        "ACL GENPASS output should be valid hex"
+    );
 
-    // ACL GENPASS with valid bits
+    // ACL GENPASS with valid bits (128 bits = 32 hex chars)
     let genpass_128 = execute_command_line(&processor, "ACL GENPASS 128").unwrap();
-    assert!(genpass_128.starts_with(b"$64\r\n"));
+    assert!(
+        genpass_128.starts_with(b"$32\r\n"),
+        "ACL GENPASS 128 should return 32-byte bulk string"
+    );
 
     // ACL GENPASS with bits=0 returns error
     let genpass_0 = execute_command_line(&processor, "ACL GENPASS 0").unwrap();

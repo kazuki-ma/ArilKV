@@ -2508,7 +2508,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GENPASS") {
             ensure_ranged_arity(args, 2, 3, "ACL", "ACL GENPASS [bits]")?;
-            if args.len() == 3 {
+            let hex_chars = if args.len() == 3 {
                 let bits =
                     parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
                 if bits == 0 || bits > 4096 {
@@ -2518,12 +2518,21 @@ impl RequestProcessor {
                     );
                     return Ok(());
                 }
+                // Each hex char encodes 4 bits; round up.
+                ((bits + 3) / 4) as usize
+            } else {
+                64 // Default: 256 bits = 64 hex chars
+            };
+            let mut hex_output = Vec::with_capacity(hex_chars);
+            let mut remaining = hex_chars;
+            while remaining > 0 {
+                let rand_val = self.next_random_u64();
+                let hex_chunk = format!("{rand_val:016x}");
+                let take = remaining.min(16);
+                hex_output.extend_from_slice(&hex_chunk.as_bytes()[..take]);
+                remaining -= take;
             }
-            // Return a fixed-length 64-char hex string (256 bits).
-            append_bulk_string(
-                response_out,
-                b"0000000000000000000000000000000000000000000000000000000000000000",
-            );
+            append_bulk_string(response_out, &hex_output);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LOG") {
@@ -2600,7 +2609,7 @@ impl RequestProcessor {
 
             return Ok(());
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_cluster(
