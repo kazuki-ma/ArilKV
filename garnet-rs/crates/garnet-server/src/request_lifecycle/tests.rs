@@ -11735,8 +11735,8 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     // CLIENT HELP returns bulk array
     let help = execute_command_line(&processor, "CLIENT HELP").unwrap();
     assert!(
-        help.starts_with(b"*23\r\n"),
-        "CLIENT HELP should return 23-element array"
+        help.starts_with(b"*29\r\n"),
+        "CLIENT HELP should return 29-element array"
     );
 
     // RESP3: CLIENT GETNAME returns _\r\n (null)

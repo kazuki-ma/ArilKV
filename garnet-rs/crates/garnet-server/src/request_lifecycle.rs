@@ -190,8 +190,61 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"daemonize".to_vec(), b"no".to_vec());
     values.insert(b"key-load-delay".to_vec(), b"0".to_vec());
     values.insert(b"lazyfree-lazy-server-del".to_vec(), b"no".to_vec());
+    values.insert(b"lazyfree-lazy-expire".to_vec(), b"no".to_vec());
+    values.insert(b"lazyfree-lazy-eviction".to_vec(), b"no".to_vec());
+    values.insert(b"lazyfree-lazy-user-del".to_vec(), b"no".to_vec());
     values.insert(b"port".to_vec(), b"6379".to_vec());
     values.insert(b"notify-keyspace-events".to_vec(), b"".to_vec());
+    values.insert(b"maxmemory-policy".to_vec(), b"noeviction".to_vec());
+    values.insert(b"hz".to_vec(), b"10".to_vec());
+    values.insert(b"dynamic-hz".to_vec(), b"yes".to_vec());
+    values.insert(b"timeout".to_vec(), b"0".to_vec());
+    values.insert(b"tcp-keepalive".to_vec(), b"300".to_vec());
+    values.insert(b"loglevel".to_vec(), b"notice".to_vec());
+    values.insert(b"logfile".to_vec(), b"".to_vec());
+    values.insert(b"databases".to_vec(), b"1".to_vec());
+    values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());
+    values.insert(b"slowlog-log-slower-than".to_vec(), b"10000".to_vec());
+    values.insert(b"slowlog-max-len".to_vec(), b"128".to_vec());
+    values.insert(
+        b"hash-max-listpack-entries".to_vec(),
+        b"128".to_vec(),
+    );
+    values.insert(
+        b"hash-max-listpack-value".to_vec(),
+        b"64".to_vec(),
+    );
+    values.insert(
+        b"set-max-intset-entries".to_vec(),
+        b"512".to_vec(),
+    );
+    values.insert(
+        b"set-max-listpack-entries".to_vec(),
+        b"128".to_vec(),
+    );
+    values.insert(b"activedefrag".to_vec(), b"no".to_vec());
+    values.insert(
+        b"proto-max-bulk-len".to_vec(),
+        b"512000000".to_vec(),
+    );
+    values.insert(b"appendfilename".to_vec(), b"appendonly.aof".to_vec());
+    values.insert(b"appendfsync".to_vec(), b"everysec".to_vec());
+    values.insert(
+        b"stop-writes-on-bgsave-error".to_vec(),
+        b"yes".to_vec(),
+    );
+    values.insert(b"rdbcompression".to_vec(), b"yes".to_vec());
+    values.insert(b"rdbchecksum".to_vec(), b"yes".to_vec());
+    values.insert(b"replica-read-only".to_vec(), b"yes".to_vec());
+    values.insert(
+        b"repl-diskless-sync".to_vec(),
+        b"yes".to_vec(),
+    );
+    values.insert(
+        b"repl-diskless-sync-delay".to_vec(),
+        b"5".to_vec(),
+    );
+    values.insert(b"aof-use-rdb-preamble".to_vec(), b"yes".to_vec());
     values
 }
 
