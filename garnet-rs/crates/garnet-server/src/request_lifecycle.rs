@@ -252,6 +252,7 @@ use self::errors::map_read_error;
 use self::errors::map_rmw_error;
 use self::errors::map_upsert_error;
 use self::errors::storage_failure;
+use self::resp::append_array_length;
 use self::resp::append_bulk_array;
 use self::resp::append_bulk_string;
 use self::resp::append_error;
