@@ -88,6 +88,9 @@ const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 22;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 20;
 const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
+const DEFAULT_HASH_MAX_LISTPACK_ENTRIES: usize = 128;
+const DEFAULT_SET_MAX_LISTPACK_ENTRIES: usize = 128;
+const DEFAULT_SET_MAX_INTSET_ENTRIES: usize = 512;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
@@ -970,6 +973,9 @@ pub struct RequestProcessor {
     notify_keyspace_events_flags: AtomicU32,
     zset_max_listpack_entries: AtomicUsize,
     list_max_listpack_size: AtomicI64,
+    hash_max_listpack_entries: AtomicUsize,
+    set_max_listpack_entries: AtomicUsize,
+    set_max_intset_entries: AtomicUsize,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
     /// CLIENT PAUSE end time as milliseconds since UNIX epoch. 0 means not paused.
@@ -1162,6 +1168,9 @@ impl RequestProcessor {
             notify_keyspace_events_flags: AtomicU32::new(0),
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
+            hash_max_listpack_entries: AtomicUsize::new(DEFAULT_HASH_MAX_LISTPACK_ENTRIES),
+            set_max_listpack_entries: AtomicUsize::new(DEFAULT_SET_MAX_LISTPACK_ENTRIES),
+            set_max_intset_entries: AtomicUsize::new(DEFAULT_SET_MAX_INTSET_ENTRIES),
             functions: KvSessionFunctions,
             object_functions: ObjectSessionFunctions,
             client_pause_end_millis: AtomicU64::new(0),

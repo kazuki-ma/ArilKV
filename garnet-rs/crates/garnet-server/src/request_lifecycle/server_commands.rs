@@ -1559,11 +1559,18 @@ impl RequestProcessor {
             }
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
+            let hash_max_listpack_entries =
+                self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
+            let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
             let encoding = object_encoding_name(
                 object.object_type,
                 &object.payload,
                 zset_max_listpack_entries,
                 list_max_listpack_size,
+                hash_max_listpack_entries,
+                set_max_listpack_entries,
+                set_max_intset_entries,
             )?;
             append_bulk_string(response_out, encoding);
             return Ok(());
@@ -3348,6 +3355,21 @@ impl RequestProcessor {
                         parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.list_max_listpack_size.store(parsed, Ordering::Release);
                     self.clear_all_forced_list_quicklist_encodings();
+                } else if parameter == b"hash-max-listpack-entries" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.hash_max_listpack_entries
+                        .store(parsed as usize, Ordering::Release);
+                } else if parameter == b"set-max-listpack-entries" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.set_max_listpack_entries
+                        .store(parsed as usize, Ordering::Release);
+                } else if parameter == b"set-max-intset-entries" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.set_max_intset_entries
+                        .store(parsed as usize, Ordering::Release);
                 } else if parameter == b"maxmemory" {
                     let Some(parsed) = parse_u64_ascii(&value) else {
                         append_error(
@@ -3388,6 +3410,13 @@ impl RequestProcessor {
             let zset_max_listpack_entries_value = zset_max_listpack_entries.to_string();
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let list_max_listpack_size_value = list_max_listpack_size.to_string();
+            let hash_max_listpack_entries =
+                self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let hash_max_listpack_entries_value = hash_max_listpack_entries.to_string();
+            let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
+            let set_max_listpack_entries_value = set_max_listpack_entries.to_string();
+            let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
+            let set_max_intset_entries_value = set_max_intset_entries.to_string();
             let maxmemory_value = self.maxmemory_limit_bytes().to_string();
             let min_replicas_to_write_value = self.min_replicas_to_write().to_string();
             let replica_serve_stale_data_value = if self.replica_serve_stale_data() {
@@ -3432,6 +3461,18 @@ impl RequestProcessor {
             config_map.insert(
                 b"zset-max-listpack-entries".to_vec(),
                 zset_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"hash-max-listpack-entries".to_vec(),
+                hash_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"set-max-listpack-entries".to_vec(),
+                set_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"set-max-intset-entries".to_vec(),
+                set_max_intset_entries_value.as_bytes().to_vec(),
             );
 
             let mut matched_items = Vec::<(Vec<u8>, Vec<u8>)>::new();
@@ -4045,10 +4086,11 @@ fn object_encoding_name(
     payload: &[u8],
     zset_listpack_max_entries: usize,
     list_max_listpack_size: i64,
+    hash_listpack_max_entries: usize,
+    set_listpack_max_entries: usize,
+    set_intset_max_entries: usize,
 ) -> Result<&'static [u8], RequestExecutionError> {
     const SMALL_ELEMENT_BYTES: usize = 64;
-    const SET_LISTPACK_MAX_ENTRIES: usize = 128;
-    const HASH_LISTPACK_MAX_ENTRIES: usize = 128;
 
     match object_type {
         LIST_OBJECT_TYPE_TAG => {
@@ -4066,12 +4108,12 @@ fn object_encoding_name(
             let set = deserialize_set_object_payload(payload).ok_or_else(|| {
                 storage_failure("object.encoding", "failed to decode set payload")
             })?;
-            let intset =
-                set.iter().all(|member| parse_i64_ascii(member).is_some()) && set.len() <= 512;
+            let intset = set.iter().all(|member| parse_i64_ascii(member).is_some())
+                && set.len() <= set_intset_max_entries;
             if intset {
                 return Ok(b"intset");
             }
-            let compact = set.len() <= SET_LISTPACK_MAX_ENTRIES
+            let compact = set.len() <= set_listpack_max_entries
                 && set.iter().all(|member| member.len() <= SMALL_ELEMENT_BYTES);
             if compact {
                 Ok(b"listpack")
@@ -4083,7 +4125,7 @@ fn object_encoding_name(
             let hash = deserialize_hash_object_payload(payload).ok_or_else(|| {
                 storage_failure("object.encoding", "failed to decode hash payload")
             })?;
-            let compact = hash.len() <= HASH_LISTPACK_MAX_ENTRIES
+            let compact = hash.len() <= hash_listpack_max_entries
                 && hash.iter().all(|(field, value)| {
                     field.len() <= SMALL_ELEMENT_BYTES && value.len() <= SMALL_ELEMENT_BYTES
                 });
