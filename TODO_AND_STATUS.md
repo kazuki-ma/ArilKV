@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 482
+> **Current Iteration**: 487
 
 ---
 
@@ -487,6 +487,10 @@
 | 11.331 | Emit RESP3 double type for GEOPOS and GEOSEARCH WITHCOORD coordinates | DONE | 11.321 | GEOPOS/GEOSEARCH/GEORADIUS/GEORADIUSBYMEMBER WITHCOORD coordinates now emit `,value\r\n` (RESP3 double) instead of bulk strings in RESP3 mode. Matches Valkey `addReplyHumanLongDouble`. Added `resp3: bool` through `execute_geo_query` and `append_geosearch_response`. Test assertion for GEOPOS RESP3. 356 tests. Commit: `771a070e63`. |
 | 11.332 | Implement structured XINFO STREAM response replacing digest hash | DONE | — | XINFO STREAM now returns proper 10-field summary (non-FULL) or 9-field detailed response (FULL with COUNT) matching Valkey semantics. Non-existent key returns ERR. RESP3 map type for both modes. Removed unused `fnv_hex_digest` from `stream_commands.rs`. 357 tests. Commit: `886b045719`. |
 | 11.333 | Add XINFO GROUPS and XINFO CONSUMERS subcommand handlers | DONE | 11.332 | XINFO GROUPS returns per-group 6-field map (name, consumers=0, pending=0, last-delivered-id, entries-read=null, lag=0) matching Valkey shape. XINFO CONSUMERS returns empty array (no consumer tracking). Non-existent group returns NOGROUP error. 357 tests. Commit: `966dc31f82`. |
+| 11.334 | Add XINFO HELP subcommand support | DONE | 11.332 | XINFO HELP returns 6-line help array. Lowered initial arity to Min(2) for HELP, separate Min(3) for data subcommands. 357 tests. Commit: `3b86204658`. |
+| 11.335 | Emit RESP3 map and structured fields for ACL GETUSER | DONE | 11.319 | ACL GETUSER now returns 6-field map (flags as set, passwords, commands, keys, channels, selectors) with RESP3 `%6` map / `~2` set types. RESP2 uses `*12` flat array / `*2` array. 357 tests. Commit: `4035ddd277`. |
+| 11.336 | Add HELP subcommands for XGROUP, DEBUG, and CLUSTER | DONE | — | XGROUP HELP (8 lines), DEBUG HELP (12 lines), CLUSTER HELP (12 lines). All follow established HELP pattern. 357 tests. Commit: `4ae2a49be2`. |
+| 11.337 | Add COMMAND DOCS stub returning empty map | DONE | — | COMMAND DOCS returns empty map (RESP3) or empty array (RESP2) for client library compatibility. 357 tests. Commit: `115d2213dd`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1211,3 +1215,8 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 480 | 2026-03-03 | 11.332 | DONE | Implemented structured XINFO STREAM response replacing digest hash: non-FULL 10-field summary, FULL 9-field with entries array and detailed group info, RESP3 map type, ERR for missing key. 357 tests. Commit: `886b045719`. |
 | 481 | 2026-03-03 | 11.333 | DONE | Added XINFO GROUPS (6-field per-group map) and XINFO CONSUMERS (empty array) subcommand handlers with NOGROUP error handling. 357 tests. Commit: `966dc31f82`. |
 | 482 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 480-482 and added TODOs 11.332-11.333. |
+| 483 | 2026-03-03 | 11.334 | DONE | Added XINFO HELP subcommand with 6-line help array. Lowered initial arity to Min(2). 357 tests. Commit: `3b86204658`. |
+| 484 | 2026-03-03 | 11.335 | DONE | ACL GETUSER restructured to 6-field map with RESP3 map/set types. 357 tests. Commit: `4035ddd277`. |
+| 485 | 2026-03-03 | 11.336 | DONE | Added HELP subcommands for XGROUP (8 lines), DEBUG (12 lines), CLUSTER (12 lines). 357 tests. Commit: `4ae2a49be2`. |
+| 486 | 2026-03-03 | 11.337 | DONE | Added COMMAND DOCS stub returning empty map/array. 357 tests. Commit: `115d2213dd`. |
+| 487 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 483-487 and added TODOs 11.334-11.337. |
