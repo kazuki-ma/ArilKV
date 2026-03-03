@@ -1159,7 +1159,7 @@ impl RequestProcessor {
             install_readonly_redis_table_metatable(&lua, &redis_table)?;
             let load_env = build_strict_lua_environment(&lua, &redis_table)?;
             lua.load(strip_lua_shebang(library_source))
-                .set_name("user_script")
+                .set_name("@user_script")
                 .set_environment(load_env)
                 .exec()?;
             Ok::<(), LuaError>(())
@@ -1309,6 +1309,10 @@ impl RequestProcessor {
         mutability: ScriptMutability,
         response_out: &mut Vec<u8>,
     ) {
+        // Compute the SHA1 for this script up front, used both for caching
+        // and for the `script: SHA` suffix in error messages.
+        let script_sha = script_sha1_hex(script);
+
         // Strip the shebang header before loading into Lua.  The shebang
         // carries metadata (engine, flags) but is not valid Lua syntax.
         let lua_source = strip_lua_shebang(script);
@@ -1432,7 +1436,7 @@ impl RequestProcessor {
 
             let value: LuaValue = lua
                 .load(lua_source)
-                .set_name("user_script")
+                .set_name("@user_script")
                 .set_environment(env)
                 .eval()?;
             Ok::<LuaValue, LuaError>(value)
@@ -1455,7 +1459,7 @@ impl RequestProcessor {
                     return;
                 }
                 let normalized = normalize_lua_runtime_error_text(&error);
-                let message = format_script_error_for_client(&normalized, "script");
+                let message = format_script_error_for_client(&normalized, "script", &script_sha);
                 append_error(response_out, message.as_bytes());
             }
         }
@@ -1604,7 +1608,7 @@ impl RequestProcessor {
             let load_env = build_strict_lua_environment(&lua, &load_redis_table)?;
 
             lua.load(strip_lua_shebang(library_source))
-                .set_name("user_script")
+                .set_name("@user_script")
                 .set_environment(load_env.clone())
                 .exec()?;
             load_redis_table.set("register_function", runtime_only_register_fn)?;
@@ -1712,7 +1716,11 @@ impl RequestProcessor {
                     append_error(response_out, normalized_error.as_bytes());
                     return;
                 }
-                let message = format_script_error_for_client(&normalized_error, "function");
+                let message = format_script_error_for_client(
+                    &normalized_error,
+                    "function",
+                    &function_name_text,
+                );
                 append_error(response_out, message.as_bytes());
             }
         }
@@ -1918,7 +1926,11 @@ fn normalize_lua_runtime_error_text(error: &LuaError) -> String {
 /// prefix (`ERR`, `WRONGTYPE`, `NOPERM`, etc.) we return it as-is so the
 /// client sees the canonical error.  Otherwise we wrap it in
 /// `"ERR Error running <kind>: ..."` to match Redis convention.
-fn format_script_error_for_client(normalized_error: &str, kind: &str) -> String {
+///
+/// When `funcname` is provided (the script SHA or function name), the error
+/// includes a `script: <funcname>, on <source>:<line>.` suffix matching the
+/// format produced by Redis's `luaCallFunction`.
+fn format_script_error_for_client(normalized_error: &str, kind: &str, funcname: &str) -> String {
     // Error messages produced by redis.call / the command layer already
     // carry a prefix like "ERR ...", "WRONGTYPE ...", etc.  Return those
     // directly so the test assertions match Redis behaviour.
@@ -1931,12 +1943,56 @@ fn format_script_error_for_client(normalized_error: &str, kind: &str) -> String 
         "NOTBUSY",
         "BUSY",
     ];
-    for prefix in known_prefixes {
-        if normalized_error.starts_with(prefix) {
-            return normalized_error.to_string();
+
+    let has_known_prefix = known_prefixes
+        .iter()
+        .any(|prefix| normalized_error.starts_with(prefix));
+
+    let mut message = if has_known_prefix {
+        normalized_error.to_string()
+    } else if normalized_error.starts_with("user_script:") {
+        // If the error looks like a Lua runtime error from the user script
+        // (e.g. "user_script:1: msg"), add the ERR prefix so it follows the
+        // Redis convention established by __redis__err__handler.
+        format!("ERR {normalized_error}")
+    } else {
+        format!("ERR Error running {kind}: {normalized_error}")
+    };
+
+    // Append the Redis-style source location suffix when we have a funcname
+    // and the error contains a source:line location.
+    if !funcname.is_empty()
+        && let Some(location) = extract_script_error_location(&message)
+    {
+        write!(message, " script: {funcname}, on {location}.").unwrap();
+    }
+
+    message
+}
+
+/// Try to extract a `source:line` location from a script error message.
+///
+/// Looks for patterns like `user_script:123:` in the error text and returns
+/// `"user_script:123"` if found.  Returns `None` if no location is present
+/// (e.g. for redis.call errors that carry an ERR prefix directly).
+fn extract_script_error_location(error_text: &str) -> Option<String> {
+    // Skip the error prefix (ERR, WRONGTYPE, etc.) before looking for the
+    // source:line pattern.
+    let body = error_text
+        .strip_prefix("ERR ")
+        .or_else(|| error_text.strip_prefix("WRONGTYPE "))
+        .unwrap_or(error_text);
+
+    // Match "user_script:N:" pattern at the start of the body.
+    if let Some(rest) = body.strip_prefix("user_script:")
+        && let Some(colon_pos) = rest.find(':')
+    {
+        let line_str = &rest[..colon_pos];
+        if line_str.chars().all(|c| c.is_ascii_digit()) && !line_str.is_empty() {
+            return Some(format!("user_script:{line_str}"));
         }
     }
-    format!("ERR Error running {kind}: {normalized_error}")
+    None
 }
 
 fn append_function_load_compile_error(response_out: &mut Vec<u8>, message: &str) {
