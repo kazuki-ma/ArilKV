@@ -148,7 +148,7 @@ const CONFIG_HELP_LINES: [&[u8]; 13] = [
     b"SET [... <directive> <value> ...]",
     b"    Set multiple configuration directives at once.",
 ];
-const CLIENT_HELP_LINES: [&[u8]; 19] = [
+const CLIENT_HELP_LINES: [&[u8]; 23] = [
     b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"CACHING (YES|NO)",
     b"    Enable/disable tracking of the keys for next command in OPTIN/OPTOUT modes.",
@@ -160,14 +160,18 @@ const CLIENT_HELP_LINES: [&[u8]; 19] = [
     b"    Return the ID of the current connection.",
     b"INFO",
     b"    Return information about the current client connection.",
-    b"KILL <ip:port>",
-    b"    Kill connection by ip:port.",
-    b"LIST",
+    b"KILL <ip:port | <option> [value] ...>",
+    b"    Kill connections matching the given filter.",
+    b"LIST [TYPE (NORMAL|MASTER|REPLICA|PUBSUB)]",
     b"    Return information about client connections.",
     b"NO-EVICT (ON|OFF)",
     b"    Protect current client connection from eviction.",
     b"NO-TOUCH (ON|OFF)",
     b"    Avoid touching LRU/LFU stats for current client connection commands.",
+    b"REPLY (ON|OFF|SKIP)",
+    b"    Control the replies sent to the current connection.",
+    b"SETNAME <connection-name>",
+    b"    Set the current connection name.",
 ];
 const DEBUG_HELP_LINES: [&[u8]; 12] = [
     b"DEBUG <subcommand> [<arg> [value] [opt] ...]",
@@ -811,7 +815,7 @@ impl RequestProcessor {
             args,
             2,
             "CLIENT",
-            "CLIENT <ID|GETNAME|SETNAME|LIST|UNBLOCK|PAUSE|UNPAUSE|NO-EVICT|NO-TOUCH|HELP> [arguments...]",
+            "CLIENT <ID|GETNAME|SETNAME|LIST|INFO|KILL|UNBLOCK|PAUSE|UNPAUSE|NO-EVICT|NO-TOUCH|CACHING|REPLY|HELP> [arguments...]",
         )?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
@@ -904,6 +908,52 @@ impl RequestProcessor {
                 return Ok(());
             }
             if ascii_eq_ignore_case(mode, b"OFF") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        if ascii_eq_ignore_case(subcommand, b"INFO") {
+            require_exact_arity(args, 2, "CLIENT", "CLIENT INFO")?;
+            let client_id = super::current_request_client_id()
+                .map(|cid| u64::from(cid))
+                .unwrap_or(1);
+            let info_line = format!(
+                "id={client_id} addr=127.0.0.1:0 fd=0 name= db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name= lib-ver=\n"
+            );
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(response_out, b"txt", info_line.as_bytes());
+            } else {
+                append_bulk_string(response_out, info_line.as_bytes());
+            }
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"KILL") {
+            ensure_min_arity(
+                args,
+                3,
+                "CLIENT",
+                "CLIENT KILL <ip:port | <option> [value] ...>",
+            )?;
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"CACHING") {
+            require_exact_arity(args, 3, "CLIENT", "CLIENT CACHING YES|NO")?;
+            let mode = args[2];
+            if ascii_eq_ignore_case(mode, b"YES") || ascii_eq_ignore_case(mode, b"NO") {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        if ascii_eq_ignore_case(subcommand, b"REPLY") {
+            require_exact_arity(args, 3, "CLIENT", "CLIENT REPLY ON|OFF|SKIP")?;
+            let mode = args[2];
+            if ascii_eq_ignore_case(mode, b"ON")
+                || ascii_eq_ignore_case(mode, b"OFF")
+                || ascii_eq_ignore_case(mode, b"SKIP")
+            {
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
@@ -2988,6 +3038,14 @@ impl RequestProcessor {
                 append_bulk_string(response_out, &key);
                 append_bulk_string(response_out, &value);
             }
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"REWRITE") {
+            require_exact_arity(args, 2, "CONFIG", "CONFIG REWRITE")?;
+            append_error(
+                response_out,
+                b"ERR The server is running without a config file",
+            );
             return Ok(());
         }
 
