@@ -1140,6 +1140,16 @@ impl RequestProcessor {
             append_bulk_string(response_out, payload.as_bytes());
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"PAUSE-CRON") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG PAUSE-CRON <0|1>")?;
+            let flag = args[2];
+            if flag != b"0" && flag != b"1" {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            self.set_debug_pause_cron(flag == b"1");
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         Err(RequestExecutionError::UnknownSubcommand)
     }
 

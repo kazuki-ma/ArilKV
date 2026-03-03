@@ -820,6 +820,7 @@ pub struct RequestProcessor {
     forced_list_quicklist_keys: Mutex<HashSet<RedisKey>>,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
+    debug_pause_cron: AtomicBool,
     expired_keys: AtomicU64,
     expired_keys_active: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
@@ -1009,6 +1010,7 @@ impl RequestProcessor {
             forced_list_quicklist_keys: Mutex::new(HashSet::new()),
             random_state: AtomicU64::new(current_unix_time_millis().unwrap_or(0x9e3779b97f4a7c15)),
             active_expire_enabled: AtomicBool::new(true),
+            debug_pause_cron: AtomicBool::new(false),
             expired_keys: AtomicU64::new(0),
             expired_keys_active: AtomicU64::new(0),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
@@ -2191,6 +2193,14 @@ impl RequestProcessor {
 
     pub(super) fn set_active_expire_enabled(&self, enabled: bool) {
         self.active_expire_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub(crate) fn debug_pause_cron(&self) -> bool {
+        self.debug_pause_cron.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_debug_pause_cron(&self, paused: bool) {
+        self.debug_pause_cron.store(paused, Ordering::Release);
     }
 
     pub(super) fn expired_keys(&self) -> u64 {

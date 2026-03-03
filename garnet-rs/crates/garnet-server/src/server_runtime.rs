@@ -136,6 +136,7 @@ where
             interval.tick().await;
             if !expiration_processor.active_expire_enabled()
                 || expiration_processor.is_expire_action_paused()
+                || expiration_processor.debug_pause_cron()
             {
                 continue;
             }
