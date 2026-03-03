@@ -984,11 +984,17 @@ pub struct RequestProcessor {
     client_pause_type: AtomicU8,
     /// CLIENT SETNAME connection name (empty = no name set).
     client_name: Mutex<Vec<u8>>,
+    /// CLIENT REPLY mode: 0 = ON (default), 1 = OFF, 2 = SKIP (one-shot).
+    client_reply_mode: AtomicU8,
 }
 
 const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
 const CLIENT_PAUSE_TYPE_WRITE: u8 = 1;
 const CLIENT_PAUSE_TYPE_ALL: u8 = 2;
+
+const CLIENT_REPLY_ON: u8 = 0;
+const CLIENT_REPLY_OFF: u8 = 1;
+const CLIENT_REPLY_SKIP: u8 = 2;
 
 impl RequestProcessor {
     pub fn new() -> Result<Self, RequestProcessorInitError> {
@@ -1176,6 +1182,7 @@ impl RequestProcessor {
             client_pause_end_millis: AtomicU64::new(0),
             client_pause_type: AtomicU8::new(CLIENT_PAUSE_TYPE_NONE),
             client_name: Mutex::new(Vec::new()),
+            client_reply_mode: AtomicU8::new(CLIENT_REPLY_ON),
         })
     }
 
@@ -1230,6 +1237,21 @@ impl RequestProcessor {
 
     pub(super) fn emit_resp3_zset_pairs(&self) -> bool {
         self.resp_protocol_version().is_resp3() || self.interop_force_resp3_zset_pairs
+    }
+
+    /// Returns the current CLIENT REPLY mode (CLIENT_REPLY_ON / OFF / SKIP).
+    pub(crate) fn client_reply_mode(&self) -> u8 {
+        self.client_reply_mode.load(Ordering::Acquire)
+    }
+
+    /// Reset SKIP back to ON (called after one response is suppressed).
+    pub(crate) fn clear_client_reply_skip(&self) {
+        let _ = self.client_reply_mode.compare_exchange(
+            CLIENT_REPLY_SKIP,
+            CLIENT_REPLY_ON,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        );
     }
 
     pub(crate) fn blocked_clients(&self) -> u64 {

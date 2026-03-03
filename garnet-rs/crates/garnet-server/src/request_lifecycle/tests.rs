@@ -11664,17 +11664,40 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
     let caching_no = execute_command_line(&processor, "CLIENT CACHING NO").unwrap();
     assert_eq!(caching_no, b"+OK\r\n");
 
-    // CLIENT REPLY ON returns OK
+    // CLIENT REPLY ON returns OK and sets mode
     let reply = execute_command_line(&processor, "CLIENT REPLY ON").unwrap();
     assert_eq!(reply, b"+OK\r\n");
+    assert_eq!(processor.client_reply_mode(), 0, "ON should be mode 0");
 
-    // CLIENT REPLY OFF returns OK
+    // CLIENT REPLY OFF returns OK and sets mode
     let reply_off = execute_command_line(&processor, "CLIENT REPLY OFF").unwrap();
     assert_eq!(reply_off, b"+OK\r\n");
+    assert_eq!(processor.client_reply_mode(), 1, "OFF should be mode 1");
 
-    // CLIENT REPLY SKIP returns OK
+    // CLIENT REPLY SKIP returns OK and sets mode
     let reply_skip = execute_command_line(&processor, "CLIENT REPLY SKIP").unwrap();
     assert_eq!(reply_skip, b"+OK\r\n");
+    assert_eq!(processor.client_reply_mode(), 2, "SKIP should be mode 2");
+
+    // clear_client_reply_skip resets SKIP back to ON
+    processor.clear_client_reply_skip();
+    assert_eq!(
+        processor.client_reply_mode(),
+        0,
+        "SKIP should be cleared to ON"
+    );
+
+    // clear_client_reply_skip is a no-op when mode is OFF
+    let _ = execute_command_line(&processor, "CLIENT REPLY OFF").unwrap();
+    processor.clear_client_reply_skip();
+    assert_eq!(
+        processor.client_reply_mode(),
+        1,
+        "OFF should remain OFF after clear_skip"
+    );
+
+    // Restore to ON for remaining tests
+    let _ = execute_command_line(&processor, "CLIENT REPLY ON").unwrap();
 
     // CONFIG REWRITE returns proper error
     let rewrite = execute_command_line(&processor, "CONFIG REWRITE").unwrap();

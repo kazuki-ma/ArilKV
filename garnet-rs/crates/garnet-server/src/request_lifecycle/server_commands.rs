@@ -1058,10 +1058,21 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"REPLY") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT REPLY ON|OFF|SKIP")?;
             let mode = args[2];
-            if ascii_eq_ignore_case(mode, b"ON")
-                || ascii_eq_ignore_case(mode, b"OFF")
-                || ascii_eq_ignore_case(mode, b"SKIP")
-            {
+            if ascii_eq_ignore_case(mode, b"ON") {
+                self.client_reply_mode
+                    .store(CLIENT_REPLY_ON, Ordering::Release);
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(mode, b"OFF") {
+                self.client_reply_mode
+                    .store(CLIENT_REPLY_OFF, Ordering::Release);
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(mode, b"SKIP") {
+                self.client_reply_mode
+                    .store(CLIENT_REPLY_SKIP, Ordering::Release);
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
