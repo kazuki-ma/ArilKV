@@ -11040,3 +11040,60 @@ fn command_info_returns_map_in_resp3_and_array_in_resp2() {
     let resp2_empty = execute_command_line(&processor, "COMMAND INFO").unwrap();
     assert_eq!(resp2_empty, b"*0\r\n");
 }
+
+#[test]
+fn scan_and_sscan_return_set_type_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SET k1 v1", b"+OK\r\n");
+    assert_command_response(&processor, "SADD s1 a b c", b":3\r\n");
+
+    // Helper: find the inner data type prefix in a scan response.
+    // Scan response format: *2\r\n $N\r\ncursor\r\n [*|~]N\r\n ...
+    // We search for the cursor bulk string end (0\r\n) followed by the inner
+    // type prefix.
+    let inner_type_byte = |resp: &[u8]| -> u8 {
+        // Skip outer *2\r\n, then the cursor bulk string ($N\r\nvalue\r\n).
+        // The cursor value ends with \r\n, and the next byte is the inner type.
+        let cursor_str = b"0\r\n";
+        let pos = resp
+            .windows(cursor_str.len())
+            .rposition(|w| w == cursor_str)
+            .expect("cursor 0 not found");
+        resp[pos + cursor_str.len()]
+    };
+
+    // RESP2: SCAN inner data should use array type (*N)
+    let resp2_scan = execute_command_line(&processor, "SCAN 0").unwrap();
+    assert_eq!(
+        inner_type_byte(&resp2_scan),
+        b'*',
+        "RESP2 SCAN inner data should use array type"
+    );
+
+    // RESP3: SCAN inner data should use set type (~N)
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3_scan = execute_command_line(&processor, "SCAN 0").unwrap();
+    assert_eq!(
+        inner_type_byte(&resp3_scan),
+        b'~',
+        "RESP3 SCAN inner data should use set type"
+    );
+
+    // RESP2: SSCAN inner data should use array type (*N)
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+    let resp2_sscan = execute_command_line(&processor, "SSCAN s1 0").unwrap();
+    assert_eq!(
+        inner_type_byte(&resp2_sscan),
+        b'*',
+        "RESP2 SSCAN inner data should use array type"
+    );
+
+    // RESP3: SSCAN inner data should use set type (~N)
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3_sscan = execute_command_line(&processor, "SSCAN s1 0").unwrap();
+    assert_eq!(
+        inner_type_byte(&resp3_sscan),
+        b'~',
+        "RESP3 SSCAN inner data should use set type"
+    );
+}

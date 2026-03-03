@@ -211,9 +211,10 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
+        let resp3 = self.resp_protocol_version().is_resp3();
 
         let Some(set) = self.load_set_object(&key)? else {
-            append_set_scan_response(response_out, cursor, scan_options.count, &[]);
+            append_set_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
 
@@ -232,7 +233,7 @@ impl RequestProcessor {
             matched.push(member.as_slice());
         }
 
-        append_set_scan_response(response_out, cursor, scan_options.count, &matched);
+        append_set_scan_response(response_out, cursor, scan_options.count, &matched, resp3);
         Ok(())
     }
 
@@ -633,6 +634,7 @@ fn append_set_scan_response(
     cursor: u64,
     count: usize,
     values: &[&[u8]],
+    resp3: bool,
 ) {
     // When the collection shrinks between iterations (elements removed), the
     // cursor may point past the new end.  Wrap around to 0 so elements that
@@ -647,13 +649,17 @@ fn append_set_scan_response(
     let end = start.saturating_add(count).min(values.len());
     let next_cursor = if end >= values.len() { 0 } else { end };
 
-    response_out.push(b'*');
-    response_out.extend_from_slice(b"2\r\n");
+    response_out.extend_from_slice(b"*2\r\n");
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
-    response_out.push(b'*');
-    response_out.extend_from_slice((end - start).to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+
+    // In RESP3, emit set members as set type.
+    let page_len = end - start;
+    if resp3 {
+        append_set_length(response_out, page_len);
+    } else {
+        append_array_length(response_out, page_len);
+    }
     for value in &values[start..end] {
         append_bulk_string(response_out, value);
     }

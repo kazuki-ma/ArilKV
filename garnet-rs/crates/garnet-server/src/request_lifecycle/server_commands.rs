@@ -1568,7 +1568,8 @@ impl RequestProcessor {
             matched.push(key.into_vec());
         }
         matched.sort_unstable();
-        append_scan_cursor_and_key_array(response_out, cursor, count, &matched);
+        let resp3 = self.resp_protocol_version().is_resp3();
+        append_scan_cursor_and_key_array(response_out, cursor, count, &matched, resp3);
         Ok(())
     }
 
@@ -3627,6 +3628,7 @@ fn append_scan_cursor_and_key_array(
     cursor: u64,
     count: usize,
     keys: &[Vec<u8>],
+    resp3: bool,
 ) {
     let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
     let start = if raw_start >= keys.len() {
@@ -3637,13 +3639,17 @@ fn append_scan_cursor_and_key_array(
     let end = start.saturating_add(count).min(keys.len());
     let next_cursor = if end >= keys.len() { 0 } else { end };
 
-    response_out.push(b'*');
-    response_out.extend_from_slice(b"2\r\n");
+    response_out.extend_from_slice(b"*2\r\n");
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
-    response_out.push(b'*');
-    response_out.extend_from_slice((end - start).to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+
+    // In RESP3, emit keys as set type.
+    let page_len = end - start;
+    if resp3 {
+        append_set_length(response_out, page_len);
+    } else {
+        append_array_length(response_out, page_len);
+    }
     for key in &keys[start..end] {
         append_bulk_string(response_out, key);
     }
