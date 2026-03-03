@@ -1353,7 +1353,27 @@ impl RequestProcessor {
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(lua, values, mutability, false, LuaCallMode::PCall)
             })?;
-            let sha1hex_fn = scope.create_function(|_, value: mlua::String| {
+            let sha1hex_fn = scope.create_function(|_, args: MultiValue| {
+                if args.len() != 1 {
+                    return Err(LuaError::RuntimeError(
+                        "wrong number of arguments".to_string(),
+                    ));
+                }
+                let value = match args.into_iter().next().unwrap() {
+                    LuaValue::String(s) => s,
+                    other => {
+                        let s = match other {
+                            LuaValue::Integer(n) => n.to_string(),
+                            LuaValue::Number(n) => n.to_string(),
+                            _ => {
+                                return Err(LuaError::RuntimeError(
+                                    "wrong number of arguments".to_string(),
+                                ));
+                            }
+                        };
+                        return Ok(script_sha1_hex(s.as_bytes()));
+                    }
+                };
                 Ok(script_sha1_hex(value.as_bytes().as_ref()))
             })?;
             let status_reply_fn = scope.create_function(|lua, value: mlua::String| {
@@ -1496,7 +1516,27 @@ impl RequestProcessor {
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(lua, values, mutability, allow_oom, LuaCallMode::PCall)
             })?;
-            let sha1hex_fn = scope.create_function(|_, value: mlua::String| {
+            let sha1hex_fn = scope.create_function(|_, args: MultiValue| {
+                if args.len() != 1 {
+                    return Err(LuaError::RuntimeError(
+                        "wrong number of arguments".to_string(),
+                    ));
+                }
+                let value = match args.into_iter().next().unwrap() {
+                    LuaValue::String(s) => s,
+                    other => {
+                        let s = match other {
+                            LuaValue::Integer(n) => n.to_string(),
+                            LuaValue::Number(n) => n.to_string(),
+                            _ => {
+                                return Err(LuaError::RuntimeError(
+                                    "wrong number of arguments".to_string(),
+                                ));
+                            }
+                        };
+                        return Ok(script_sha1_hex(s.as_bytes()));
+                    }
+                };
                 Ok(script_sha1_hex(value.as_bytes().as_ref()))
             })?;
             let status_reply_fn = scope.create_function(|lua, value: mlua::String| {
@@ -1645,7 +1685,7 @@ impl RequestProcessor {
     ) -> mlua::Result<LuaValue> {
         if values.is_empty() {
             return Err(LuaError::RuntimeError(
-                "ERR redis.call/pcall requires a command name".to_string(),
+                "Please specify at least one argument for this call".to_string(),
             ));
         }
 
@@ -1659,11 +1699,18 @@ impl RequestProcessor {
             .collect::<Vec<&[u8]>>();
 
         let command = dispatch_command_name(arg_refs[0]);
+        if command == CommandId::Unknown {
+            return lua_call_error_or_pcall_error(
+                lua,
+                call_mode,
+                "ERR Unknown Redis command called from script",
+            );
+        }
         if !command_allowed_from_script(command) {
             return lua_call_error_or_pcall_error(
                 lua,
                 call_mode,
-                "ERR command is not allowed from script",
+                "ERR This Redis command is not allowed from script",
             );
         }
         if mutability == ScriptMutability::ReadOnly && command_is_mutating(command) {
@@ -1688,7 +1735,8 @@ impl RequestProcessor {
             Err(error) => {
                 self.record_command_failure(arg_refs[0]);
                 let message = request_error_message(error);
-                return lua_call_error_or_pcall_error(lua, call_mode, &message);
+                let rewritten = rewrite_script_error_message(&message);
+                return lua_call_error_or_pcall_error(lua, call_mode, &rewritten);
             }
         }
 
@@ -1701,7 +1749,8 @@ impl RequestProcessor {
         match frame {
             RespFrame::Error(message) => {
                 self.record_command_failure(arg_refs[0]);
-                lua_call_error_or_pcall_error(lua, call_mode, &message)
+                let rewritten = rewrite_script_error_message(&message);
+                lua_call_error_or_pcall_error(lua, call_mode, &rewritten)
             }
             other => resp_frame_to_lua_value(lua, other),
         }
@@ -2824,6 +2873,29 @@ fn lua_argument_to_bytes(value: LuaValue, index: usize) -> mlua::Result<Vec<u8>>
             index + 1
         ))),
     }
+}
+
+/// Rewrite error messages from the command execution layer to match
+/// Redis/Valkey scripting error conventions.  Redis rewrites certain
+/// well-known error strings so that scripts see a canonical form
+/// regardless of how the server formats them internally.
+fn rewrite_script_error_message(message: &str) -> String {
+    // Strip leading "ERR " for comparison but keep it in the rewrite.
+    let body = message.strip_prefix("ERR ").unwrap_or(message);
+
+    // "wrong number of arguments for '...' command"
+    // -> "ERR Wrong number of args calling Redis command from script"
+    if body.starts_with("wrong number of arguments for ") {
+        return "ERR Wrong number of args calling Redis command from script".to_string();
+    }
+
+    // "unknown command '...'" -> "ERR Unknown Redis command called from script"
+    if body.starts_with("unknown command") {
+        return "ERR Unknown Redis command called from script".to_string();
+    }
+
+    // All other messages are passed through unchanged.
+    message.to_string()
 }
 
 fn request_error_message(error: RequestExecutionError) -> String {
