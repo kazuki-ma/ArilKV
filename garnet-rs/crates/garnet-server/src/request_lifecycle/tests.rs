@@ -6513,6 +6513,20 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
         ),
         vec![b"key1".to_vec(), b"key2".to_vec()]
     );
+    // Generic FirstKey fallback for hash field expire commands.
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS HEXPIRE mykey 30 FIELDS 1 f1")
+                .unwrap()
+        ),
+        vec![b"mykey".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS HPTTL mykey FIELDS 1 f1").unwrap()
+        ),
+        vec![b"mykey".to_vec()]
+    );
 
     let numkeys = 260usize;
     let mut getkeys_parts = vec![
@@ -6604,6 +6618,27 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
             &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS DELEX k1 IFEQ v1").unwrap()
         ),
         vec![(b"k1".to_vec(), vec![b"RW".to_vec(), b"delete".to_vec()])]
+    );
+    // Generic FirstKey fallback for hash field expire commands.
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(
+                &processor,
+                "COMMAND GETKEYSANDFLAGS HEXPIRE mykey 30 FIELDS 1 f1"
+            )
+            .unwrap()
+        ),
+        vec![(b"mykey".to_vec(), vec![b"OW".to_vec(), b"update".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(
+                &processor,
+                "COMMAND GETKEYSANDFLAGS HPTTL mykey FIELDS 1 f1"
+            )
+            .unwrap()
+        ),
+        vec![(b"mykey".to_vec(), vec![b"RO".to_vec(), b"access".to_vec()])]
     );
     assert_eq!(
         parse_command_getkeysandflags_response(

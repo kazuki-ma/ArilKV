@@ -1,8 +1,10 @@
 use super::*;
 use crate::command_spec::ArityPolicy;
+use crate::command_spec::KeyAccessPattern;
 use crate::command_spec::command_arity_policy;
 use crate::command_spec::command_id_from_name;
 use crate::command_spec::command_is_mutating;
+use crate::command_spec::command_key_access_pattern;
 use crate::command_spec::command_names_for_command_response;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
@@ -1841,7 +1843,19 @@ impl RequestProcessor {
             let end = 5 + key_count;
             keys.extend_from_slice(&args[5..end]);
         } else {
-            return Err(RequestExecutionError::SyntaxError);
+            let target_command = command_id_from_name(target);
+            match target_command {
+                Some(id) if command_key_access_pattern(id) == KeyAccessPattern::FirstKey => {
+                    ensure_min_arity(
+                        args,
+                        4,
+                        "COMMAND",
+                        "COMMAND GETKEYS <command> key [arg ...]",
+                    )?;
+                    keys.push(args[3]);
+                }
+                _ => return Err(RequestExecutionError::SyntaxError),
+            }
         }
 
         append_bulk_array(response_out, &keys);
@@ -2004,7 +2018,24 @@ impl RequestProcessor {
                 entries.push(((*source).to_vec(), &COMMAND_FLAGS_RO_ACCESS));
             }
         } else {
-            return Err(RequestExecutionError::InvalidArguments);
+            let target_command = command_id_from_name(target);
+            match target_command {
+                Some(id) if command_key_access_pattern(id) == KeyAccessPattern::FirstKey => {
+                    ensure_min_arity(
+                        args,
+                        4,
+                        "COMMAND",
+                        "COMMAND GETKEYSANDFLAGS <command> key [arg ...]",
+                    )?;
+                    let flags = if command_is_mutating(id) {
+                        &COMMAND_FLAGS_OW_UPDATE
+                    } else {
+                        &COMMAND_FLAGS_RO_ACCESS
+                    };
+                    entries.push((args[3].to_vec(), flags));
+                }
+                _ => return Err(RequestExecutionError::InvalidArguments),
+            }
         }
 
         append_command_getkeysandflags(response_out, &entries);
