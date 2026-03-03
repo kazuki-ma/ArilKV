@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 508
+> **Current Iteration**: 515
 
 ---
 
@@ -507,6 +507,13 @@
 | 11.351 | Expand ACL CAT to 21 categories and fix GETUSER/DELUSER case bug | DONE | 11.350 | ACL CAT now returns all 21 Redis categories (was 8). Fixed ascii_eq_ignore_case call for GETUSER (used lowercase "default" instead of "DEFAULT"). Added ACL CAT/GETUSER RESP2/RESP3 tests. 366 lib tests. Commit: `7040bf1f34`. |
 | 11.352 | Fix OBJECT/LATENCY/SLOWLOG/PUBSUB unknown subcommand error type | DONE | — | Changed 4 handlers from UnknownCommand to UnknownSubcommand. Updated test assertions. 366 lib tests. Commit: `f6a8738e36`. |
 | 11.353 | Add XGROUP CREATECONSUMER/DELCONSUMER and fix subcommand error type | DONE | — | CREATECONSUMER returns 1 on existing stream/group. DELCONSUMER returns 0 pending entries. Updated XGROUP_HELP_LINES 8→12. Fixed XGROUP fallback to UnknownSubcommand. 367 lib tests. Commit: `71dc8ac6d7`. |
+| 11.354 | Add MEMORY USAGE optional SAMPLES count parameter | DONE | — | MEMORY USAGE now accepts `SAMPLES count` (validates as integer, accepts but does not change behavior). Added test for valid/invalid SAMPLES usage. 368 lib tests. Commit: `c82c17bbd7`. |
+| 11.355 | Add XGROUP CREATE/SETID ENTRIESREAD option | DONE | — | XGROUP CREATE now accepts MKSTREAM and/or ENTRIESREAD in any order. XGROUP SETID accepts optional ENTRIESREAD. Validates entries-read as integer. 368 lib tests. Commit: `a1bb0b3857`. |
+| 11.356 | Expand CLIENT/DEBUG help lines and add common CONFIG GET defaults | DONE | — | CLIENT_HELP_LINES 23→29 (added PAUSE/SETINFO/TRACKING). DEBUG_HELP_LINES 12→22 (all implemented subcommands). Added 25+ CONFIG GET default parameters (maxmemory-policy, hz, timeout, databases, etc.). 368 lib tests. Commit: `2af8c69661`. |
+| 11.357 | Improve CLIENT LIST with TYPE/ID filters and richer output | DONE | — | CLIENT LIST now accepts TYPE (NORMAL/MASTER/REPLICA/PUBSUB) and ID filters. Output includes full client info fields instead of stub. 369 lib tests. Commit: `8e24c00221`. |
+| 11.358 | Add CONFIG SET validation for common parameters | DONE | — | Validates maxmemory-policy (8 policies), loglevel (4 levels), hz (1-500), appendfsync (3 modes), boolean params (12), and numeric params (14). 370 lib tests. Commit: `2f4e3e54f0`. |
+| 11.359 | Add XPENDING IDLE filter support | DONE | — | XPENDING accepts optional IDLE min-idle-time parameter (Redis 6.2+ syntax). Value validated but not used for filtering. 371 lib tests. Commit: `bc8af5494d`. |
+| 11.360 | Fix remaining UnknownCommand errors in subcommand handlers | DONE | 11.352 | PFDEBUG, SCRIPT, XINFO: UnknownCommand → UnknownSubcommand. SCRIPT FLUSH invalid mode → SyntaxError. 371 lib tests. Commit: `b1346bced0`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1257,3 +1264,10 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 506 | 2026-03-03 | 11.351 | DONE | ACL CAT 21 categories + GETUSER/DELUSER case fix. Promoted ACL to FULL. 366 lib tests. Commits: `7040bf1f34`, `dbcd5fd985`. |
 | 507 | 2026-03-03 | 11.352 | DONE | OBJECT/LATENCY/SLOWLOG/PUBSUB UnknownSubcommand fix. 366 lib tests. Commit: `f6a8738e36`. |
 | 508 | 2026-03-03 | 11.353 | DONE | XGROUP CREATECONSUMER/DELCONSUMER + UnknownSubcommand fix. 367 lib tests. Commit: `71dc8ac6d7`. |
+| 509 | 2026-03-03 | 11.354 | DONE | MEMORY USAGE optional SAMPLES parameter. 368 lib tests. Commit: `c82c17bbd7`. |
+| 510 | 2026-03-03 | 11.355 | DONE | XGROUP CREATE/SETID ENTRIESREAD option. 368 lib tests. Commit: `a1bb0b3857`. |
+| 511 | 2026-03-03 | 11.356 | DONE | CLIENT/DEBUG help lines + CONFIG GET defaults. 368 lib tests. Commit: `2af8c69661`. |
+| 512 | 2026-03-03 | 11.357 | DONE | CLIENT LIST TYPE/ID filters + richer output. 369 lib tests. Commit: `8e24c00221`. |
+| 513 | 2026-03-03 | 11.358 | DONE | CONFIG SET validation for common parameters. 370 lib tests. Commit: `2f4e3e54f0`. |
+| 514 | 2026-03-03 | 11.359 | DONE | XPENDING IDLE filter support. 371 lib tests. Commit: `bc8af5494d`. |
+| 515 | 2026-03-03 | 11.360 | DONE | PFDEBUG/SCRIPT/XINFO UnknownSubcommand fix. 371 lib tests. Commit: `b1346bced0`. |
