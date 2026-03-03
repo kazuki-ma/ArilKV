@@ -919,6 +919,30 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"SETINFO") {
+            require_exact_arity(args, 4, "CLIENT", "CLIENT SETINFO <option> <value>")?;
+            let option = args[2];
+            let value = args[3];
+            if ascii_eq_ignore_case(option, b"LIB-NAME") {
+                if value.iter().any(|&b| b == b' ' || b == b'\n') {
+                    response_out.extend_from_slice(
+                        b"-ERR lib-name can only contain characters that are allowed in CLIENT SETNAME\r\n",
+                    );
+                    return Ok(());
+                }
+                *self.client_lib_name.lock().unwrap_or_else(|e| e.into_inner()) = value.to_vec();
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(option, b"LIB-VER") {
+                *self.client_lib_ver.lock().unwrap_or_else(|e| e.into_inner()) = value.to_vec();
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            response_out
+                .extend_from_slice(b"-ERR Unrecognized option 'lib-name' or 'lib-ver' expected\r\n");
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"LIST") {
             // Accept optional TYPE or ID filter arguments for compatibility.
             if args.len() > 2 {
@@ -952,8 +976,12 @@ impl RequestProcessor {
                 .unwrap_or(1);
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
+            let lib_name = self.client_lib_name.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_name_str = String::from_utf8_lossy(&lib_name);
+            let lib_ver = self.client_lib_ver.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_ver_str = String::from_utf8_lossy(&lib_ver);
             let client_info = format!(
-                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name= lib-ver=\n"
+                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", client_info.as_bytes());
@@ -1026,8 +1054,12 @@ impl RequestProcessor {
                 .unwrap_or(1);
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
+            let lib_name = self.client_lib_name.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_name_str = String::from_utf8_lossy(&lib_name);
+            let lib_ver = self.client_lib_ver.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_ver_str = String::from_utf8_lossy(&lib_ver);
             let info_line = format!(
-                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name= lib-ver=\n"
+                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", info_line.as_bytes());

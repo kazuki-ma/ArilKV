@@ -986,6 +986,10 @@ pub struct RequestProcessor {
     client_name: Mutex<Vec<u8>>,
     /// CLIENT REPLY mode: 0 = ON (default), 1 = OFF, 2 = SKIP (one-shot).
     client_reply_mode: AtomicU8,
+    /// CLIENT SETINFO LIB-NAME value (empty = not set).
+    client_lib_name: Mutex<Vec<u8>>,
+    /// CLIENT SETINFO LIB-VER value (empty = not set).
+    client_lib_ver: Mutex<Vec<u8>>,
 }
 
 const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
@@ -1183,6 +1187,8 @@ impl RequestProcessor {
             client_pause_type: AtomicU8::new(CLIENT_PAUSE_TYPE_NONE),
             client_name: Mutex::new(Vec::new()),
             client_reply_mode: AtomicU8::new(CLIENT_REPLY_ON),
+            client_lib_name: Mutex::new(Vec::new()),
+            client_lib_ver: Mutex::new(Vec::new()),
         })
     }
 

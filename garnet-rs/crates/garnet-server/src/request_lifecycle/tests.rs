@@ -11893,12 +11893,54 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
         String::from_utf8_lossy(&setname_space)
     );
 
-    // CLIENT LIST should include the stored name in output
+    // CLIENT SETINFO LIB-NAME stores the library name
+    let setinfo_name = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"SETINFO", b"LIB-NAME", b"redis-py"]),
+    );
+    assert_eq!(setinfo_name, b"+OK\r\n");
+
+    // CLIENT SETINFO LIB-VER stores the library version
+    let setinfo_ver = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"SETINFO", b"LIB-VER", b"5.0.1"]),
+    );
+    assert_eq!(setinfo_ver, b"+OK\r\n");
+
+    // CLIENT SETINFO LIB-NAME rejects names with spaces
+    let setinfo_space = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"SETINFO", b"LIB-NAME", b"bad name"]),
+    );
+    assert!(
+        setinfo_space.starts_with(b"-ERR"),
+        "CLIENT SETINFO LIB-NAME should reject spaces"
+    );
+
+    // CLIENT SETINFO with unknown option returns error
+    let setinfo_bad = execute_frame(
+        &processor,
+        &encode_resp(&[b"CLIENT", b"SETINFO", b"UNKNOWN", b"val"]),
+    );
+    assert!(
+        setinfo_bad.starts_with(b"-ERR"),
+        "CLIENT SETINFO with unknown option should error"
+    );
+
+    // CLIENT LIST should include the stored name and lib info in output
     let list_with_name = execute_command_line(&processor, "CLIENT LIST").unwrap();
     let list_text = String::from_utf8_lossy(&list_with_name);
     assert!(
         list_text.contains("name=myconn"),
         "CLIENT LIST should include stored name: {list_text}"
+    );
+    assert!(
+        list_text.contains("lib-name=redis-py"),
+        "CLIENT LIST should include lib-name: {list_text}"
+    );
+    assert!(
+        list_text.contains("lib-ver=5.0.1"),
+        "CLIENT LIST should include lib-ver: {list_text}"
     );
 
     // CLIENT SETNAME with empty string clears the name
