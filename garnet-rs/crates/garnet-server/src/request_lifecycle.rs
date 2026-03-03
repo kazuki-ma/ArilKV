@@ -245,6 +245,51 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
         b"5".to_vec(),
     );
     values.insert(b"aof-use-rdb-preamble".to_vec(), b"yes".to_vec());
+    values.insert(b"list-compress-depth".to_vec(), b"0".to_vec());
+    values.insert(
+        b"zset-max-ziplist-value".to_vec(),
+        b"64".to_vec(),
+    );
+    values.insert(
+        b"zset-max-listpack-value".to_vec(),
+        b"64".to_vec(),
+    );
+    values.insert(
+        b"stream-node-max-bytes".to_vec(),
+        b"4096".to_vec(),
+    );
+    values.insert(
+        b"stream-node-max-entries".to_vec(),
+        b"100".to_vec(),
+    );
+    values.insert(b"maxclients".to_vec(), b"10000".to_vec());
+    values.insert(b"repl-backlog-ttl".to_vec(), b"3600".to_vec());
+    values.insert(b"cluster-enabled".to_vec(), b"no".to_vec());
+    values.insert(
+        b"cluster-node-timeout".to_vec(),
+        b"15000".to_vec(),
+    );
+    values.insert(b"latency-tracking".to_vec(), b"yes".to_vec());
+    values.insert(
+        b"latency-tracking-info-percentiles".to_vec(),
+        b"50 99 99.9".to_vec(),
+    );
+    values.insert(
+        b"close-on-oom".to_vec(),
+        b"no".to_vec(),
+    );
+    values.insert(
+        b"close-files-after-invoked-defer".to_vec(),
+        b"no".to_vec(),
+    );
+    values.insert(
+        b"min-replicas-max-lag".to_vec(),
+        b"10".to_vec(),
+    );
+    values.insert(
+        b"min-slaves-max-lag".to_vec(),
+        b"10".to_vec(),
+    );
     values
 }
 
