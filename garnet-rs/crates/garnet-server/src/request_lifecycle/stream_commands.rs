@@ -109,14 +109,29 @@ impl RequestProcessor {
         }
 
         if ascii_eq_ignore_case(subcommand, b"CREATE") {
-            ensure_one_of_arities(
+            ensure_min_arity(
                 args,
-                &[5, 6],
+                5,
                 "XGROUP",
-                "XGROUP CREATE key group id [MKSTREAM]",
+                "XGROUP CREATE key group id [MKSTREAM] [ENTRIESREAD entries-read]",
             )?;
-            if args.len() == 6 && !ascii_eq_ignore_case(args[5], b"MKSTREAM") {
-                return Err(RequestExecutionError::SyntaxError);
+            // Parse optional trailing tokens: MKSTREAM and/or ENTRIESREAD n.
+            let mut index = 5;
+            while index < args.len() {
+                if ascii_eq_ignore_case(args[index], b"MKSTREAM") {
+                    index += 1;
+                } else if ascii_eq_ignore_case(args[index], b"ENTRIESREAD") {
+                    if index + 1 >= args.len() {
+                        return Err(RequestExecutionError::SyntaxError);
+                    }
+                    // Validate the entries-read value is an integer; we accept
+                    // but ignore it since we don't track entries-read state.
+                    parse_i64_ascii(args[index + 1])
+                        .ok_or(RequestExecutionError::ValueNotInteger)?;
+                    index += 2;
+                } else {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
             }
             let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
@@ -129,7 +144,18 @@ impl RequestProcessor {
         }
 
         if ascii_eq_ignore_case(subcommand, b"SETID") {
-            require_exact_arity(args, 5, "XGROUP", "XGROUP SETID key group id")?;
+            ensure_one_of_arities(
+                args,
+                &[5, 7],
+                "XGROUP",
+                "XGROUP SETID key group id [ENTRIESREAD entries-read]",
+            )?;
+            if args.len() == 7 {
+                if !ascii_eq_ignore_case(args[5], b"ENTRIESREAD") {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                parse_i64_ascii(args[6]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            }
             let key = RedisKey::from(args[2]);
             let group = args[3].to_vec();
             let mut stream = self.load_stream_object(&key)?.unwrap_or_default();
