@@ -10423,3 +10423,96 @@ fn script_exists_returns_array_for_multiple_shas() {
     let exists_single = encode_resp(&[b"SCRIPT", b"EXISTS", sha_a.as_slice()]);
     assert_eq!(execute_frame(&processor, &exists_single), b"*1\r\n:1\r\n");
 }
+
+#[test]
+fn debug_sleep_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEBUG SLEEP 0", b"+OK\r\n");
+}
+
+#[test]
+fn debug_reload_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+}
+
+#[test]
+fn debug_object_reports_metadata_for_existing_key() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Missing key returns an error.
+    assert_command_response(&processor, "DEBUG OBJECT nosuchkey", b"-ERR no such key\r\n");
+
+    // Set a key and verify DEBUG OBJECT returns a bulk string with expected metadata.
+    assert_command_response(&processor, "SET mykey myvalue", b"+OK\r\n");
+    let response = execute_command_line(&processor, "DEBUG OBJECT mykey").unwrap();
+    let response_str = std::str::from_utf8(&response).expect("valid UTF-8 response");
+    assert!(response_str.starts_with('$'), "expected bulk string, got: {response_str}");
+    assert!(
+        response_str.contains("Value at:"),
+        "expected 'Value at:' in response: {response_str}"
+    );
+    assert!(
+        response_str.contains("refcount:1"),
+        "expected 'refcount:1' in response: {response_str}"
+    );
+    assert!(
+        response_str.contains("encoding:raw"),
+        "expected 'encoding:raw' in response: {response_str}"
+    );
+}
+
+#[test]
+fn debug_pause_cron_toggles_active_expire() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEBUG PAUSE-CRON 1", b"+OK\r\n");
+    assert_command_response(&processor, "DEBUG PAUSE-CRON 0", b"+OK\r\n");
+}
+
+#[test]
+fn memory_malloc_stats_returns_bulk_string() {
+    let processor = RequestProcessor::new().unwrap();
+    let frame = encode_resp(&[b"MEMORY", b"MALLOC-STATS"]);
+    let response = execute_frame(&processor, &frame);
+    assert!(
+        response.starts_with(b"$"),
+        "MEMORY MALLOC-STATS should return a bulk string, got: {:?}",
+        String::from_utf8_lossy(&response)
+    );
+}
+
+#[test]
+fn memory_purge_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let frame = encode_resp(&[b"MEMORY", b"PURGE"]);
+    let response = execute_frame(&processor, &frame);
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn lolwut_returns_bulk_with_version_info() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Plain LOLWUT returns a bulk string containing version info.
+    let frame = encode_resp(&[b"LOLWUT"]);
+    let response = execute_frame(&processor, &frame);
+    assert!(
+        response.starts_with(b"$"),
+        "LOLWUT should return a bulk string, got: {:?}",
+        String::from_utf8_lossy(&response)
+    );
+    assert!(
+        String::from_utf8_lossy(&response).contains("garnet-rs"),
+        "LOLWUT should contain version info, got: {:?}",
+        String::from_utf8_lossy(&response)
+    );
+
+    // LOLWUT VERSION 6 also returns a bulk string.
+    let frame_v6 = encode_resp(&[b"LOLWUT", b"VERSION", b"6"]);
+    let response_v6 = execute_frame(&processor, &frame_v6);
+    assert!(
+        response_v6.starts_with(b"$"),
+        "LOLWUT VERSION 6 should return a bulk string, got: {:?}",
+        String::from_utf8_lossy(&response_v6)
+    );
+}
