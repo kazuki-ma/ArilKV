@@ -11001,8 +11001,7 @@ fn command_info_returns_map_in_resp3_and_array_in_resp2() {
     );
 
     // RESP2: unknown command returns *0 placeholder
-    let resp2_unknown =
-        execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND").unwrap();
+    let resp2_unknown = execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND").unwrap();
     assert!(
         resp2_unknown.starts_with(b"*2\r\n"),
         "RESP2 should include placeholders for unknown commands"
@@ -11023,8 +11022,7 @@ fn command_info_returns_map_in_resp3_and_array_in_resp2() {
     );
 
     // RESP3: unknown commands are omitted from map
-    let resp3_mixed =
-        execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND SET").unwrap();
+    let resp3_mixed = execute_command_line(&processor, "COMMAND INFO GET NOTACOMMAND SET").unwrap();
     assert!(
         resp3_mixed.starts_with(b"%2\r\n"),
         "RESP3 should have map with 2 entries (unknown omitted), got: {:?}",
@@ -11167,11 +11165,7 @@ fn info_and_cluster_info_return_verbatim_string_in_resp3() {
         String::from_utf8_lossy(&resp3_info[..resp3_info.len().min(40)])
     );
     // Verify format prefix is "txt:"
-    let after_crlf_pos = resp3_info
-        .windows(2)
-        .position(|w| w == b"\r\n")
-        .unwrap()
-        + 2;
+    let after_crlf_pos = resp3_info.windows(2).position(|w| w == b"\r\n").unwrap() + 2;
     assert!(
         resp3_info[after_crlf_pos..].starts_with(b"txt:"),
         "RESP3 verbatim string should use txt format"
