@@ -9884,6 +9884,37 @@ fn function_list_supports_libraryname_filter_and_argument_errors() {
 }
 
 #[test]
+fn function_list_and_stats_use_resp3_map_types() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let library_source = b"#!lua name=testlib\nredis.register_function('myfn', function(keys, args) return 1 end)";
+    execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LOAD", library_source]),
+    );
+
+    // RESP3: FUNCTION LIST should use map (%N) for library entries
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let list_resp3 = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"LIST"]));
+    let list_text = String::from_utf8_lossy(&list_resp3);
+    assert!(
+        list_text.contains("%3\r\n"),
+        "RESP3 FUNCTION LIST library entry should use map: {list_text}"
+    );
+
+    // RESP3: FUNCTION STATS should use map (%N)
+    let stats_resp3 = execute_frame(&processor, &encode_resp(&[b"FUNCTION", b"STATS"]));
+    let stats_text = String::from_utf8_lossy(&stats_resp3);
+    assert!(
+        stats_text.contains("%2\r\n"),
+        "RESP3 FUNCTION STATS should use top-level map: {stats_text}"
+    );
+    assert!(
+        stats_text.contains("%1\r\n"),
+        "RESP3 FUNCTION STATS engines should use map: {stats_text}"
+    );
+}
+
+#[test]
 fn function_load_metadata_validation_matches_redis_messages() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     let body = b"redis.register_function('foo', function() return 1 end)";
