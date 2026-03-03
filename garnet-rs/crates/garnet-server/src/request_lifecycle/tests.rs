@@ -9209,6 +9209,59 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
 }
 
 #[test]
+fn xpending_accepts_idle_filter() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 16];
+    let mut response = Vec::new();
+
+    // Set up: create stream and consumer group
+    let xadd = encode_resp(&[b"XADD", b"xs1", b"*", b"f1", b"v1"]);
+    let meta = parse_resp_command_arg_slices(&xadd, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let xgroup = encode_resp(&[b"XGROUP", b"CREATE", b"xs1", b"g1", b"0"]);
+    let meta = parse_resp_command_arg_slices(&xgroup, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    // XPENDING with IDLE filter (no consumer)
+    response.clear();
+    let xpending_idle = encode_resp(&[
+        b"XPENDING", b"xs1", b"g1", b"IDLE", b"5000", b"-", b"+", b"10",
+    ]);
+    let meta = parse_resp_command_arg_slices(&xpending_idle, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    // XPENDING with IDLE filter and consumer
+    response.clear();
+    let xpending_idle_consumer = encode_resp(&[
+        b"XPENDING", b"xs1", b"g1", b"IDLE", b"5000", b"-", b"+", b"10", b"c1",
+    ]);
+    let meta = parse_resp_command_arg_slices(&xpending_idle_consumer, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*0\r\n");
+
+    // XPENDING with IDLE but missing min-idle-time should error
+    response.clear();
+    let xpending_bad_idle = encode_resp(&[b"XPENDING", b"xs1", b"g1", b"IDLE"]);
+    let meta = parse_resp_command_arg_slices(&xpending_bad_idle, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    assert!(matches!(err, RequestExecutionError::SyntaxError));
+}
+
+#[test]
 fn xtrim_supports_maxlen_minid_and_limit_options() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 24];

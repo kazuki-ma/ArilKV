@@ -488,7 +488,7 @@ impl RequestProcessor {
             args,
             3,
             "XPENDING",
-            "XPENDING key group [start end count [consumer]]",
+            "XPENDING key group [IDLE min-idle-time] start end count [consumer]",
         )?;
         let key = RedisKey::from(args[1]);
         let group = args[2];
@@ -513,17 +513,35 @@ impl RequestProcessor {
             append_array_length(response_out, 0);
             return Ok(());
         }
-        ensure_ranged_arity(
-            args,
-            6,
-            7,
-            "XPENDING",
-            "XPENDING key group [start end count [consumer]]",
-        )?;
+
+        // Extended form: XPENDING key group [IDLE min-idle-time] start end count [consumer]
+        // With IDLE: 8 or 9 args. Without IDLE: 6 or 7 args.
+        let has_idle = args.len() >= 4 && ascii_eq_ignore_case(args[3], b"IDLE");
+        let offset = if has_idle {
+            if args.len() < 8 {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            2
+        } else {
+            if args.len() < 6 {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            0
+        };
+        let count_index = 5 + offset;
+        if count_index >= args.len() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
         let parsed_count =
-            parse_i64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            parse_i64_ascii(args[count_index]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if parsed_count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        // Validate total arity: base (6+offset) or with consumer (7+offset)
+        let max_args = 7 + offset;
+        if args.len() > max_args {
+            return Err(RequestExecutionError::SyntaxError);
         }
         append_array_length(response_out, 0);
         Ok(())
