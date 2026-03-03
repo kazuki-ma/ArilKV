@@ -129,9 +129,7 @@ impl RequestProcessor {
             } else {
                 self.save_list_object(&key, &list)?;
             }
-            response_out.push(b'*');
-            response_out.extend_from_slice(popped.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, popped.len());
             for value in &popped {
                 append_bulk_string(response_out, value);
             }
@@ -171,14 +169,14 @@ impl RequestProcessor {
         let list = match self.load_list_object(&key)? {
             Some(list) => list,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
 
         let len = list.len() as i64;
         if len == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
@@ -188,21 +186,19 @@ impl RequestProcessor {
             normalized_start = 0;
         }
         if normalized_stop < 0 || normalized_start >= len {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
         if normalized_stop >= len {
             normalized_stop = len - 1;
         }
         if normalized_start > normalized_stop {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
         let count = (normalized_stop - normalized_start + 1) as usize;
-        response_out.push(b'*');
-        response_out.extend_from_slice(count.to_string().as_bytes());
-        response_out.extend_from_slice(b"\r\n");
+        append_array_length(response_out, count);
         for index in normalized_start..=normalized_stop {
             append_bulk_string(response_out, &list[index as usize]);
         }
@@ -273,7 +269,7 @@ impl RequestProcessor {
         let resp3 = self.resp_protocol_version().is_resp3();
         let Some(list) = self.load_list_object(&key)? else {
             if options.count.is_some() {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
             } else if resp3 {
                 append_null(response_out);
             } else {
@@ -329,9 +325,7 @@ impl RequestProcessor {
         }
 
         if options.count.is_some() {
-            response_out.push(b'*');
-            response_out.extend_from_slice(positions.len().to_string().as_bytes());
-            response_out.extend_from_slice(b"\r\n");
+            append_array_length(response_out, positions.len());
             for position in positions {
                 append_integer(response_out, position);
             }
@@ -783,7 +777,7 @@ impl RequestProcessor {
         if self.resp_protocol_version().is_resp3() {
             append_null(response_out);
         } else {
-            response_out.extend_from_slice(b"*-1\r\n");
+            append_null_array(response_out);
         }
         Ok(())
     }
@@ -805,7 +799,7 @@ impl RequestProcessor {
         if self.resp_protocol_version().is_resp3() {
             append_null(response_out);
         } else {
-            response_out.extend_from_slice(b"*-1\r\n");
+            append_null_array(response_out);
         }
         Ok(())
     }
@@ -1057,17 +1051,15 @@ fn looks_numeric_timeout_token(token: &[u8]) -> bool {
 }
 
 fn append_blocking_pop_response(response_out: &mut Vec<u8>, key: &[u8], value: &[u8]) {
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     append_bulk_string(response_out, key);
     append_bulk_string(response_out, value);
 }
 
 fn append_lmpop_response(response_out: &mut Vec<u8>, key: &[u8], values: &[Vec<u8>]) {
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     append_bulk_string(response_out, key);
-    response_out.push(b'*');
-    response_out.extend_from_slice(values.len().to_string().as_bytes());
-    response_out.extend_from_slice(b"\r\n");
+    append_array_length(response_out, values.len());
     for value in values {
         append_bulk_string(response_out, value);
     }

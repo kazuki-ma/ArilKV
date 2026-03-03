@@ -246,7 +246,7 @@ impl RequestProcessor {
             let longitude = decoded_score.longitude;
             let latitude = decoded_score.latitude;
 
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
             if resp3 {
                 append_double(response_out, longitude);
                 append_double(response_out, latitude);
@@ -869,7 +869,7 @@ fn execute_geo_query(
                 store_geosearch_result(processor, destination, &BTreeMap::new())?;
                 append_integer(response_out, 0);
             } else {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
             }
             return Ok(());
         }
@@ -1086,7 +1086,7 @@ fn append_geosearch_response(
             append_integer(response_out, entry.score as i64);
         }
         if options.with_coord {
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
             if resp3 {
                 append_double(response_out, entry.longitude);
                 append_double(response_out, entry.latitude);

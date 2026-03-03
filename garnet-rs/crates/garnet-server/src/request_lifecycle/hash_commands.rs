@@ -136,7 +136,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_map_length(response_out, 0);
                 } else {
-                    response_out.extend_from_slice(b"*0\r\n");
+                    append_array_length(response_out, 0);
                 }
                 return Ok(());
             }
@@ -299,7 +299,7 @@ impl RequestProcessor {
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -323,7 +323,7 @@ impl RequestProcessor {
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -574,16 +574,16 @@ impl RequestProcessor {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
         if requested_count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
         let Some(hash) = hash else {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         };
         if hash.is_empty() {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
@@ -612,7 +612,7 @@ impl RequestProcessor {
                 response_out.extend_from_slice(sampled.len().to_string().as_bytes());
                 response_out.extend_from_slice(b"\r\n");
                 for (field, value) in sampled {
-                    response_out.extend_from_slice(b"*2\r\n");
+                    append_array_length(response_out, 2);
                     append_bulk_string(response_out, field);
                     append_bulk_string(response_out, value);
                 }
@@ -1312,7 +1312,7 @@ fn append_hash_scan_response(
     let next_cursor = if end >= pairs.len() { 0 } else { end };
     let page = &pairs[start..end];
 
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
 

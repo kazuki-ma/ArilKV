@@ -94,14 +94,14 @@ impl RequestProcessor {
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
 
         let entries = sorted_zset_entries_by_score(&zset);
         let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         };
 
@@ -144,7 +144,7 @@ impl RequestProcessor {
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -152,7 +152,7 @@ impl RequestProcessor {
         let mut entries = sorted_zset_entries_by_score(&zset);
         entries.reverse();
         let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         };
 
@@ -826,7 +826,7 @@ impl RequestProcessor {
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -897,7 +897,7 @@ impl RequestProcessor {
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -1020,11 +1020,11 @@ impl RequestProcessor {
         };
 
         let Some(zset) = zset else {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         };
         if zset.is_empty() || count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
@@ -1051,7 +1051,7 @@ impl RequestProcessor {
         response_out.extend_from_slice(b"\r\n");
         for (member, score) in sampled {
             if emit_pair_array {
-                response_out.extend_from_slice(b"*2\r\n");
+                append_array_length(response_out, 2);
                 append_bulk_string(response_out, member.as_slice());
                 if resp3 {
                     append_double(response_out, score);
@@ -1181,12 +1181,12 @@ impl RequestProcessor {
             1
         };
         if count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
         let requested = usize::try_from(count).unwrap_or(usize::MAX);
         let Some(selected) = self.pop_zset_entries_from_key(&key, pop_max, requested)? else {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         };
 
@@ -1205,7 +1205,7 @@ impl RequestProcessor {
         response_out.extend_from_slice(b"\r\n");
         for (member, score) in selected {
             if emit_pair_array {
-                response_out.extend_from_slice(b"*2\r\n");
+                append_array_length(response_out, 2);
                 append_bulk_string(response_out, member.as_slice());
                 if resp3 {
                     append_double(response_out, score);
@@ -1259,7 +1259,7 @@ impl RequestProcessor {
         if self.resp_protocol_version().is_resp3() {
             append_null(response_out);
         } else {
-            response_out.extend_from_slice(b"*-1\r\n");
+            append_null_array(response_out);
         }
         Ok(())
     }
@@ -1282,7 +1282,7 @@ impl RequestProcessor {
         if self.resp_protocol_version().is_resp3() {
             append_null(response_out);
         } else {
-            response_out.extend_from_slice(b"*-1\r\n");
+            append_null_array(response_out);
         }
         Ok(())
     }
@@ -1409,7 +1409,7 @@ fn append_zset_scan_response(
     let next_cursor = if end >= entries.len() { 0 } else { end };
     let page = &entries[start..end];
 
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
 
@@ -1484,7 +1484,7 @@ fn append_zrange_score_entries(
         response_out.extend_from_slice(entries.len().to_string().as_bytes());
         response_out.extend_from_slice(b"\r\n");
         for (member, score) in entries {
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
             append_bulk_string(response_out, member);
             if resp3_double {
                 append_double(response_out, *score);
@@ -1858,13 +1858,13 @@ fn append_zmpop_response(
     entries: &[(Vec<u8>, f64)],
     resp3: bool,
 ) {
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     append_bulk_string(response_out, key);
     response_out.push(b'*');
     response_out.extend_from_slice(entries.len().to_string().as_bytes());
     response_out.extend_from_slice(b"\r\n");
     for (member, score) in entries {
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, member);
         if resp3 {
             append_double(response_out, *score);
@@ -1880,7 +1880,7 @@ fn append_bzpop_response(
     entry: &(Vec<u8>, f64),
     resp3: bool,
 ) {
-    response_out.extend_from_slice(b"*3\r\n");
+    append_array_length(response_out, 3);
     append_bulk_string(response_out, key);
     append_bulk_string(response_out, entry.0.as_slice());
     if resp3 {

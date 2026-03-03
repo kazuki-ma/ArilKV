@@ -230,7 +230,7 @@ impl RequestProcessor {
         let mut stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -258,7 +258,7 @@ impl RequestProcessor {
         }
 
         if selected.is_empty() {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
@@ -271,12 +271,12 @@ impl RequestProcessor {
             append_map_length(response_out, 1);
         } else {
             append_array_length(response_out, 1);
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
         }
         append_bulk_string(response_out, key.as_slice());
         append_array_length(response_out, selected.len());
         for (id, fields) in selected {
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
             append_bulk_string(response_out, &id.encode());
             append_stream_entry_fields(response_out, &fields, resp3);
         }
@@ -389,7 +389,7 @@ impl RequestProcessor {
         }
         for (key, entries) in stream_results {
             if !resp3 {
-                response_out.extend_from_slice(b"*2\r\n");
+                append_array_length(response_out, 2);
             }
             append_bulk_string(response_out, key.as_slice());
             append_stream_entry_array(response_out, &entries, resp3);
@@ -439,7 +439,7 @@ impl RequestProcessor {
 
         if args.len() == 3 {
             let resp3 = self.resp_protocol_version().is_resp3();
-            response_out.extend_from_slice(b"*4\r\n");
+            append_array_length(response_out, 4);
             append_integer(response_out, 0);
             if resp3 {
                 append_null(response_out);
@@ -448,7 +448,7 @@ impl RequestProcessor {
                 append_null_bulk_string(response_out);
                 append_null_bulk_string(response_out);
             }
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
         ensure_ranged_arity(
@@ -463,7 +463,7 @@ impl RequestProcessor {
         if parsed_count < 0 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        response_out.extend_from_slice(b"*0\r\n");
+        append_array_length(response_out, 0);
         Ok(())
     }
 
@@ -536,7 +536,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        response_out.extend_from_slice(b"*0\r\n");
+        append_array_length(response_out, 0);
         Ok(())
     }
 
@@ -583,10 +583,10 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        response_out.extend_from_slice(b"*3\r\n");
+        append_array_length(response_out, 3);
         append_bulk_string(response_out, start_id);
-        response_out.extend_from_slice(b"*0\r\n");
-        response_out.extend_from_slice(b"*0\r\n");
+        append_array_length(response_out, 0);
+        append_array_length(response_out, 0);
         Ok(())
     }
 
@@ -844,14 +844,14 @@ impl RequestProcessor {
         let end = args[3];
         let count = parse_stream_count_option(args)?;
         if count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -878,14 +878,14 @@ impl RequestProcessor {
         let start = args[3];
         let count = parse_stream_count_option(args)?;
         if count == 0 {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
             None => {
-                response_out.extend_from_slice(b"*0\r\n");
+                append_array_length(response_out, 0);
                 return Ok(());
             }
         };
@@ -1004,10 +1004,6 @@ fn is_xclaim_option_token(token: &[u8]) -> bool {
         || ascii_eq_ignore_case(token, b"FORCE")
         || ascii_eq_ignore_case(token, b"JUSTID")
         || ascii_eq_ignore_case(token, b"LASTID")
-}
-
-fn append_null_array(response_out: &mut Vec<u8>) {
-    response_out.extend_from_slice(b"*-1\r\n");
 }
 
 fn parse_stream_count_option(args: &[&[u8]]) -> Result<usize, RequestExecutionError> {
@@ -1153,7 +1149,7 @@ fn append_stream_entry_array(
 ) {
     append_array_length(response_out, entries.len());
     for (id, fields) in entries {
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, &id.encode());
         if resp3 {
             append_map_length(response_out, fields.len());
@@ -1235,7 +1231,7 @@ fn append_xinfo_stream_summary(
     // 9. first-entry
     append_bulk_string(response_out, b"first-entry");
     if let Some((id, fields)) = stream.entries.first_key_value() {
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, &id.encode());
         append_stream_entry_fields(response_out, fields, resp3);
     } else if resp3 {
@@ -1247,7 +1243,7 @@ fn append_xinfo_stream_summary(
     // 10. last-entry
     append_bulk_string(response_out, b"last-entry");
     if let Some((id, fields)) = stream.entries.last_key_value() {
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, &id.encode());
         append_stream_entry_fields(response_out, fields, resp3);
     } else if resp3 {
@@ -1307,7 +1303,7 @@ fn append_xinfo_stream_full(
     let visible_entries: Vec<_> = stream.entries.iter().take(entry_count_limit).collect();
     append_array_length(response_out, visible_entries.len());
     for (id, fields) in &visible_entries {
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, &id.encode());
         append_stream_entry_fields(response_out, fields, resp3);
     }

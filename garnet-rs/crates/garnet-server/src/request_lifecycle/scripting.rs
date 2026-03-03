@@ -1001,7 +1001,7 @@ impl RequestProcessor {
                     ("", FunctionExecutionFlags::default())
                 };
 
-                response_out.extend_from_slice(b"*6\r\n");
+                append_array_length(response_out, 6);
                 append_bulk_string(response_out, b"name");
                 append_bulk_string(response_out, function_name.as_bytes());
                 append_bulk_string(response_out, b"description");
@@ -1080,12 +1080,12 @@ impl RequestProcessor {
         };
         let running_script_state = running_script_state.clone();
 
-        response_out.extend_from_slice(b"*4\r\n");
+        append_array_length(response_out, 4);
         append_bulk_string(response_out, b"running_script");
         if let Some(state) = running_script_state {
             let duration_millis = state.started_at.elapsed().as_millis();
             let duration_millis = i64::try_from(duration_millis).unwrap_or(i64::MAX);
-            response_out.extend_from_slice(b"*6\r\n");
+            append_array_length(response_out, 6);
             append_bulk_string(response_out, b"name");
             append_bulk_string(response_out, state.name.as_bytes());
             append_bulk_string(response_out, b"command");
@@ -1093,13 +1093,13 @@ impl RequestProcessor {
             append_bulk_string(response_out, b"duration_ms");
             append_integer(response_out, duration_millis);
         } else {
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
         }
 
         append_bulk_string(response_out, b"engines");
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, b"LUA");
-        response_out.extend_from_slice(b"*4\r\n");
+        append_array_length(response_out, 4);
         append_bulk_string(response_out, b"libraries_count");
         append_integer(response_out, registry.library_sources.len() as i64);
         append_bulk_string(response_out, b"functions_count");

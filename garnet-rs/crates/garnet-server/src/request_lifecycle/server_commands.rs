@@ -389,7 +389,7 @@ impl RequestProcessor {
             && let Some(client_id) = super::current_request_client_id()
             && self.pubsub_subscription_count(client_id) > 0
         {
-            response_out.extend_from_slice(b"*2\r\n");
+            append_array_length(response_out, 2);
             append_bulk_string(response_out, b"pong");
             let payload = if args.len() == 1 { b"" } else { args[1] };
             append_bulk_string(response_out, payload);
@@ -1304,7 +1304,7 @@ impl RequestProcessor {
                 if resp3 {
                     response_out.extend_from_slice(b"|1\r\n");
                     append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIBUTE_NAME);
-                    response_out.extend_from_slice(b"*2\r\n");
+                    append_array_length(response_out, 2);
                     append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIBUTE_KEY);
                     append_integer(response_out, 90);
                     append_bulk_string(response_out, DEBUG_PROTOCOL_ATTRIB_REPLY);
@@ -2257,7 +2257,7 @@ impl RequestProcessor {
             response_out.extend_from_slice(latest.len().to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
             for event in latest {
-                response_out.extend_from_slice(b"*4\r\n");
+                append_array_length(response_out, 4);
                 append_bulk_string(response_out, &event.event_name);
                 append_integer(response_out, event.latest_sample.unix_seconds as i64);
                 append_integer(response_out, event.latest_sample.latency_millis as i64);
@@ -2272,7 +2272,7 @@ impl RequestProcessor {
             response_out.extend_from_slice(history.len().to_string().as_bytes());
             response_out.extend_from_slice(b"\r\n");
             for sample in history {
-                response_out.extend_from_slice(b"*2\r\n");
+                append_array_length(response_out, 2);
                 append_integer(response_out, sample.unix_seconds as i64);
                 append_integer(response_out, sample.latency_millis as i64);
             }
@@ -3719,7 +3719,7 @@ fn append_pubsub_ack(
     if resp3 {
         append_push_length(response_out, 3);
     } else {
-        response_out.extend_from_slice(b"*3\r\n");
+        append_array_length(response_out, 3);
     }
     append_bulk_string(response_out, kind);
     match channel {
@@ -3957,7 +3957,7 @@ fn append_scan_cursor_and_key_array(
     let end = start.saturating_add(count).min(keys.len());
     let next_cursor = if end >= keys.len() { 0 } else { end };
 
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
 
@@ -4083,7 +4083,7 @@ fn command_getkeys_numkeys(
 }
 
 fn append_command_info_entry(response_out: &mut Vec<u8>, name: &[u8], arity: i64, flags: &[&[u8]]) {
-    response_out.extend_from_slice(b"*3\r\n");
+    append_array_length(response_out, 3);
     append_bulk_string(response_out, name);
     append_integer(response_out, arity);
     append_bulk_array(response_out, flags);
@@ -4097,7 +4097,7 @@ fn append_command_getkeysandflags(
     response_out.extend_from_slice(entries.len().to_string().as_bytes());
     response_out.extend_from_slice(b"\r\n");
     for (key, flags) in entries {
-        response_out.extend_from_slice(b"*2\r\n");
+        append_array_length(response_out, 2);
         append_bulk_string(response_out, key);
         append_bulk_array(response_out, flags);
     }

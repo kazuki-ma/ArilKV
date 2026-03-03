@@ -140,9 +140,9 @@ impl RequestProcessor {
             Some(set) => set,
             None => {
                 if resp3 {
-                    response_out.extend_from_slice(b"~0\r\n");
+                    append_set_length(response_out, 0);
                 } else {
-                    response_out.extend_from_slice(b"*0\r\n");
+                    append_array_length(response_out, 0);
                 }
                 return Ok(());
             }
@@ -668,7 +668,7 @@ fn append_set_scan_response(
     let end = start.saturating_add(count).min(values.len());
     let next_cursor = if end >= values.len() { 0 } else { end };
 
-    response_out.extend_from_slice(b"*2\r\n");
+    append_array_length(response_out, 2);
     let next_cursor_bytes = next_cursor.to_string();
     append_bulk_string(response_out, next_cursor_bytes.as_bytes());
 

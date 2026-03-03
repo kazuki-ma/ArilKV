@@ -908,7 +908,7 @@ impl RequestProcessor {
             if saw_overflow_directive {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            response_out.extend_from_slice(b"*0\r\n");
+            append_array_length(response_out, 0);
             return Ok(());
         }
 
