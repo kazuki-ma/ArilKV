@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 501
+> **Current Iteration**: 504
 
 ---
 
@@ -500,6 +500,9 @@
 | 11.344 | Add tests for ACL DRYRUN and CLUSTER stubs | DONE | 11.343 | Covers valid/invalid slot ranges, arity errors, HELP line counts. 386 tests. Commit: `284c4860d2`. |
 | 11.345 | Replace hardcoded RESP array/null patterns with helpers (batch 2) | DONE | 11.341 | Systematic *0, *2, *3, *4, *6, *-1, ~0 replacement with append_array_length/append_null_array/append_set_length across all 9 request_lifecycle modules. Removed duplicate append_null_array in stream_commands. 386 tests. Commit: `7802b1ad10`. |
 | 11.346 | Replace dynamic push/to_string array length with append_array_length (batch 3) | DONE | 11.345 | Eliminated 3-line push(b'*')+to_string()+extend("\r\n") patterns across hash_commands, zset_commands, set_commands, string_commands, server_commands, scripting. Net -69 lines. 386 tests. Commit: `692b3ed35d`. |
+| 11.347 | Implement SET GET option to return old value before replacement | DONE | — | Added return_old_value to SetOptions, parse GET token. Returns old string value or null. Handles NX/XX+GET combinations and WRONGTYPE for non-string keys (per Valkey semantics). 387 tests. Commit: `3cf7d017f8`. |
+| 11.348 | Add MODULE LOAD/LOADEX/UNLOAD and CLUSTER RESET/SHARDS stubs | DONE | — | MODULE: LOAD/LOADEX return "not supported" error, UNLOAD returns "no such module". Changed MODULE unknown-subcommand from UnknownCommand to UnknownSubcommand. CLUSTER: RESET validates HARD/SOFT mode, SHARDS returns single-shard topology. CLUSTER_HELP_LINES 20→24. 387 tests. Commit: `e027dd873e`. |
+| 11.349 | Add tests for MODULE LOAD/LOADEX/UNLOAD and CLUSTER RESET/SHARDS | DONE | 11.348 | Tests MODULE stubs (LOAD/LOADEX/UNLOAD error responses, arity, unknown subcommand, HELP count), CLUSTER RESET modes, CLUSTER SHARDS topology fields. 389 tests. Commit: `065542f65e`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1242,3 +1245,6 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 498 | 2026-03-03 | 11.345 | DONE | Batch 2: replaced hardcoded RESP *0/*2/*3/*4/*6/*-1/~0 with helper functions across 9 modules. 386 tests. Commit: `7802b1ad10`. |
 | 499 | 2026-03-03 | 11.346 | DONE | Batch 3: replaced dynamic push/to_string array length encoding with append_array_length across 6 files. Net -69 lines. 386 tests. Commit: `692b3ed35d`. |
 | 500 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 495-501 and TODOs 11.342-11.346. |
+| 501 | 2026-03-03 | 11.347 | DONE | Implemented SET GET option. Added return_old_value to SetOptions, parse GET token, return old value/null. Handles NX/XX+GET, WRONGTYPE. 387 tests. Commit: `3cf7d017f8`. |
+| 502 | 2026-03-03 | 11.348 | DONE | Added MODULE LOAD/LOADEX/UNLOAD stubs and CLUSTER RESET/SHARDS stubs. Updated CLUSTER_HELP_LINES 20→24. 387 tests. Commit: `e027dd873e`. |
+| 503 | 2026-03-03 | 11.349 | DONE | Added tests for MODULE/CLUSTER stubs. 389 tests. Commit: `065542f65e`. |
