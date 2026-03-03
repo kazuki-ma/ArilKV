@@ -207,7 +207,7 @@ const DEBUG_HELP_LINES: [&[u8]; 12] = [
     b"DIGEST",
     b"    Compute a dataset digest.",
 ];
-const CLUSTER_HELP_LINES: [&[u8]; 20] = [
+const CLUSTER_HELP_LINES: [&[u8]; 24] = [
     b"CLUSTER <subcommand> [<arg> [value] [opt] ...]",
     b"Available subcommands:",
     b"COUNTKEYSINSLOT <slot>",
@@ -222,8 +222,12 @@ const CLUSTER_HELP_LINES: [&[u8]; 20] = [
     b"    Return the node ID.",
     b"NODES",
     b"    Return cluster configuration of nodes.",
+    b"RESET [HARD|SOFT]",
+    b"    Reset a node.",
     b"SAVECONFIG",
     b"    Force save the cluster configuration on disk.",
+    b"SHARDS",
+    b"    Return information about slot range mappings.",
     b"SLOTS",
     b"    Return information about slots range mappings.",
     b"HELP",
@@ -2382,12 +2386,30 @@ impl RequestProcessor {
             append_array_length(response_out, 0);
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"LOAD") {
+            ensure_min_arity(args, 3, "MODULE", "MODULE LOAD <path> [<arg> ...]")?;
+            append_error(response_out, b"ERR Module loading is not supported");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"LOADEX") {
+            ensure_min_arity(args, 3, "MODULE", "MODULE LOADEX <path> [args ...]")?;
+            append_error(response_out, b"ERR Module loading is not supported");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"UNLOAD") {
+            require_exact_arity(args, 3, "MODULE", "MODULE UNLOAD <name>")?;
+            append_error(
+                response_out,
+                b"ERR Error unloading module: no such module with that name",
+            );
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "MODULE", "MODULE HELP")?;
             append_bulk_array(response_out, &MODULE_HELP_LINES);
             return Ok(());
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_slowlog(
@@ -2642,10 +2664,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "CLUSTER", "CLUSTER COUNTKEYSINSLOT slot")?;
             let slot = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if slot > 16383 {
-                append_error(
-                    response_out,
-                    b"ERR Invalid or out of range slot",
-                );
+                append_error(response_out, b"ERR Invalid or out of range slot");
                 return Ok(());
             }
             append_integer(response_out, 0);
@@ -2655,14 +2674,44 @@ impl RequestProcessor {
             require_exact_arity(args, 4, "CLUSTER", "CLUSTER GETKEYSINSLOT slot count")?;
             let slot = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             if slot > 16383 {
-                append_error(
-                    response_out,
-                    b"ERR Invalid or out of range slot",
-                );
+                append_error(response_out, b"ERR Invalid or out of range slot");
                 return Ok(());
             }
             let _count = parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
             append_array_length(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"RESET") {
+            ensure_ranged_arity(args, 2, 3, "CLUSTER", "CLUSTER RESET [HARD|SOFT]")?;
+            if args.len() == 3 {
+                let mode = args[2];
+                if !ascii_eq_ignore_case(mode, b"HARD") && !ascii_eq_ignore_case(mode, b"SOFT") {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+            }
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SHARDS") {
+            require_exact_arity(args, 2, "CLUSTER", "CLUSTER SHARDS")?;
+            // Return a single shard covering all slots with this node.
+            append_array_length(response_out, 1);
+            append_array_length(response_out, 4);
+            append_bulk_string(response_out, b"slots");
+            append_array_length(response_out, 2);
+            append_integer(response_out, 0);
+            append_integer(response_out, 16_383);
+            append_bulk_string(response_out, b"nodes");
+            append_array_length(response_out, 1);
+            append_array_length(response_out, 8);
+            append_bulk_string(response_out, b"id");
+            append_bulk_string(response_out, b"0000000000000000000000000000000000000000");
+            append_bulk_string(response_out, b"port");
+            append_integer(response_out, 6379);
+            append_bulk_string(response_out, b"ip");
+            append_bulk_string(response_out, b"127.0.0.1");
+            append_bulk_string(response_out, b"role");
+            append_bulk_string(response_out, b"master");
             return Ok(());
         }
         Err(RequestExecutionError::ClusterSupportDisabled)

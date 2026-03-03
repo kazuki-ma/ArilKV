@@ -7503,7 +7503,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap_err();
     err.append_resp_error(&mut response);
-    assert_eq!(response, b"-ERR unknown command\r\n");
+    assert_eq!(response, b"-ERR unknown subcommand\r\n");
 
     response.clear();
     let latency_unknown = b"*2\r\n$7\r\nLATENCY\r\n$4\r\nNOPE\r\n";
@@ -11805,8 +11805,8 @@ fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
     // CLUSTER HELP reflects new count
     let cluster_help = execute_command_line(&processor, "CLUSTER HELP").unwrap();
     assert!(
-        cluster_help.starts_with(b"*20\r\n"),
-        "CLUSTER HELP should return 20-element array"
+        cluster_help.starts_with(b"*24\r\n"),
+        "CLUSTER HELP should return 24-element array"
     );
 }
 
