@@ -696,18 +696,16 @@ impl RequestProcessor {
                 slot.insert(script.to_vec());
                 inserted = true;
             }
-            if inserted {
-                if let Ok(mut insertion_order) = self.script_cache_insertion_order.lock() {
-                    insertion_order.push_back(sha1.clone());
-                    if cache_max_entries > 0 {
-                        while cache.len() > cache_max_entries {
-                            if let Some(evicted_sha) = insertion_order.pop_front() {
-                                if cache.remove(&evicted_sha).is_some() {
-                                    self.record_script_cache_eviction();
-                                }
-                            } else {
-                                break;
+            if inserted && let Ok(mut insertion_order) = self.script_cache_insertion_order.lock() {
+                insertion_order.push_back(sha1.clone());
+                if cache_max_entries > 0 {
+                    while cache.len() > cache_max_entries {
+                        if let Some(evicted_sha) = insertion_order.pop_front() {
+                            if cache.remove(&evicted_sha).is_some() {
+                                self.record_script_cache_eviction();
                             }
+                        } else {
+                            break;
                         }
                     }
                 }
@@ -785,10 +783,10 @@ impl RequestProcessor {
             ));
         };
         for registration in registrations {
-            if let Some(existing) = registry.functions.get(&registration.name) {
-                if existing.library_name != library_name {
-                    return Ok(Some(registration.name.clone()));
-                }
+            if let Some(existing) = registry.functions.get(&registration.name)
+                && existing.library_name != library_name
+            {
+                return Ok(Some(registration.name.clone()));
             }
         }
         Ok(None)
@@ -1219,12 +1217,11 @@ impl RequestProcessor {
 
         for registration in registrations {
             let normalized_name = registration.name.to_ascii_lowercase();
-            if let Some(existing) = registry.functions.get(&normalized_name) {
-                if existing.library_name != library_name
-                    && !existing_library_name_set.contains(&normalized_name)
-                {
-                    return Err(RequestExecutionError::FunctionNameAlreadyExists);
-                }
+            if let Some(existing) = registry.functions.get(&normalized_name)
+                && existing.library_name != library_name
+                && !existing_library_name_set.contains(&normalized_name)
+            {
+                return Err(RequestExecutionError::FunctionNameAlreadyExists);
             }
         }
 
@@ -1459,6 +1456,7 @@ impl RequestProcessor {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn execute_lua_function(
         &self,
         library_source: &[u8],
@@ -1710,9 +1708,9 @@ impl RequestProcessor {
         }
     }
 
-    fn execute_lua_redis_call<'lua>(
+    fn execute_lua_redis_call(
         &self,
-        lua: &'lua Lua,
+        lua: &Lua,
         values: MultiValue,
         mutability: ScriptMutability,
         allow_oom: bool,
@@ -1815,19 +1813,17 @@ impl RequestProcessor {
             lua.set_hook(
                 HookTriggers::new().every_nth_instruction(LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE),
                 move |_lua, _debug| {
-                    if let Some(flag) = &kill_flag {
-                        if flag.load(Ordering::Acquire) {
-                            return Err(LuaError::RuntimeError(
-                                SCRIPT_KILLED_ERROR_TEXT.to_string(),
-                            ));
-                        }
+                    if let Some(flag) = &kill_flag
+                        && flag.load(Ordering::Acquire)
+                    {
+                        return Err(LuaError::RuntimeError(SCRIPT_KILLED_ERROR_TEXT.to_string()));
                     }
-                    if let Some(timeout) = timeout {
-                        if started.elapsed() > timeout {
-                            return Err(LuaError::RuntimeError(
-                                SCRIPT_TIMEOUT_ERROR_TEXT.to_string(),
-                            ));
-                        }
+                    if let Some(timeout) = timeout
+                        && started.elapsed() > timeout
+                    {
+                        return Err(LuaError::RuntimeError(
+                            SCRIPT_TIMEOUT_ERROR_TEXT.to_string(),
+                        ));
                     }
                     Ok(VmState::Continue)
                 },
@@ -2178,7 +2174,7 @@ fn build_lua_bit_table(lua: &Lua) -> mlua::Result<LuaTable> {
     // tohex(x [, n]) — convert to hex string
     // n > 0: lowercase, n < 0: uppercase, |n| = number of hex digits (default 8)
     let tohex_fn = lua.create_function(|_, args: MultiValue| {
-        let value = match args.get(0) {
+        let value = match args.front() {
             Some(LuaValue::Integer(n)) => *n as u32,
             Some(LuaValue::Number(n)) => *n as u32,
             _ => {
@@ -2456,10 +2452,10 @@ fn json_value_to_lua(
                     json_value_to_lua(lua, v, depth + 1, max_depth, use_array_mt)?,
                 )?;
             }
-            if use_array_mt {
-                if let Ok(array_mt) = lua.globals().raw_get::<LuaTable>(CJSON_ARRAY_MT_KEY) {
-                    let _ = table.set_metatable(Some(array_mt));
-                }
+            if use_array_mt
+                && let Ok(array_mt) = lua.globals().raw_get::<LuaTable>(CJSON_ARRAY_MT_KEY)
+            {
+                let _ = table.set_metatable(Some(array_mt));
             }
             Ok(LuaValue::Table(table))
         }
@@ -2651,7 +2647,7 @@ fn lua_value_to_msgpack(value: LuaValue, depth: usize) -> mlua::Result<rmpv::Val
 
 fn msgpack_value_to_lua(lua: &Lua, value: rmpv::Value) -> mlua::Result<LuaValue> {
     match value {
-        rmpv::Value::Nil => Ok(LuaValue::Boolean(false)),
+        rmpv::Value::Nil => Ok(LuaValue::Nil),
         rmpv::Value::Boolean(b) => Ok(LuaValue::Boolean(b)),
         rmpv::Value::Integer(n) => {
             if let Some(i) = n.as_i64() {
@@ -2682,7 +2678,12 @@ fn msgpack_value_to_lua(lua: &Lua, value: rmpv::Value) -> mlua::Result<LuaValue>
         rmpv::Value::Map(map) => {
             let table = lua.create_table_with_capacity(0, map.len())?;
             for (k, v) in map {
-                table.set(msgpack_value_to_lua(lua, k)?, msgpack_value_to_lua(lua, v)?)?;
+                let lua_val = msgpack_value_to_lua(lua, v)?;
+                // In Lua, setting a table key to nil removes the entry.
+                // Skip nil values to match Redis's lua_settable behavior.
+                if lua_val != LuaValue::Nil {
+                    table.set(msgpack_value_to_lua(lua, k)?, lua_val)?;
+                }
             }
             Ok(LuaValue::Table(table))
         }
@@ -2861,7 +2862,7 @@ fn make_table_readonly(lua: &Lua, content: &LuaTable) -> mlua::Result<()> {
 }
 
 /// Get the backing table for a readonly proxy table, if it has one.
-fn get_readonly_backing<'a>(table: &'a LuaTable) -> Option<LuaTable> {
+fn get_readonly_backing(table: &LuaTable) -> Option<LuaTable> {
     let metatable = table.metatable()?;
     match metatable.raw_get::<LuaValue>(READONLY_BACKING_KEY) {
         Ok(LuaValue::Table(backing)) => Some(backing),
@@ -2968,12 +2969,11 @@ fn install_safe_setmetatable(
                 if let Ok(LuaValue::Table(registry)) = lua
                     .globals()
                     .raw_get::<LuaValue>(READONLY_TABLES_REGISTRY_KEY)
+                    && let Ok(LuaValue::Boolean(true)) = registry.raw_get::<LuaValue>(t.clone())
                 {
-                    if let Ok(LuaValue::Boolean(true)) = registry.raw_get::<LuaValue>(t.clone()) {
-                        return Err(LuaError::RuntimeError(
-                            "Attempt to modify a readonly table".to_string(),
-                        ));
-                    }
+                    return Err(LuaError::RuntimeError(
+                        "Attempt to modify a readonly table".to_string(),
+                    ));
                 }
             }
             original_setmetatable.call::<LuaValue>((table, mt))
