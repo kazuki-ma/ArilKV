@@ -4,6 +4,7 @@ use super::*;
 pub(super) struct ScanMatchCountOptions<'a> {
     pub(super) pattern: Option<&'a [u8]>,
     pub(super) count: usize,
+    pub(super) novalues: bool,
 }
 
 #[inline]
@@ -83,6 +84,7 @@ pub(super) fn parse_scan_match_count_options<'a>(
     let mut options = ScanMatchCountOptions {
         pattern: None,
         count: 10,
+        novalues: false,
     };
     let mut index = start_index;
     while index < args.len() {
@@ -106,6 +108,11 @@ pub(super) fn parse_scan_match_count_options<'a>(
             }
             options.count = usize::try_from(raw_count).unwrap_or(usize::MAX);
             index += 2;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"NOVALUES") {
+            options.novalues = true;
+            index += 1;
             continue;
         }
         return Err(RequestExecutionError::SyntaxError);

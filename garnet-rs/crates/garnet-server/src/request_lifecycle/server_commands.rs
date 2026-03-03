@@ -209,6 +209,7 @@ enum InfoSection {
     Replication,
     Cpu,
     Scripting,
+    Keyspace,
     Keysizes,
     Commandstats,
 }
@@ -228,6 +229,7 @@ fn push_default_info_sections(sections: &mut Vec<InfoSection>) {
         InfoSection::Replication,
         InfoSection::Cpu,
         InfoSection::Scripting,
+        InfoSection::Keyspace,
     ] {
         push_info_section_once(sections, section);
     }
@@ -274,6 +276,10 @@ fn append_info_sections_from_token(sections: &mut Vec<InfoSection>, token: &[u8]
     }
     if ascii_eq_ignore_case(token, b"SCRIPTING") {
         push_info_section_once(sections, InfoSection::Scripting);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"KEYSPACE") {
+        push_info_section_once(sections, InfoSection::Keyspace);
         return;
     }
     if ascii_eq_ignore_case(token, b"KEYSIZES") {
@@ -379,7 +385,9 @@ impl RequestProcessor {
         let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
         let expired_keys = self.expired_keys();
         let expired_keys_active = self.expired_keys_active();
+        let lazyfree_pending_objects = self.lazyfree_pending_objects();
         let lazyfreed_objects = self.lazyfreed_objects();
+        let used_memory = self.estimated_used_memory_bytes()?;
         let scripting_runtime = self.scripting_runtime_config();
         let used_memory_vm_functions = self.used_memory_vm_functions();
 
@@ -410,20 +418,19 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Memory => {
-                    payload.push_str(
-                        format!("# Memory\r\nused_memory:{}\r\n", used_memory_vm_functions)
-                            .as_str(),
-                    );
+                    payload
+                        .push_str(format!("# Memory\r\nused_memory:{}\r\n", used_memory).as_str());
                 }
                 InfoSection::Stats => {
                     payload.push_str(
                         format!(
-                            "# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
+                            "# Stats\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
                             dbsize,
                             rdb_bgsave_in_progress,
                             rdb_changes_since_last_save,
                             expired_keys,
                             expired_keys_active,
+                            lazyfree_pending_objects,
                             lazyfreed_objects,
                         )
                         .as_str(),
@@ -455,6 +462,16 @@ impl RequestProcessor {
                         )
                         .as_str(),
                     );
+                }
+                InfoSection::Keyspace => {
+                    payload.push_str("# Keyspace\r\n");
+                    if dbsize > 0 {
+                        let expires = self.total_expiration_count();
+                        payload.push_str(
+                            format!("db0:keys={},expires={},avg_ttl=0\r\n", dbsize, expires)
+                                .as_str(),
+                        );
+                    }
                 }
                 InfoSection::Keysizes => {
                     payload.push_str(&self.render_keysizes_info_payload()?);
@@ -740,18 +757,26 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"PAUSE") {
             ensure_one_of_arities(args, &[3, 4], "CLIENT", "CLIENT PAUSE timeout [WRITE|ALL]")?;
-            parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-            if args.len() == 4 {
+            let timeout = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let pause_all = if args.len() == 4 {
                 let mode = args[3];
-                if !ascii_eq_ignore_case(mode, b"WRITE") && !ascii_eq_ignore_case(mode, b"ALL") {
+                if ascii_eq_ignore_case(mode, b"ALL") {
+                    true
+                } else if ascii_eq_ignore_case(mode, b"WRITE") {
+                    false
+                } else {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-            }
+            } else {
+                true
+            };
+            self.client_pause(timeout, pause_all);
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"UNPAUSE") {
             require_exact_arity(args, 2, "CLIENT", "CLIENT UNPAUSE")?;
+            self.client_unpause();
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1305,7 +1330,10 @@ impl RequestProcessor {
         let cursor = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let mut pattern: Option<&[u8]> = None;
         let mut count = 10usize;
-        let mut type_filter: Option<ScanTypeFilter> = None;
+        // Unknown type names are silently accepted and match nothing (Redis 7.x
+        // compat).  `None` means no TYPE filter was specified; `Some(None)`
+        // means an unknown type was given.
+        let mut type_filter: Option<Option<ScanTypeFilter>> = None;
         let mut index = 2usize;
         while index < args.len() {
             let token = args[index];
@@ -1335,9 +1363,7 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 let raw_type = args[index + 1];
-                type_filter = Some(
-                    parse_scan_type_filter(raw_type).ok_or(RequestExecutionError::SyntaxError)?,
-                );
+                type_filter = Some(parse_scan_type_filter(raw_type));
                 index += 2;
                 continue;
             }
@@ -1349,6 +1375,16 @@ impl RequestProcessor {
 
         let mut matched = Vec::new();
         for key in keys {
+            // Redis 7.x filter order: pattern -> expire -> type.
+            // Keys that don't match the pattern are skipped without triggering
+            // expiry.  Keys that match the pattern are lazily expired, then
+            // type-filtered.
+            if let Some(pattern) = pattern {
+                if !redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
+                    continue;
+                }
+            }
+
             self.expire_key_if_needed(key.as_slice())?;
             let string_exists = self.key_exists(key.as_slice())?;
             let object_exists = self.object_key_exists(key.as_slice())?;
@@ -1362,19 +1398,17 @@ impl RequestProcessor {
                 continue;
             }
 
-            if let Some(filter) = type_filter {
+            if let Some(filter_opt) = type_filter {
+                let Some(filter) = filter_opt else {
+                    // Unknown type name: matches nothing.
+                    continue;
+                };
                 if !self.scan_key_matches_type_filter(
                     key.as_slice(),
                     string_exists,
                     object_exists,
                     filter,
                 )? {
-                    continue;
-                }
-            }
-
-            if let Some(pattern) = pattern {
-                if !redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
                     continue;
                 }
             }
@@ -2382,6 +2416,7 @@ impl RequestProcessor {
             require_exact_arity(args, 2, "CONFIG", "CONFIG RESETSTAT")?;
             self.reset_rdb_changes_since_last_save();
             self.reset_expiration_stats();
+            self.reset_lazyfree_pending_objects();
             self.reset_lazyfreed_objects();
             self.reset_commandstats();
             self.record_command_call(b"config|resetstat");
@@ -2461,11 +2496,18 @@ impl RequestProcessor {
                     }
                 }
                 if parameter == b"notify-keyspace-events" {
-                    append_error(
-                        response_out,
-                        b"ERR CONFIG SET failed (possibly related to argument 'notify-keyspace-events') - keyspace notifications are not supported",
-                    );
-                    return Ok(());
+                    let Some(flags) = super::keyspace_events_string_to_flags(&value) else {
+                        append_error(
+                            response_out,
+                            b"ERR Invalid event class character. Use 'g$lszhxeKEtmdn'.",
+                        );
+                        return Ok(());
+                    };
+                    self.set_notify_keyspace_events_flags(flags);
+                    // Store the canonical string in config overrides for CONFIG GET.
+                    let canonical = super::keyspace_events_flags_to_string(flags);
+                    self.set_config_value(b"notify-keyspace-events", canonical);
+                    // Continue to process remaining parameters in this CONFIG SET.
                 }
                 if parameter == b"port" {
                     let parsed_port =
@@ -2531,6 +2573,9 @@ impl RequestProcessor {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.set_rdb_key_save_delay_micros(parsed);
+                } else if parameter == b"notify-keyspace-events" {
+                    // Already handled in the validation pass above.
+                    continue;
                 } else {
                     self.set_config_value(&parameter, value);
                     continue;
@@ -2631,8 +2676,11 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 1, "FLUSHDB", "FLUSHDB")?;
-        self.flush_all_keys()?;
+        let flush_mode = parse_flush_mode(args, "FLUSHDB", "FLUSHDB [ASYNC|SYNC]")?;
+        let removed_count = self.flush_all_keys()?;
+        if should_record_lazyfreed_for_flush_mode(flush_mode) {
+            self.record_lazyfreed_objects(removed_count);
+        }
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -2642,18 +2690,27 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 1, "FLUSHALL", "FLUSHALL")?;
-        self.flush_all_keys()?;
+        let flush_mode = parse_flush_mode(args, "FLUSHALL", "FLUSHALL [ASYNC|SYNC]")?;
+        let removed_count = self.flush_all_keys()?;
+        if should_record_lazyfreed_for_flush_mode(flush_mode) {
+            self.record_lazyfreed_objects(removed_count);
+        }
         append_simple_string(response_out, b"OK");
         Ok(())
     }
 
-    fn flush_all_keys(&self) -> Result<(), RequestExecutionError> {
+    fn flush_all_keys(&self) -> Result<u64, RequestExecutionError> {
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
+        self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
+
+        let mut deleted_count = 0u64;
 
         for key in keys {
-            self.expire_key_if_needed(key.as_slice())?;
+            if let Err(error) = self.expire_key_if_needed(key.as_slice()) {
+                self.reset_lazyfree_pending_objects();
+                return Err(error);
+            }
 
             let mut string_deleted = false;
             {
@@ -2668,6 +2725,7 @@ impl RequestProcessor {
                     }
                     DeleteOperationStatus::NotFound => {}
                     DeleteOperationStatus::RetryLater => {
+                        self.reset_lazyfree_pending_objects();
                         return Err(RequestExecutionError::StorageBusy);
                     }
                 }
@@ -2676,9 +2734,18 @@ impl RequestProcessor {
                 self.remove_string_key_metadata(key.as_slice());
             }
 
-            let object_deleted = self.object_delete(key.as_slice())?;
+            let object_deleted = match self.object_delete(key.as_slice()) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.reset_lazyfree_pending_objects();
+                    return Err(error);
+                }
+            };
             if string_deleted && !object_deleted {
                 self.bump_watch_version(key.as_slice());
+            }
+            if string_deleted || object_deleted {
+                deleted_count = deleted_count.saturating_add(1);
             }
         }
 
@@ -2695,13 +2762,55 @@ impl RequestProcessor {
             .unwrap_or_else(|e| e.into_inner())
             .clear();
 
-        Ok(())
+        self.reset_lazyfree_pending_objects();
+        Ok(deleted_count)
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
         Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
+    }
+
+    fn total_expiration_count(&self) -> usize {
+        let mut total = 0usize;
+        for shard_index in self.string_expiration_counts.indices() {
+            total = total.saturating_add(self.string_expiration_count_for_shard(shard_index));
+        }
+        total
+    }
+
+    fn estimated_used_memory_bytes(&self) -> Result<u64, RequestExecutionError> {
+        const ESTIMATED_BASE_MEMORY_BYTES: u64 = 1024;
+
+        let mut total_bytes = ESTIMATED_BASE_MEMORY_BYTES;
+        total_bytes = total_bytes.saturating_add(self.used_memory_vm_functions());
+
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
+        keys.extend(self.object_keys_snapshot());
+
+        for key in keys {
+            if let Some(value) = self.read_string_value(key.as_slice())? {
+                total_bytes = total_bytes.saturating_add(
+                    u64::try_from(estimate_memory_usage_bytes(key.len(), value.len()))
+                        .unwrap_or(u64::MAX),
+                );
+                continue;
+            }
+
+            if let Some(object) = self.object_read(key.as_slice())? {
+                let estimated_payload_bytes = estimate_object_payload_memory_usage_bytes(&object);
+                total_bytes = total_bytes.saturating_add(
+                    u64::try_from(estimate_memory_usage_bytes(
+                        key.len(),
+                        estimated_payload_bytes,
+                    ))
+                    .unwrap_or(u64::MAX),
+                );
+            }
+        }
+
+        Ok(total_bytes)
     }
 
     fn render_keysizes_info_payload(&self) -> Result<String, RequestExecutionError> {
@@ -3205,15 +3314,78 @@ fn estimate_memory_usage_bytes(key_len: usize, value_len: usize) -> i64 {
     i64::try_from(total).unwrap_or(i64::MAX)
 }
 
+fn estimate_object_payload_memory_usage_bytes(object: &DecodedObjectValue) -> usize {
+    if object.object_type != SET_OBJECT_TYPE_TAG {
+        return object.payload.len();
+    }
+
+    match decode_set_object_payload(&object.payload) {
+        Some(DecodedSetObjectPayload::Members(set)) => set
+            .iter()
+            .map(|member| member.len().saturating_add(16))
+            .sum::<usize>()
+            .saturating_add(64),
+        Some(DecodedSetObjectPayload::ContiguousI64Range(range)) => {
+            let cardinality = range
+                .end()
+                .checked_sub(range.start())
+                .and_then(|delta| delta.checked_add(1))
+                .and_then(|value| u64::try_from(value).ok())
+                .unwrap_or(u64::MAX);
+            usize::try_from(cardinality)
+                .unwrap_or(usize::MAX)
+                .saturating_mul(16)
+                .saturating_add(64)
+        }
+        None => object.payload.len(),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FlushMode {
+    Default,
+    Sync,
+    Async,
+}
+
+fn parse_flush_mode(
+    args: &[&[u8]],
+    command: &'static str,
+    usage: &'static str,
+) -> Result<FlushMode, RequestExecutionError> {
+    ensure_one_of_arities(args, &[1, 2], command, usage)?;
+    if args.len() == 1 {
+        return Ok(FlushMode::Default);
+    }
+    if ascii_eq_ignore_case(args[1], b"SYNC") {
+        return Ok(FlushMode::Sync);
+    }
+    if ascii_eq_ignore_case(args[1], b"ASYNC") {
+        return Ok(FlushMode::Async);
+    }
+    Err(RequestExecutionError::SyntaxError)
+}
+
+fn should_record_lazyfreed_for_flush_mode(mode: FlushMode) -> bool {
+    match mode {
+        FlushMode::Async => true,
+        FlushMode::Sync => false,
+        FlushMode::Default => !current_request_in_transaction(),
+    }
+}
+
 fn append_scan_cursor_and_key_array(
     response_out: &mut Vec<u8>,
     cursor: u64,
     count: usize,
     keys: &[Vec<u8>],
 ) {
-    let start = usize::try_from(cursor)
-        .unwrap_or(usize::MAX)
-        .min(keys.len());
+    let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+    let start = if raw_start >= keys.len() {
+        0
+    } else {
+        raw_start
+    };
     let end = start.saturating_add(count).min(keys.len());
     let next_cursor = if end >= keys.len() { 0 } else { end };
 

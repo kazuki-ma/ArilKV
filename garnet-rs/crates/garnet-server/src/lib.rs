@@ -576,7 +576,7 @@ fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Inst
         .map(|value| String::from_utf8_lossy(value).to_string())
         .unwrap_or_default();
     format!(
-        "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=20474 argv-mem=0 multi-mem=0 rbs=16384 rbp=0 obl=0 oll=0 omem=0 tot-mem=20480 events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
+        "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 rbs=1024 rbp=0 obl=0 oll=0 omem=0 tot-mem=20480 events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
         u64::from(client_id),
         String::from_utf8_lossy(&client.addr),
         String::from_utf8_lossy(&client.laddr),
