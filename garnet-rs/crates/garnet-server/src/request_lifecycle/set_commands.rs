@@ -298,7 +298,11 @@ impl RequestProcessor {
             return Ok(());
         };
         if set.is_empty() || count == 0 {
-            append_array_length(response_out, 0);
+            if use_set_type {
+                append_set_length(response_out, 0);
+            } else {
+                append_array_length(response_out, 0);
+            }
             return Ok(());
         }
 
