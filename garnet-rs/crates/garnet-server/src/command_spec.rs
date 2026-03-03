@@ -2985,6 +2985,89 @@ mod tests {
     }
 
     #[test]
+    fn eval_script_no_writes_flag_detection() {
+        // No shebang → not flagged
+        assert!(!eval_script_has_no_writes_flag(b"return 1"));
+        // Shebang without flags → not flagged
+        assert!(!eval_script_has_no_writes_flag(b"#!lua\nreturn 1"));
+        assert!(!eval_script_has_no_writes_flag(b"#!lua name=mylib\nreturn 1"));
+        // Shebang with flags=no-writes → flagged
+        assert!(eval_script_has_no_writes_flag(b"#!lua flags=no-writes\nreturn 1"));
+        assert!(eval_script_has_no_writes_flag(
+            b"#!lua name=mylib flags=no-writes\nreturn 1"
+        ));
+        // Multiple flags including no-writes
+        assert!(eval_script_has_no_writes_flag(
+            b"#!lua flags=allow-oom,no-writes\nreturn 1"
+        ));
+        assert!(eval_script_has_no_writes_flag(
+            b"#!lua flags=no-writes,allow-oom\nreturn 1"
+        ));
+        // Case insensitive
+        assert!(eval_script_has_no_writes_flag(
+            b"#!lua flags=NO-WRITES\nreturn 1"
+        ));
+    }
+
+    #[test]
+    fn write_pause_classification_for_script_commands() {
+        // Regular EVAL without shebang → write-pause-affected
+        assert!(command_is_write_pause_affected_with_script(
+            CommandId::Eval,
+            None,
+            Some(b"return 1"),
+        ));
+        // EVAL with no-writes shebang → NOT write-pause-affected
+        assert!(!command_is_write_pause_affected_with_script(
+            CommandId::Eval,
+            None,
+            Some(b"#!lua flags=no-writes\nreturn 1"),
+        ));
+        // EVAL_RO → never write-pause-affected
+        assert!(!command_is_write_pause_affected_with_script(
+            CommandId::EvalRo,
+            None,
+            Some(b"return redis.call('SET','k','v')"),
+        ));
+        // EVALSHA_RO → never write-pause-affected
+        assert!(!command_is_write_pause_affected_with_script(
+            CommandId::EvalshaRo,
+            None,
+            None,
+        ));
+        // FCALL_RO → never write-pause-affected
+        assert!(!command_is_write_pause_affected_with_script(
+            CommandId::FcallRo,
+            None,
+            None,
+        ));
+        // FCALL → write-pause-affected (caller overrides for read-only functions)
+        assert!(command_is_write_pause_affected_with_script(
+            CommandId::Fcall,
+            None,
+            None,
+        ));
+        // SET → write-pause-affected
+        assert!(command_is_write_pause_affected_with_script(
+            CommandId::Set,
+            None,
+            None,
+        ));
+        // GET → NOT write-pause-affected
+        assert!(!command_is_write_pause_affected_with_script(
+            CommandId::Get,
+            None,
+            None,
+        ));
+        // PUBLISH → write-pause-affected (may_replicate)
+        assert!(command_is_write_pause_affected_with_script(
+            CommandId::Publish,
+            None,
+            None,
+        ));
+    }
+
+    #[test]
     fn owner_routing_restricts_del_to_single_key() {
         assert!(command_is_owner_routable(CommandId::Del, 2));
         assert!(!command_is_owner_routable(CommandId::Del, 3));
