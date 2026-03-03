@@ -2261,6 +2261,7 @@ impl RequestProcessor {
         self.execute_bytes(&arg_bytes, response_out)
     }
 
+    #[cfg(test)]
     pub(crate) fn execute_with_client_no_touch(
         &self,
         args: &[ArgSlice],
