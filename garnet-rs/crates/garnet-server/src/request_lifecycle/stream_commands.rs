@@ -651,29 +651,79 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(args, 4, "XINFO", "XINFO STREAM key FULL")?;
+        ensure_min_arity(
+            args,
+            3,
+            "XINFO",
+            "XINFO <subcommand> [<arg> [value] [opt] ...]",
+        )?;
         let subcommand = args[1];
         if !ascii_eq_ignore_case(subcommand, b"STREAM") {
             return Err(RequestExecutionError::UnknownCommand);
         }
-        let full = args[3];
-        if !ascii_eq_ignore_case(full, b"FULL") {
-            return Err(RequestExecutionError::UnknownCommand);
-        }
+
         let key = RedisKey::from(args[2]);
         let stream = match self.load_stream_object(&key)? {
             Some(stream) => stream,
-            None => {
-                if self.resp_protocol_version().is_resp3() {
-                    append_null(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
-                }
-                return Ok(());
-            }
+            None => return Err(RequestExecutionError::NoSuchKey),
         };
-        let digest = fnv_hex_digest(3, &serialize_stream_object_payload(&stream));
-        append_bulk_string(response_out, &digest);
+
+        let full = args.len() >= 4 && ascii_eq_ignore_case(args[3], b"FULL");
+        if args.len() > 3 && !full {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let mut entry_count_limit = 10usize;
+        if full && args.len() >= 6 {
+            if args.len() != 6 || !ascii_eq_ignore_case(args[4], b"COUNT") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            let parsed = parse_i64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if parsed < 0 {
+                entry_count_limit = 10;
+            } else {
+                entry_count_limit = usize::try_from(parsed).unwrap_or(usize::MAX);
+            }
+        }
+        if full && args.len() > 6 {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        let resp3 = self.resp_protocol_version().is_resp3();
+        let last_generated_id = stream
+            .entries
+            .keys()
+            .next_back()
+            .copied()
+            .unwrap_or_else(StreamId::zero);
+        let first_entry_id = stream
+            .entries
+            .keys()
+            .next()
+            .copied()
+            .unwrap_or_else(StreamId::zero);
+        let entry_count = stream.entries.len();
+
+        if full {
+            append_xinfo_stream_full(
+                response_out,
+                &stream,
+                entry_count,
+                last_generated_id,
+                first_entry_id,
+                entry_count_limit,
+                resp3,
+            );
+        } else {
+            append_xinfo_stream_summary(
+                response_out,
+                &stream,
+                entry_count,
+                last_generated_id,
+                first_entry_id,
+                resp3,
+            );
+        }
         Ok(())
     }
 
@@ -1047,13 +1097,168 @@ fn append_stream_entry_fields(
     }
 }
 
-fn fnv_hex_digest(tag: u8, payload: &[u8]) -> Vec<u8> {
-    let mut hash = 0xcbf29ce484222325u64;
-    hash ^= u64::from(tag);
-    hash = hash.wrapping_mul(0x100000001b3);
-    for byte in payload {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(0x100000001b3);
+/// Emit `XINFO STREAM key` (non-FULL) response: 10-field map.
+fn append_xinfo_stream_summary(
+    response_out: &mut Vec<u8>,
+    stream: &StreamObject,
+    entry_count: usize,
+    last_generated_id: StreamId,
+    first_entry_id: StreamId,
+    resp3: bool,
+) {
+    let field_count = 10;
+    if resp3 {
+        append_map_length(response_out, field_count);
+    } else {
+        append_array_length(response_out, field_count * 2);
     }
-    format!("{hash:016x}").into_bytes()
+
+    // 1. length
+    append_bulk_string(response_out, b"length");
+    append_integer(response_out, entry_count as i64);
+
+    // 2. radix-tree-keys (approximation: entry count)
+    append_bulk_string(response_out, b"radix-tree-keys");
+    append_integer(response_out, entry_count as i64);
+
+    // 3. radix-tree-nodes (approximation: entry count)
+    append_bulk_string(response_out, b"radix-tree-nodes");
+    append_integer(response_out, entry_count as i64);
+
+    // 4. last-generated-id
+    append_bulk_string(response_out, b"last-generated-id");
+    append_bulk_string(response_out, &last_generated_id.encode());
+
+    // 5. max-deleted-entry-id (not tracked)
+    append_bulk_string(response_out, b"max-deleted-entry-id");
+    append_bulk_string(response_out, b"0-0");
+
+    // 6. entries-added (approximation: entry count)
+    append_bulk_string(response_out, b"entries-added");
+    append_integer(response_out, entry_count as i64);
+
+    // 7. recorded-first-entry-id
+    append_bulk_string(response_out, b"recorded-first-entry-id");
+    append_bulk_string(response_out, &first_entry_id.encode());
+
+    // 8. groups (count only in non-FULL mode)
+    append_bulk_string(response_out, b"groups");
+    append_integer(response_out, stream.groups.len() as i64);
+
+    // 9. first-entry
+    append_bulk_string(response_out, b"first-entry");
+    if let Some((id, fields)) = stream.entries.first_key_value() {
+        response_out.extend_from_slice(b"*2\r\n");
+        append_bulk_string(response_out, &id.encode());
+        append_stream_entry_fields(response_out, fields, resp3);
+    } else if resp3 {
+        append_null(response_out);
+    } else {
+        append_null_bulk_string(response_out);
+    }
+
+    // 10. last-entry
+    append_bulk_string(response_out, b"last-entry");
+    if let Some((id, fields)) = stream.entries.last_key_value() {
+        response_out.extend_from_slice(b"*2\r\n");
+        append_bulk_string(response_out, &id.encode());
+        append_stream_entry_fields(response_out, fields, resp3);
+    } else if resp3 {
+        append_null(response_out);
+    } else {
+        append_null_bulk_string(response_out);
+    }
+}
+
+/// Emit `XINFO STREAM key FULL [COUNT count]` response: 9-field map.
+fn append_xinfo_stream_full(
+    response_out: &mut Vec<u8>,
+    stream: &StreamObject,
+    entry_count: usize,
+    last_generated_id: StreamId,
+    first_entry_id: StreamId,
+    entry_count_limit: usize,
+    resp3: bool,
+) {
+    let field_count = 9;
+    if resp3 {
+        append_map_length(response_out, field_count);
+    } else {
+        append_array_length(response_out, field_count * 2);
+    }
+
+    // 1. length
+    append_bulk_string(response_out, b"length");
+    append_integer(response_out, entry_count as i64);
+
+    // 2. radix-tree-keys
+    append_bulk_string(response_out, b"radix-tree-keys");
+    append_integer(response_out, entry_count as i64);
+
+    // 3. radix-tree-nodes
+    append_bulk_string(response_out, b"radix-tree-nodes");
+    append_integer(response_out, entry_count as i64);
+
+    // 4. last-generated-id
+    append_bulk_string(response_out, b"last-generated-id");
+    append_bulk_string(response_out, &last_generated_id.encode());
+
+    // 5. max-deleted-entry-id
+    append_bulk_string(response_out, b"max-deleted-entry-id");
+    append_bulk_string(response_out, b"0-0");
+
+    // 6. entries-added
+    append_bulk_string(response_out, b"entries-added");
+    append_integer(response_out, entry_count as i64);
+
+    // 7. recorded-first-entry-id
+    append_bulk_string(response_out, b"recorded-first-entry-id");
+    append_bulk_string(response_out, &first_entry_id.encode());
+
+    // 8. entries (limited by count)
+    append_bulk_string(response_out, b"entries");
+    let visible_entries: Vec<_> = stream.entries.iter().take(entry_count_limit).collect();
+    append_array_length(response_out, visible_entries.len());
+    for (id, fields) in &visible_entries {
+        response_out.extend_from_slice(b"*2\r\n");
+        append_bulk_string(response_out, &id.encode());
+        append_stream_entry_fields(response_out, fields, resp3);
+    }
+
+    // 9. groups (detailed array in FULL mode)
+    append_bulk_string(response_out, b"groups");
+    append_array_length(response_out, stream.groups.len());
+    for (group_name, last_id) in &stream.groups {
+        let group_field_count = 7;
+        if resp3 {
+            append_map_length(response_out, group_field_count);
+        } else {
+            append_array_length(response_out, group_field_count * 2);
+        }
+
+        append_bulk_string(response_out, b"name");
+        append_bulk_string(response_out, group_name);
+
+        append_bulk_string(response_out, b"last-delivered-id");
+        append_bulk_string(response_out, &last_id.encode());
+
+        append_bulk_string(response_out, b"entries-read");
+        if resp3 {
+            append_null(response_out);
+        } else {
+            append_null_bulk_string(response_out);
+        }
+
+        append_bulk_string(response_out, b"lag");
+        append_integer(response_out, 0);
+
+        append_bulk_string(response_out, b"pel-count");
+        append_integer(response_out, 0);
+
+        append_bulk_string(response_out, b"pending");
+        append_array_length(response_out, 0);
+
+        append_bulk_string(response_out, b"consumers");
+        append_array_length(response_out, 0);
+    }
 }

@@ -8928,7 +8928,8 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     let source_info = response.clone();
-    assert!(source_info.starts_with(b"$16\r\n"));
+    // XINFO STREAM key FULL returns 9-field map = 18-element flat array in RESP2.
+    assert!(source_info.starts_with(b"*18\r\n"));
 
     response.clear();
     let copy = b"*3\r\n$4\r\nCOPY\r\n$7\r\nstream1\r\n$7\r\nstream2\r\n";
@@ -8945,6 +8946,95 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, source_info);
+}
+
+#[test]
+fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 24];
+    let mut response = Vec::new();
+
+    // Add two entries.
+    let xadd1 = b"*5\r\n$4\r\nXADD\r\n$4\r\nxkey\r\n$3\r\n1-0\r\n$1\r\nf\r\n$1\r\nv\r\n";
+    let meta = parse_resp_command_arg_slices(xadd1, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    response.clear();
+    let xadd2 = b"*5\r\n$4\r\nXADD\r\n$4\r\nxkey\r\n$3\r\n2-0\r\n$1\r\nf\r\n$2\r\nv2\r\n";
+    let meta = parse_resp_command_arg_slices(xadd2, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+
+    // Create a group.
+    response.clear();
+    let xgroup = b"*5\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$4\r\nxkey\r\n$2\r\nmg\r\n$1\r\n0\r\n";
+    let meta = parse_resp_command_arg_slices(xgroup, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    // XINFO STREAM xkey (non-FULL): 10-field map = 20-element flat array in RESP2.
+    response.clear();
+    let xinfo = b"*3\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$4\r\nxkey\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"*20\r\n"));
+    // Verify length=2 is present after "length" label.
+    assert!(
+        response
+            .windows(b"$6\r\nlength\r\n:2\r\n".len())
+            .any(|w| w == b"$6\r\nlength\r\n:2\r\n")
+    );
+    // Verify groups=1 is present after "groups" label.
+    assert!(
+        response
+            .windows(b"$6\r\ngroups\r\n:1\r\n".len())
+            .any(|w| w == b"$6\r\ngroups\r\n:1\r\n")
+    );
+
+    // XINFO STREAM on non-existent key: error.
+    response.clear();
+    let xinfo_missing = b"*3\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$7\r\nno_such\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_missing, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert!(response.starts_with(b"-ERR no such key"));
+
+    // XINFO STREAM key FULL COUNT 1: entries limited to 1.
+    response.clear();
+    let xinfo_full_count =
+        b"*6\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$4\r\nxkey\r\n$4\r\nFULL\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
+    let meta = parse_resp_command_arg_slices(xinfo_full_count, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    // 9-field FULL map = 18-element array.
+    assert!(response.starts_with(b"*18\r\n"));
+    // Entries limited to 1: after "entries" label, array should be *1.
+    let entries_idx = response
+        .windows(b"$7\r\nentries\r\n".len())
+        .position(|w| w == b"$7\r\nentries\r\n")
+        .unwrap();
+    let after_entries = &response[entries_idx + b"$7\r\nentries\r\n".len()..];
+    assert!(after_entries.starts_with(b"*1\r\n"));
+
+    // RESP3: XINFO STREAM returns map prefix.
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    response.clear();
+    let meta = parse_resp_command_arg_slices(xinfo, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert!(response.starts_with(b"%10\r\n"));
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 }
 
 #[test]
