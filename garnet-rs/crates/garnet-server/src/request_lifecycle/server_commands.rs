@@ -2481,7 +2481,11 @@ impl RequestProcessor {
             } else {
                 self.pubsub_numsub(&args[2..])
             };
-            response_out.extend_from_slice(format!("*{}\r\n", subscribers.len() * 2).as_bytes());
+            if self.resp_protocol_version().is_resp3() {
+                append_map_length(response_out, subscribers.len());
+            } else {
+                append_array_length(response_out, subscribers.len() * 2);
+            }
             for (channel, count) in subscribers {
                 append_bulk_string(response_out, &channel);
                 append_integer(response_out, saturating_usize_to_i64(count));

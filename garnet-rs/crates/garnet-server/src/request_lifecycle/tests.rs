@@ -10812,3 +10812,25 @@ fn zscan_returns_map_in_resp3_and_flat_array_in_resp2() {
         String::from_utf8_lossy(&resp3)
     );
 }
+
+#[test]
+fn pubsub_numsub_returns_map_in_resp3() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // RESP2: PUBSUB NUMSUB returns flat array *4 (2 channels × 2 elements each).
+    let resp2 = execute_command_line(&processor, "PUBSUB NUMSUB ch1 ch2").unwrap();
+    assert!(
+        resp2.starts_with(b"*4\r\n"),
+        "RESP2 PUBSUB NUMSUB should return *4 flat array, got: {:?}",
+        String::from_utf8_lossy(&resp2)
+    );
+
+    // RESP3: PUBSUB NUMSUB returns map %2 (2 channel → count pairs).
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    let resp3 = execute_command_line(&processor, "PUBSUB NUMSUB ch1 ch2").unwrap();
+    assert!(
+        resp3.starts_with(b"%2\r\n"),
+        "RESP3 PUBSUB NUMSUB should return %2 map, got: {:?}",
+        String::from_utf8_lossy(&resp3)
+    );
+}
