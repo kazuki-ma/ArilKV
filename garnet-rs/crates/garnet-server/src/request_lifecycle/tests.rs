@@ -8453,6 +8453,147 @@ fn object_encoding_and_refcount_report_basic_metadata() {
 }
 
 #[test]
+fn object_freq_returns_zero_for_existing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let freq = b"*3\r\n$6\r\nOBJECT\r\n$4\r\nFREQ\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(freq, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+}
+
+#[test]
+fn object_freq_returns_null_for_missing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let freq = b"*3\r\n$6\r\nOBJECT\r\n$4\r\nFREQ\r\n$11\r\nnonexistent\r\n";
+    let meta = parse_resp_command_arg_slices(freq, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn object_idletime_returns_integer_for_existing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let idletime = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nIDLETIME\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(idletime, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    // Should return a non-negative integer in `:N\r\n` format
+    let resp_str = String::from_utf8_lossy(&response);
+    assert!(
+        resp_str.starts_with(':') && resp_str.ends_with("\r\n"),
+        "expected integer response, got: {}",
+        resp_str
+    );
+    let num_str = &resp_str[1..resp_str.len() - 2];
+    let idle: i64 = num_str.parse().unwrap_or_else(|_| {
+        panic!(
+            "expected integer in OBJECT IDLETIME response, got: {}",
+            resp_str
+        )
+    });
+    assert!(idle >= 0, "expected non-negative idle time, got: {}", idle);
+}
+
+#[test]
+fn object_idletime_returns_null_for_missing_key() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let idletime = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nIDLETIME\r\n$11\r\nnonexistent\r\n";
+    let meta = parse_resp_command_arg_slices(idletime, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+}
+
+#[test]
+fn object_encoding_distinguishes_string_types() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    // Integer-representable string should report "int" encoding
+    let set_int = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\n12345\r\n";
+    let meta = parse_resp_command_arg_slices(set_int, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let enc = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(enc, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\nint\r\n");
+
+    // Short non-numeric string should report "embstr" encoding
+    response.clear();
+    let set_short = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nshort\r\n";
+    let meta = parse_resp_command_arg_slices(set_short, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(enc, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$6\r\nembstr\r\n");
+
+    // Long string (45+ bytes) should report "raw" encoding
+    response.clear();
+    let set_long = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$50\r\naaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeee\r\n";
+    let meta = parse_resp_command_arg_slices(set_long, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(enc, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$3\r\nraw\r\n");
+}
+
+#[test]
 fn debug_digest_value_matches_for_equal_payloads() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -10040,6 +10181,76 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$8\r\nlistpack\r\n");
+}
+
+#[test]
+fn config_get_returns_array_for_known_param() {
+    let processor = RequestProcessor::new().unwrap();
+    // "appendonly" is in default config with value "no"
+    assert_command_response(
+        &processor,
+        "CONFIG GET appendonly",
+        b"*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n",
+    );
+}
+
+#[test]
+fn config_set_and_get_round_trip() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "CONFIG SET hz 20", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG GET hz",
+        b"*2\r\n$2\r\nhz\r\n$2\r\n20\r\n",
+    );
+}
+
+#[test]
+fn config_resetstat_clears_stats_and_returns_ok() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let config_resetstat = b"*2\r\n$6\r\nCONFIG\r\n$9\r\nRESETSTAT\r\n";
+    let meta = parse_resp_command_arg_slices(config_resetstat, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+}
+
+#[test]
+fn config_get_glob_pattern() {
+    let processor = RequestProcessor::new().unwrap();
+    // "max*" should match parameters like maxmemory, maxmemory-samples, etc.
+    let response = execute_command_line(&processor, "CONFIG GET max*").unwrap();
+    let response_str = String::from_utf8_lossy(&response);
+    // Should return an array (not an error), with at least one match from defaults
+    assert!(
+        response.starts_with(b"*"),
+        "expected array response for CONFIG GET max*, got: {response_str}"
+    );
+    // maxmemory-samples is in defaults, so we expect at least one key-value pair (*2 or more)
+    assert!(
+        !response.starts_with(b"*0\r\n"),
+        "expected at least one match for CONFIG GET max*, got: {response_str}"
+    );
+    // Verify the response contains a known default key
+    assert!(
+        response_str.contains("maxmemory-samples"),
+        "expected maxmemory-samples in CONFIG GET max* response, got: {response_str}"
+    );
+}
+
+#[test]
+fn config_set_immutable_param_returns_error() {
+    let processor = RequestProcessor::new().unwrap();
+    // "daemonize" is an immutable config parameter that cannot be changed at runtime
+    assert_command_response(
+        &processor,
+        "CONFIG SET daemonize yes",
+        b"-ERR CONFIG SET failed (possibly related to argument 'daemonize') - immutable config\r\n",
+    );
 }
 
 #[test]

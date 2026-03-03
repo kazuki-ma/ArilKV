@@ -4639,4 +4639,231 @@ mod tests {
         assert_eq!(response, b"+OK\r\n");
         assert!(!client_state.no_evict);
     }
+
+    #[test]
+    fn client_setname_empty_clears_name() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        // SETNAME "myname"
+        let frame =
+            encode_resp_frame(&[b"CLIENT".to_vec(), b"SETNAME".to_vec(), b"myname".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        // SETNAME "" should clear the name.
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"SETNAME".to_vec(), b"".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        // GETNAME should return null after clearing.
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"GETNAME".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"$-1\r\n");
+    }
+
+    #[test]
+    fn client_info_returns_bulk_with_id() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"INFO".to_vec()]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with('$'),
+            "CLIENT INFO should return a bulk string, got: {}",
+            response_str,
+        );
+        assert!(
+            response_str.contains("id="),
+            "CLIENT INFO payload should contain id= field, got: {}",
+            response_str,
+        );
+    }
+
+    #[test]
+    fn client_list_returns_connection_info() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"LIST".to_vec()]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with('$'),
+            "CLIENT LIST should return a bulk string, got: {}",
+            response_str,
+        );
+        assert!(
+            response_str.contains("id="),
+            "CLIENT LIST payload should contain id= field, got: {}",
+            response_str,
+        );
+    }
+
+    #[test]
+    fn client_setinfo_lib_name_round_trip() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let mut args = [ArgSlice::EMPTY; 8];
+        let mut response = Vec::new();
+
+        // CLIENT SETINFO LIB-NAME "mylib"
+        let frame = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"SETINFO".to_vec(),
+            b"LIB-NAME".to_vec(),
+            b"mylib".to_vec(),
+        ]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        // CLIENT INFO should include lib-name=mylib
+        response.clear();
+        let frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"INFO".to_vec()]);
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.contains("lib-name=mylib"),
+            "CLIENT INFO should contain lib-name=mylib, got: {}",
+            response_str,
+        );
+    }
+
+    #[test]
+    fn client_setname_rejects_newlines() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"SETNAME".to_vec(),
+            b"bad\nname".to_vec(),
+        ]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        handle_client_command(
+            &processor,
+            &metrics,
+            ClientId::new(1),
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with("-ERR"),
+            "expected error for name with newline: {}",
+            response_str,
+        );
+    }
+
+    #[test]
+    fn client_kill_invalid_id_returns_error() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let mut client_state = ClientConnectionState::default();
+        let frame = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"KILL".to_vec(),
+            b"ID".to_vec(),
+            b"notanumber".to_vec(),
+        ]);
+        let mut args = [ArgSlice::EMPTY; 8];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+
+        handle_client_command(
+            &processor,
+            &metrics,
+            ClientId::new(1),
+            &args[..meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        let response_str = String::from_utf8_lossy(&response);
+        assert!(
+            response_str.starts_with("-ERR"),
+            "expected error for invalid CLIENT KILL ID: {}",
+            response_str,
+        );
+    }
 }
