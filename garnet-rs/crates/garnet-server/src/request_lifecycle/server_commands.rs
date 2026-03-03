@@ -356,17 +356,79 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        if args.len() == 1 {
-            append_simple_string(response_out, b"OK");
-            return Ok(());
+        // Parse optional protocol version.
+        let version = if args.len() >= 2 {
+            let raw = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            Some(RespProtocolVersion::from_u64(raw).ok_or(RequestExecutionError::SyntaxError)?)
+        } else {
+            None
+        };
+
+        // Scan remaining arguments for AUTH and SETNAME options.
+        let mut idx = 2;
+        while idx < args.len() {
+            if ascii_eq_ignore_case(args[idx], b"AUTH") {
+                if idx + 2 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // AUTH is not supported — reject like handle_auth.
+                return Err(RequestExecutionError::AuthNotEnabled);
+            } else if ascii_eq_ignore_case(args[idx], b"SETNAME") {
+                if idx + 1 >= args.len() {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                // SETNAME is validated here for syntax; the actual name
+                // application is performed by connection_handler after
+                // successful command execution.
+                let name = args[idx + 1];
+                if name.iter().any(|&b| b == b' ' || b == b'\n') {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                idx += 2;
+            } else {
+                return Err(RequestExecutionError::SyntaxError);
+            }
         }
-        require_exact_arity(args, 2, "HELLO", "HELLO [2|3]")?;
-        let raw_version = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let version =
-            RespProtocolVersion::from_u64(raw_version).ok_or(RequestExecutionError::SyntaxError)?;
-        self.set_resp_protocol_version(version);
-        append_simple_string(response_out, b"OK");
+
+        // Apply the protocol version change.
+        if let Some(v) = version {
+            self.set_resp_protocol_version(v);
+        }
+
+        // Build the HELLO response with server info.
+        let proto = self.resp_protocol_version();
+        let client_id = super::current_request_client_id().unwrap_or_default();
+        self.append_hello_response(response_out, proto, client_id);
         Ok(())
+    }
+
+    fn append_hello_response(
+        &self,
+        response_out: &mut Vec<u8>,
+        proto: RespProtocolVersion,
+        client_id: ClientId,
+    ) {
+        let resp3 = proto.is_resp3();
+        let entry_count = 7;
+        if resp3 {
+            append_map_length(response_out, entry_count);
+        } else {
+            append_array_length(response_out, entry_count * 2);
+        }
+        append_bulk_string(response_out, b"server");
+        append_bulk_string(response_out, b"redis");
+        append_bulk_string(response_out, b"version");
+        append_bulk_string(response_out, b"garnet-rs");
+        append_bulk_string(response_out, b"proto");
+        append_integer(response_out, if resp3 { 3 } else { 2 });
+        append_bulk_string(response_out, b"id");
+        append_integer(response_out, u64::from(client_id) as i64);
+        append_bulk_string(response_out, b"mode");
+        append_bulk_string(response_out, b"standalone");
+        append_bulk_string(response_out, b"role");
+        append_bulk_string(response_out, b"master");
+        append_bulk_string(response_out, b"modules");
+        append_array_length(response_out, 0);
     }
 
     pub(super) fn handle_info(

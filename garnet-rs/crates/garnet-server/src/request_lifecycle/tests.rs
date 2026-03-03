@@ -1204,13 +1204,8 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .unwrap();
     assert!(response.starts_with(b"*8\r\n"));
 
-    response.clear();
-    let hello3 = b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n";
-    let meta = parse_resp_command_arg_slices(hello3, &mut args).unwrap();
-    processor
-        .execute(&args[..meta.argument_count], &mut response)
-        .unwrap();
-    assert_eq!(response, b"+OK\r\n");
+    // Switch to RESP3 via set_resp_protocol_version (HELLO returns server info now).
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
 
     response.clear();
     let hrand_resp3 = b"*4\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n$10\r\nWITHVALUES\r\n";
@@ -1220,13 +1215,8 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .unwrap();
     assert!(response.starts_with(b"*2\r\n*2\r\n"));
 
-    response.clear();
-    let hello2 = b"*2\r\n$5\r\nHELLO\r\n$1\r\n2\r\n";
-    let meta = parse_resp_command_arg_slices(hello2, &mut args).unwrap();
-    processor
-        .execute(&args[..meta.argument_count], &mut response)
-        .unwrap();
-    assert_eq!(response, b"+OK\r\n");
+    // Switch back to RESP2.
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 
     response.clear();
     let meta = parse_resp_command_arg_slices(hrand_resp3, &mut args).unwrap();
@@ -6984,7 +6974,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert_eq!(response, b"+OK\r\n");
+    // HELLO returns a map (%7) in RESP3 with server info.
+    assert!(
+        response.starts_with(b"%7\r\n"),
+        "expected RESP3 map from HELLO 3"
+    );
     assert_eq!(
         processor.resp_protocol_version(),
         RespProtocolVersion::Resp3

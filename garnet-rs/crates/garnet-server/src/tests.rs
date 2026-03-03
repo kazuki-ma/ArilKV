@@ -250,22 +250,12 @@ async fn hello_protocol_version_is_connection_scoped() {
     let mut client_b = TcpStream::connect(addr).await.unwrap();
     let debug_protocol_true = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$4\r\nTRUE\r\n";
 
-    send_and_expect(
-        &mut client_a,
-        b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n",
-        b"+OK\r\n",
-    )
-    .await;
+    send_hello_and_drain(&mut client_a, b"3").await;
     send_and_expect(&mut client_a, debug_protocol_true, b"#t\r\n").await;
 
     send_and_expect(&mut client_b, debug_protocol_true, b":1\r\n").await;
 
-    send_and_expect(
-        &mut client_a,
-        b"*2\r\n$5\r\nHELLO\r\n$1\r\n2\r\n",
-        b"+OK\r\n",
-    )
-    .await;
+    send_hello_and_drain(&mut client_a, b"2").await;
     send_and_expect(&mut client_a, debug_protocol_true, b":1\r\n").await;
 
     let _ = shutdown_tx.send(());
@@ -5521,6 +5511,46 @@ async fn read_exact_with_timeout(
         .unwrap()
         .unwrap();
     response
+}
+
+/// Send a HELLO command and read/drain the full server-info map response.
+async fn send_hello_and_drain(client: &mut TcpStream, version: &[u8]) {
+    let frame = format!(
+        "*2\r\n$5\r\nHELLO\r\n${}\r\n{}\r\n",
+        version.len(),
+        std::str::from_utf8(version).unwrap()
+    );
+    client.write_all(frame.as_bytes()).await.unwrap();
+    // Read the header line (%7 or *14).
+    let header = read_resp_line_with_timeout(client, Duration::from_secs(1)).await;
+    let is_map = header.starts_with(b"%");
+    let is_array = header.starts_with(b"*");
+    assert!(
+        is_map || is_array,
+        "expected map or array header from HELLO, got: {:?}",
+        String::from_utf8_lossy(&header)
+    );
+    // Drain remaining lines: 7 key-value pairs = 14 RESP items.
+    // Each item is a RESP line (simple/integer) or bulk string (header + payload).
+    let item_count = 7 * 2; // 7 key-value pairs, both map and array have 14 items
+    for _ in 0..item_count {
+        let line = read_resp_line_with_timeout(client, Duration::from_secs(1)).await;
+        if line.starts_with(b"$") {
+            // Bulk string: read payload + CRLF.
+            let len = std::str::from_utf8(&line[1..])
+                .unwrap()
+                .parse::<usize>()
+                .unwrap();
+            let mut payload = vec![0u8; len + 2];
+            tokio::time::timeout(Duration::from_secs(1), client.read_exact(&mut payload))
+                .await
+                .unwrap()
+                .unwrap();
+        } else if line.starts_with(b"*") {
+            // Empty modules array (*0) — nothing more to read.
+        }
+        // Integer lines (:N) are already fully consumed by read_resp_line.
+    }
 }
 
 async fn wait_for_blocked_clients(stream: &mut TcpStream, expected: u64, timeout: Duration) {

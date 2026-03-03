@@ -1509,11 +1509,13 @@ pub(crate) async fn handle_connection(
                             Ok(blocking_outcome) => {
                                 wait_for_blocking_progress = blocked_before > 0
                                     && command_may_wake_blocking_waiters(command);
-                                maybe_update_client_resp_protocol_version_after_hello(
+                                maybe_apply_hello_side_effects(
                                     command,
                                     &args[..argument_count],
                                     &blocking_outcome.frame_response,
                                     &mut client_state,
+                                    &metrics,
+                                    client_id,
                                 );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);
                                 if blocking_outcome.should_replicate {
@@ -3266,29 +3268,49 @@ fn parse_i64_ascii(value: &[u8]) -> Option<i64> {
     text.parse::<i64>().ok()
 }
 
-fn maybe_update_client_resp_protocol_version_after_hello(
+fn maybe_apply_hello_side_effects(
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
     client_state: &mut ClientConnectionState,
+    metrics: &ServerMetrics,
+    client_id: ClientId,
 ) {
-    if command != CommandId::Hello || !frame_response.starts_with(b"+OK\r\n") {
+    if command != CommandId::Hello {
         return;
     }
-    if args.len() != 2 {
+    // HELLO only succeeds with a map or array response (not `-ERR`).
+    if frame_response.starts_with(b"-") {
         return;
     }
-    let Some(version_arg) = args.get(1) else {
-        return;
-    };
-    // SAFETY: args reference the currently parsed frame bytes.
-    let Some(raw_version) = parse_u64_ascii(arg_slice_bytes(version_arg)) else {
-        return;
-    };
-    let Some(version) = RespProtocolVersion::from_u64(raw_version) else {
-        return;
-    };
-    client_state.resp_protocol_version = version;
+    // Extract protocol version from args[1] if present.
+    if args.len() >= 2
+        && let Some(raw_version) = parse_u64_ascii(arg_slice_bytes(&args[1]))
+        && let Some(version) = RespProtocolVersion::from_u64(raw_version)
+    {
+        client_state.resp_protocol_version = version;
+    }
+    // Scan for SETNAME option and apply the client name.
+    let mut idx = 2;
+    while idx < args.len() {
+        let token = arg_slice_bytes(&args[idx]);
+        if ascii_eq_ignore_case(token, b"AUTH") {
+            idx += 3; // skip AUTH username password
+        } else if ascii_eq_ignore_case(token, b"SETNAME") {
+            if idx + 1 < args.len() {
+                let name = arg_slice_bytes(&args[idx + 1]);
+                let name_value = if name.is_empty() {
+                    None
+                } else {
+                    Some(name.to_vec())
+                };
+                metrics.set_client_name(client_id, name_value);
+            }
+            idx += 2;
+        } else {
+            idx += 1;
+        }
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
