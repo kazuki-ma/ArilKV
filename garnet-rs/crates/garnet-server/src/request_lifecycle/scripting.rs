@@ -13,7 +13,6 @@ use mlua::VmState;
 use sha1::Digest;
 use sha1::Sha1;
 use std::cell::RefCell;
-use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -47,6 +46,10 @@ const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
 /// a SIGSEGV when the stack grows into unmapped memory.  By capping the range
 /// in Rust before the C code runs, we avoid the UB entirely.
 const LUA_UNPACK_MAX_RESULTS: i64 = 8_000;
+/// Maximum recursion depth when converting a Lua value to RESP.
+/// Matches Redis/Valkey behaviour: recursive tables produce nested `*1`
+/// arrays up to this depth, then emit `-ERR reached lua stack limit`.
+const LUA_REPLY_MAX_DEPTH: usize = 100;
 const SCRIPT_FUNCTION_NAME_FORMAT_ERROR: &str = "Library names can only contain letters, numbers, or underscores(_) and must be at least one character long";
 const SCRIPT_FUNCTION_LOAD_RUNTIME_ONLY_ERROR: &str =
     "redis.register_function can only be called on FUNCTION LOAD command";
@@ -2298,7 +2301,7 @@ fn json_value_to_lua(
                     .globals()
                     .raw_get::<LuaTable>(CJSON_ARRAY_MT_KEY)
                 {
-                    table.set_metatable(Some(array_mt));
+                    let _ = table.set_metatable(Some(array_mt));
                 }
             }
             Ok(LuaValue::Table(table))
@@ -2833,6 +2836,18 @@ fn request_error_message(error: RequestExecutionError) -> String {
 }
 
 fn append_lua_value_as_resp(value: LuaValue, response_out: &mut Vec<u8>) -> Result<(), String> {
+    append_lua_value_as_resp_depth(value, response_out, 0)
+}
+
+fn append_lua_value_as_resp_depth(
+    value: LuaValue,
+    response_out: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), String> {
+    if depth >= LUA_REPLY_MAX_DEPTH {
+        append_error(response_out, b"ERR reached lua stack limit");
+        return Ok(());
+    }
     match value {
         LuaValue::Nil => {
             append_null_bulk_string(response_out);
@@ -2864,43 +2879,68 @@ fn append_lua_value_as_resp(value: LuaValue, response_out: &mut Vec<u8>) -> Resu
             append_bulk_string(response_out, value.as_bytes().as_ref());
             Ok(())
         }
-        LuaValue::Table(table) => append_lua_table_as_resp(table, response_out),
+        LuaValue::Table(table) => append_lua_table_as_resp_depth(table, response_out, depth),
         _ => Err("Lua script returned unsupported value type".to_string()),
     }
 }
 
-fn append_lua_table_as_resp(table: LuaTable, response_out: &mut Vec<u8>) -> Result<(), String> {
-    if let Some(error_payload) = lua_table_named_string_field(&table, "err")? {
+fn append_lua_table_as_resp_depth(
+    table: LuaTable,
+    response_out: &mut Vec<u8>,
+    depth: usize,
+) -> Result<(), String> {
+    // Use raw_get to avoid triggering metamethods (matches Redis/Valkey behaviour).
+    if let Some(error_payload) = lua_table_raw_string_field(&table, "err")? {
         append_error(response_out, &error_payload);
         return Ok(());
     }
-    if let Some(status_payload) = lua_table_named_string_field(&table, "ok")? {
+    if let Some(status_payload) = lua_table_raw_string_field(&table, "ok")? {
         append_simple_string(response_out, &status_payload);
         return Ok(());
     }
+    if let Some(double_payload) = lua_table_raw_double_field(&table, "double")? {
+        append_bulk_string(response_out, double_payload.to_string().as_bytes());
+        return Ok(());
+    }
 
-    let mut values = Vec::new();
-    for entry in table.sequence_values::<LuaValue>() {
-        let value = entry.map_err(|error| sanitize_error_text(&error.to_string()))?;
+    // Use raw_len + raw_get to iterate the array portion without metamethods.
+    let len = table.raw_len();
+    let mut values = Vec::with_capacity(len);
+    for i in 1..=len {
+        let value: LuaValue = table
+            .raw_get(i)
+            .map_err(|error| sanitize_error_text(&error.to_string()))?;
         values.push(value);
     }
     response_out.push(b'*');
     response_out.extend_from_slice(values.len().to_string().as_bytes());
     response_out.extend_from_slice(b"\r\n");
     for value in values {
-        append_lua_value_as_resp(value, response_out)?;
+        append_lua_value_as_resp_depth(value, response_out, depth + 1)?;
     }
     Ok(())
 }
 
-fn lua_table_named_string_field(table: &LuaTable, field: &str) -> Result<Option<Vec<u8>>, String> {
-    let value = table
-        .get::<LuaValue>(field)
+fn lua_table_raw_string_field(table: &LuaTable, field: &str) -> Result<Option<Vec<u8>>, String> {
+    let value: LuaValue = table
+        .raw_get(field)
         .map_err(|error| sanitize_error_text(&error.to_string()))?;
     match value {
         LuaValue::Nil => Ok(None),
         LuaValue::String(payload) => Ok(Some(payload.as_bytes().to_vec())),
         _ => Err(format!("Lua table field '{}' must be a string", field)),
+    }
+}
+
+fn lua_table_raw_double_field(table: &LuaTable, field: &str) -> Result<Option<f64>, String> {
+    let value: LuaValue = table
+        .raw_get(field)
+        .map_err(|error| sanitize_error_text(&error.to_string()))?;
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Number(n) => Ok(Some(n)),
+        LuaValue::Integer(n) => Ok(Some(n as f64)),
+        _ => Ok(None),
     }
 }
 
