@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-04
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 530
+> **Current Iteration**: 533
 
 ---
 
@@ -528,6 +528,9 @@
 | 11.372 | CLIENT TRACKING/TRACKINGINFO/GETREDIR compatibility stubs | DONE | — | TRACKING ON/OFF accepts optional flags. TRACKINGINFO returns off/no-redirect/no-prefixes. GETREDIR returns -1. 373 lib tests. Commit: `3d5a1eab96`. |
 | 11.373 | CONFIG GET/SET defaults for commonly queried parameters | DONE | — | lfu-log-factor, lfu-decay-time, lazyfree-lazy-user-flush, jemalloc-bg-thread, activerehashing, no-appendfsync-on-rewrite, set-proc-title, repl-min-slaves-*. 373 lib tests. Commit: `0ec513c2ed`. |
 | 11.374 | INFO Clients/Memory/Stats section enrichment | DONE | — | Clients: tracking_clients, total_blocking_clients. Memory: used_memory_human, rss, peak, maxmemory, fragmentation_ratio. Stats: total_connections/commands, ops/sec, net bytes, hits/misses. 373 lib tests. Commits: `da0f07b71b`, `1ad17b6bf2`. |
+| 11.375 | CONFIG SET integer/boolean validation expansion | DONE | — | Add list-compress-depth, stream-node-max-*, maxclients, repl-backlog-ttl, cluster-node-timeout, min-*-max-lag to integer validation. Add latency-tracking, cluster-enabled to boolean validation. 373 lib tests. Commits: `3334c69cb9`, `405a736690`. |
+| 11.376 | DEBUG OBJECT encoding and serializedlength accuracy | DONE | — | Compute actual encoding (embstr/int/raw/listpack/etc) and serializedlength from value/payload instead of hardcoded raw/0. 373 lib tests. Commits: `c4c68d4cc2`, `1de7404596`. |
+| 11.377 | CLUSTER INFO standard fields enrichment | DONE | — | Add cluster_slots_ok/pfail/fail, cluster_size, epoch, messages sent/received. 373 lib tests. Commit: `8e0be8f304`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1300,3 +1303,6 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 528 | 2026-03-04 | 11.372 | DONE | CLIENT TRACKING/TRACKINGINFO/GETREDIR stubs. 373 lib tests. Commit: `3d5a1eab96`. |
 | 529 | 2026-03-04 | 11.373 | DONE | CONFIG GET/SET defaults expansion. 373 lib tests. Commit: `0ec513c2ed`. |
 | 530 | 2026-03-04 | 11.374 | DONE | INFO Clients/Memory/Stats enrichment. 373 lib tests. Commits: `da0f07b71b`, `1ad17b6bf2`. |
+| 531 | 2026-03-04 | 11.375 | DONE | CONFIG SET integer/boolean validation expansion. 373 lib tests. Commits: `3334c69cb9`, `405a736690`. |
+| 532 | 2026-03-04 | 11.376 | DONE | DEBUG OBJECT encoding and serializedlength. 373 lib tests. Commits: `c4c68d4cc2`, `1de7404596`. |
+| 533 | 2026-03-04 | 11.377 | DONE | CLUSTER INFO enrichment. 373 lib tests. Commit: `8e0be8f304`. |
