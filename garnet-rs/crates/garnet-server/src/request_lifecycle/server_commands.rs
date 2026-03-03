@@ -3413,7 +3413,16 @@ impl RequestProcessor {
                     || parameter == b"proto-max-bulk-len"
                     || parameter == b"client-query-buffer-limit"
                     || parameter == b"lfu-log-factor"
-                    || parameter == b"lfu-decay-time")
+                    || parameter == b"lfu-decay-time"
+                    || parameter == b"list-compress-depth"
+                    || parameter == b"stream-node-max-bytes"
+                    || parameter == b"stream-node-max-entries"
+                    || parameter == b"maxclients"
+                    || parameter == b"repl-backlog-ttl"
+                    || parameter == b"cluster-node-timeout"
+                    || parameter == b"min-replicas-max-lag"
+                    || parameter == b"min-slaves-max-lag"
+                    || parameter == b"repl-min-slaves-max-lag")
                     && parse_u64_ascii(&value).is_none()
                 {
                     append_error(
