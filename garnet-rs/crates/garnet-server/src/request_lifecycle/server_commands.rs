@@ -944,17 +944,24 @@ impl RequestProcessor {
                     );
                     return Ok(());
                 }
-                *self.client_lib_name.lock().unwrap_or_else(|e| e.into_inner()) = value.to_vec();
+                *self
+                    .client_lib_name
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = value.to_vec();
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
             if ascii_eq_ignore_case(option, b"LIB-VER") {
-                *self.client_lib_ver.lock().unwrap_or_else(|e| e.into_inner()) = value.to_vec();
+                *self
+                    .client_lib_ver
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = value.to_vec();
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
-            response_out
-                .extend_from_slice(b"-ERR Unrecognized option 'lib-name' or 'lib-ver' expected\r\n");
+            response_out.extend_from_slice(
+                b"-ERR Unrecognized option 'lib-name' or 'lib-ver' expected\r\n",
+            );
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LIST") {
@@ -978,8 +985,7 @@ impl RequestProcessor {
                         return Err(RequestExecutionError::SyntaxError);
                     }
                     for id_arg in &args[3..] {
-                        parse_u64_ascii(id_arg)
-                            .ok_or(RequestExecutionError::ValueNotInteger)?;
+                        parse_u64_ascii(id_arg).ok_or(RequestExecutionError::ValueNotInteger)?;
                     }
                 } else {
                     return Err(RequestExecutionError::SyntaxError);
@@ -990,9 +996,15 @@ impl RequestProcessor {
                 .unwrap_or(1);
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
-            let lib_name = self.client_lib_name.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_name = self
+                .client_lib_name
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let lib_name_str = String::from_utf8_lossy(&lib_name);
-            let lib_ver = self.client_lib_ver.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_ver = self
+                .client_lib_ver
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let lib_ver_str = String::from_utf8_lossy(&lib_ver);
             let client_info = format!(
                 "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
@@ -1068,9 +1080,15 @@ impl RequestProcessor {
                 .unwrap_or(1);
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
-            let lib_name = self.client_lib_name.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_name = self
+                .client_lib_name
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let lib_name_str = String::from_utf8_lossy(&lib_name);
-            let lib_ver = self.client_lib_ver.lock().unwrap_or_else(|e| e.into_inner());
+            let lib_ver = self
+                .client_lib_ver
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
             let lib_ver_str = String::from_utf8_lossy(&lib_ver);
             let info_line = format!(
                 "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
@@ -1345,12 +1363,7 @@ impl RequestProcessor {
         if !ascii_eq_ignore_case(subcommand, b"USAGE") {
             return Err(RequestExecutionError::UnknownSubcommand);
         }
-        ensure_one_of_arities(
-            args,
-            &[3, 5],
-            "MEMORY",
-            "MEMORY USAGE key [SAMPLES count]",
-        )?;
+        ensure_one_of_arities(args, &[3, 5], "MEMORY", "MEMORY USAGE key [SAMPLES count]")?;
         if args.len() == 5 {
             if !ascii_eq_ignore_case(args[3], b"SAMPLES") {
                 return Err(RequestExecutionError::SyntaxError);
@@ -1538,8 +1551,7 @@ impl RequestProcessor {
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if !self.key_exists_any(&key)? {
-                append_error(response_out, b"ERR no such key");
-                return Ok(());
+                return Err(RequestExecutionError::NoSuchKey);
             }
             let (encoding, serialized_len) = if let Some(value) = self.read_string_value(&key)? {
                 let enc = String::from_utf8_lossy(string_encoding_name(&value)).into_owned();
@@ -1678,8 +1690,7 @@ impl RequestProcessor {
             }
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
-            let hash_max_listpack_entries =
-                self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let hash_max_listpack_entries = self.hash_max_listpack_entries.load(Ordering::Acquire);
             let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
             let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
             let encoding = object_encoding_name(
@@ -2478,12 +2489,12 @@ impl RequestProcessor {
         )?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
-            require_exact_arity(args, 2, "LATENCY|HELP", "LATENCY HELP")?;
+            require_exact_arity(args, 2, "LATENCY", "LATENCY HELP")?;
             append_bulk_array(response_out, &LATENCY_HELP_LINES);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LATEST") {
-            require_exact_arity(args, 2, "LATENCY", "LATENCY LATEST")?;
+            require_exact_arity(args, 2, "LATENCY|LATEST", "LATENCY LATEST")?;
             let latest = self.latency_latest();
             append_array_length(response_out, latest.len());
             for event in latest {
@@ -2496,7 +2507,7 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"HISTORY") {
-            require_exact_arity(args, 3, "LATENCY", "LATENCY HISTORY event")?;
+            require_exact_arity(args, 3, "LATENCY|HISTORY", "LATENCY HISTORY event")?;
             let history = self.latency_history(args[2]);
             append_array_length(response_out, history.len());
             for sample in history {
@@ -2522,12 +2533,12 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
-            require_exact_arity(args, 2, "LATENCY", "LATENCY DOCTOR")?;
+            require_exact_arity(args, 2, "LATENCY|DOCTOR", "LATENCY DOCTOR")?;
             append_bulk_string(response_out, LATENCY_DOCTOR_DISABLED_MESSAGE);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GRAPH") {
-            require_exact_arity(args, 3, "LATENCY", "LATENCY GRAPH event")?;
+            require_exact_arity(args, 3, "LATENCY|GRAPH", "LATENCY GRAPH event")?;
             let resp3 = self.resp_protocol_version().is_resp3();
             let Some(range) = self.latency_graph_range(args[2]) else {
                 if resp3 {
@@ -3364,12 +3375,7 @@ impl RequestProcessor {
                     }
                 }
                 if parameter == b"loglevel" {
-                    let valid = [
-                        &b"debug"[..],
-                        b"verbose",
-                        b"notice",
-                        b"warning",
-                    ];
+                    let valid = [&b"debug"[..], b"verbose", b"notice", b"warning"];
                     if !valid.iter().any(|v| value.eq_ignore_ascii_case(v)) {
                         append_error(
                             response_out,
@@ -3448,6 +3454,7 @@ impl RequestProcessor {
                     || parameter == b"stream-node-max-entries"
                     || parameter == b"maxclients"
                     || parameter == b"repl-backlog-ttl"
+                    || parameter == b"repl-min-slaves-to-write"
                     || parameter == b"cluster-node-timeout"
                     || parameter == b"min-replicas-max-lag"
                     || parameter == b"min-slaves-max-lag"
@@ -3548,8 +3555,7 @@ impl RequestProcessor {
             let zset_max_listpack_entries_value = zset_max_listpack_entries.to_string();
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let list_max_listpack_size_value = list_max_listpack_size.to_string();
-            let hash_max_listpack_entries =
-                self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let hash_max_listpack_entries = self.hash_max_listpack_entries.load(Ordering::Acquire);
             let hash_max_listpack_entries_value = hash_max_listpack_entries.to_string();
             let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
             let set_max_listpack_entries_value = set_max_listpack_entries.to_string();
