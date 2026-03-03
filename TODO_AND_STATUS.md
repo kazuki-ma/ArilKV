@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 492
+> **Current Iteration**: 494
 
 ---
 
@@ -494,6 +494,7 @@
 | 11.338 | Add CLIENT INFO/KILL/CACHING/REPLY stubs and CONFIG REWRITE error | DONE | — | CLIENT INFO returns connection info line with client ID. CLIENT KILL returns 0. CLIENT CACHING/REPLY validate args, return OK. CONFIG REWRITE returns proper "running without config file" error. Updated CLIENT_HELP_LINES (23 entries). 358 tests. Commit: `6bd5d80b35`. |
 | 11.339 | Add ACL DELUSER/GENPASS/LOG/SAVE/LOAD and MEMORY DOCTOR/STATS stubs | DONE | — | ACL DELUSER rejects default user. ACL GENPASS validates bit range. ACL LOG returns empty/RESET. ACL SAVE/LOAD no-op. MEMORY DOCTOR returns healthy status. MEMORY STATS returns 4-field RESP3 map. Updated help constants. 358 tests. Commit: `797138acfd`. |
 | 11.340 | Replace hardcoded RESP arrays with helper functions | DONE | — | ROLE, SLOWLOG GET, MODULE LIST, COMMAND INFO, CLUSTER SLOTS now use append_array_length/append_null_array helpers. COMMAND INFO returns null array for unknown commands (Valkey-compatible). 358 tests. Commit: `7814114f69`. |
+| 11.341 | Eliminate format!() RESP array encoding in hot paths | DONE | 11.340 | Replaced format!("*{}\r\n") allocations with append_array_length in string_commands (MSET, LCS), scripting (FUNCTION LIST), geo_commands (GEOPOS, GEOHASH, GEOSEARCH), and server_commands (PUBSUB CHANNELS). Removed duplicate append_resp_array_len. 358 tests. Commit: `1dff4fda56`. |
 | 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
@@ -1228,3 +1229,5 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 490 | 2026-03-03 | 11.340 | DONE | Replaced hardcoded RESP arrays with helper functions. COMMAND INFO null array for unknown commands. 358 tests. Commit: `7814114f69`. |
 | 491 | 2026-03-03 | 11.338-11.340 | DONE | Test for CLIENT INFO/KILL/CACHING/REPLY, CONFIG REWRITE, COMMAND DOCS. 358 tests. Commit: `55d60dfbc2`. |
 | 492 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iterations 488-492 and added TODOs 11.338-11.340. |
+| 493 | 2026-03-03 | 11.341 | DONE | Eliminated format!() RESP array encoding allocations across 4 files. Removed duplicate append_resp_array_len. 358 tests. Commit: `1dff4fda56`. |
+| 494 | 2026-03-03 | Tracking | DONE | Updated TODO tracker with iteration 493-494 and added TODO 11.341. |
