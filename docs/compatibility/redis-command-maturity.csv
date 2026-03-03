@@ -33,21 +33,21 @@ DIGEST,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Compatibility digest surface is limit
 DISCARD,SUPPORTED_DECLARED,1,1,FULL,
 DUMP,SUPPORTED_DECLARED,1,1,FULL,
 ECHO,SUPPORTED_DECLARED,1,1,FULL,
-EVAL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Implemented behind GARNET_SCRIPTING_ENABLED; executes Lua via mlua (Lua 5.1 vendored) with KEYS/ARGV and redis.call/pcall bridge.
-EVAL_RO,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Implemented behind GARNET_SCRIPTING_ENABLED; write commands are rejected from script context.
-EVALSHA,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Implemented behind GARNET_SCRIPTING_ENABLED; returns NOSCRIPT on missing SHA and executes cached script body. Replication normalizes mutating EVALSHA to EVAL payloads.
-EVALSHA_RO,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Implemented behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection inside redis.call/pcall.
+EVAL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Behind GARNET_SCRIPTING_ENABLED; Lua 5.1 via mlua with KEYS/ARGV/redis.call/pcall bridge and cjson/cmsgpack/bit libraries and sandbox with readonly protection and shebang flags=no-writes support.
+EVAL_RO,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Behind GARNET_SCRIPTING_ENABLED; write commands rejected from script context; same sandbox as EVAL.
+EVALSHA,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Behind GARNET_SCRIPTING_ENABLED; NOSCRIPT on missing SHA; cached script with shebang/no-writes support; replication normalizes mutating EVALSHA to EVAL.
+EVALSHA_RO,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Behind GARNET_SCRIPTING_ENABLED; same as EVALSHA with write-command rejection.
 EXEC,SUPPORTED_DECLARED,1,1,FULL,
 EXISTS,SUPPORTED_DECLARED,1,1,FULL,
 EXPIRE,SUPPORTED_DECLARED,1,1,FULL,
 EXPIREAT,SUPPORTED_DECLARED,1,1,FULL,
 EXPIRETIME,SUPPORTED_DECLARED,1,1,FULL,
 FAILOVER,SUPPORTED_DECLARED,1,1,DISABLED,
-FCALL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD.
-FCALL_RO,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Implemented behind GARNET_SCRIPTING_ENABLED for functions registered via FUNCTION LOAD with no-writes flag.
+FCALL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Behind GARNET_SCRIPTING_ENABLED; executes functions registered via FUNCTION LOAD with full sandbox and library support.
+FCALL_RO,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Behind GARNET_SCRIPTING_ENABLED; read-only function execution with no-writes flag enforcement.
 FLUSHALL,SUPPORTED_DECLARED,1,1,FULL,
 FLUSHDB,SUPPORTED_DECLARED,1,1,FULL,
-FUNCTION,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Supports HELP/LIST/DELETE/STATS/KILL/DUMP/RESTORE/FLUSH [ASYNC|SYNC] plus LOAD [REPLACE] with redis.register_function parsing; full Redis FUNCTION management semantics are not implemented.
+FUNCTION,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Supports HELP/LIST/DELETE/STATS/KILL/DUMP/RESTORE/FLUSH [ASYNC|SYNC] plus LOAD [REPLACE] with redis.register_function parsing and description metadata; behind GARNET_SCRIPTING_ENABLED.
 GEOADD,SUPPORTED_DECLARED,1,1,FULL,
 GEODIST,SUPPORTED_DECLARED,1,1,FULL,
 GEOHASH,SUPPORTED_DECLARED,1,1,FULL,
@@ -138,12 +138,12 @@ PFMERGE,SUPPORTED_DECLARED,1,1,FULL,
 PFSELFTEST,SUPPORTED_DECLARED,1,1,FULL,
 PING,SUPPORTED_DECLARED,1,1,FULL,
 PSETEX,SUPPORTED_DECLARED,1,1,FULL,
-PSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+PSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Pattern subscription with delivery; ACK count tracking; not full runtime parity (no cluster-wide broadcast).
 PSYNC,SUPPORTED_DECLARED,1,1,FULL,
 PTTL,SUPPORTED_DECLARED,1,1,FULL,
-PUBLISH,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
-PUBSUB,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
-PUNSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+PUBLISH,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Channel message delivery to subscribed clients with receiver count; not full cluster-wide parity.
+PUBSUB,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,CHANNELS/NUMSUB/NUMPAT/SHARDCHANNELS/SHARDNUMSUB introspection with live subscription state tracking.
+PUNSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Pattern unsubscription with ACK count tracking; not full cluster-wide parity.
 QUIT,SUPPORTED_DECLARED,1,1,FULL,
 RANDOMKEY,SUPPORTED_DECLARED,1,1,FULL,
 READONLY,SUPPORTED_DECLARED,1,1,DISABLED,
@@ -188,17 +188,17 @@ SMOVE,SUPPORTED_DECLARED,1,1,FULL,
 SORT,SUPPORTED_DECLARED,1,1,FULL,
 SORT_RO,SUPPORTED_DECLARED,1,1,FULL,
 SPOP,SUPPORTED_DECLARED,1,1,FULL,
-SPUBLISH,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+SPUBLISH,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Sharded channel message delivery with receiver count; not full cluster-wide parity.
 SRANDMEMBER,SUPPORTED_DECLARED,1,1,FULL,
 SREM,SUPPORTED_DECLARED,1,1,FULL,
 SSCAN,SUPPORTED_DECLARED,1,1,FULL,
-SSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+SSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Sharded channel subscription with ACK count tracking; not full cluster-wide parity.
 STRLEN,SUPPORTED_DECLARED,1,1,FULL,
-SUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+SUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Channel subscription with message delivery and ACK count tracking; not full cluster-wide parity.
 SUBSTR,SUPPORTED_DECLARED,1,1,FULL,
 SUNION,SUPPORTED_DECLARED,1,1,FULL,
 SUNIONSTORE,SUPPORTED_DECLARED,1,1,FULL,
-SUNSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+SUNSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Sharded channel unsubscription with ACK count tracking; not full cluster-wide parity.
 SWAPDB,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,single-db mode only; SWAPDB supports 0<->0 only.
 SYNC,SUPPORTED_DECLARED,1,1,FULL,
 TIME,SUPPORTED_DECLARED,1,1,FULL,
@@ -207,7 +207,7 @@ TRIMSLOTS,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behav
 TTL,SUPPORTED_DECLARED,1,1,FULL,
 TYPE,SUPPORTED_DECLARED,1,1,FULL,
 UNLINK,SUPPORTED_DECLARED,1,1,FULL,
-UNSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal deterministic pubsub compatibility shapes; not full runtime parity.
+UNSUBSCRIBE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Channel unsubscription with ACK count tracking; not full cluster-wide parity.
 UNWATCH,SUPPORTED_DECLARED,1,1,FULL,
 WAIT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full replication and durability semantics are not implemented.
 WAITAOF,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full replication and durability semantics are not implemented.
