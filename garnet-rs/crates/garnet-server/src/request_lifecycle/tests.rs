@@ -7263,7 +7263,19 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert_eq!(response, b"$13\r\nid=1 cmd=exec\r\n");
+    let response_str = String::from_utf8_lossy(&response);
+    assert!(
+        response_str.starts_with("$"),
+        "CLIENT LIST should return bulk string"
+    );
+    assert!(
+        response_str.contains("id=1 "),
+        "CLIENT LIST should contain client id"
+    );
+    assert!(
+        response_str.contains("cmd=client|list"),
+        "CLIENT LIST should contain cmd field"
+    );
 
     response.clear();
     let client_help = b"*2\r\n$6\r\nCLIENT\r\n$4\r\nHELP\r\n";
@@ -11752,6 +11764,48 @@ fn client_id_getname_setname_list_noevict_notouch_help_stubs() {
     assert!(
         list_resp3.starts_with(b"="),
         "RESP3 CLIENT LIST should return verbatim string"
+    );
+}
+
+#[test]
+fn client_list_type_and_id_filters() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // CLIENT LIST TYPE NORMAL returns bulk string with client info fields
+    let list_normal = execute_command_line(&processor, "CLIENT LIST TYPE NORMAL").unwrap();
+    assert!(
+        list_normal.starts_with(b"$"),
+        "CLIENT LIST TYPE NORMAL should return bulk string"
+    );
+    assert!(
+        list_normal.windows(3).any(|w| w == b"id="),
+        "CLIENT LIST output should contain id= field"
+    );
+
+    // CLIENT LIST TYPE REPLICA also accepted
+    let list_replica = execute_command_line(&processor, "CLIENT LIST TYPE REPLICA").unwrap();
+    assert!(list_replica.starts_with(b"$"));
+
+    // CLIENT LIST TYPE with invalid type returns error
+    let list_bad = execute_command_line(&processor, "CLIENT LIST TYPE INVALID");
+    assert!(list_bad.is_err(), "Invalid CLIENT LIST TYPE should error");
+
+    // CLIENT LIST ID with valid ID
+    let list_id = execute_command_line(&processor, "CLIENT LIST ID 1").unwrap();
+    assert!(list_id.starts_with(b"$"));
+
+    // CLIENT LIST ID with non-integer returns error
+    let list_bad_id = execute_command_line(&processor, "CLIENT LIST ID notanum");
+    assert!(
+        list_bad_id.is_err(),
+        "CLIENT LIST ID non-integer should error"
+    );
+
+    // CLIENT LIST with unknown filter returns error
+    let list_bad_filter = execute_command_line(&processor, "CLIENT LIST BADFILTER value");
+    assert!(
+        list_bad_filter.is_err(),
+        "CLIENT LIST unknown filter should error"
     );
 }
 

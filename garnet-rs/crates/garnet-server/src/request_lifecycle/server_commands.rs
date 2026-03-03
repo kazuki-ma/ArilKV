@@ -907,13 +907,43 @@ impl RequestProcessor {
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LIST") {
-            require_exact_arity(args, 2, "CLIENT", "CLIENT LIST")?;
-            // Minimal compatibility surface for tests that probe blocked EXEC visibility.
-            let client_info = b"id=1 cmd=exec";
+            // Accept optional TYPE or ID filter arguments for compatibility.
+            if args.len() > 2 {
+                let filter_option = args[2];
+                if ascii_eq_ignore_case(filter_option, b"TYPE") {
+                    if args.len() != 4 {
+                        return Err(RequestExecutionError::SyntaxError);
+                    }
+                    let type_value = args[3];
+                    if !ascii_eq_ignore_case(type_value, b"NORMAL")
+                        && !ascii_eq_ignore_case(type_value, b"MASTER")
+                        && !ascii_eq_ignore_case(type_value, b"REPLICA")
+                        && !ascii_eq_ignore_case(type_value, b"PUBSUB")
+                    {
+                        return Err(RequestExecutionError::SyntaxError);
+                    }
+                } else if ascii_eq_ignore_case(filter_option, b"ID") {
+                    if args.len() < 4 {
+                        return Err(RequestExecutionError::SyntaxError);
+                    }
+                    for id_arg in &args[3..] {
+                        parse_u64_ascii(id_arg)
+                            .ok_or(RequestExecutionError::ValueNotInteger)?;
+                    }
+                } else {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+            }
+            let client_id = super::current_request_client_id()
+                .map(u64::from)
+                .unwrap_or(1);
+            let client_info = format!(
+                "id={client_id} addr=127.0.0.1:0 fd=0 name= db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name= lib-ver=\n"
+            );
             if self.resp_protocol_version().is_resp3() {
-                append_verbatim_string(response_out, b"txt", client_info);
+                append_verbatim_string(response_out, b"txt", client_info.as_bytes());
             } else {
-                append_bulk_string(response_out, client_info);
+                append_bulk_string(response_out, client_info.as_bytes());
             }
             return Ok(());
         }
