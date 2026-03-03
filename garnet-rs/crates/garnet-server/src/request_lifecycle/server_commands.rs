@@ -1542,7 +1542,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_keys(
@@ -2384,7 +2384,7 @@ impl RequestProcessor {
             }
             return Ok(());
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_module(
@@ -2460,7 +2460,7 @@ impl RequestProcessor {
             append_array_length(response_out, 0);
             return Ok(());
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_acl(
@@ -2935,7 +2935,7 @@ impl RequestProcessor {
             }
             return Ok(());
         }
-        Err(RequestExecutionError::UnknownCommand)
+        Err(RequestExecutionError::UnknownSubcommand)
     }
 
     pub(super) fn handle_monitor(

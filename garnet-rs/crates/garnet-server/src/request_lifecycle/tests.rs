@@ -7512,7 +7512,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap_err();
     err.append_resp_error(&mut response);
-    assert_eq!(response, b"-ERR unknown command\r\n");
+    assert_eq!(response, b"-ERR unknown subcommand\r\n");
 
     response.clear();
     let slowlog_bad_count = b"*3\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n$3\r\nbad\r\n";
@@ -7744,7 +7744,7 @@ fn pubsub_commands_cover_minimal_ack_and_introspection_shapes() {
         "SUBSCRIBE",
         b"-ERR wrong number of arguments for 'subscribe' command\r\n",
     );
-    assert_command_error(&processor, "PUBSUB NOPE", b"-ERR unknown command\r\n");
+    assert_command_error(&processor, "PUBSUB NOPE", b"-ERR unknown subcommand\r\n");
 }
 
 #[test]
