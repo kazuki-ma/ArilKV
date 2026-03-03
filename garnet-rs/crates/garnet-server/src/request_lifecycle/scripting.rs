@@ -1159,6 +1159,7 @@ impl RequestProcessor {
             install_readonly_redis_table_metatable(&lua, &redis_table)?;
             let load_env = build_strict_lua_environment(&lua, &redis_table)?;
             lua.load(strip_lua_shebang(library_source))
+                .set_name("user_script")
                 .set_environment(load_env)
                 .exec()?;
             Ok::<(), LuaError>(())
@@ -1414,7 +1415,11 @@ impl RequestProcessor {
             }
             env.raw_set("ARGV", argv_table)?;
 
-            let value: LuaValue = lua.load(script).set_environment(env).eval()?;
+            let value: LuaValue = lua
+                .load(script)
+                .set_name("user_script")
+                .set_environment(env)
+                .eval()?;
             Ok::<LuaValue, LuaError>(value)
         });
 
@@ -1581,6 +1586,7 @@ impl RequestProcessor {
             let load_env = build_strict_lua_environment(&lua, &load_redis_table)?;
 
             lua.load(strip_lua_shebang(library_source))
+                .set_name("user_script")
                 .set_environment(load_env.clone())
                 .exec()?;
             load_redis_table.set("register_function", runtime_only_register_fn)?;
@@ -1592,8 +1598,18 @@ impl RequestProcessor {
             let runtime_pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(lua, values, mutability, allow_oom, LuaCallMode::PCall)
             })?;
-            let runtime_sha1hex_fn = scope.create_function(|_, value: mlua::String| {
-                Ok(script_sha1_hex(value.as_bytes().as_ref()))
+            let runtime_sha1hex_fn = scope.create_function(|_, args: MultiValue| {
+                if args.len() != 1 {
+                    return Err(LuaError::RuntimeError(
+                        "wrong number of arguments".to_string(),
+                    ));
+                }
+                match args.into_iter().next().unwrap_or(LuaValue::Nil) {
+                    LuaValue::String(s) => Ok(script_sha1_hex(s.as_bytes().as_ref())),
+                    _ => Err(LuaError::RuntimeError(
+                        "wrong number of arguments".to_string(),
+                    )),
+                }
             })?;
             let runtime_status_reply_fn = scope.create_function(|lua, value: mlua::String| {
                 let table = lua.create_table()?;
