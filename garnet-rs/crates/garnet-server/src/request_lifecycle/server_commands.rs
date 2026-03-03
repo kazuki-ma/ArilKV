@@ -924,8 +924,9 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "CLIENT", "CLIENT SETNAME connection-name")?;
             let name = args[2];
             if name.iter().any(|&b| b == b' ' || b == b'\n') {
-                response_out.extend_from_slice(
-                    b"-ERR Client names cannot contain spaces, newlines or special characters.\r\n",
+                append_error(
+                    response_out,
+                    b"ERR Client names cannot contain spaces, newlines or special characters.",
                 );
                 return Ok(());
             }
@@ -939,8 +940,9 @@ impl RequestProcessor {
             let value = args[3];
             if ascii_eq_ignore_case(option, b"LIB-NAME") {
                 if value.iter().any(|&b| b == b' ' || b == b'\n') {
-                    response_out.extend_from_slice(
-                        b"-ERR lib-name can only contain characters that are allowed in CLIENT SETNAME\r\n",
+                    append_error(
+                        response_out,
+                        b"ERR lib-name can only contain characters that are allowed in CLIENT SETNAME",
                     );
                     return Ok(());
                 }
@@ -959,8 +961,9 @@ impl RequestProcessor {
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
-            response_out.extend_from_slice(
-                b"-ERR Unrecognized option 'lib-name' or 'lib-ver' expected\r\n",
+            append_error(
+                response_out,
+                b"ERR Unrecognized option 'lib-name' or 'lib-ver' expected",
             );
             return Ok(());
         }
