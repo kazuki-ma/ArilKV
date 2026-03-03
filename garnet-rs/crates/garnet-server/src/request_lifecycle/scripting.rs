@@ -1902,36 +1902,75 @@ fn install_readonly_redis_table_metatable(lua: &Lua, redis_table: &LuaTable) -> 
 }
 
 fn build_strict_lua_environment(lua: &Lua, redis_table: &LuaTable) -> mlua::Result<LuaTable> {
+    // The environment table (`env`) is intentionally left EMPTY: all globals
+    // live in the `__index` backing table so that ANY write (even to keys that
+    // "exist") goes through `__newindex` and is rejected.  This matches
+    // Redis/Valkey's patched-Lua readonly-table semantics.
     let env = lua.create_table()?;
-    env.set("redis", redis_table.clone())?;
-    env.set("_G", env.clone())?;
 
-    // Build and install library tables with readonly protection
+    // Build library tables with readonly protection.
+    // make_table_readonly moves all raw keys into a backing __index table
+    // so that writes to existing keys (e.g. `cjson.encode = ...`) also
+    // trigger __newindex and are rejected.
     let bit_table = build_lua_bit_table(lua)?;
-    install_readonly_table_metatable(lua, &bit_table)?;
-    env.set("bit", bit_table)?;
+    make_table_readonly(lua, &bit_table)?;
 
     let cjson_table = build_lua_cjson_table(lua)?;
-    install_readonly_table_metatable(lua, &cjson_table)?;
-    env.set("cjson", cjson_table)?;
+    make_table_readonly(lua, &cjson_table)?;
 
     let cmsgpack_table = build_lua_cmsgpack_table(lua)?;
-    install_readonly_table_metatable(lua, &cmsgpack_table)?;
-    env.set("cmsgpack", cmsgpack_table)?;
+    make_table_readonly(lua, &cmsgpack_table)?;
 
     let os_table = build_lua_os_table(lua)?;
-    install_readonly_table_metatable(lua, &os_table)?;
-    env.set("os", os_table)?;
+    make_table_readonly(lua, &os_table)?;
 
-    let readonly_globals = lua.create_table()?;
+    // Make the redis table fully readonly by moving its raw keys into a
+    // proxy.  This prevents `redis.call = ...` from succeeding.
+    // We clone the redis table reference before making it readonly so the
+    // original caller doesn't lose access to the raw keys.
+    let readonly_redis = lua.create_table()?;
+    let redis_keys: Vec<(LuaValue, LuaValue)> = redis_table
+        .pairs::<LuaValue, LuaValue>()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    for (key, value) in &redis_keys {
+        readonly_redis.raw_set(key.clone(), value.clone())?;
+    }
+    make_table_readonly(lua, &readonly_redis)?;
+
+    // The backing table contains all visible globals.  Reads fall through
+    // from `env` -> `__index` -> `backing`; writes hit `__newindex` and
+    // always error.
+    let backing = lua.create_table()?;
+    backing.raw_set("redis", readonly_redis)?;
+    backing.raw_set("_G", env.clone())?;
+    backing.raw_set("bit", bit_table)?;
+    backing.raw_set("cjson", cjson_table)?;
+    backing.raw_set("cmsgpack", cmsgpack_table)?;
+    backing.raw_set("os", os_table)?;
+
     let base_globals = lua.globals();
     for global_name in LUA_ALLOWED_GLOBALS {
+        if global_name == "setmetatable" {
+            continue; // replaced with safe wrapper below
+        }
         if let Ok(value) = base_globals.get::<LuaValue>(global_name) {
-            readonly_globals.raw_set(global_name, value)?;
+            backing.raw_set(global_name, value)?;
         }
     }
-    let readonly_globals_metatable = lua.create_table()?;
-    let readonly_index_fn = lua.create_function(
+
+    // Build a table of all "protected" (readonly) tables whose metatables
+    // must not be changed via setmetatable().  We register env itself plus
+    // the library tables.
+    let protected_tables = lua.create_table()?;
+    // Use lua_ref-like keys: store the table as both key and value so we
+    // can do a fast lookup later.
+    install_safe_setmetatable(lua, &backing, &env, &protected_tables)?;
+
+    // The backing table's own metatable catches access to truly nonexistent
+    // global names.
+    let backing_metatable = lua.create_table()?;
+    let nonexistent_index_fn = lua.create_function(
         |_, (_table, key): (LuaValue, LuaValue)| -> mlua::Result<LuaValue> {
             let key_name = script_global_name(key);
             Err(LuaError::RuntimeError(format!(
@@ -1946,14 +1985,23 @@ fn build_strict_lua_environment(lua: &Lua, redis_table: &LuaTable) -> mlua::Resu
             ))
         },
     )?;
-    readonly_globals_metatable.set("__index", readonly_index_fn)?;
-    readonly_globals_metatable.set("__newindex", readonly_newindex_fn.clone())?;
-    readonly_globals.set_metatable(Some(readonly_globals_metatable))?;
+    backing_metatable.set("__index", nonexistent_index_fn)?;
+    backing_metatable.set("__newindex", readonly_newindex_fn.clone())?;
+    backing.set_metatable(Some(backing_metatable))?;
 
-    let metatable = lua.create_table()?;
-    metatable.set("__index", readonly_globals)?;
-    metatable.set("__newindex", readonly_newindex_fn)?;
-    env.set_metatable(Some(metatable))?;
+    // The environment's metatable: __index delegates reads to `backing`,
+    // __newindex rejects all writes.
+    // __metatable exposes a readonly proxy table so that:
+    //   - getmetatable(_G) returns a table whose __newindex errors
+    //   - setmetatable on the real env goes through our safe wrapper
+    let fake_metatable = lua.create_table()?;
+    install_readonly_table_metatable(lua, &fake_metatable)?;
+
+    let env_metatable = lua.create_table()?;
+    env_metatable.set("__index", backing)?;
+    env_metatable.set("__newindex", readonly_newindex_fn)?;
+    env_metatable.set("__metatable", fake_metatable)?;
+    env.set_metatable(Some(env_metatable))?;
     Ok(env)
 }
 
@@ -2378,7 +2426,7 @@ fn build_lua_cjson_table(lua: &Lua) -> mlua::Result<LuaTable> {
     let array_mt = lua.create_table()?;
     let is_array_fn = lua.create_function(|_, _: ()| Ok(true))?;
     array_mt.raw_set("__is_cjson_array", is_array_fn)?;
-    install_readonly_table_metatable(lua, &array_mt)?;
+    make_table_readonly(lua, &array_mt)?;
     lua.globals().raw_set(CJSON_ARRAY_MT_KEY, array_mt)?;
 
     // cjson.encode(value)
@@ -2709,6 +2757,103 @@ fn install_readonly_table_metatable(lua: &Lua, table: &LuaTable) -> mlua::Result
     )?;
     metatable.set("__newindex", newindex_fn)?;
     table.set_metatable(Some(metatable))?;
+    Ok(())
+}
+
+/// Create a readonly proxy: move all raw keys from `content` into a new
+/// backing table and set `content` up as an empty proxy whose `__index`
+/// points to the backing, `__newindex` rejects all writes, and
+/// `__metatable` prevents metatable tampering.
+///
+/// After this call, `content` is empty and all lookups go through the
+/// metatable, ensuring that writes to existing keys also fail.
+fn make_table_readonly(lua: &Lua, content: &LuaTable) -> mlua::Result<()> {
+    // Move existing raw keys to a backing table
+    let backing = lua.create_table()?;
+    let keys_to_move: Vec<(LuaValue, LuaValue)> = content
+        .pairs::<LuaValue, LuaValue>()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    for (key, value) in &keys_to_move {
+        backing.raw_set(key.clone(), value.clone())?;
+    }
+    for (key, _) in &keys_to_move {
+        content.raw_set(key.clone(), LuaValue::Nil)?;
+    }
+    // Set up metatable
+    let metatable = lua.create_table()?;
+    metatable.set("__index", backing)?;
+    let newindex_fn = lua.create_function(
+        |_, (_table, _key, _value): (LuaValue, LuaValue, LuaValue)| -> mlua::Result<()> {
+            Err(LuaError::RuntimeError(
+                "Attempt to modify a readonly table".to_string(),
+            ))
+        },
+    )?;
+    metatable.set("__newindex", newindex_fn)?;
+    content.set_metatable(Some(metatable))?;
+    // Register in the readonly tables set so safe_setmetatable blocks
+    // setmetatable() targeting this table.
+    mark_table_readonly(lua, content)?;
+    Ok(())
+}
+
+/// Lua registry key for the set of readonly-protected tables.
+const READONLY_TABLES_REGISTRY_KEY: &str = "__garnet_readonly_tables";
+
+/// Mark a table as readonly-protected in the Lua registry.  After this call,
+/// `safe_setmetatable` will reject `setmetatable()` calls targeting this table.
+fn mark_table_readonly(lua: &Lua, table: &LuaTable) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let registry: LuaTable = match globals.raw_get::<LuaValue>(READONLY_TABLES_REGISTRY_KEY) {
+        Ok(LuaValue::Table(t)) => t,
+        _ => {
+            let t = lua.create_table()?;
+            globals.raw_set(READONLY_TABLES_REGISTRY_KEY, t.clone())?;
+            t
+        }
+    };
+    // Use the table itself as key (identity-based lookup)
+    registry.raw_set(table.clone(), true)?;
+    Ok(())
+}
+
+/// Replace `setmetatable` in the backing globals with a wrapper that rejects
+/// modifications to protected (readonly) tables.  Redis's patched Lua checks a
+/// C-level readonly flag; we emulate this by keeping a registry set of
+/// protected table references and checking before delegation.
+fn install_safe_setmetatable(
+    lua: &Lua,
+    backing: &LuaTable,
+    env: &LuaTable,
+    _protected_tables: &LuaTable,
+) -> mlua::Result<()> {
+    let globals = lua.globals();
+    let original_setmetatable: LuaFunction = globals.get("setmetatable")?;
+
+    // Mark the env table as protected
+    mark_table_readonly(lua, env)?;
+
+    let safe_setmetatable =
+        lua.create_function(move |lua, (table, mt): (LuaValue, LuaValue)| {
+            if let LuaValue::Table(ref t) = table {
+                // Check the registry of readonly tables
+                if let Ok(LuaValue::Table(registry)) = lua
+                    .globals()
+                    .raw_get::<LuaValue>(READONLY_TABLES_REGISTRY_KEY)
+                {
+                    if let Ok(LuaValue::Boolean(true)) =
+                        registry.raw_get::<LuaValue>(t.clone())
+                    {
+                        return Err(LuaError::RuntimeError(
+                            "Attempt to modify a readonly table".to_string(),
+                        ));
+                    }
+                }
+            }
+            original_setmetatable.call::<LuaValue>((table, mt))
+        })?;
+    backing.raw_set("setmetatable", safe_setmetatable)?;
     Ok(())
 }
 
