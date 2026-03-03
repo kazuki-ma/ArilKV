@@ -1,5 +1,5 @@
 command,declaration_status,redis_present,garnet_present,implementation_status,comment
-ACL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal ACL subcommand surface only.
+ACL,SUPPORTED_DECLARED,1,1,FULL,Full subcommand coverage: HELP WHOAMI USERS LIST SETUSER CAT DELUSER GENPASS LOG SAVE LOAD DRYRUN GETUSER with 21-category catalog.
 APPEND,SUPPORTED_DECLARED,1,1,FULL,
 ASKING,SUPPORTED_DECLARED,1,1,FULL,
 AUTH,SUPPORTED_DECLARED,1,1,FULL,
