@@ -1167,6 +1167,106 @@ fn hash_field_expiration_extension_commands_cover_ttl_expiretime_and_persist() {
 }
 
 #[test]
+fn hsetex_hgetex_hgetdel_hexpire_hpexpire_cover_basic_operations() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // --- HSETEX: set hash fields with per-field expiration ---
+    let now_millis = current_unix_time_millis().unwrap();
+    let future_millis = now_millis + 60_000;
+    let cmd = format!("HSETEX hsx PXAT {future_millis} FIELDS 2 f1 v1 f2 v2");
+    assert_command_integer(&processor, &cmd, 2);
+    // Fields exist and have expiration.
+    let hpttl = execute_command_line(&processor, "HPTTL hsx FIELDS 2 f1 f2").unwrap();
+    let ttls = parse_integer_array_response(&hpttl);
+    assert_eq!(ttls.len(), 2);
+    assert!((0..=60_000).contains(&ttls[0]));
+    assert!((0..=60_000).contains(&ttls[1]));
+    // Values are stored correctly.
+    let v1 = execute_command_line(&processor, "HGET hsx f1").unwrap();
+    assert_eq!(v1, b"$2\r\nv1\r\n");
+    let v2 = execute_command_line(&processor, "HGET hsx f2").unwrap();
+    assert_eq!(v2, b"$2\r\nv2\r\n");
+    // HSETEX arity error (fewer than 5 args).
+    assert_command_error(
+        &processor,
+        "HSETEX hsx PX 100",
+        b"-ERR wrong number of arguments for 'hsetex' command\r\n",
+    );
+
+    // --- HGETEX: get fields and set new expiration ---
+    let future_millis2 = current_unix_time_millis().unwrap() + 90_000;
+    let cmd = format!("HGETEX hsx PXAT {future_millis2} FIELDS 2 f1 missing");
+    let response = execute_command_line(&processor, &cmd).unwrap();
+    // Returns array of bulk strings: f1 value, nil for missing.
+    assert!(response.starts_with(b"*2\r\n"));
+    assert!(
+        response
+            .windows(b"$2\r\nv1\r\n".len())
+            .any(|w| w == b"$2\r\nv1\r\n")
+    );
+    assert!(response.windows(b"$-1\r\n".len()).any(|w| w == b"$-1\r\n"));
+    // f1 now has new expiration.
+    let hpttl = execute_command_line(&processor, "HPTTL hsx FIELDS 1 f1").unwrap();
+    let ttls = parse_integer_array_response(&hpttl);
+    assert!((0..=90_000).contains(&ttls[0]));
+    // Missing key returns all nil.
+    let response = execute_command_line(&processor, "HGETEX nokey FIELDS 1 f1").unwrap();
+    assert!(response.starts_with(b"*1\r\n"));
+    assert!(response.windows(b"$-1\r\n".len()).any(|w| w == b"$-1\r\n"));
+
+    // --- HGETDEL: get and atomically delete fields ---
+    assert_command_integer(&processor, "HSET hdel f1 v1 f2 v2 f3 v3", 3);
+    let response = execute_command_line(&processor, "HGETDEL hdel FIELDS 2 f1 missing").unwrap();
+    assert!(response.starts_with(b"*2\r\n"));
+    assert!(
+        response
+            .windows(b"$2\r\nv1\r\n".len())
+            .any(|w| w == b"$2\r\nv1\r\n")
+    );
+    assert!(response.windows(b"$-1\r\n".len()).any(|w| w == b"$-1\r\n"));
+    // f1 is now deleted.
+    let v1 = execute_command_line(&processor, "HGET hdel f1").unwrap();
+    assert_eq!(v1, b"$-1\r\n");
+    // f2, f3 remain.
+    let v2 = execute_command_line(&processor, "HGET hdel f2").unwrap();
+    assert_eq!(v2, b"$2\r\nv2\r\n");
+    // Missing key returns all nil.
+    let response = execute_command_line(&processor, "HGETDEL nokey FIELDS 1 f1").unwrap();
+    assert!(response.windows(b"$-1\r\n".len()).any(|w| w == b"$-1\r\n"));
+
+    // --- HEXPIRE: set seconds-based expiration on hash fields ---
+    assert_command_integer(&processor, "HSET hexp f1 v1 f2 v2", 2);
+    let response = execute_command_line(&processor, "HEXPIRE hexp 30 FIELDS 2 f1 missing").unwrap();
+    assert_eq!(parse_integer_array_response(&response), vec![1, -2]);
+    // f1 has TTL, f2 does not.
+    let httl = execute_command_line(&processor, "HTTL hexp FIELDS 2 f1 f2").unwrap();
+    let ttls = parse_integer_array_response(&httl);
+    assert!((0..=30).contains(&ttls[0]));
+    assert_eq!(ttls[1], -1);
+    // Negative seconds rejected.
+    assert_command_error(
+        &processor,
+        "HEXPIRE hexp -1 FIELDS 1 f1",
+        b"-ERR value is out of range\r\n",
+    );
+
+    // --- HPEXPIRE: set milliseconds-based expiration on hash fields ---
+    assert_command_integer(&processor, "HSET hpexp f1 v1 f2 v2", 2);
+    let response =
+        execute_command_line(&processor, "HPEXPIRE hpexp 45000 FIELDS 2 f1 missing").unwrap();
+    assert_eq!(parse_integer_array_response(&response), vec![1, -2]);
+    let hpttl = execute_command_line(&processor, "HPTTL hpexp FIELDS 1 f1").unwrap();
+    let ttls = parse_integer_array_response(&hpttl);
+    assert!((0..=45_000).contains(&ttls[0]));
+    // Negative millis rejected.
+    assert_command_error(
+        &processor,
+        "HPEXPIRE hpexp -1 FIELDS 1 f1",
+        b"-ERR value is out of range\r\n",
+    );
+}
+
+#[test]
 fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 16];
