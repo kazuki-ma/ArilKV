@@ -54,12 +54,14 @@ const SLOWLOG_HELP_LINES: [&[u8]; 12] = [
     b"HELP",
     b"    Print this help.",
 ];
-const ACL_HELP_LINES: [&[u8]; 25] = [
+const ACL_HELP_LINES: [&[u8]; 27] = [
     b"ACL <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"CAT [<category>]",
     b"    List ACL categories and the commands inside them.",
     b"DELUSER <username> [<username> ...]",
     b"    Delete ACL users and associated rules.",
+    b"DRYRUN <username> <command> [<arg> ...]",
+    b"    Test whether a user can run a command without executing it.",
     b"GENPASS [<bits>]",
     b"    Generate a secure password for ACL users.",
     b"GETUSER <username>",
@@ -205,9 +207,13 @@ const DEBUG_HELP_LINES: [&[u8]; 12] = [
     b"DIGEST",
     b"    Compute a dataset digest.",
 ];
-const CLUSTER_HELP_LINES: [&[u8]; 12] = [
+const CLUSTER_HELP_LINES: [&[u8]; 20] = [
     b"CLUSTER <subcommand> [<arg> [value] [opt] ...]",
     b"Available subcommands:",
+    b"COUNTKEYSINSLOT <slot>",
+    b"    Return the number of keys in the specified hash slot.",
+    b"GETKEYSINSLOT <slot> <count>",
+    b"    Return keys in the specified hash slot.",
     b"INFO",
     b"    Return information about the cluster.",
     b"KEYSLOT <key>",
@@ -216,8 +222,12 @@ const CLUSTER_HELP_LINES: [&[u8]; 12] = [
     b"    Return the node ID.",
     b"NODES",
     b"    Return cluster configuration of nodes.",
+    b"SAVECONFIG",
+    b"    Force save the cluster configuration on disk.",
     b"SLOTS",
     b"    Return information about slots range mappings.",
+    b"HELP",
+    b"    Print this help.",
 ];
 const DEBUG_PROTOCOL_ATTRIB_REPLY: &[u8] = b"Some real reply following the attribute";
 const DEBUG_PROTOCOL_BIGNUM_VALUE: &[u8] = b"1234567999999999999999999999999999999";
@@ -2524,6 +2534,12 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"DRYRUN") {
+            ensure_min_arity(args, 4, "ACL", "ACL DRYRUN username command [arg ...]")?;
+            // Single-user stub: the "default" user can run everything.
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {
             require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
             let username = args[2];
@@ -2623,6 +2639,38 @@ impl RequestProcessor {
             append_array_length(response_out, 2);
             append_bulk_string(response_out, b"127.0.0.1");
             append_integer(response_out, 6379);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SAVECONFIG") {
+            require_exact_arity(args, 2, "CLUSTER", "CLUSTER SAVECONFIG")?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"COUNTKEYSINSLOT") {
+            require_exact_arity(args, 3, "CLUSTER", "CLUSTER COUNTKEYSINSLOT slot")?;
+            let slot = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if slot > 16383 {
+                append_error(
+                    response_out,
+                    b"ERR Invalid or out of range slot",
+                );
+                return Ok(());
+            }
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"GETKEYSINSLOT") {
+            require_exact_arity(args, 4, "CLUSTER", "CLUSTER GETKEYSINSLOT slot count")?;
+            let slot = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if slot > 16383 {
+                append_error(
+                    response_out,
+                    b"ERR Invalid or out of range slot",
+                );
+                return Ok(());
+            }
+            let _count = parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            append_array_length(response_out, 0);
             return Ok(());
         }
         Err(RequestExecutionError::ClusterSupportDisabled)
