@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-03
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 470
+> **Current Iteration**: 471
 
 ---
 
@@ -478,6 +478,7 @@
 | 11.318 | Emit RESP3 map type for PUBSUB NUMSUB/SHARDNUMSUB | DONE | 11.310 | Channel-count pairs returned as `%N` (map) in RESP3 instead of `*2N` (flat array). 343 total tests. Commit: `1df8aefaad`. |
 | 11.321 | Emit RESP3 double type for sorted set scores and GEODIST | DONE | 11.310 | Sorted set score outputs (ZSCORE, ZMSCORE, ZINCRBY, WITHSCORES, ZPOP, ZSCAN, ZMPOP, BZPOP) and GEODIST return `,value\r\n` (double) in RESP3 instead of bulk string. Added `append_double` helper. 2 new tests (351 total). Commit: `9b309f0aaf`. |
 | 11.320 | Emit RESP3 set type for SMEMBERS, SUNION, SINTER, SDIFF | DONE | 11.310 | Set commands return `~N` (set type) in RESP3 instead of `*N` (array). Added `append_set_length` helper. 2 new tests (349 total). Commit: `57f3003072`. |
+| 11.324 | Emit RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO | DONE | 11.310 | Moved `append_verbatim_string` helper to resp.rs. INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO return `=N\r\ntxt:...\r\n` in RESP3. 1 new test (355 total). Commit: `89ff7fa353`. |
 | 11.323 | Emit RESP3 set type for SRANDMEMBER and SPOP with count | DONE | 11.320 | SRANDMEMBER +count returns `~N` in RESP3 (distinct results). Negative count stays `*N` (duplicates possible). SPOP with count returns `~N`. 1 new test (354 total). Commit: `04d286fe7b`. |
 | 11.322 | Emit RESP3 set type for SCAN and SSCAN inner data | DONE | 11.320 | SCAN and SSCAN inner key/member data use `~N` (set type) in RESP3 instead of `*N` (array). 1 new test (353 total). Commit: `b36ad2f12b`. |
 | 11.319 | Emit RESP3 null type for all null bulk string and null array responses | DONE | 11.310 | Converted all 64 `append_null_bulk_string`/`append_null_array` call sites across 9 command handler files to emit RESP3 null (`_\r\n`) when connection is RESP3. Threaded `resp3: bool` through Lua value conversion chain. 4 new tests (347 total). Commit: `a79d990a08`. |
@@ -1189,3 +1190,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 468 | 2026-03-03 | 11.312 | DONE | RESP3 map type for COMMAND INFO responses. Map keyed by command name, unknown commands omitted. 1 new test (352 total). Commit: `bfffb5e737`. |
 | 469 | 2026-03-03 | 11.322 | DONE | RESP3 set type for SCAN and SSCAN inner data. Both emit `~N` in RESP3 instead of `*N`. 1 new test (353 total). Commit: `b36ad2f12b`. |
 | 470 | 2026-03-03 | 11.323 | DONE | RESP3 set type for SRANDMEMBER (+count) and SPOP with count. Negative count stays array. 1 new test (354 total). Commit: `04d286fe7b`. |
+| 471 | 2026-03-03 | 11.324 | DONE | RESP3 verbatim string for INFO, DEBUG OBJECT, LATENCY GRAPH, CLUSTER INFO. Moved helper to resp.rs. 1 new test (355 total). Commit: `89ff7fa353`. |
