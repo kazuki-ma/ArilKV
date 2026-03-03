@@ -1017,7 +1017,7 @@ impl RequestProcessor {
                 if flags.allow_stale {
                     flags_entries += 1;
                 }
-                response_out.extend_from_slice(format!("*{flags_entries}\r\n").as_bytes());
+                append_array_length(response_out, flags_entries);
                 if flags.read_only {
                     append_bulk_string(response_out, b"no-writes");
                 }

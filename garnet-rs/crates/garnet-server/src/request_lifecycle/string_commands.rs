@@ -923,7 +923,7 @@ impl RequestProcessor {
         }
 
         let resp3 = self.resp_protocol_version().is_resp3();
-        response_out.extend_from_slice(format!("*{}\r\n", responses.len()).as_bytes());
+        append_array_length(response_out, responses.len());
         for entry in responses {
             match entry {
                 Some(value) => append_integer(response_out, value),
@@ -1143,7 +1143,7 @@ impl RequestProcessor {
                 .checked_mul(options.get_patterns.len())
                 .ok_or(RequestExecutionError::ValueOutOfRange)?
         };
-        append_resp_array_len(response_out, response_count);
+        append_array_length(response_out, response_count);
         if options.get_patterns.is_empty() {
             for element in selected {
                 append_bulk_string(response_out, element);
@@ -3369,22 +3369,18 @@ fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> LcsComputation {
     }
 }
 
-fn append_resp_array_len(response_out: &mut Vec<u8>, len: usize) {
-    response_out.extend_from_slice(format!("*{}\r\n", len).as_bytes());
-}
-
 fn append_lcs_match_entry(
     response_out: &mut Vec<u8>,
     entry: &LcsMatchSegment,
     with_match_len: bool,
 ) {
-    append_resp_array_len(response_out, if with_match_len { 3 } else { 2 });
+    append_array_length(response_out, if with_match_len { 3 } else { 2 });
 
-    append_resp_array_len(response_out, 2);
+    append_array_length(response_out, 2);
     append_integer(response_out, entry.start_left as i64);
     append_integer(response_out, entry.end_left as i64);
 
-    append_resp_array_len(response_out, 2);
+    append_array_length(response_out, 2);
     append_integer(response_out, entry.start_right as i64);
     append_integer(response_out, entry.end_right as i64);
 
@@ -3399,9 +3395,9 @@ fn append_lcs_idx_response(
     lcs_len: usize,
     with_match_len: bool,
 ) {
-    append_resp_array_len(response_out, 4);
+    append_array_length(response_out, 4);
     append_bulk_string(response_out, b"matches");
-    append_resp_array_len(response_out, matches.len());
+    append_array_length(response_out, matches.len());
     for entry in matches {
         append_lcs_match_entry(response_out, entry, with_match_len);
     }

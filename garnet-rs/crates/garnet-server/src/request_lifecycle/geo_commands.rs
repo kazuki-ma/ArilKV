@@ -225,7 +225,7 @@ impl RequestProcessor {
         let zset = self.load_zset_object(key)?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
-        response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
+        append_array_length(response_out, args.len() - 2);
         for member in &args[2..] {
             let Some(score) = zset.as_ref().and_then(|entries| entries.get(*member)) else {
                 if resp3 {
@@ -350,7 +350,7 @@ impl RequestProcessor {
         let zset = self.load_zset_object(key)?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
-        response_out.extend_from_slice(format!("*{}\r\n", args.len() - 2).as_bytes());
+        append_array_length(response_out, args.len() - 2);
         for member in &args[2..] {
             let Some(score) = zset.as_ref().and_then(|entries| entries.get(*member)) else {
                 if resp3 {
@@ -1069,13 +1069,13 @@ fn append_geosearch_response(
 ) {
     let option_count =
         options.with_dist as usize + options.with_hash as usize + options.with_coord as usize;
-    response_out.extend_from_slice(format!("*{}\r\n", matches.len()).as_bytes());
+    append_array_length(response_out, matches.len());
     for entry in matches {
         if option_count == 0 {
             append_bulk_string(response_out, &entry.member);
             continue;
         }
-        response_out.extend_from_slice(format!("*{}\r\n", option_count + 1).as_bytes());
+        append_array_length(response_out, option_count + 1);
         append_bulk_string(response_out, &entry.member);
         if options.with_dist {
             let distance_unit = entry.distance_meters / options.shape.unit_to_meters();

@@ -2790,7 +2790,7 @@ impl RequestProcessor {
             } else {
                 self.pubsub_channels(args.get(2).copied())
             };
-            response_out.extend_from_slice(format!("*{}\r\n", channels.len()).as_bytes());
+            append_array_length(response_out, channels.len());
             for channel in channels {
                 append_bulk_string(response_out, &channel);
             }
