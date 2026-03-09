@@ -963,6 +963,84 @@ async fn reset_clears_multi_and_authenticated_state() {
 }
 
 #[tokio::test]
+async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$9\r\ndatabases\r\n$2\r\n16\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let info_payload = send_and_read_bulk_payload(
+        &mut client,
+        b"*2\r\n$6\r\nCLIENT\r\n$4\r\nINFO\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        info_payload.windows("db=1".len()).any(|w| w == b"db=1"),
+        "CLIENT INFO should contain db=1 after SELECT 1: {}",
+        String::from_utf8_lossy(&info_payload),
+    );
+
+    let client_id = send_and_read_integer(
+        &mut client,
+        b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let client_id_text = client_id.to_string();
+    let client_list_frame =
+        encode_resp_command(&[b"CLIENT", b"LIST", b"ID", client_id_text.as_bytes()]);
+    let list_payload =
+        send_and_read_bulk_payload(&mut client, &client_list_frame, Duration::from_secs(1)).await;
+    assert!(
+        list_payload.windows("db=1".len()).any(|w| w == b"db=1"),
+        "CLIENT LIST should contain db=1 after SELECT 1: {}",
+        String::from_utf8_lossy(&list_payload),
+    );
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nRESET\r\n", b"+RESET\r\n").await;
+    let reset_info_payload = send_and_read_bulk_payload(
+        &mut client,
+        b"*2\r\n$6\r\nCLIENT\r\n$4\r\nINFO\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        reset_info_payload
+            .windows("db=0".len())
+            .any(|w| w == b"db=0"),
+        "CLIENT INFO should contain db=0 after RESET: {}",
+        String::from_utf8_lossy(&reset_info_payload),
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1055,6 +1133,84 @@ async fn watch_key_expiring_after_watch_aborts_exec() {
 }
 
 #[tokio::test]
+async fn smove_existing_destination_member_does_not_abort_watched_exec() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut client2 = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"srcset{t}", b"dstset{t}"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"srcset{t}", b"a", b"b"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"dstset{t}", b"a"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"dstset{t}"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"dstset{t}", b"c"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client2,
+        &encode_resp_command(&[b"SMOVE", b"srcset{t}", b"dstset{t}", b"a"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"SCARD", b"dstset{t}"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        2
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn tcp_inline_pipeline_executes_basic_crud_commands() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1082,6 +1238,45 @@ async fn tcp_inline_pipeline_executes_basic_crud_commands() {
         .unwrap()
         .unwrap();
     assert_eq!(actual, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn inline_pipelining_stresser_external_scenario_round_trips_all_pairs() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/other.tcl:
+    // "PIPELINING stresser (also a regression for the old epoll bug)"
+    const PIPELINE_PAIRS: usize = 100_000;
+    let mut pipeline = Vec::with_capacity(4 * 1024 * 1024);
+    for i in 0..PIPELINE_PAIRS {
+        let value = format!("0000{i}0000");
+        pipeline.extend_from_slice(format!("SET key:{i} {value}\r\n").as_bytes());
+        pipeline.extend_from_slice(format!("GET key:{i}\r\n").as_bytes());
+    }
+
+    client.write_all(&pipeline).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(60), async {
+        for i in 0..PIPELINE_PAIRS {
+            let set_line = read_resp_line_with_timeout(&mut client, Duration::from_secs(5)).await;
+            assert_eq!(
+                set_line,
+                b"+OK",
+                "expected +OK for pipelined SET at index {i}, got: {:?}",
+                String::from_utf8_lossy(&set_line)
+            );
+
+            let payload = read_bulk_payload_with_timeout(&mut client, Duration::from_secs(5)).await;
+            let expected = format!("0000{i}0000").into_bytes();
+            assert_eq!(payload, expected, "unexpected GET payload at index {i}");
+        }
+    })
+    .await
+    .expect("inline pipelining stresser timed out");
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -1260,6 +1455,396 @@ async fn blocking_clients_are_visible_in_info_and_client_list() {
         "INFO should report blocked_clients:0 after wakeup: {}",
         String::from_utf8_lossy(&info_after),
     );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_pause_inside_multi_is_queued_and_applies_after_exec() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut tx_client = TcpStream::connect(addr).await.unwrap();
+    let mut writer = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(&mut tx_client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut tx_client,
+        b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$5\r\n60000\r\n$5\r\nWRITE\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut tx_client,
+        b"*3\r\n$3\r\nSET\r\n$7\r\nmulti:k\r\n$1\r\n1\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut tx_client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"*2\r\n+OK\r\n+OK\r\n",
+    )
+    .await;
+
+    writer
+        .write_all(b"*3\r\n$3\r\nSET\r\n$8\r\npaused:k\r\n$1\r\n2\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut tx_client,
+        b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    let resumed = read_exact_with_timeout(&mut writer, 5, Duration::from_secs(1)).await;
+    assert_eq!(resumed, b"+OK\r\n");
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_pause_write_keeps_randomkey_visible_until_unpause() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$1\r\n3\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$5\r\n10000\r\n$5\r\nWRITE\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"*2\r\n+OK\r\n+OK\r\n",
+    )
+    .await;
+
+    sleep(Duration::from_millis(5)).await;
+
+    let mut saw_key_during_pause = false;
+    for _ in 0..50 {
+        let random = send_and_read_optional_bulk(
+            &mut client,
+            b"*1\r\n$9\r\nRANDOMKEY\r\n",
+            Duration::from_millis(100),
+        )
+        .await;
+        if random.as_deref() == Some(b"key") {
+            saw_key_during_pause = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        saw_key_during_pause,
+        "RANDOMKEY should keep returning expired key while CLIENT PAUSE WRITE is active",
+    );
+
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut became_empty_after_unpause = false;
+    for _ in 0..50 {
+        let random = send_and_read_optional_bulk(
+            &mut client,
+            b"*1\r\n$9\r\nRANDOMKEY\r\n",
+            Duration::from_millis(100),
+        )
+        .await;
+        if random.is_none() {
+            became_empty_after_unpause = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        became_empty_after_unpause,
+        "RANDOMKEY should become empty after unpause when only key is expired"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_unblock_cannot_interrupt_pause_block_but_works_after_unpause() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut client1 = TcpStream::connect(addr).await.unwrap();
+    let mut client2 = TcpStream::connect(addr).await.unwrap();
+
+    let client1_id = send_and_read_integer(
+        &mut client1,
+        b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let client2_id = send_and_read_integer(
+        &mut client2,
+        b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n",
+        Duration::from_secs(1),
+    )
+    .await;
+    let client1_id_text = client1_id.to_string();
+    let client2_id_text = client2_id.to_string();
+
+    send_and_expect(
+        &mut controller,
+        b"*2\r\n$3\r\nDEL\r\n$6\r\nmylist\r\n",
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$6\r\n100000\r\n$5\r\nWRITE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    client1
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$6\r\nmylist\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    client2
+        .write_all(b"*3\r\n$5\r\nBLPOP\r\n$6\r\nmylist\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+
+    let unblock1_during_pause = encode_resp_command(&[
+        b"CLIENT",
+        b"UNBLOCK",
+        client1_id_text.as_bytes(),
+        b"TIMEOUT",
+    ]);
+    let unblock2_during_pause =
+        encode_resp_command(&[b"CLIENT", b"UNBLOCK", client2_id_text.as_bytes(), b"ERROR"]);
+    let unblock1_during_pause_result = send_and_read_integer(
+        &mut controller,
+        &unblock1_during_pause,
+        Duration::from_secs(1),
+    )
+    .await;
+    let unblock2_during_pause_result = send_and_read_integer(
+        &mut controller,
+        &unblock2_during_pause,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(unblock1_during_pause_result, 0);
+    assert_eq!(unblock2_during_pause_result, 0);
+
+    send_and_expect(
+        &mut controller,
+        b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let unblock1_after_unpause = send_and_read_integer(
+        &mut controller,
+        &unblock1_during_pause,
+        Duration::from_secs(1),
+    )
+    .await;
+    let unblock2_after_unpause = send_and_read_integer(
+        &mut controller,
+        &unblock2_during_pause,
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(unblock1_after_unpause, 1);
+    assert_eq!(unblock2_after_unpause, 1);
+
+    let timeout_response = read_exact_with_timeout(&mut client1, 5, Duration::from_secs(1)).await;
+    assert_eq!(timeout_response, b"*-1\r\n");
+    let error_response = read_resp_line_with_timeout(&mut client2, Duration::from_secs(1)).await;
+    assert_eq!(
+        error_response,
+        b"-UNBLOCKED client unblocked via CLIENT UNBLOCK"
+    );
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_pause_write_unpause_releases_script_commands_without_busy_error() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap()
+    });
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut script_a = TcpStream::connect(addr).await.unwrap();
+    let mut script_b = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$5\r\n60000\r\n$5\r\nWRITE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    script_a
+        .write_all(b"*3\r\n$4\r\nEVAL\r\n$8\r\nreturn 1\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+    script_b
+        .write_all(b"*3\r\n$4\r\nEVAL\r\n$14\r\n#!lua\nreturn 1\r\n$1\r\n0\r\n")
+        .await
+        .unwrap();
+
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+    send_and_expect(
+        &mut controller,
+        b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let script_a_response =
+        read_resp_line_with_timeout(&mut script_a, Duration::from_secs(1)).await;
+    let script_b_response =
+        read_resp_line_with_timeout(&mut script_b, Duration::from_secs(1)).await;
+    assert_eq!(
+        script_a_response,
+        b":1",
+        "first script returned unexpected response: {}",
+        String::from_utf8_lossy(&script_a_response)
+    );
+    assert_eq!(
+        script_b_response,
+        b":1",
+        "second script returned unexpected response: {}",
+        String::from_utf8_lossy(&script_b_response)
+    );
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn client_pause_write_does_not_block_wrong_arity_errors() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut paused_client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$5\r\n60000\r\n$5\r\nWRITE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    paused_client
+        .write_all(b"*2\r\n$3\r\nSET\r\n$3\r\nFOO\r\n")
+        .await
+        .unwrap();
+    let response = read_resp_line_with_timeout(&mut paused_client, Duration::from_secs(1)).await;
+    assert_eq!(
+        response,
+        b"-ERR wrong number of arguments for 'set' command"
+    );
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -1714,6 +2299,2255 @@ async fn info_commandstats_counts_blocking_command_once() {
 }
 
 #[tokio::test]
+async fn blocking_xread_waiting_new_data_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // "Blocking XREAD waiting new data"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"s1{t}", b"s2{t}", b"s3{t}"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"s2{t}", b"90-0", b"old", b"abcd1234"]),
+        b"$4\r\n90-0\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"XREAD", b"BLOCK", b"20000", b"STREAMS", b"s1{t}", b"s2{t}", b"s3{t}", b"$", b"$",
+            b"$",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"s2{t}", b"100-0", b"new", b"abcd1234"]),
+        b"$5\r\n100-0\r\n",
+    )
+    .await;
+
+    let response = read_exact_with_timeout(
+        &mut waiter,
+        b"*1\r\n*2\r\n$5\r\ns2{t}\r\n*1\r\n*2\r\n$5\r\n100-0\r\n*2\r\n$3\r\nnew\r\n$8\r\nabcd1234\r\n"
+            .len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        response,
+        b"*1\r\n*2\r\n$5\r\ns2{t}\r\n*1\r\n*2\r\n$5\r\n100-0\r\n*2\r\n$3\r\nnew\r\n$8\r\nabcd1234\r\n"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_xread_last_element_plus_from_empty_stream_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // "XREAD last element blocking from empty stream"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"lestream"]),
+        b":0\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"XREAD",
+            b"BLOCK",
+            b"20000",
+            b"STREAMS",
+            b"lestream",
+            b"+",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"lestream", b"1-0", b"k1", b"v1"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+
+    let expected =
+        b"*1\r\n*2\r\n$8\r\nlestream\r\n*1\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$2\r\nk1\r\n$2\r\nv1\r\n";
+    let response =
+        read_exact_with_timeout(&mut waiter, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(response, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_xread_last_element_plus_from_non_empty_stream_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // "XREAD last element blocking from non-empty stream"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"lestream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"lestream", b"1-0", b"k1", b"v1"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"lestream", b"2-0", b"k2", b"v2"]),
+        b"$3\r\n2-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"lestream", b"3-0", b"k3", b"v3"]),
+        b"$3\r\n3-0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"XREAD",
+            b"BLOCK",
+            b"1000000",
+            b"STREAMS",
+            b"lestream",
+            b"+",
+        ]),
+        b"*1\r\n*2\r\n$8\r\nlestream\r\n*1\r\n*2\r\n$3\r\n3-0\r\n*2\r\n$2\r\nk3\r\n$2\r\nv3\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_xread_streamid_edge_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // "XREAD streamID edge (blocking)"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"x"]),
+        b":0\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"XREAD",
+            b"BLOCK",
+            b"0",
+            b"STREAMS",
+            b"x",
+            b"1-18446744073709551615",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"x", b"1-1", b"f", b"v"]),
+        b"$3\r\n1-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"x", b"1-18446744073709551615", b"f", b"v"]),
+        b"$22\r\n1-18446744073709551615\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"x", b"2-1", b"f", b"v"]),
+        b"$3\r\n2-1\r\n",
+    )
+    .await;
+
+    let expected = b"*1\r\n*2\r\n$1\r\nx\r\n*1\r\n*2\r\n$3\r\n2-1\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n";
+    let response =
+        read_exact_with_timeout(&mut waiter, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(response, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_xreadgroup_with_list_waiter_on_same_key_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut list_waiter = TcpStream::connect(addr).await.unwrap();
+    let mut stream_waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "Blocking XREADGROUP for stream key that has clients blocked on list"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+
+    let list_waiter_id = send_and_read_integer(
+        &mut list_waiter,
+        &encode_resp_command(&[b"CLIENT", b"ID"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let list_waiter_id_text = list_waiter_id.to_string();
+
+    list_waiter
+        .write_all(&encode_resp_command(&[b"BLPOP", b"mystream", b"0"]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+    let info_after_list_wait = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO", b"clients"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after_list_wait, "total_blocking_keys"),
+        Some(1)
+    );
+    assert_eq!(
+        read_info_u64(&info_after_list_wait, "total_blocking_keys_on_nokey"),
+        Some(0)
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"666-0", b"key", b"value"]),
+        b"$5\r\n666-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"mygroup",
+            b"$",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    stream_waiter
+        .write_all(&encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"myconsumer",
+            b"BLOCK",
+            b"0",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+    let info_after_stream_wait = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO", b"clients"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after_stream_wait, "total_blocking_keys"),
+        Some(1)
+    );
+    assert_eq!(
+        read_info_u64(&info_after_stream_wait, "total_blocking_keys_on_nokey"),
+        Some(1)
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":1\r\n",
+    )
+    .await;
+    let error = read_resp_line_with_timeout(&mut stream_waiter, Duration::from_secs(1)).await;
+    assert!(
+        error.starts_with(b"-NOGROUP "),
+        "expected NOGROUP wakeup, got: {}",
+        String::from_utf8_lossy(&error)
+    );
+    let info_after_stream_unblock = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO", b"clients"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after_stream_unblock, "total_blocking_keys"),
+        Some(1)
+    );
+    assert_eq!(
+        read_info_u64(&info_after_stream_unblock, "total_blocking_keys_on_nokey"),
+        Some(0)
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"CLIENT",
+            b"UNBLOCK",
+            list_waiter_id_text.as_bytes(),
+            b"TIMEOUT",
+        ]),
+        b":1\r\n",
+    )
+    .await;
+    let list_response = read_exact_with_timeout(&mut list_waiter, 5, Duration::from_secs(1)).await;
+    assert_eq!(list_response, b"*-1\r\n");
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xgroup_destroy_unblocks_xreadgroup_with_nogroup_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "XGROUP DESTROY should unblock XREADGROUP with -NOGROUP"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"CONFIG", b"RESETSTAT"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"mygroup",
+            b"$",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"Alice",
+            b"BLOCK",
+            b"0",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XGROUP", b"DESTROY", b"mystream", b"mygroup"]),
+        b":1\r\n",
+    )
+    .await;
+    let error = read_resp_line_with_timeout(&mut waiter, Duration::from_secs(1)).await;
+    assert!(
+        error.starts_with(b"-NOGROUP "),
+        "expected NOGROUP wakeup, got: {}",
+        String::from_utf8_lossy(&error)
+    );
+
+    let errorstats = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO", b"errorstats"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let errorstats_text = String::from_utf8_lossy(&errorstats);
+    assert!(
+        errorstats_text.contains("errorstat_NOGROUP:count=1"),
+        "unexpected INFO errorstats payload: {errorstats_text}"
+    );
+
+    let commandstats = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO", b"commandstats"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let commandstats_text = String::from_utf8_lossy(&commandstats);
+    assert!(
+        commandstats_text.contains("cmdstat_xreadgroup:calls=1"),
+        "unexpected INFO commandstats payload: {commandstats_text}"
+    );
+    assert!(
+        commandstats_text.contains("rejected_calls=0,failed_calls=1"),
+        "unexpected INFO commandstats payload: {commandstats_text}"
+    );
+
+    let stats = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO", b"stats"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(read_info_u64(&stats, "total_error_replies"), Some(1));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xgroup_destroy_removes_all_consumer_group_references_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "XGROUP DESTROY removes all consumer group references"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    for j in 0..5u64 {
+        let id = format!("{j}-1");
+        let item = format!("{j}");
+        let expected = format!("${}\r\n{}\r\n", id.len(), id);
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[
+                b"XADD",
+                b"mystream",
+                id.as_bytes(),
+                b"item",
+                item.as_bytes(),
+            ]),
+            expected.as_bytes(),
+        )
+        .await;
+    }
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", b"mygroup", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let delivered = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"consumer1",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_array(&delivered).len(), 1);
+
+    let pending = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"mygroup"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer(&resp_socket_array(&pending)[0]), 5);
+
+    let blocked_delete = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XDELEX",
+            b"mystream",
+            b"ACKED",
+            b"IDS",
+            b"5",
+            b"0-1",
+            b"1-1",
+            b"2-1",
+            b"3-1",
+            b"4-1",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer_array(&blocked_delete),
+        vec![2, 2, 2, 2, 2]
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"DESTROY", b"mystream", b"mygroup"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let deleted = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XDELEX",
+            b"mystream",
+            b"ACKED",
+            b"IDS",
+            b"5",
+            b"0-1",
+            b"1-1",
+            b"2-1",
+            b"3-1",
+            b"4-1",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&deleted), vec![1, 1, 1, 1, 1]);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XLEN", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xgroup_destroy_updates_acknowledged_delete_references_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "XGROUP DESTROY correctly manage min_cgroup_last_id cache"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    for (id, field, value) in [
+        (b"1-0", b"f1", b"v1"),
+        (b"2-0", b"f2", b"v2"),
+        (b"3-0", b"f3", b"v3"),
+        (b"4-0", b"f4", b"v4"),
+        (b"5-0", b"f5", b"v5"),
+    ] {
+        let expected = format!("${}\r\n{}\r\n", id.len(), String::from_utf8_lossy(id));
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XADD", b"mystream", id, field, value]),
+            expected.as_bytes(),
+        )
+        .await;
+    }
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", b"group1", b"1-0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", b"group2", b"3-0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let first_delete = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XDELEX", b"mystream", b"ACKED", b"IDS", b"1", b"1-0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&first_delete), vec![1]);
+
+    let still_referenced = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XDELEX", b"mystream", b"ACKED", b"IDS", b"1", b"2-0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&still_referenced), vec![2]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"DESTROY", b"mystream", b"group1"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let after_destroy = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XDELEX", b"mystream", b"ACKED", b"IDS", b"1", b"2-0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&after_destroy), vec![1]);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xackdel_surface_external_scenarios_run_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XACKDEL wrong number of args"
+    // - "XACKDEL should return empty array when key doesn't exist or group doesn't exist"
+    // - "XACKDEL IDS parameter validation"
+    // - "XACKDEL KEEPREF/DELREF/ACKED parameter validation"
+    for request in [
+        vec![b"XACKDEL".as_slice()],
+        vec![b"XACKDEL".as_slice(), b"s"],
+        vec![b"XACKDEL".as_slice(), b"s", b"g"],
+    ] {
+        let error = send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&request),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(error, "ERR wrong number of arguments for 'xackdel' command");
+    }
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"s"]),
+        b":0\r\n",
+    )
+    .await;
+    let missing_key = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XACKDEL", b"s", b"g", b"IDS", b"2", b"1-1", b"2-2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&missing_key), vec![-1, -1]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"s", b"1-0", b"f", b"v"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    let missing_group = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XACKDEL", b"s", b"g", b"IDS", b"2", b"1-1", b"2-2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&missing_group), vec![-1, -1]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"s", b"g", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    for invalid_numids in [b"abc".as_slice(), b"0".as_slice(), b"-5".as_slice()] {
+        let error = send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&[b"XACKDEL", b"s", b"g", b"IDS", invalid_numids, b"1-1"]),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(error, "ERR Number of IDs must be a positive integer");
+    }
+
+    let mismatch = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"XACKDEL", b"s", b"g", b"IDS", b"3", b"1-1", b"2-2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        mismatch,
+        "ERR The `numids` parameter must match the number of arguments"
+    );
+
+    let syntax_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"XACKDEL", b"s", b"g", b"IDS", b"1", b"1-1", b"2-2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(syntax_error, "ERR syntax error");
+
+    for request in [
+        vec![
+            b"XACKDEL".as_slice(),
+            b"s",
+            b"g",
+            b"KEEPREF",
+            b"DELREF",
+            b"IDS",
+            b"1",
+            b"1-1",
+        ],
+        vec![
+            b"XACKDEL".as_slice(),
+            b"s",
+            b"g",
+            b"KEEPREF",
+            b"ACKED",
+            b"IDS",
+            b"1",
+            b"1-1",
+        ],
+        vec![
+            b"XACKDEL".as_slice(),
+            b"s",
+            b"g",
+            b"DELREF",
+            b"ACKED",
+            b"IDS",
+            b"1",
+            b"1-1",
+        ],
+    ] {
+        let error = send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&request),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(error, "ERR syntax error");
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xackdel_reference_modes_external_scenarios_run_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XACKDEL with DELREF option acknowledges will remove entry from all PELs"
+    // - "XACKDEL with ACKED option only deletes messages acknowledged by all groups"
+    // - "XACKDEL with KEEPREF"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    for id in [b"1-0".as_slice(), b"2-0".as_slice()] {
+        let expected = format!("${}\r\n{}\r\n", id.len(), String::from_utf8_lossy(id));
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XADD", b"mystream", id, b"f", b"v"]),
+            expected.as_bytes(),
+        )
+        .await;
+    }
+    for group in [b"group1".as_slice(), b"group2".as_slice()] {
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", group, b"0"]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+    for (group, consumer) in [
+        (b"group1".as_slice(), b"consumer1".as_slice()),
+        (b"group2".as_slice(), b"consumer2".as_slice()),
+    ] {
+        let delivered = send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[
+                b"XREADGROUP",
+                b"GROUP",
+                group,
+                consumer,
+                b"STREAMS",
+                b"mystream",
+                b">",
+            ]),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(resp_socket_array(&delivered).len(), 1);
+    }
+
+    let delref = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XACKDEL",
+            b"mystream",
+            b"group1",
+            b"DELREF",
+            b"IDS",
+            b"2",
+            b"1-0",
+            b"2-0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&delref), vec![1, 1]);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XLEN", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+
+    let pending_group1 = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group1"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let pending_group1_items = resp_socket_array(&pending_group1);
+    assert_eq!(resp_socket_integer(&pending_group1_items[0]), 0);
+    assert!(matches!(pending_group1_items[1], RespSocketValue::Null));
+    assert!(matches!(pending_group1_items[2], RespSocketValue::Null));
+    assert!(resp_socket_array(&pending_group1_items[3]).is_empty());
+
+    let pending_group2 = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let pending_group2_items = resp_socket_array(&pending_group2);
+    assert_eq!(resp_socket_integer(&pending_group2_items[0]), 0);
+    assert!(matches!(pending_group2_items[1], RespSocketValue::Null));
+    assert!(matches!(pending_group2_items[2], RespSocketValue::Null));
+    assert!(resp_socket_array(&pending_group2_items[3]).is_empty());
+
+    let missing_after_delref = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XACKDEL",
+            b"mystream",
+            b"group2",
+            b"DELREF",
+            b"IDS",
+            b"2",
+            b"1-0",
+            b"2-0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer_array(&missing_after_delref),
+        vec![-1, -1]
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":1\r\n",
+    )
+    .await;
+    for id in [b"1-0".as_slice(), b"2-0".as_slice()] {
+        let expected = format!("${}\r\n{}\r\n", id.len(), String::from_utf8_lossy(id));
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XADD", b"mystream", id, b"f", b"v"]),
+            expected.as_bytes(),
+        )
+        .await;
+    }
+    for group in [b"group1".as_slice(), b"group2".as_slice()] {
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", group, b"0"]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+    for (group, consumer) in [
+        (b"group1".as_slice(), b"consumer1".as_slice()),
+        (b"group2".as_slice(), b"consumer2".as_slice()),
+    ] {
+        let delivered = send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[
+                b"XREADGROUP",
+                b"GROUP",
+                group,
+                consumer,
+                b"STREAMS",
+                b"mystream",
+                b">",
+            ]),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(resp_socket_array(&delivered).len(), 1);
+    }
+
+    let acked_first_group = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XACKDEL",
+            b"mystream",
+            b"group1",
+            b"ACKED",
+            b"IDS",
+            b"2",
+            b"1-0",
+            b"2-0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&acked_first_group), vec![2, 2]);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XLEN", b"mystream"]),
+        b":2\r\n",
+    )
+    .await;
+    let pending_after_first_ack = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group1"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer(&resp_socket_array(&pending_after_first_ack)[0]),
+        0
+    );
+    let pending_after_first_ack_group2 = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let group2_items = resp_socket_array(&pending_after_first_ack_group2);
+    assert_eq!(resp_socket_integer(&group2_items[0]), 2);
+    assert_eq!(resp_socket_bulk(&group2_items[1]), b"1-0");
+    assert_eq!(resp_socket_bulk(&group2_items[2]), b"2-0");
+    let group2_consumers = resp_socket_array(&group2_items[3]);
+    assert_eq!(group2_consumers.len(), 1);
+    let group2_consumer = resp_socket_array(&group2_consumers[0]);
+    assert_eq!(resp_socket_bulk(&group2_consumer[0]), b"consumer2");
+    assert_eq!(resp_socket_integer(&group2_consumer[1]), 2);
+
+    let acked_second_group = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XACKDEL",
+            b"mystream",
+            b"group2",
+            b"ACKED",
+            b"IDS",
+            b"2",
+            b"1-0",
+            b"2-0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&acked_second_group), vec![1, 1]);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XLEN", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":1\r\n",
+    )
+    .await;
+    for id in [b"1-0".as_slice(), b"2-0".as_slice()] {
+        let expected = format!("${}\r\n{}\r\n", id.len(), String::from_utf8_lossy(id));
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XADD", b"mystream", id, b"f", b"v"]),
+            expected.as_bytes(),
+        )
+        .await;
+    }
+    for group in [b"group1".as_slice(), b"group2".as_slice()] {
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", group, b"0"]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+    for (group, consumer) in [
+        (b"group1".as_slice(), b"consumer1".as_slice()),
+        (b"group2".as_slice(), b"consumer2".as_slice()),
+    ] {
+        let delivered = send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[
+                b"XREADGROUP",
+                b"GROUP",
+                group,
+                consumer,
+                b"STREAMS",
+                b"mystream",
+                b">",
+            ]),
+            Duration::from_secs(1),
+        )
+        .await;
+        assert_eq!(resp_socket_array(&delivered).len(), 1);
+    }
+
+    let keepref_group1 = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XACKDEL",
+            b"mystream",
+            b"group1",
+            b"KEEPREF",
+            b"IDS",
+            b"2",
+            b"1-0",
+            b"2-0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&keepref_group1), vec![1, 1]);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XLEN", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    let keepref_group2_pending = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer(&resp_socket_array(&keepref_group2_pending)[0]),
+        2
+    );
+
+    let keepref_group2 = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"XACKDEL",
+            b"mystream",
+            b"group2",
+            b"KEEPREF",
+            b"IDS",
+            b"2",
+            b"1-0",
+            b"2-0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&keepref_group2), vec![1, 1]);
+    let keepref_group1_pending = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group1"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer(&resp_socket_array(&keepref_group1_pending)[0]),
+        0
+    );
+    let keepref_group2_pending_after = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XPENDING", b"mystream", b"group2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer(&resp_socket_array(&keepref_group2_pending_after)[0]),
+        0
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xackdel_many_ids_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "XACKDEL with IDs exceeding STREAMID_STATIC_VECTOR_LEN for heap allocation"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"mygroup",
+            b"$",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut command = vec![
+        b"XACKDEL".as_slice(),
+        b"mystream",
+        b"mygroup",
+        b"IDS",
+        b"50",
+    ];
+    let ids: Vec<String> = (0..50).map(|index| format!("{index}-1")).collect();
+    for id in &ids {
+        command.push(id.as_bytes());
+    }
+    let reply = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&command),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_array(&reply).len(), 50);
+    assert!(
+        resp_socket_integer_array(&reply)
+            .iter()
+            .all(|value| *value == -1)
+    );
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xreadgroup_dirty_semantics_match_stream_cgroups_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"x"]),
+        b":0\r\n",
+    )
+    .await;
+    for (id, value) in [
+        (b"1-0", b"a"),
+        (b"2-0", b"b"),
+        (b"3-0", b"c"),
+        (b"4-0", b"d"),
+    ] {
+        let mut expected = Vec::new();
+        expected.extend_from_slice(format!("${}\r\n", id.len()).as_bytes());
+        expected.extend_from_slice(id);
+        expected.extend_from_slice(b"\r\n");
+        send_and_expect(
+            &mut controller,
+            &encode_resp_command(&[b"XADD", b"x", id, b"data", value]),
+            &expected,
+        )
+        .await;
+    }
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"x", b"g1", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XGROUP", b"CREATECONSUMER", b"x", b"g1", b"Alice"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let info_before = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let dirty_before = read_info_u64(&info_before, "rdb_changes_since_last_save").unwrap_or(0);
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g1",
+            b"Alice",
+            b"COUNT",
+            b"2",
+            b"STREAMS",
+            b"x",
+            b">",
+        ]),
+        b"*1\r\n*2\r\n$1\r\nx\r\n*2\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$4\r\ndata\r\n$1\r\na\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$4\r\ndata\r\n$1\r\nb\r\n",
+    )
+    .await;
+    let info_after = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0) - dirty_before,
+        1
+    );
+
+    let dirty_before = read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0);
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g1",
+            b"Alice",
+            b"NOACK",
+            b"COUNT",
+            b"2",
+            b"STREAMS",
+            b"x",
+            b">",
+        ]),
+        b"*1\r\n*2\r\n$1\r\nx\r\n*2\r\n*2\r\n$3\r\n3-0\r\n*2\r\n$4\r\ndata\r\n$1\r\nc\r\n*2\r\n$3\r\n4-0\r\n*2\r\n$4\r\ndata\r\n$1\r\nd\r\n",
+    )
+    .await;
+    let info_after = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0) - dirty_before,
+        1
+    );
+
+    let dirty_before = read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0);
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g1",
+            b"Alice",
+            b"COUNT",
+            b"2",
+            b"STREAMS",
+            b"x",
+            b"0",
+        ]),
+        b"*1\r\n*2\r\n$1\r\nx\r\n*2\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$4\r\ndata\r\n$1\r\na\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$4\r\ndata\r\n$1\r\nb\r\n",
+    )
+    .await;
+    let info_after = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0) - dirty_before,
+        0
+    );
+
+    let dirty_before = read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0);
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g1",
+            b"Alice",
+            b"COUNT",
+            b"2",
+            b"STREAMS",
+            b"x",
+            b"9000",
+        ]),
+        b"*1\r\n*2\r\n$1\r\nx\r\n*0\r\n",
+    )
+    .await;
+    let info_after = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0) - dirty_before,
+        0
+    );
+
+    let dirty_before = read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0);
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"g1",
+            b"noconsumer",
+            b"COUNT",
+            b"2",
+            b"STREAMS",
+            b"x",
+            b"0",
+        ]),
+        b"*1\r\n*2\r\n$1\r\nx\r\n*0\r\n",
+    )
+    .await;
+    let info_after = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_after, "rdb_changes_since_last_save").unwrap_or(0) - dirty_before,
+        1
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn consumer_without_pel_is_present_after_aofrw_external_scenario_runs_as_tcp_integration_test()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut blocked = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"mygroup",
+            b"$",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-0", b"f", b"v"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"Alice",
+            b"NOACK",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]),
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n",
+    )
+    .await;
+
+    blocked
+        .write_all(&encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"Bob",
+            b"BLOCK",
+            b"0",
+            b"NOACK",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATECONSUMER",
+            b"mystream",
+            b"mygroup",
+            b"Charlie",
+        ]),
+        b":1\r\n",
+    )
+    .await;
+
+    let groups_before = send_and_read_resp_value(
+        &mut controller,
+        &encode_resp_command(&[b"XINFO", b"GROUPS", b"mystream"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let groups_before_array = resp_socket_array(&groups_before);
+    assert_eq!(groups_before_array.len(), 1);
+    let group_before = resp_socket_flat_map(&groups_before_array[0]);
+    assert_eq!(resp_socket_integer(group_before[&b"consumers".to_vec()]), 3);
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"BGREWRITEAOF"]),
+        b"+Background append only file rewriting started\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"LOADAOF"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let groups_after = send_and_read_resp_value(
+        &mut controller,
+        &encode_resp_command(&[b"XINFO", b"GROUPS", b"mystream"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(groups_after, groups_before);
+    let groups_after_array = resp_socket_array(&groups_after);
+    let group_after = resp_socket_flat_map(&groups_after_array[0]);
+    assert_eq!(resp_socket_integer(group_after[&b"consumers".to_vec()]), 3);
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"2-0", b"f", b"v2"]),
+        b"$3\r\n2-0\r\n",
+    )
+    .await;
+    let blocked_response = read_exact_with_timeout(
+        &mut blocked,
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$1\r\nf\r\n$2\r\nv2\r\n"
+            .len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        blocked_response,
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$1\r\nf\r\n$2\r\nv2\r\n"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn stream_aof_rewrite_after_xdel_lastid_matches_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "Empty stream can be rewrite into AOF correctly"
+    // - "Stream can be rewrite into AOF correctly after XDEL lastid"
+    let empty_create = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"MAXLEN", b"0", b"*", b"a", b"b"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(empty_create, RespSocketValue::Bulk(_)),
+        "expected XADD MAXLEN 0 to return a bulk stream ID, got {empty_create:?}"
+    );
+
+    let empty_info = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XINFO", b"STREAM", b"mystream"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let empty_info_map = resp_socket_flat_map(&empty_info);
+    assert_eq!(resp_socket_integer(empty_info_map[&b"length".to_vec()]), 0);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XSETID", b"mystream", b"0-0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-1", b"a", b"b"]),
+        b"$3\r\n1-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"2-2", b"a", b"b"]),
+        b"$3\r\n2-2\r\n",
+    )
+    .await;
+
+    let before_delete = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XINFO", b"STREAM", b"mystream"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let before_delete_map = resp_socket_flat_map(&before_delete);
+    assert_eq!(
+        resp_socket_integer(before_delete_map[&b"length".to_vec()]),
+        2
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XDEL", b"mystream", b"2-2"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"BGREWRITEAOF"]),
+        b"+Background append only file rewriting started\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"LOADAOF"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let after_load = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"XINFO", b"STREAM", b"mystream"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let after_load_map = resp_socket_flat_map(&after_load);
+    assert_eq!(resp_socket_integer(after_load_map[&b"length".to_vec()]), 1);
+    assert_eq!(
+        resp_socket_bulk(after_load_map[&b"last-generated-id".to_vec()]),
+        b"2-2"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_xread_key_deleted_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "Blocking XREAD: key deleted"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"666", b"f", b"v"]),
+        b"$5\r\n666-0\r\n",
+    )
+    .await;
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"XREAD",
+            b"BLOCK",
+            b"0",
+            b"STREAMS",
+            b"mystream",
+            b"$",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"667", b"f", b"v"]),
+        b"$5\r\n667-0\r\n",
+    )
+    .await;
+
+    let response = read_exact_with_timeout(
+        &mut waiter,
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$5\r\n667-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n"
+            .len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        response,
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$5\r\n667-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n"
+    );
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xgroup_create_surface_external_scenarios_run_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XGROUP CREATE: creation and duplicate group name detection"
+    // - "XGROUP CREATE: with ENTRIESREAD parameter"
+    // - "XGROUP CREATE: automatic stream creation fails without MKSTREAM"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-1", b"a", b"1"]),
+        b"$3\r\n1-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-2", b"b", b"2"]),
+        b"$3\r\n1-2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-3", b"c", b"3"]),
+        b"$3\r\n1-3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-4", b"d", b"4"]),
+        b"$3\r\n1-4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", b"mygroup", b"$"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let duplicate = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", b"mygroup", b"$"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(duplicate, "BUSYGROUP Consumer Group name already exists");
+
+    let invalid_entries_read = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"badgroup",
+            b"$",
+            b"ENTRIESREAD",
+            b"-3",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        invalid_entries_read,
+        "ERR value for ENTRIESREAD must be positive or -1"
+    );
+
+    let missing_mkstream = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"missingstream", b"mygroup", b"$"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        missing_mkstream,
+        "ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically."
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mkstream",
+            b"mygroup",
+            b"$",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn xread_and_xreadgroup_wrong_parameter_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "XREAD and XREADGROUP against wrong parameter"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XADD", b"mystream", b"666", b"f", b"v"]),
+        b"$5\r\n666-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"XGROUP", b"CREATE", b"mystream", b"mygroup", b"$"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let xreadgroup_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"Alice",
+            b"COUNT",
+            b"1",
+            b"STREAMS",
+            b"mystream",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        xreadgroup_error,
+        "ERR Unbalanced 'xreadgroup' list of streams: for each stream key an ID or '>' must be specified."
+    );
+
+    let xread_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"XREAD", b"COUNT", b"1", b"STREAMS", b"mystream"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        xread_error,
+        "ERR Unbalanced 'xread' list of streams: for each stream key an ID, '+', or '$' must be specified."
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn blocking_xreadgroup_stream_ran_dry_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "Blocking XREADGROUP for stream that ran dry (issue #5299)"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"mygroup",
+            b"$",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"666", b"key", b"value"]),
+        b"$5\r\n666-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XDEL", b"mystream", b"666"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut waiter,
+        &encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"myconsumer",
+            b"BLOCK",
+            b"10",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]),
+        b"*-1\r\n",
+    )
+    .await;
+
+    let smaller_id_error = send_and_read_error_line(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"665", b"key", b"value"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        smaller_id_error,
+        "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+    );
+
+    let equal_id_error = send_and_read_error_line(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"666", b"key", b"value"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        equal_id_error,
+        "ERR The ID specified in XADD is equal or smaller than the target stream top item"
+    );
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"mygroup",
+            b"myconsumer",
+            b"BLOCK",
+            b"0",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"667", b"key", b"value"]),
+        b"$5\r\n667-0\r\n",
+    )
+    .await;
+    let response = read_exact_with_timeout(
+        &mut waiter,
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$5\r\n667-0\r\n*2\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+            .len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        response,
+        b"*1\r\n*2\r\n$8\r\nmystream\r\n*1\r\n*2\r\n$5\r\n667-0\r\n*2\r\n$3\r\nkey\r\n$5\r\nvalue\r\n"
+    );
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn bzmpop_multiple_blocked_clients_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter1 = TcpStream::connect(addr).await.unwrap();
+    let mut waiter2 = TcpStream::connect(addr).await.unwrap();
+    let mut waiter3 = TcpStream::connect(addr).await.unwrap();
+    let mut waiter4 = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // "BZMPOP with multiple blocked clients"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"myzset{t}", b"myzset2{t}"]),
+        b":0\r\n",
+    )
+    .await;
+
+    waiter1
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MIN",
+            b"COUNT",
+            b"1",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    waiter2
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MAX",
+            b"COUNT",
+            b"10",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+
+    waiter3
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MIN",
+            b"COUNT",
+            b"10",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 3, Duration::from_secs(1)).await;
+
+    waiter4
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MAX",
+            b"COUNT",
+            b"1",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 4, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"MULTI"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"ZADD",
+            b"myzset{t}",
+            b"1",
+            b"a",
+            b"2",
+            b"b",
+            b"3",
+            b"c",
+            b"4",
+            b"d",
+            b"5",
+            b"e",
+        ]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"ZADD",
+            b"myzset2{t}",
+            b"1",
+            b"a",
+            b"2",
+            b"b",
+            b"3",
+            b"c",
+            b"4",
+            b"d",
+            b"5",
+            b"e",
+        ]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*2\r\n:5\r\n:5\r\n",
+    )
+    .await;
+
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter1, Duration::from_secs(1)).await,
+        (b"myzset{t}".to_vec(), vec![(b"a".to_vec(), b"1".to_vec())])
+    );
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter2, Duration::from_secs(1)).await,
+        (
+            b"myzset{t}".to_vec(),
+            vec![
+                (b"e".to_vec(), b"5".to_vec()),
+                (b"d".to_vec(), b"4".to_vec()),
+                (b"c".to_vec(), b"3".to_vec()),
+                (b"b".to_vec(), b"2".to_vec())
+            ]
+        )
+    );
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter3, Duration::from_secs(1)).await,
+        (
+            b"myzset2{t}".to_vec(),
+            vec![
+                (b"a".to_vec(), b"1".to_vec()),
+                (b"b".to_vec(), b"2".to_vec()),
+                (b"c".to_vec(), b"3".to_vec()),
+                (b"d".to_vec(), b"4".to_vec()),
+                (b"e".to_vec(), b"5".to_vec())
+            ]
+        )
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"ZADD", b"myzset2{t}", b"1", b"a", b"2", b"b", b"3", b"c"]),
+        b":3\r\n",
+    )
+    .await;
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter4, Duration::from_secs(1)).await,
+        (b"myzset2{t}".to_vec(), vec![(b"c".to_vec(), b"3".to_vec())])
+    );
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = send_and_read_integer(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"myzset{t}", b"myzset2{t}"]),
+        Duration::from_secs(1),
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn bzmpop_illegal_arguments_match_redis_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // "BZMPOP with illegal argument"
+    assert_eq!(
+        send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&[b"BZMPOP"]),
+            Duration::from_secs(1),
+        )
+        .await,
+        "ERR wrong number of arguments for 'bzmpop' command"
+    );
+    assert_eq!(
+        send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&[b"BZMPOP", b"0", b"1"]),
+            Duration::from_secs(1),
+        )
+        .await,
+        "ERR wrong number of arguments for 'bzmpop' command"
+    );
+    assert_eq!(
+        send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&[b"BZMPOP", b"0", b"1", b"myzset{t}"]),
+            Duration::from_secs(1),
+        )
+        .await,
+        "ERR wrong number of arguments for 'bzmpop' command"
+    );
+
+    for request in [
+        encode_resp_command(&[b"BZMPOP", b"1", b"0", b"myzset{t}", b"MIN"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"a", b"myzset{t}", b"MIN"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"-1", b"myzset{t}", b"MAX"]),
+    ] {
+        let error = send_and_read_error_line(&mut client, &request, Duration::from_secs(1)).await;
+        assert!(
+            error.starts_with("ERR numkeys"),
+            "expected numkeys error, got: {error}"
+        );
+    }
+
+    for request in [
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"bad_where"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"MIN", b"bar_arg"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"MAX", b"MIN"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"COUNT"]),
+        encode_resp_command(&[
+            b"BZMPOP",
+            b"1",
+            b"1",
+            b"myzset{t}",
+            b"MIN",
+            b"COUNT",
+            b"1",
+            b"COUNT",
+            b"2",
+        ]),
+        encode_resp_command(&[
+            b"BZMPOP",
+            b"1",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"bad_arg",
+        ]),
+    ] {
+        let error = send_and_read_error_line(&mut client, &request, Duration::from_secs(1)).await;
+        assert!(
+            error.starts_with("ERR syntax error"),
+            "expected syntax error, got: {error}"
+        );
+    }
+
+    for request in [
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"MIN", b"COUNT", b"0"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"MAX", b"COUNT", b"a"]),
+        encode_resp_command(&[b"BZMPOP", b"1", b"1", b"myzset{t}", b"MIN", b"COUNT", b"-1"]),
+        encode_resp_command(&[
+            b"BZMPOP",
+            b"1",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MAX",
+            b"COUNT",
+            b"-1",
+        ]),
+    ] {
+        let error = send_and_read_error_line(&mut client, &request, Duration::from_secs(1)).await;
+        assert!(
+            error.starts_with("ERR count"),
+            "expected count error, got: {error}"
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let master_addr = master_listener.local_addr().unwrap();
@@ -1800,6 +4634,123 @@ async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let _ = replica_shutdown_tx.send(());
     master_server.await.unwrap();
     replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_returns_ack_count_after_replica_applies_write() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
+            let _ = master_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
+            let _ = replica_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+
+    let mut replicated = false;
+    for attempt in 0..50 {
+        let value = format!("v{attempt}");
+        let set_frame = encode_resp_command(&[b"SET", b"wait:sync", value.as_bytes()]);
+        send_and_expect(&mut master_client, &set_frame, b"+OK\r\n").await;
+
+        let get_frame = encode_resp_command(&[b"GET", b"wait:sync"]);
+        replica_client.write_all(&get_frame).await.unwrap();
+        let mut response = [0u8; 64];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(200),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        let expected = format!("${}\r\n{}\r\n", value.len(), value);
+        if &response[..bytes_read] == expected.as_bytes() {
+            replicated = true;
+            break;
+        }
+        sleep(Duration::from_millis(50)).await;
+    }
+    assert!(replicated, "replica did not reach steady replication state");
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"wait:key", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let wait_frame = encode_resp_command(&[b"WAIT", b"1", b"2000"]);
+    let acknowledged =
+        send_and_read_integer(&mut master_client, &wait_frame, Duration::from_secs(3)).await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe at least one acknowledged replica, got {acknowledged}"
+    );
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_times_out_without_downstream_replicas() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"wait:no-replica", b"v"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let wait_frame = encode_resp_command(&[b"WAIT", b"1", b"50"]);
+    let acknowledged =
+        send_and_read_integer(&mut client, &wait_frame, Duration::from_secs(1)).await;
+    assert_eq!(
+        acknowledged, 0,
+        "expected WAIT timeout without replicas to return 0"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -2129,6 +5080,552 @@ async fn sync_replication_stream_starts_with_select_db_zero() {
 }
 
 #[tokio::test]
+async fn sync_replication_stream_rewrites_bzmpop_as_zpop_commands_like_redis_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // "BZMPOP propagate as pop with count command to replica"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"ZADD",
+            b"myzset{t}",
+            b"1",
+            b"one",
+            b"2",
+            b"two",
+            b"3",
+            b"three",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"ZADD",
+            b"myzset2{t}",
+            b"4",
+            b"four",
+            b"5",
+            b"five",
+            b"6",
+            b"six",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+
+    controller
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"1",
+            b"myzset{t}",
+            b"MIN",
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_zmpop_like_response(&mut controller, Duration::from_secs(1)).await,
+        (
+            b"myzset{t}".to_vec(),
+            vec![(b"one".to_vec(), b"1".to_vec())]
+        )
+    );
+
+    controller
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MAX",
+            b"COUNT",
+            b"10",
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_zmpop_like_response(&mut controller, Duration::from_secs(1)).await,
+        (
+            b"myzset{t}".to_vec(),
+            vec![
+                (b"three".to_vec(), b"3".to_vec()),
+                (b"two".to_vec(), b"2".to_vec())
+            ]
+        )
+    );
+
+    controller
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MAX",
+            b"COUNT",
+            b"10",
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_zmpop_like_response(&mut controller, Duration::from_secs(1)).await,
+        (
+            b"myzset2{t}".to_vec(),
+            vec![
+                (b"six".to_vec(), b"6".to_vec()),
+                (b"five".to_vec(), b"5".to_vec()),
+                (b"four".to_vec(), b"4".to_vec())
+            ]
+        )
+    );
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"1",
+            b"myzset{t}",
+            b"MIN",
+            b"COUNT",
+            b"1",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"ZADD", b"myzset{t}", b"1", b"one"]),
+        b":1\r\n",
+    )
+    .await;
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter, Duration::from_secs(1)).await,
+        (
+            b"myzset{t}".to_vec(),
+            vec![(b"one".to_vec(), b"1".to_vec())]
+        )
+    );
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MIN",
+            b"COUNT",
+            b"5",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"ZADD",
+            b"myzset{t}",
+            b"1",
+            b"one",
+            b"2",
+            b"two",
+            b"3",
+            b"three",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter, Duration::from_secs(1)).await,
+        (
+            b"myzset{t}".to_vec(),
+            vec![
+                (b"one".to_vec(), b"1".to_vec()),
+                (b"two".to_vec(), b"2".to_vec()),
+                (b"three".to_vec(), b"3".to_vec())
+            ]
+        )
+    );
+
+    waiter
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0",
+            b"2",
+            b"myzset{t}",
+            b"myzset2{t}",
+            b"MAX",
+            b"COUNT",
+            b"10",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"ZADD",
+            b"myzset2{t}",
+            b"4",
+            b"four",
+            b"5",
+            b"five",
+            b"6",
+            b"six",
+        ]),
+        b":3\r\n",
+    )
+    .await;
+    assert_eq!(
+        read_zmpop_like_response(&mut waiter, Duration::from_secs(1)).await,
+        (
+            b"myzset2{t}".to_vec(),
+            vec![
+                (b"six".to_vec(), b"6".to_vec()),
+                (b"five".to_vec(), b"5".to_vec()),
+                (b"four".to_vec(), b"4".to_vec())
+            ]
+        )
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"BZMPOP",
+            b"0.01",
+            b"1",
+            b"myzset{t}",
+            b"MAX",
+            b"COUNT",
+            b"10",
+        ]),
+        b"*-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"SET", b"foo{t}", b"bar"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"ZADD",
+        b"myzset{t}",
+        b"1",
+        b"one",
+        b"2",
+        b"two",
+        b"3",
+        b"three",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"ZADD",
+        b"myzset2{t}",
+        b"4",
+        b"four",
+        b"5",
+        b"five",
+        b"6",
+        b"six",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZPOPMIN", b"myzset{t}", b"1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZPOPMAX", b"myzset{t}", b"2"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZPOPMAX", b"myzset2{t}", b"3"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZADD", b"myzset{t}", b"1", b"one"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZPOPMIN", b"myzset{t}", b"1"]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"ZADD",
+        b"myzset{t}",
+        b"1",
+        b"one",
+        b"2",
+        b"two",
+        b"3",
+        b"three",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZPOPMIN", b"myzset{t}", b"3"]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"ZADD",
+        b"myzset2{t}",
+        b"4",
+        b"four",
+        b"5",
+        b"five",
+        b"6",
+        b"six",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[b"ZPOPMAX", b"myzset2{t}", b"3"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"foo{t}", b"bar"]));
+
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_rewrites_hgetdel_as_hdel_like_redis_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"HSET", b"key1", b"f1", b"v1", b"f2", b"v2", b"f3", b"v3", b"f4", b"v4", b"f5", b"v5",
+        ]),
+        b":5\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HGETDEL", b"key1", b"FIELDS", b"1", b"f1"]),
+        b"*1\r\n$2\r\nv1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HGETDEL", b"key1", b"FIELDS", b"2", b"f2", b"f3"]),
+        b"*2\r\n$2\r\nv2\r\n$2\r\nv3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HGETDEL", b"key1", b"FIELDS", b"2", b"f7", b"f8"]),
+        b"*2\r\n$-1\r\n$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HGETDEL", b"key1", b"FIELDS", b"3", b"f4", b"f5", b"f6"]),
+        b"*3\r\n$2\r\nv4\r\n$2\r\nv5\r\n$-1\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"HSET", b"key1", b"f1", b"v1", b"f2", b"v2", b"f3", b"v3", b"f4", b"v4", b"f5", b"v5",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[b"HDEL", b"key1", b"f1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"HDEL", b"key1", b"f2", b"f3"]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"HDEL", b"key1", b"f4", b"f5", b"f6",
+    ]));
+
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_rewrites_delex_as_del_like_redis_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DELEX", b"foo", b"IFEQ", b"bar"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar2"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DELEX", b"foo", b"IFEQ", b"baz"]),
+        b":0\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"foo", b"bar"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"DEL", b"foo"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"foo", b"bar2"]));
+
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_emits_select_on_db_switch() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut admin_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut admin_client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"2"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"db1:key", b"v1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"db0:key", b"v0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"db1:key", b"v1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"db0:key", b"v0"]));
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_replicating_get() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2241,6 +5738,202 @@ async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_rep
         trailing_read
     );
 
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_propagates_lazy_expire_del_from_short_ttl_get() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let processor = Arc::new(RequestProcessor::new().unwrap());
+    processor.set_active_expire_enabled(false);
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server_processor = Arc::clone(&processor);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            server_processor,
+        )
+        .await
+        .unwrap()
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let get_foo = encode_resp_command(&[b"GET", b"foo"]);
+    let mut foo_expired = false;
+    for _ in 0..80 {
+        sleep(Duration::from_millis(5)).await;
+        client.write_all(&get_foo).await.unwrap();
+        let mut response = [0u8; 64];
+        let bytes_read =
+            tokio::time::timeout(Duration::from_millis(200), client.read(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+        let frame = &response[..bytes_read];
+        if frame == b"$-1\r\n" {
+            foo_expired = true;
+            break;
+        }
+        assert_eq!(frame, b"$3\r\nbar\r\n");
+    }
+    assert!(
+        foo_expired,
+        "GET foo did not observe short-TTL expiration within retry budget"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"DEL", b"foo"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"x", b"1"]));
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_propagates_lazy_expire_del_when_active_expire_is_debug_disabled() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let get_foo = encode_resp_command(&[b"GET", b"foo"]);
+    let mut foo_expired = false;
+    for _ in 0..50 {
+        sleep(Duration::from_millis(20)).await;
+        client.write_all(&get_foo).await.unwrap();
+        let mut response = [0u8; 64];
+        let bytes_read =
+            tokio::time::timeout(Duration::from_millis(500), client.read(&mut response))
+                .await
+                .unwrap()
+                .unwrap();
+        let frame = &response[..bytes_read];
+        if frame == b"$-1\r\n" {
+            foo_expired = true;
+            break;
+        }
+        assert_eq!(frame, b"$3\r\nbar\r\n");
+    }
+    assert!(
+        foo_expired,
+        "GET foo did not observe expiration with DEBUG SET-ACTIVE-EXPIRE 0"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"DEL", b"foo"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"x", b"1"]));
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
     let _ = shutdown_tx.send(());
     server.await.unwrap();
 }
@@ -2561,6 +6254,159 @@ async fn cluster_routing_returns_moved_for_remote_slots() {
         expected_clusterdown.as_bytes(),
     )
     .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn cluster_mode_readonly_and_readwrite_return_ok() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let cluster_store = Arc::new(ClusterConfigStore::new(ClusterConfig::new_local(
+        "node-1",
+        "127.0.0.1",
+        addr.port(),
+    )));
+
+    let server_metrics = Arc::clone(&metrics);
+    let server_cluster = Arc::clone(&cluster_store);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(server_cluster),
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"READONLY"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"READWRITE"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn cluster_mode_cluster_snapshot_commands_return_live_topology() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let mut cluster_config = ClusterConfig::new_local("node-1", "127.0.0.1", addr.port());
+    let (next, node2_id) = cluster_config
+        .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+        .unwrap();
+    cluster_config = next;
+    cluster_config = cluster_config
+        .set_slot_state(SlotNumber::new(0), LOCAL_WORKER_ID, SlotState::Stable)
+        .unwrap();
+    cluster_config = cluster_config
+        .set_slot_state(SlotNumber::new(1), node2_id, SlotState::Stable)
+        .unwrap();
+    let cluster_store = Arc::new(ClusterConfigStore::new(cluster_config));
+
+    let server_metrics = Arc::clone(&metrics);
+    let server_cluster = Arc::clone(&cluster_store);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            Some(server_cluster),
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let cluster_info = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"CLUSTER", b"INFO"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let cluster_info_text = String::from_utf8_lossy(&cluster_info);
+    assert!(cluster_info_text.contains("cluster_state:fail"));
+    assert!(cluster_info_text.contains("cluster_slots_assigned:2"));
+    assert!(cluster_info_text.contains("cluster_known_nodes:2"));
+
+    let myid = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"CLUSTER", b"MYID"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(myid, b"node-1");
+
+    let cluster_nodes = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"CLUSTER", b"NODES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let cluster_nodes_text = String::from_utf8_lossy(&cluster_nodes);
+    assert!(cluster_nodes_text.contains("node-1 127.0.0.1:"));
+    assert!(cluster_nodes_text.contains("myself,master"));
+    assert!(cluster_nodes_text.contains("node-2 10.0.0.2:6380@16380"));
+    assert!(cluster_nodes_text.contains(" connected 0"));
+    assert!(cluster_nodes_text.contains(" connected 1"));
+
+    let mut slots_client = TcpStream::connect(addr).await.unwrap();
+    slots_client
+        .write_all(&encode_resp_command(&[b"CLUSTER", b"SLOTS"]))
+        .await
+        .unwrap();
+    let slots_header = read_resp_line_with_timeout(&mut slots_client, Duration::from_secs(1)).await;
+    assert_eq!(slots_header, b"*2");
+
+    let mut shards_client = TcpStream::connect(addr).await.unwrap();
+    shards_client
+        .write_all(&encode_resp_command(&[b"CLUSTER", b"SHARDS"]))
+        .await
+        .unwrap();
+    let shards_header =
+        read_resp_line_with_timeout(&mut shards_client, Duration::from_secs(1)).await;
+    assert_eq!(shards_header, b"*2");
+
+    let mut resp3_client = TcpStream::connect(addr).await.unwrap();
+    send_hello_and_drain(&mut resp3_client, b"3").await;
+    resp3_client
+        .write_all(&encode_resp_command(&[b"CLUSTER", b"INFO"]))
+        .await
+        .unwrap();
+    let resp3_header = read_resp_line_with_timeout(&mut resp3_client, Duration::from_secs(1)).await;
+    assert!(resp3_header.starts_with(b"="));
+    let resp3_len = std::str::from_utf8(&resp3_header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let resp3_payload =
+        read_exact_with_timeout(&mut resp3_client, resp3_len + 2, Duration::from_secs(1)).await;
+    let resp3_payload_text = String::from_utf8_lossy(&resp3_payload);
+    assert!(resp3_payload_text.starts_with("txt:cluster_state:fail"));
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -5383,15 +9229,27 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
 
     let set_frame = encode_resp_command(&[b"SET", b"k", b"v"]);
     let set_owned_args = owned_frame_args_from_frame(&set_frame);
-    let routed_set =
-        execute_owned_frame_args_via_processor(&processor, &set_owned_args, false, None).unwrap();
+    let routed_set = execute_owned_frame_args_via_processor(
+        &processor,
+        &set_owned_args,
+        false,
+        None,
+        crate::request_lifecycle::DbName::default(),
+    )
+    .unwrap();
     let direct_set = execute_processor_frame(&processor, &set_frame);
     assert_eq!(routed_set, direct_set);
 
     let get_frame = encode_resp_command(&[b"GET", b"k"]);
     let get_owned_args = owned_frame_args_from_frame(&get_frame);
-    let routed_get =
-        execute_owned_frame_args_via_processor(&processor, &get_owned_args, false, None).unwrap();
+    let routed_get = execute_owned_frame_args_via_processor(
+        &processor,
+        &get_owned_args,
+        false,
+        None,
+        crate::request_lifecycle::DbName::default(),
+    )
+    .unwrap();
     let direct_get = execute_processor_frame(&processor, &get_frame);
     assert_eq!(routed_get, direct_get);
 }
@@ -5409,6 +9267,596 @@ fn capture_owned_frame_args_rejects_invalid_argument_views() {
         capture_owned_frame_args(&frame, &[foreign_arg]),
         Err(RoutedExecutionError::Protocol)
     ));
+}
+
+#[tokio::test]
+async fn srandmember_long_chain_external_scenario_runs_as_tcp_integration_test() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, false).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server_processor = Arc::clone(&processor);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            server_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let info_server = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"SERVER"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&info_server, "process_id"),
+        Some(std::process::id() as u64)
+    );
+
+    // Redis tests/unit/type/set.tcl:
+    // "SRANDMEMBER with a dict containing long chain"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"save", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"set-max-listpack-entries", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"rdb-key-save-delay", b"2147483647"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    create_set_like_redis_external_test(&mut client, b"myset", 100_000).await;
+
+    wait_for_set_rehashing_to_complete_like_redis_external_test(
+        &mut client,
+        b"myset",
+        b"100",
+        Duration::from_secs(5),
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"BGSAVE"]),
+        b"+Background saving started\r\n",
+    )
+    .await;
+    rem_hash_set_top_n_like_redis_external_test(&mut client, b"myset", 100_000 - 500).await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"SCARD", b"myset"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        500
+    );
+
+    processor.force_finish_bgsave_for_tests();
+    wait_for_bgsave_to_finish(&mut client, Duration::from_secs(5)).await;
+
+    let popped = send_and_read_bulk_array_payloads(
+        &mut client,
+        &encode_resp_command(&[b"SPOP", b"myset", b"1"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(popped.len(), 1);
+    assert!(
+        debug_htstats_key_is_rehashing(&mut client, b"myset", Duration::from_secs(5)).await,
+        "DEBUG HTSTATS-KEY should report rehashing after extreme shrink trigger"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"BGSAVE"]),
+        b"+Background saving started\r\n",
+    )
+    .await;
+
+    wait_for_set_rehashing_to_complete_like_redis_external_test(
+        &mut client,
+        b"myset",
+        b"1",
+        Duration::from_secs(5),
+    )
+    .await;
+
+    processor.force_finish_bgsave_for_tests();
+    wait_for_bgsave_to_finish(&mut client, Duration::from_secs(5)).await;
+
+    let expected_members = send_and_read_bulk_array_payloads(
+        &mut client,
+        &encode_resp_command(&[b"SMEMBERS", b"myset"]),
+        Duration::from_secs(5),
+    )
+    .await
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    let mut observed_members = std::collections::BTreeSet::new();
+
+    let mut iterations = 1000usize;
+    while iterations != 0 {
+        iterations -= 1;
+        let sample = send_and_read_bulk_array_payloads(
+            &mut client,
+            &encode_resp_command(&[b"SRANDMEMBER", b"myset", b"-10"]),
+            Duration::from_secs(5),
+        )
+        .await;
+        observed_members.extend(sample);
+        if observed_members == expected_members {
+            break;
+        }
+    }
+    assert_ne!(iterations, 0);
+
+    rem_hash_set_top_n_like_redis_external_test(&mut client, b"myset", 499 - 30).await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"SCARD", b"myset"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        30
+    );
+    let htstats = send_and_read_debug_htstats_key_payload(
+        &mut client,
+        b"myset",
+        false,
+        Duration::from_secs(5),
+    )
+    .await;
+    let htstats_text = String::from_utf8(htstats).unwrap();
+    assert!(
+        !htstats_text.contains("rehashing target"),
+        "rehashing should be complete: {htstats_text}"
+    );
+    assert!(
+        htstats_text.contains("table size: 64"),
+        "expected shrunk table size: {htstats_text}"
+    );
+    assert!(
+        htstats_text.contains("number of elements: 30"),
+        "expected final member count: {htstats_text}"
+    );
+
+    let htstats_full = send_and_read_debug_htstats_key_payload(
+        &mut client,
+        b"myset",
+        true,
+        Duration::from_secs(5),
+    )
+    .await;
+    let htstats_full_text = String::from_utf8(htstats_full).unwrap();
+    assert!(
+        htstats_full_text.contains("different slots: 1"),
+        "expected single-slot synthetic distribution: {htstats_full_text}"
+    );
+    assert!(
+        htstats_full_text.contains("max chain length: 30"),
+        "expected long-chain synthetic distribution: {htstats_full_text}"
+    );
+
+    let members = send_and_read_bulk_array_payloads(
+        &mut client,
+        &encode_resp_command(&[b"SMEMBERS", b"myset"]),
+        Duration::from_secs(5),
+    )
+    .await
+    .into_iter()
+    .collect::<std::collections::BTreeSet<_>>();
+    let mut histogram_samples = Vec::with_capacity(10_000);
+    for _ in 0..1000 {
+        let sample = send_and_read_bulk_array_payloads(
+            &mut client,
+            &encode_resp_command(&[b"SRANDMEMBER", b"myset", b"10"]),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(sample.len(), 10);
+        histogram_samples.extend(sample);
+    }
+    assert!(chi_square_value(&histogram_samples, &members) < 73.0);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn string_external_setbit_with_out_of_range_bit_offset_returns_range_error() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/string.tcl:
+    // "SETBIT with out of range bit offset"
+    let huge_offset = (4u64 * 1024 * 1024 * 1024).to_string();
+    let error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SETBIT", b"mykey", huge_offset.as_bytes(), b"1"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        error.contains("out of range"),
+        "expected out-of-range error, got: {error}"
+    );
+
+    let negative_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SETBIT", b"mykey", b"-1", b"1"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        negative_error.contains("out of range"),
+        "expected out-of-range error, got: {negative_error}"
+    );
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn string_external_setrange_offset_limits_match_redis() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/string.tcl:
+    // "SETRANGE with out of range offset"
+    let max_offset = (512usize * 1024 * 1024 - 4).to_string();
+    let max_size_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SETRANGE", b"mykey", max_offset.as_bytes(), b"world"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        max_size_error.contains("maximum allowed size"),
+        "expected maximum allowed size error, got: {max_size_error}"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"mykey", b"hello"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let negative_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SETRANGE", b"mykey", b"-1", b"world"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        negative_error.contains("out of range"),
+        "expected out-of-range error, got: {negative_error}"
+    );
+
+    let repeated_max_size_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SETRANGE", b"mykey", max_offset.as_bytes(), b"world"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        repeated_max_size_error.contains("maximum allowed size"),
+        "expected maximum allowed size error, got: {repeated_max_size_error}"
+    );
+
+    // Redis tests/unit/type/string.tcl:
+    // "SETRANGE with huge offset"
+    for offset in [b"9223372036854775807".as_slice(), b"2147483647".as_slice()] {
+        let error = send_and_read_error_line(
+            &mut client,
+            &encode_resp_command(&[b"SETRANGE", b"K", offset, b"A"]),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert!(
+            error.contains("string exceeds maximum allowed size") || error.contains("out of range"),
+            "expected huge-offset error, got: {error}"
+        );
+    }
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn string_external_mutations_switch_integer_encoding_to_raw() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/string.tcl:
+    // "SETRANGE against integer-encoded key"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"mykey", b"1234"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_bulk_payload(
+            &mut client,
+            &encode_resp_command(&[b"OBJECT", b"ENCODING", b"mykey"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        b"int"
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SETRANGE", b"mykey", b"0", b"2"]),
+        b":4\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_bulk_payload(
+            &mut client,
+            &encode_resp_command(&[b"OBJECT", b"ENCODING", b"mykey"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        b"raw"
+    );
+    assert_eq!(
+        send_and_read_bulk_payload(
+            &mut client,
+            &encode_resp_command(&[b"GET", b"mykey"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        b"2234"
+    );
+
+    // Redis tests/unit/type/string.tcl:
+    // "APPEND modifies the encoding from int to raw"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"foo"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_bulk_payload(
+            &mut client,
+            &encode_resp_command(&[b"OBJECT", b"ENCODING", b"foo"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        b"int"
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"APPEND", b"foo", b"2"]),
+        b":2\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_bulk_payload(
+            &mut client,
+            &encode_resp_command(&[b"GET", b"foo"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        b"12"
+    );
+    assert_eq!(
+        send_and_read_bulk_payload(
+            &mut client,
+            &encode_resp_command(&[b"OBJECT", b"ENCODING", b"foo"]),
+            Duration::from_secs(5),
+        )
+        .await,
+        b"raw"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn publish_to_self_inside_multi_external_pubsub_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_hello_and_drain(&mut client, b"3").await;
+
+    let subscribe = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo"]),
+        timeout,
+    )
+    .await;
+    let subscribe_items = resp_socket_array(&subscribe);
+    assert_eq!(resp_socket_bulk(&subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&subscribe_items[1]), b"foo");
+    assert_eq!(resp_socket_integer(&subscribe_items[2]), 1);
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING", b"abc"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PUBLISH", b"foo", b"bar"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PUBLISH", b"foo", b"vaz"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING", b"def"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+
+    let exec =
+        send_and_read_resp_value(&mut client, &encode_resp_command(&[b"EXEC"]), timeout).await;
+    let exec_items = resp_socket_array(&exec);
+    assert_eq!(exec_items.len(), 4);
+    assert_eq!(resp_socket_bulk(&exec_items[0]), b"abc");
+    assert_eq!(resp_socket_integer(&exec_items[1]), 1);
+    assert_eq!(resp_socket_integer(&exec_items[2]), 1);
+    assert_eq!(resp_socket_bulk(&exec_items[3]), b"def");
+
+    let first_message = read_resp_value_with_timeout(&mut client, timeout).await;
+    let first_items = resp_socket_array(&first_message);
+    assert_eq!(first_items.len(), 3);
+    assert_eq!(resp_socket_bulk(&first_items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&first_items[1]), b"foo");
+    assert_eq!(resp_socket_bulk(&first_items[2]), b"bar");
+
+    let second_message = read_resp_value_with_timeout(&mut client, timeout).await;
+    let second_items = resp_socket_array(&second_message);
+    assert_eq!(second_items.len(), 3);
+    assert_eq!(resp_socket_bulk(&second_items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&second_items[1]), b"foo");
+    assert_eq!(resp_socket_bulk(&second_items[2]), b"vaz");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn unsubscribe_inside_multi_then_publish_to_self_external_pubsub_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_hello_and_drain(&mut client, b"3").await;
+
+    let first_subscribe = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo", b"bar", b"baz"]),
+        timeout,
+    )
+    .await;
+    let first_subscribe_items = resp_socket_array(&first_subscribe);
+    assert_eq!(resp_socket_bulk(&first_subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&first_subscribe_items[1]), b"foo");
+    assert_eq!(resp_socket_integer(&first_subscribe_items[2]), 1);
+
+    let second_subscribe = read_resp_value_with_timeout(&mut client, timeout).await;
+    let second_subscribe_items = resp_socket_array(&second_subscribe);
+    assert_eq!(resp_socket_bulk(&second_subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&second_subscribe_items[1]), b"bar");
+    assert_eq!(resp_socket_integer(&second_subscribe_items[2]), 2);
+
+    let third_subscribe = read_resp_value_with_timeout(&mut client, timeout).await;
+    let third_subscribe_items = resp_socket_array(&third_subscribe);
+    assert_eq!(resp_socket_bulk(&third_subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&third_subscribe_items[1]), b"baz");
+    assert_eq!(resp_socket_integer(&third_subscribe_items[2]), 3);
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING", b"abc"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"UNSUBSCRIBE", b"bar"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"UNSUBSCRIBE", b"baz"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING", b"def"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+
+    let exec =
+        send_and_read_resp_value(&mut client, &encode_resp_command(&[b"EXEC"]), timeout).await;
+    let exec_items = resp_socket_array(&exec);
+    assert_eq!(exec_items.len(), 4);
+    assert_eq!(resp_socket_bulk(&exec_items[0]), b"abc");
+
+    let first_unsubscribe = resp_socket_array(&exec_items[1]);
+    assert_eq!(resp_socket_bulk(&first_unsubscribe[0]), b"unsubscribe");
+    assert_eq!(resp_socket_bulk(&first_unsubscribe[1]), b"bar");
+    assert_eq!(resp_socket_integer(&first_unsubscribe[2]), 2);
+
+    let second_unsubscribe = resp_socket_array(&exec_items[2]);
+    assert_eq!(resp_socket_bulk(&second_unsubscribe[0]), b"unsubscribe");
+    assert_eq!(resp_socket_bulk(&second_unsubscribe[1]), b"baz");
+    assert_eq!(resp_socket_integer(&second_unsubscribe[2]), 1);
+
+    assert_eq!(resp_socket_bulk(&exec_items[3]), b"def");
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"PUBLISH", b"foo", b"vaz"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+
+    let message = read_resp_value_with_timeout(&mut client, timeout).await;
+    let message_items = resp_socket_array(&message);
+    assert_eq!(message_items.len(), 3);
+    assert_eq!(resp_socket_bulk(&message_items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&message_items[1]), b"foo");
+    assert_eq!(resp_socket_bulk(&message_items[2]), b"vaz");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
 }
 
 async fn wait_until<P>(mut predicate: P, timeout: Duration)
@@ -5463,12 +9911,22 @@ async fn send_and_read_integer(client: &mut TcpStream, request: &[u8], timeout: 
         .unwrap()
 }
 
-async fn send_and_read_bulk_payload(
+async fn send_and_read_error_line(
     client: &mut TcpStream,
     request: &[u8],
     timeout: Duration,
-) -> Vec<u8> {
+) -> String {
     client.write_all(request).await.unwrap();
+    let line = read_resp_line_with_timeout(client, timeout).await;
+    assert!(
+        line.starts_with(b"-"),
+        "expected error response, got: {:?}",
+        String::from_utf8_lossy(&line)
+    );
+    String::from_utf8(line[1..].to_vec()).unwrap()
+}
+
+async fn read_bulk_payload_with_timeout(client: &mut TcpStream, timeout: Duration) -> Vec<u8> {
     let header = read_resp_line_with_timeout(client, timeout).await;
     assert!(header.starts_with(b"$"));
     let payload_len = std::str::from_utf8(&header[1..])
@@ -5482,6 +9940,390 @@ async fn send_and_read_bulk_payload(
         .unwrap();
     payload.truncate(payload_len);
     payload
+}
+
+async fn send_and_read_bulk_payload(
+    client: &mut TcpStream,
+    request: &[u8],
+    timeout: Duration,
+) -> Vec<u8> {
+    client.write_all(request).await.unwrap();
+    read_bulk_payload_with_timeout(client, timeout).await
+}
+
+async fn read_bulk_array_payloads_with_timeout(
+    client: &mut TcpStream,
+    timeout: Duration,
+) -> Vec<Vec<u8>> {
+    let header = read_resp_line_with_timeout(client, timeout).await;
+    assert!(header.starts_with(b"*"));
+    let len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let mut values = Vec::with_capacity(len);
+    for _ in 0..len {
+        values.push(read_bulk_payload_with_timeout(client, timeout).await);
+    }
+    values
+}
+
+async fn send_and_read_bulk_array_payloads(
+    client: &mut TcpStream,
+    request: &[u8],
+    timeout: Duration,
+) -> Vec<Vec<u8>> {
+    client.write_all(request).await.unwrap();
+    read_bulk_array_payloads_with_timeout(client, timeout).await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RespSocketValue {
+    Integer(i64),
+    Bulk(Vec<u8>),
+    Simple(Vec<u8>),
+    Array(Vec<RespSocketValue>),
+    Null,
+}
+
+fn read_resp_value_with_timeout<'a>(
+    client: &'a mut TcpStream,
+    timeout: Duration,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = RespSocketValue> + 'a>> {
+    Box::pin(async move {
+        let header = read_resp_line_with_timeout(client, timeout).await;
+        match header.first().copied().unwrap() {
+            b':' => RespSocketValue::Integer(
+                std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<i64>()
+                    .unwrap(),
+            ),
+            b'+' => RespSocketValue::Simple(header[1..].to_vec()),
+            b'$' => {
+                if header == b"$-1" {
+                    return RespSocketValue::Null;
+                }
+                let payload_len = std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                let mut payload = vec![0u8; payload_len + 2];
+                tokio::time::timeout(timeout, client.read_exact(&mut payload))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                payload.truncate(payload_len);
+                RespSocketValue::Bulk(payload)
+            }
+            b'*' => {
+                let len = std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    items.push(read_resp_value_with_timeout(client, timeout).await);
+                }
+                RespSocketValue::Array(items)
+            }
+            b'>' => {
+                let len = std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    items.push(read_resp_value_with_timeout(client, timeout).await);
+                }
+                RespSocketValue::Array(items)
+            }
+            other => panic!("unsupported RESP token from socket: {}", other as char),
+        }
+    })
+}
+
+async fn send_and_read_resp_value(
+    client: &mut TcpStream,
+    request: &[u8],
+    timeout: Duration,
+) -> RespSocketValue {
+    client.write_all(request).await.unwrap();
+    read_resp_value_with_timeout(client, timeout).await
+}
+
+fn resp_socket_array(value: &RespSocketValue) -> &[RespSocketValue] {
+    match value {
+        RespSocketValue::Array(items) => items,
+        other => panic!("expected RESP array, got {other:?}"),
+    }
+}
+
+fn resp_socket_bulk(value: &RespSocketValue) -> &[u8] {
+    match value {
+        RespSocketValue::Bulk(payload) => payload,
+        RespSocketValue::Simple(payload) => payload,
+        other => panic!("expected RESP bulk/simple string, got {other:?}"),
+    }
+}
+
+fn resp_socket_integer(value: &RespSocketValue) -> i64 {
+    match value {
+        RespSocketValue::Integer(number) => *number,
+        other => panic!("expected RESP integer, got {other:?}"),
+    }
+}
+
+fn resp_socket_integer_array(value: &RespSocketValue) -> Vec<i64> {
+    resp_socket_array(value)
+        .iter()
+        .map(resp_socket_integer)
+        .collect()
+}
+
+fn resp_socket_flat_map<'a>(
+    value: &'a RespSocketValue,
+) -> std::collections::BTreeMap<Vec<u8>, &'a RespSocketValue> {
+    let items = resp_socket_array(value);
+    assert_eq!(items.len() % 2, 0);
+    let mut map = std::collections::BTreeMap::new();
+    let mut index = 0usize;
+    while index < items.len() {
+        let key = resp_socket_bulk(&items[index]).to_vec();
+        map.insert(key, &items[index + 1]);
+        index += 2;
+    }
+    map
+}
+
+async fn read_zmpop_like_response(
+    client: &mut TcpStream,
+    timeout: Duration,
+) -> (Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>) {
+    let header = read_resp_line_with_timeout(client, timeout).await;
+    assert_eq!(header, b"*2");
+    let key = read_bulk_payload_with_timeout(client, timeout).await;
+    let members_header = read_resp_line_with_timeout(client, timeout).await;
+    assert!(members_header.starts_with(b"*"));
+    let member_count = std::str::from_utf8(&members_header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let mut members = Vec::with_capacity(member_count);
+    for _ in 0..member_count {
+        let pair_header = read_resp_line_with_timeout(client, timeout).await;
+        assert_eq!(pair_header, b"*2");
+        let member = read_bulk_payload_with_timeout(client, timeout).await;
+        let score = read_bulk_payload_with_timeout(client, timeout).await;
+        members.push((member, score));
+    }
+    (key, members)
+}
+
+async fn send_and_read_debug_htstats_key_payload(
+    client: &mut TcpStream,
+    key: &[u8],
+    full: bool,
+    timeout: Duration,
+) -> Vec<u8> {
+    if full {
+        send_and_read_bulk_payload(
+            client,
+            &encode_resp_command(&[b"DEBUG", b"HTSTATS-KEY", key, b"full"]),
+            timeout,
+        )
+        .await
+    } else {
+        send_and_read_bulk_payload(
+            client,
+            &encode_resp_command(&[b"DEBUG", b"HTSTATS-KEY", key]),
+            timeout,
+        )
+        .await
+    }
+}
+
+async fn debug_htstats_key_is_rehashing(
+    client: &mut TcpStream,
+    key: &[u8],
+    timeout: Duration,
+) -> bool {
+    let payload = send_and_read_debug_htstats_key_payload(client, key, false, timeout).await;
+    String::from_utf8(payload)
+        .unwrap()
+        .contains("rehashing target")
+}
+
+async fn wait_for_set_rehashing_to_complete_like_redis_external_test(
+    client: &mut TcpStream,
+    key: &[u8],
+    sample_count: &[u8],
+    timeout: Duration,
+) {
+    let mut remaining_iterations = 256usize;
+    while debug_htstats_key_is_rehashing(client, key, timeout).await {
+        if remaining_iterations == 0 {
+            let payload = send_and_read_debug_htstats_key_payload(client, key, true, timeout).await;
+            panic!(
+                "DEBUG HTSTATS-KEY kept reporting rehashing after 256 iterations: {}",
+                String::from_utf8(payload).unwrap()
+            );
+        }
+        remaining_iterations -= 1;
+        let request = encode_resp_command(&[b"SRANDMEMBER", key, sample_count]);
+        assert!(
+            !send_and_read_bulk_array_payloads(client, &request, timeout)
+                .await
+                .is_empty()
+        );
+    }
+}
+
+async fn send_and_read_scan_cursor_and_members(
+    client: &mut TcpStream,
+    request: &[u8],
+    timeout: Duration,
+) -> (u64, Vec<Vec<u8>>) {
+    client.write_all(request).await.unwrap();
+    let header = read_resp_line_with_timeout(client, timeout).await;
+    assert_eq!(header, b"*2");
+    let cursor = read_bulk_payload_with_timeout(client, timeout).await;
+    let cursor = std::str::from_utf8(&cursor)
+        .unwrap()
+        .parse::<u64>()
+        .unwrap();
+    let members = read_bulk_array_payloads_with_timeout(client, timeout).await;
+    (cursor, members)
+}
+
+async fn send_and_read_optional_bulk(
+    client: &mut TcpStream,
+    request: &[u8],
+    timeout: Duration,
+) -> Option<Vec<u8>> {
+    client.write_all(request).await.unwrap();
+    let header = read_resp_line_with_timeout(client, timeout).await;
+    if header == b"$-1" {
+        return None;
+    }
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let mut payload = vec![0u8; payload_len + 2];
+    tokio::time::timeout(timeout, client.read_exact(&mut payload))
+        .await
+        .unwrap()
+        .unwrap();
+    payload.truncate(payload_len);
+    Some(payload)
+}
+
+async fn wait_for_bgsave_to_finish(client: &mut TcpStream, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    while Instant::now() < deadline {
+        let payload = send_and_read_bulk_payload(
+            client,
+            &encode_resp_command(&[b"INFO"]),
+            Duration::from_secs(1),
+        )
+        .await;
+        if read_info_u64(&payload, "rdb_bgsave_in_progress") == Some(0) {
+            return;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    panic!("timed out waiting for BGSAVE to finish");
+}
+
+async fn create_set_like_redis_external_test(
+    client: &mut TcpStream,
+    key: &[u8],
+    member_count: usize,
+) {
+    let _ = send_and_read_integer(
+        client,
+        &encode_resp_command(&[b"DEL", key]),
+        Duration::from_secs(5),
+    )
+    .await;
+    for index in 0..member_count {
+        let member = format!("m:{index}");
+        assert_eq!(
+            send_and_read_integer(
+                client,
+                &encode_resp_command(&[b"SADD", key, member.as_bytes()]),
+                Duration::from_secs(5),
+            )
+            .await,
+            1
+        );
+    }
+}
+
+async fn rem_hash_set_top_n_like_redis_external_test(
+    client: &mut TcpStream,
+    key: &[u8],
+    remove_count: usize,
+) {
+    let mut cursor = 0u64;
+    let mut members_to_remove = Vec::with_capacity(remove_count);
+    loop {
+        let cursor_text = cursor.to_string();
+        let (next_cursor, members) = send_and_read_scan_cursor_and_members(
+            client,
+            &encode_resp_command(&[b"SSCAN", key, cursor_text.as_bytes()]),
+            Duration::from_secs(5),
+        )
+        .await;
+        for member in members {
+            members_to_remove.push(member);
+            if members_to_remove.len() >= remove_count {
+                break;
+            }
+        }
+        if members_to_remove.len() >= remove_count || next_cursor == 0 {
+            break;
+        }
+        cursor = next_cursor;
+    }
+
+    assert_eq!(members_to_remove.len(), remove_count);
+
+    for member in &members_to_remove {
+        client
+            .write_all(&encode_resp_command(&[b"SREM", key, member.as_slice()]))
+            .await
+            .unwrap();
+    }
+    for _ in &members_to_remove {
+        assert_eq!(
+            read_resp_line_with_timeout(client, Duration::from_secs(5)).await,
+            b":1"
+        );
+    }
+}
+
+fn chi_square_value(samples: &[Vec<u8>], population: &std::collections::BTreeSet<Vec<u8>>) -> f64 {
+    if samples.is_empty() || population.is_empty() {
+        return 0.0;
+    }
+
+    let expected = samples.len() as f64 / population.len() as f64;
+    let mut observed = std::collections::BTreeMap::<&[u8], usize>::new();
+    for sample in samples {
+        *observed.entry(sample.as_slice()).or_default() += 1;
+    }
+
+    population
+        .iter()
+        .map(|member| {
+            let observed_count = *observed.get(member.as_slice()).unwrap_or(&0) as f64;
+            let delta = observed_count - expected;
+            (delta * delta) / expected
+        })
+        .sum()
 }
 
 async fn read_resp_line_with_timeout(stream: &mut TcpStream, timeout: Duration) -> Vec<u8> {
@@ -5595,6 +10437,28 @@ fn execute_processor_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     response
+}
+
+async fn start_test_server() -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    (addr, shutdown_tx, server)
 }
 
 fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {

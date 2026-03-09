@@ -1,4 +1,6 @@
 //! Minimal Redis replication compatibility for REPLICAOF/PSYNC/REPLCONF flows.
+// TLA+ model linkage:
+// - formal/tla/specs/WaitAckProgress.tla
 
 mod protocol;
 
@@ -15,9 +17,11 @@ use crate::redis_replication::protocol::parse_bulk_length;
 use crate::redis_replication::protocol::read_line;
 use crate::redis_replication::protocol::starts_with_ascii_no_case;
 use crate::redis_replication::protocol::write_resp_command;
+use crate::request_lifecycle::DbName;
 use garnet_common::ArgSlice;
 use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
+use std::collections::HashMap;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::AtomicBool;
@@ -25,10 +29,12 @@ use std::sync::atomic::AtomicU64;
 use std::sync::atomic::AtomicUsize;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
+use std::time::Instant;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::net::TcpStream;
 use tokio::sync::Mutex;
+use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
@@ -39,6 +45,7 @@ const DOWNSTREAM_BROADCAST_CAPACITY: usize = 4096;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
+const REPLCONF_GETACK_FRAME: &[u8] = b"*3\r\n$8\r\nREPLCONF\r\n$6\r\nGETACK\r\n$1\r\n*\r\n";
 
 #[inline]
 fn arg_slice_bytes(arg: &ArgSlice) -> &[u8] {
@@ -63,7 +70,11 @@ struct ReplicationInner {
     upstream_link_up: AtomicBool,
     downstream_replica_count: AtomicUsize,
     replication_select_needed: AtomicBool,
+    replication_selected_db: AtomicUsize,
     master_repl_offset: AtomicU64,
+    next_downstream_replica_id: AtomicU64,
+    downstream_ack_offsets: Mutex<HashMap<u64, u64>>,
+    downstream_ack_notify: Notify,
     repl_id: String,
     empty_rdb_payload: Vec<u8>,
 }
@@ -89,7 +100,11 @@ impl RedisReplicationCoordinator {
             upstream_link_up: AtomicBool::new(false),
             downstream_replica_count: AtomicUsize::new(0),
             replication_select_needed: AtomicBool::new(true),
+            replication_selected_db: AtomicUsize::new(0),
             master_repl_offset: AtomicU64::new(0),
+            next_downstream_replica_id: AtomicU64::new(1),
+            downstream_ack_offsets: Mutex::new(HashMap::new()),
+            downstream_ack_notify: Notify::new(),
             repl_id: generate_repl_id(),
             empty_rdb_payload: decode_hex_bytes(EMPTY_RDB_HEX),
         };
@@ -110,10 +125,20 @@ impl RedisReplicationCoordinator {
         self.inner.downstream_replica_count.load(Ordering::Relaxed) as u64
     }
 
-    pub(crate) fn consume_replication_select_needed(&self) -> bool {
-        self.inner
+    pub(crate) fn consume_replication_select_needed_for_db(&self, selected_db: DbName) -> bool {
+        let selected_db = usize::from(selected_db);
+        let select_needed = self
+            .inner
             .replication_select_needed
-            .swap(false, Ordering::AcqRel)
+            .swap(false, Ordering::AcqRel);
+        let current_selected_db = self.inner.replication_selected_db.load(Ordering::Acquire);
+        if !select_needed && current_selected_db == selected_db {
+            return false;
+        }
+        self.inner
+            .replication_selected_db
+            .store(selected_db, Ordering::Release);
+        true
     }
 
     pub(crate) async fn become_master(&self) {
@@ -122,6 +147,9 @@ impl RedisReplicationCoordinator {
         self.inner
             .replication_select_needed
             .store(true, Ordering::Release);
+        self.inner
+            .replication_selected_db
+            .store(0, Ordering::Release);
         {
             let mut endpoint_guard = self.inner.upstream_endpoint.write().await;
             *endpoint_guard = None;
@@ -138,6 +166,9 @@ impl RedisReplicationCoordinator {
         self.inner
             .replication_select_needed
             .store(true, Ordering::Release);
+        self.inner
+            .replication_selected_db
+            .store(0, Ordering::Release);
         {
             let mut endpoint_guard = self.inner.upstream_endpoint.write().await;
             *endpoint_guard = Some(MasterEndpoint {
@@ -163,6 +194,97 @@ impl RedisReplicationCoordinator {
             .master_repl_offset
             .fetch_add(frame.len() as u64, Ordering::Relaxed);
         let _ = self.inner.downstream_tx.send(Arc::from(frame.to_vec()));
+    }
+
+    pub(crate) fn current_master_repl_offset(&self) -> u64 {
+        self.inner.master_repl_offset.load(Ordering::Relaxed)
+    }
+
+    pub(crate) async fn wait_for_replicas(
+        &self,
+        requested_replicas: u64,
+        timeout_millis: u64,
+        target_offset: u64,
+    ) -> u64 {
+        // TLA+ : WaitRequestAckRefresh
+        self.request_downstream_ack_refresh();
+
+        if timeout_millis == 0 {
+            loop {
+                let notified = self.inner.downstream_ack_notify.notified();
+                let acknowledged = self
+                    .acknowledged_downstream_replica_count(target_offset)
+                    .await;
+                if acknowledged >= requested_replicas {
+                    // TLA+ : WaitObserveAckQuorum
+                    return acknowledged;
+                }
+                notified.await;
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_millis);
+        loop {
+            let notified = self.inner.downstream_ack_notify.notified();
+            let acknowledged = self
+                .acknowledged_downstream_replica_count(target_offset)
+                .await;
+            if acknowledged >= requested_replicas {
+                // TLA+ : WaitObserveAckQuorum
+                return acknowledged;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                // TLA+ : WaitObserveTimeout
+                return acknowledged;
+            }
+            if tokio::time::timeout(remaining, notified).await.is_err() {
+                // TLA+ : WaitObserveTimeout
+                return self
+                    .acknowledged_downstream_replica_count(target_offset)
+                    .await;
+            }
+        }
+    }
+
+    async fn acknowledged_downstream_replica_count(&self, target_offset: u64) -> u64 {
+        let ack_offsets = self.inner.downstream_ack_offsets.lock().await;
+        ack_offsets
+            .values()
+            .filter(|&&value| value >= target_offset)
+            .count() as u64
+    }
+
+    fn request_downstream_ack_refresh(&self) {
+        if self.inner.downstream_replica_count.load(Ordering::Relaxed) == 0 {
+            return;
+        }
+        self.publish_write_frame(REPLCONF_GETACK_FRAME);
+    }
+
+    async fn register_downstream_replica(&self) -> u64 {
+        self.inner
+            .downstream_replica_count
+            .fetch_add(1, Ordering::Relaxed);
+        let replica_id = self
+            .inner
+            .next_downstream_replica_id
+            .fetch_add(1, Ordering::Relaxed);
+        let mut ack_offsets = self.inner.downstream_ack_offsets.lock().await;
+        ack_offsets.insert(replica_id, 0);
+        drop(ack_offsets);
+        self.inner.downstream_ack_notify.notify_waiters();
+        replica_id
+    }
+
+    async fn unregister_downstream_replica(&self, replica_id: u64) {
+        self.inner
+            .downstream_replica_count
+            .fetch_sub(1, Ordering::Relaxed);
+        let mut ack_offsets = self.inner.downstream_ack_offsets.lock().await;
+        ack_offsets.remove(&replica_id);
+        drop(ack_offsets);
+        self.inner.downstream_ack_notify.notify_waiters();
     }
 
     pub(crate) fn subscribe_downstream(&self) -> broadcast::Receiver<Arc<[u8]>> {
@@ -203,10 +325,13 @@ impl RedisReplicationCoordinator {
         mut stream: TcpStream,
         mut subscriber: broadcast::Receiver<Arc<[u8]>>,
     ) -> io::Result<()> {
-        self.inner
-            .downstream_replica_count
-            .fetch_add(1, Ordering::Relaxed);
+        let replica_id = self.register_downstream_replica().await;
         let mut inbound_buf = [0u8; 1024];
+        let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
+            .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
+        let mut inbound_receive_buffer = Vec::with_capacity(1024);
+        let mut inbound_args =
+            vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
 
         loop {
             tokio::select! {
@@ -214,9 +339,7 @@ impl RedisReplicationCoordinator {
                     match result {
                         Ok(frame) => {
                             if let Err(error) = stream.write_all(&frame).await {
-                                self.inner
-                                    .downstream_replica_count
-                                    .fetch_sub(1, Ordering::Relaxed);
+                                self.unregister_downstream_replica(replica_id).await;
                                 return Err(error);
                             }
                         }
@@ -224,9 +347,7 @@ impl RedisReplicationCoordinator {
                             continue;
                         }
                         Err(broadcast::error::RecvError::Closed) => {
-                            self.inner
-                                .downstream_replica_count
-                                .fetch_sub(1, Ordering::Relaxed);
+                            self.unregister_downstream_replica(replica_id).await;
                             return Ok(());
                         }
                     }
@@ -234,18 +355,22 @@ impl RedisReplicationCoordinator {
                 read_result = stream.read(&mut inbound_buf) => {
                     match read_result {
                         Ok(0) => {
-                            self.inner
-                                .downstream_replica_count
-                                .fetch_sub(1, Ordering::Relaxed);
+                            self.unregister_downstream_replica(replica_id).await;
                             return Ok(());
                         }
-                        Ok(_) => {
-                            // Ignore REPLCONF ACK chatter from downstream replicas.
+                        Ok(bytes_read) => {
+                            inbound_receive_buffer.extend_from_slice(&inbound_buf[..bytes_read]);
+                            process_downstream_control_frames(
+                                &self.inner,
+                                replica_id,
+                                &mut inbound_receive_buffer,
+                                &mut inbound_args,
+                                max_resp_arguments,
+                            )
+                            .await;
                         }
                         Err(error) => {
-                            self.inner
-                                .downstream_replica_count
-                                .fetch_sub(1, Ordering::Relaxed);
+                            self.unregister_downstream_replica(replica_id).await;
                             return Err(error);
                         }
                     }
@@ -322,7 +447,14 @@ async fn sync_once_from_upstream(
 
     write_resp_command(&mut stream, &[b"PSYNC", b"?", b"-1"]).await?;
     let psync_reply = read_line(&mut stream, &mut receive_buffer, &mut read_scratch).await?;
+    let mut applied_offset_base = 0u64;
     if starts_with_ascii_no_case(&psync_reply, b"+FULLRESYNC") {
+        applied_offset_base = parse_fullresync_offset(&psync_reply).ok_or_else(|| {
+            io::Error::other(format!(
+                "upstream FULLRESYNC reply does not include a valid offset (reply={})",
+                String::from_utf8_lossy(&psync_reply)
+            ))
+        })?;
         let rdb_header = read_line(&mut stream, &mut receive_buffer, &mut read_scratch).await?;
         if !rdb_header.starts_with(b"$") {
             return Err(io::Error::other(format!(
@@ -345,7 +477,8 @@ async fn sync_once_from_upstream(
     let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
         .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
     let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
-    let mut applied_offset = 0u64;
+    let mut applied_offset = applied_offset_base;
+    let mut applied_selected_db = DbName::default();
 
     loop {
         let mut consumed = 0usize;
@@ -364,6 +497,7 @@ async fn sync_once_from_upstream(
                         &args[..meta.argument_count],
                         meta.bytes_consumed,
                         &mut applied_offset,
+                        &mut applied_selected_db,
                     )
                     .await?;
                     consumed += meta.bytes_consumed;
@@ -405,6 +539,7 @@ async fn process_upstream_frame(
     args: &[ArgSlice],
     frame_len: usize,
     applied_offset: &mut u64,
+    applied_selected_db: &mut DbName,
 ) -> io::Result<()> {
     if args.is_empty() {
         return Ok(());
@@ -428,9 +563,17 @@ async fn process_upstream_frame(
         return Ok(());
     }
 
-    if starts_with_ascii_no_case(command_name, b"PING")
-        || starts_with_ascii_no_case(command_name, b"SELECT")
-    {
+    if starts_with_ascii_no_case(command_name, b"PING") {
+        return Ok(());
+    }
+
+    if starts_with_ascii_no_case(command_name, b"SELECT") {
+        if args.len() >= 2
+            && let Some(parsed) = parse_u64_ascii_bytes(arg_slice_bytes(&args[1]))
+            && let Ok(db_index) = usize::try_from(parsed)
+        {
+            *applied_selected_db = DbName::new(db_index);
+        }
         return Ok(());
     }
 
@@ -455,6 +598,7 @@ async fn process_upstream_frame(
         frame,
         false,
         None,
+        *applied_selected_db,
     ) {
         Ok(_) => {}
         Err(OwnerThreadExecutionError::Request(error)) => {
@@ -470,6 +614,86 @@ async fn process_upstream_frame(
         }
     }
     Ok(())
+}
+
+async fn process_downstream_control_frames(
+    inner: &ReplicationInner,
+    replica_id: u64,
+    receive_buffer: &mut Vec<u8>,
+    args: &mut Vec<ArgSlice>,
+    max_resp_arguments: usize,
+) {
+    let mut consumed = 0usize;
+    loop {
+        match parse_resp_command_arg_slices_dynamic(
+            &receive_buffer[consumed..],
+            args,
+            max_resp_arguments,
+        ) {
+            Ok(meta) => {
+                maybe_record_downstream_ack(inner, replica_id, &args[..meta.argument_count]).await;
+                consumed += meta.bytes_consumed;
+            }
+            Err(RespParseError::Incomplete) => break,
+            Err(RespParseError::ArgumentCapacityExceeded { .. }) => {
+                consumed = receive_buffer.len();
+                break;
+            }
+            Err(_) => {
+                consumed = receive_buffer.len();
+                break;
+            }
+        }
+    }
+    if consumed > 0 {
+        receive_buffer.drain(..consumed);
+    }
+}
+
+async fn maybe_record_downstream_ack(inner: &ReplicationInner, replica_id: u64, args: &[ArgSlice]) {
+    if args.len() < 3 {
+        return;
+    }
+    let command = arg_slice_bytes(&args[0]);
+    if !starts_with_ascii_no_case(command, b"REPLCONF") {
+        return;
+    }
+    let subcommand = arg_slice_bytes(&args[1]);
+    if !starts_with_ascii_no_case(subcommand, b"ACK") {
+        return;
+    }
+    let Some(ack_offset) = parse_u64_ascii_bytes(arg_slice_bytes(&args[2])) else {
+        return;
+    };
+
+    let mut ack_offsets = inner.downstream_ack_offsets.lock().await;
+    let Some(current_offset) = ack_offsets.get_mut(&replica_id) else {
+        return;
+    };
+    if ack_offset <= *current_offset {
+        return;
+    }
+    // TLA+ : ReplicaAckAdvance
+    *current_offset = ack_offset;
+    drop(ack_offsets);
+    inner.downstream_ack_notify.notify_waiters();
+}
+
+fn parse_u64_ascii_bytes(value: &[u8]) -> Option<u64> {
+    let text = std::str::from_utf8(value).ok()?;
+    text.parse::<u64>().ok()
+}
+
+fn parse_fullresync_offset(line: &[u8]) -> Option<u64> {
+    let text = std::str::from_utf8(line).ok()?;
+    let mut parts = text.split_ascii_whitespace();
+    let prefix = parts.next()?;
+    if !prefix.eq_ignore_ascii_case("+FULLRESYNC") {
+        return None;
+    }
+    let _replid = parts.next()?;
+    let offset = parts.next()?;
+    offset.parse::<u64>().ok()
 }
 
 fn parse_positive_env_usize(key: &str) -> Option<usize> {

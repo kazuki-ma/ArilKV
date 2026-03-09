@@ -141,7 +141,8 @@ where
                 let shard_index = ShardIndex::new(shard);
                 let routed_processor = Arc::clone(&expiration_processor);
                 let _ = expiration_owner_thread_pool.execute_sync(shard_index, move || {
-                    routed_processor.expire_stale_keys_in_shard(shard_index, 128)
+                    let _ = routed_processor.expire_stale_keys_in_shard(shard_index, 128);
+                    routed_processor.active_expire_hash_fields_in_shard(shard_index, 128)
                 });
             }
         }

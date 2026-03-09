@@ -98,9 +98,13 @@ impl RequestProcessor {
             .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                self.track_read_key_for_current_client(key);
                 Ok(Some(output))
             }
-            ReadOperationStatus::NotFound => Ok(None),
+            ReadOperationStatus::NotFound => {
+                self.track_read_key_for_current_client(key);
+                Ok(None)
+            }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
@@ -115,13 +119,23 @@ impl RequestProcessor {
             .map_err(map_read_error)?;
 
         match status {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
-            ReadOperationStatus::NotFound => Ok(false),
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                self.track_read_key_for_current_client(key);
+                Ok(true)
+            }
+            ReadOperationStatus::NotFound => {
+                self.track_read_key_for_current_client(key);
+                Ok(false)
+            }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
     pub(super) fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        if self.has_set_hot_entry(key) {
+            self.track_read_key_for_current_client(key);
+            return Ok(true);
+        }
         let mut store = self.lock_object_store_for_key(key);
         let mut session = store.session(&self.object_functions);
         let mut output = Vec::new();
@@ -135,8 +149,14 @@ impl RequestProcessor {
             .map_err(map_read_error)?;
 
         match status {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => Ok(true),
-            ReadOperationStatus::NotFound => Ok(false),
+            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                self.track_read_key_for_current_client(key);
+                Ok(true)
+            }
+            ReadOperationStatus::NotFound => {
+                self.track_read_key_for_current_client(key);
+                Ok(false)
+            }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
@@ -314,21 +334,20 @@ impl RequestProcessor {
         let status = session
             .delete(&key.to_vec(), &mut info)
             .map_err(map_delete_error)?;
-        let object_deleted = self.object_delete(key)?;
-        let key_removed = match status {
+        let _ = self.object_delete(key)?;
+        match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.bump_watch_version(key);
-                true
+                self.bump_watch_version_server_origin(key);
             }
-            DeleteOperationStatus::NotFound => object_deleted,
+            DeleteOperationStatus::NotFound => {}
             DeleteOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
-        };
-        self.untrack_string_key_in_shard(key, shard_index);
-        if key_removed {
-            self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
-            self.record_lazy_expired_keys(1);
-            self.enqueue_lazy_expired_key_for_replication(key);
         }
+        self.untrack_string_key_in_shard(key, shard_index);
+        // Replicate/emit lazy-expire deletion whenever expiration metadata says the key expired,
+        // even if the underlying delete path returns NotFound.
+        self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
+        self.record_lazy_expired_keys(1);
+        self.enqueue_lazy_expired_key_for_replication(key);
         Ok(true)
     }
 
@@ -544,6 +563,7 @@ impl RequestProcessor {
     pub(super) fn remove_string_key_metadata_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
         self.set_string_expiration_deadline_in_shard(key, shard_index, None);
         self.untrack_string_key_in_shard(key, shard_index);
+        self.clear_forced_raw_string_encoding(key);
     }
 
     pub(super) fn remove_string_key_metadata(&self, key: &[u8]) {
@@ -609,6 +629,12 @@ impl RequestProcessor {
             .get(key)
             .and_then(|fields| fields.get(field))
             .map(|metadata| metadata.unix_millis.as_u64())
+    }
+
+    pub(super) fn has_hash_field_expirations_for_key(&self, key: &[u8]) -> bool {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.lock_hash_field_expirations_for_shard(shard_index)
+            .contains_key(key)
     }
 
     pub(super) fn clear_hash_field_expirations_for_key_in_shard(
@@ -732,5 +758,12 @@ impl RequestProcessor {
     pub(super) fn bump_watch_version(&self, key: &[u8]) {
         let slot = watch_version_slot(key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+        self.enqueue_tracking_invalidation_for_key(key);
+    }
+
+    pub(super) fn bump_watch_version_server_origin(&self, key: &[u8]) {
+        let slot = watch_version_slot(key);
+        self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
+        self.enqueue_tracking_invalidation_for_key_as_server(key);
     }
 }

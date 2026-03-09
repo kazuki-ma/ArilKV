@@ -33,10 +33,36 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
   - Writes a CSV summary and per-case logs under
     `garnet-rs/tests/interop/results/...`.
 
+- `cluster_wait_failover_gap_probe.sh`
+  - Runs a focused gap probe for high-cost compatibility commands:
+    - Redis reference behavior for `WAIT` / `WAITAOF` in primary+replica mode
+    - Redis 3-node cluster bootstrap reference behavior
+    - Garnet standalone observations for `WAIT` / `WAITAOF` / `MIGRATE` / `FAILOVER`
+    - Garnet multi-port cluster observations for `CLUSTER*`, `READONLY/READWRITE`, and `MOVED`
+  - Uses companion compose file:
+    - `docker-compose.cluster-wait-failover.yml`
+  - Writes a CSV summary and per-case logs under
+    `garnet-rs/tests/interop/results/...`.
+
 - `redis_runtest_external_subset.sh`
   - Runs Redis official `runtest` in external-server mode against local Garnet:
     - `--host/--port --singledb --force-resp3`
     - default mode is **full** (no `--single` / `--only` / `--tags` filters)
+    - full mode applies `--timeout 120` by default (override with `RUNTEXT_TIMEOUT_SECONDS`)
+    - full mode skips `unit/querybuf` by default (`RUNTEXT_SKIP_QUERYBUF_IN_FULL=1`) to avoid
+      cron/expiration state contamination on early querybuf failure
+    - full mode skips `unit/scripting` by default (`RUNTEXT_SKIP_SCRIPTING_IN_FULL=1`) to avoid
+      debug-expiration state contamination from partial scripting failures
+    - full mode skips `unit/other` by default (`RUNTEXT_SKIP_OTHER_IN_FULL=1`) to avoid
+      long-run contamination at the inline `PIPELINING stresser` case
+    - full mode runs `unit/querybuf` in a separate isolated case by default
+      (`RUNTEXT_RUN_QUERYBUF_ISOLATED=1`)
+    - full mode runs `unit/scripting` in a separate isolated case by default
+      (`RUNTEXT_RUN_SCRIPTING_ISOLATED=1`)
+    - full mode runs `unit/other` in a separate isolated case by default
+      (`RUNTEXT_RUN_OTHER_ISOLATED=1`)
+    - isolated `unit/querybuf` runs after a server restart, and post-runtest probes also
+      auto-restart if reset cannot recover a healthy `PING`
     - optional compatibility-smoke mode: `REDIS_RUNTEXT_MODE=subset`
   - Validates runtest stdout counts in all modes:
     - parses `[ok]` / `[err]` / `[ignore]` counts from log
@@ -81,6 +107,7 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
 cd garnet-rs/tests/interop
 chmod +x command_coverage_audit.sh cluster_capability_matrix.sh
 chmod +x replication_capability_matrix.sh
+chmod +x cluster_wait_failover_gap_probe.sh
 chmod +x redis_runtest_external_subset.sh
 chmod +x build_command_status_matrix.sh
 chmod +x build_command_maturity_matrix.sh
@@ -89,6 +116,7 @@ chmod +x build_compatibility_report.sh
 ./command_coverage_audit.sh
 ./cluster_capability_matrix.sh
 ./replication_capability_matrix.sh
+./cluster_wait_failover_gap_probe.sh
 ./redis_runtest_external_subset.sh
 ./build_command_status_matrix.sh
 ./build_command_maturity_matrix.sh
@@ -130,12 +158,14 @@ Recommended add-on checks:
 ```bash
 ./command_coverage_audit.sh
 ./replication_capability_matrix.sh
+./cluster_wait_failover_gap_probe.sh
 ```
 
 ## Patterns To Re-check
 
 - `redis_runtest_external_subset.sh` is a focused subset, not full Redis compatibility.
   - default mode is full external runtest; subset mode is optional for faster smoke checks.
+  - full mode defaults `RUNTEXT_TIMEOUT_SECONDS=120` to prevent indefinite single-test stalls.
   - keep feature-level unit tests in `garnet-server` as the primary correctness gate.
 - `build_command_status_matrix.sh` updates canonical status files under `docs/compatibility/`.
   - run it whenever `CommandId`/`COMMAND` surface changes.

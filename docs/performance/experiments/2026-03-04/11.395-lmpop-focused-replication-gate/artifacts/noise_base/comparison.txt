@@ -1,0 +1,15 @@
+lmpop_replication_ab_comparison
+base_label=base_a
+new_label=base_b
+base_a.median_lpush_ops=27083.30000
+base_a.median_lpush_p99_ms=0.15900
+base_a.median_lmpop_ops=27083.30000
+base_a.median_lmpop_p99_ms=0.15900
+base_b.median_lpush_ops=27253.30000
+base_b.median_lpush_p99_ms=0.16700
+base_b.median_lmpop_ops=27253.30000
+base_b.median_lmpop_p99_ms=0.16700
+delta.median_lpush_ops_pct=0.63
+delta.median_lpush_p99_ms_pct=5.03
+delta.median_lmpop_ops_pct=0.63
+delta.median_lmpop_p99_ms_pct=5.03

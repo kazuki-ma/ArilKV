@@ -1123,7 +1123,8 @@ fn store_geosearch_result(
     result_zset: &BTreeMap<Vec<u8>, f64>,
 ) -> Result<(), RequestExecutionError> {
     processor.expire_key_if_needed(destination)?;
-    let destination_had_string = processor.key_exists(destination)?;
+    let (destination_had_string, destination_object_type) =
+        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_geo_store_overwrite(processor, destination)?
     } else {
@@ -1137,7 +1138,14 @@ fn store_geosearch_result(
         }
         return Ok(());
     }
-    processor.save_zset_object(destination, result_zset)
+    processor.save_zset_object(destination, result_zset)?;
+    processor.notify_setkey_overwrite_events(
+        destination,
+        destination_had_string,
+        destination_object_type,
+        Some(ObjectTypeTag::Zset),
+    );
+    Ok(())
 }
 
 fn delete_string_value_for_geo_store_overwrite(

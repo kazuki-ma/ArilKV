@@ -1,0 +1,5 @@
+runs=3
+median_hgetex_ops=27111.70000
+median_hgetex_p99_ms=0.15900
+median_hsetex_ops=27111.70000
+median_hsetex_p99_ms=0.18300

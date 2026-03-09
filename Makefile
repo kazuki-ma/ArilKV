@@ -2,6 +2,7 @@
 
 RUST_WORKSPACE := garnet-rs
 RUSTFMT_NIGHTLY ?= nightly-2026-02-24
+export RUST_BACKTRACE ?= 1
 
 help:
 	@echo "Available targets:"

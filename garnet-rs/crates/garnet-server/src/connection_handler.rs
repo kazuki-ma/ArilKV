@@ -1,7 +1,13 @@
 // TLA+ model linkage:
 // - formal/tla/specs/PipelineStresserTimeout.tla
 // - formal/tla/specs/BlockingDisconnectLeak.tla
+// - formal/tla/specs/BlockingWaitClassIsolation.tla
+// - formal/tla/specs/BlockingStreamAckGate.tla
 // - formal/tla/specs/LinkedBlmoveChainResidue.tla
+// - formal/tla/specs/ClientPauseUnblockRace.tla
+// - formal/tla/specs/WaitAckProgress.tla
+use std::borrow::Cow;
+use std::collections::BTreeMap;
 use std::io;
 use std::sync::Arc;
 use std::sync::atomic::AtomicU8;
@@ -9,7 +15,16 @@ use std::sync::atomic::Ordering;
 use std::time::Duration;
 use std::time::Instant;
 
+use garnet_cluster::ClusterConfig;
 use garnet_cluster::ClusterConfigStore;
+use garnet_cluster::HASH_SLOT_COUNT;
+use garnet_cluster::LOCAL_WORKER_ID;
+use garnet_cluster::RESERVED_WORKER_ID;
+use garnet_cluster::SlotNumber;
+use garnet_cluster::SlotState;
+use garnet_cluster::Worker;
+use garnet_cluster::WorkerId;
+use garnet_cluster::WorkerRole;
 use garnet_common::ArgSlice;
 use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
@@ -53,7 +68,12 @@ use crate::connection_transaction::QueuedReplicationTransition;
 use crate::connection_transaction::TransactionExecutionOutcome;
 use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
+use crate::request_lifecycle::BlockingWaitClass;
+use crate::request_lifecycle::BlockingWaitKey;
+use crate::request_lifecycle::ClientTrackingConfig;
+use crate::request_lifecycle::ClientTrackingModeSetting;
 use crate::request_lifecycle::ClientUnblockMode;
+use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::RespProtocolVersion;
 use crate::request_lifecycle::WatchedKey;
@@ -64,14 +84,21 @@ const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
 const GARNET_STRING_OWNER_THREADS_ENV: &str = "GARNET_STRING_OWNER_THREADS";
 const GARNET_OWNER_EXECUTION_INLINE_ENV: &str = "GARNET_OWNER_EXECUTION_INLINE";
 const GARNET_MAX_RESP_ARGUMENTS_ENV: &str = "GARNET_MAX_RESP_ARGUMENTS";
+const BUSY_SCRIPT_RESPONSE_PREFIX: &[u8] =
+    b"-BUSY Redis is busy running a script. You can only call FUNCTION KILL or SCRIPT KILL.\r\n";
 const BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL: Duration = Duration::from_millis(1);
+const BLOCKING_STREAM_EMPTY_POLL_INTERVAL: Duration = Duration::from_millis(10);
 const KILLED_CLIENT_POLL_INTERVAL: Duration = Duration::from_millis(25);
-const CLIENT_HELP_LINES: [&[u8]; 19] = [
+const SCRIPT_BUSY_AFTER_UNPAUSE_RETRY_WINDOW: Duration = Duration::from_millis(500);
+const SCRIPT_BUSY_AFTER_UNPAUSE_RETRY_POLL: Duration = Duration::from_millis(1);
+const CLIENT_HELP_LINES: [&[u8]; 37] = [
     b"CLIENT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"CACHING (YES|NO)",
     b"    Enable/disable tracking of the keys for next command in OPTIN/OPTOUT modes.",
     b"GETNAME",
     b"    Return the name of the current connection.",
+    b"GETREDIR",
+    b"    Return the redirect client ID or -1 if client tracking is off.",
     b"HELP",
     b"    Prints this help.",
     b"ID",
@@ -86,12 +113,29 @@ const CLIENT_HELP_LINES: [&[u8]; 19] = [
     b"    Protect current client connection from eviction.",
     b"NO-TOUCH (ON|OFF)",
     b"    Avoid touching LRU/LFU stats for current client connection commands.",
+    b"PAUSE <timeout> [WRITE|ALL]",
+    b"    Suspend all, or just write, clients, for <timeout> milliseconds.",
+    b"REPLY (ON|OFF|SKIP)",
+    b"    Control the replies sent to the current connection.",
+    b"SETINFO <LIB-NAME|LIB-VER> <value>",
+    b"    Set client library name or version for this connection.",
+    b"SETNAME <name>",
+    b"    Set the current connection name.",
+    b"TRACKING (ON|OFF) [REDIRECT <id>] [BCAST] [PREFIX <prefix> [...]] [OPTIN] [OPTOUT] [NOLOOP]",
+    b"    Enable/disable server-assisted client-side caching.",
+    b"TRACKINGINFO",
+    b"    Return the tracking status and redirect client id for the current connection.",
+    b"UNBLOCK <clientid> [TIMEOUT|ERROR]",
+    b"    Unblock a client blocked by a blocking command.",
+    b"UNPAUSE",
+    b"    Resume clients after a CLIENT PAUSE.",
 ];
 const OWNER_EXECUTION_INLINE_DEFAULT_UNSET: u8 = 0;
 const OWNER_EXECUTION_INLINE_DEFAULT_FALSE: u8 = 1;
 const OWNER_EXECUTION_INLINE_DEFAULT_TRUE: u8 = 2;
 static OWNER_EXECUTION_INLINE_DEFAULT: AtomicU8 =
     AtomicU8::new(OWNER_EXECUTION_INLINE_DEFAULT_UNSET);
+const ZERO_CLUSTER_NODE_ID: &str = "0000000000000000000000000000000000000000";
 
 pub fn set_owner_execution_inline_default(enabled: bool) {
     let encoded = if enabled {
@@ -123,11 +167,421 @@ fn parse_i64_ascii_bytes(value: &[u8]) -> Option<i64> {
     text.parse::<i64>().ok()
 }
 
+fn parse_u64_ascii_bytes(value: &[u8]) -> Option<u64> {
+    let text = std::str::from_utf8(value).ok()?;
+    text.parse::<u64>().ok()
+}
+
 fn parse_resp_single_integer_array(frame: &[u8]) -> Option<i64> {
     if !frame.starts_with(b"*1\r\n:") || !frame.ends_with(b"\r\n") {
         return None;
     }
     parse_i64_ascii_bytes(&frame[5..frame.len().saturating_sub(2)])
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ClusterSlotRange {
+    start: u16,
+    end: u16,
+    owner: WorkerId,
+}
+
+fn cluster_node_id_or_default(node_id: &str) -> &str {
+    if node_id.is_empty() {
+        ZERO_CLUSTER_NODE_ID
+    } else {
+        node_id
+    }
+}
+
+fn cluster_bus_port(port: u16) -> u16 {
+    port.saturating_add(10_000)
+}
+
+fn collect_assigned_cluster_slot_ranges(config: &ClusterConfig) -> Vec<ClusterSlotRange> {
+    let mut ranges = Vec::new();
+    let mut current: Option<ClusterSlotRange> = None;
+    for slot_index in 0..HASH_SLOT_COUNT {
+        let slot = SlotNumber::new(slot_index as u16);
+        let state = config.slot_state(slot).unwrap_or(SlotState::Invalid);
+        if matches!(state, SlotState::Offline | SlotState::Invalid) {
+            if let Some(range) = current.take() {
+                ranges.push(range);
+            }
+            continue;
+        }
+        let owner = config
+            .slot_assigned_owner(slot)
+            .unwrap_or(RESERVED_WORKER_ID);
+        if owner == RESERVED_WORKER_ID {
+            if let Some(range) = current.take() {
+                ranges.push(range);
+            }
+            continue;
+        }
+        let slot_u16 = slot_index as u16;
+        match current.as_mut() {
+            Some(range)
+                if range.owner == owner
+                    && range
+                        .end
+                        .checked_add(1)
+                        .is_some_and(|next| next == slot_u16) =>
+            {
+                range.end = slot_u16;
+            }
+            Some(_) => {
+                ranges.push(current.take().expect("range exists"));
+                current = Some(ClusterSlotRange {
+                    start: slot_u16,
+                    end: slot_u16,
+                    owner,
+                });
+            }
+            None => {
+                current = Some(ClusterSlotRange {
+                    start: slot_u16,
+                    end: slot_u16,
+                    owner,
+                });
+            }
+        }
+    }
+    if let Some(range) = current.take() {
+        ranges.push(range);
+    }
+    ranges
+}
+
+fn collect_cluster_slot_state_counts(config: &ClusterConfig) -> (usize, usize, usize, usize) {
+    let mut slots_assigned = 0usize;
+    let mut slots_ok = 0usize;
+    let slots_pfail = 0usize;
+    let mut slots_fail = 0usize;
+    for slot_index in 0..HASH_SLOT_COUNT {
+        let slot = SlotNumber::new(slot_index as u16);
+        let state = config.slot_state(slot).unwrap_or(SlotState::Invalid);
+        match state {
+            SlotState::Stable => {
+                slots_assigned += 1;
+                slots_ok += 1;
+            }
+            SlotState::Migrating | SlotState::Importing | SlotState::Node => {
+                slots_assigned += 1;
+            }
+            SlotState::Fail => {
+                slots_assigned += 1;
+                slots_fail += 1;
+            }
+            SlotState::Offline | SlotState::Invalid => {}
+        }
+    }
+    (slots_assigned, slots_ok, slots_pfail, slots_fail)
+}
+
+fn worker_by_id_map<'a>(config: &'a ClusterConfig) -> BTreeMap<WorkerId, &'a Worker> {
+    let mut workers = BTreeMap::new();
+    for worker in config.workers() {
+        if worker.id == RESERVED_WORKER_ID {
+            continue;
+        }
+        workers.insert(worker.id, worker);
+    }
+    workers
+}
+
+fn slot_ranges_by_owner(ranges: &[ClusterSlotRange]) -> BTreeMap<WorkerId, Vec<ClusterSlotRange>> {
+    let mut ranges_by_owner: BTreeMap<WorkerId, Vec<ClusterSlotRange>> = BTreeMap::new();
+    for range in ranges {
+        ranges_by_owner.entry(range.owner).or_default().push(*range);
+    }
+    ranges_by_owner
+}
+
+fn cluster_primary_owner_ids(
+    ranges_by_owner: &BTreeMap<WorkerId, Vec<ClusterSlotRange>>,
+    workers: &BTreeMap<WorkerId, &Worker>,
+) -> Vec<WorkerId> {
+    let mut owners = Vec::new();
+    for owner in ranges_by_owner.keys() {
+        if workers
+            .get(owner)
+            .is_some_and(|worker| worker.role != WorkerRole::Replica)
+        {
+            owners.push(*owner);
+        }
+    }
+    if owners.is_empty() {
+        owners.extend(ranges_by_owner.keys().copied());
+    }
+    owners
+}
+
+fn append_verbatim_string_frame(output: &mut Vec<u8>, format: &[u8], value: &[u8]) {
+    output.push(b'=');
+    let payload_len = format.len().saturating_add(1).saturating_add(value.len());
+    append_usize_ascii_frame(output, payload_len);
+    output.extend_from_slice(b"\r\n");
+    output.extend_from_slice(format);
+    output.push(b':');
+    output.extend_from_slice(value);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn append_cluster_info_snapshot_frame(
+    response_out: &mut Vec<u8>,
+    config: &ClusterConfig,
+    resp_protocol_version: RespProtocolVersion,
+) {
+    let ranges = collect_assigned_cluster_slot_ranges(config);
+    let ranges_by_owner = slot_ranges_by_owner(&ranges);
+    let workers = worker_by_id_map(config);
+    let primary_owner_ids = cluster_primary_owner_ids(&ranges_by_owner, &workers);
+    let (slots_assigned, slots_ok, slots_pfail, slots_fail) =
+        collect_cluster_slot_state_counts(config);
+    let known_nodes = workers
+        .values()
+        .filter(|worker| worker.role != WorkerRole::Unassigned)
+        .count();
+    let current_epoch = workers
+        .values()
+        .map(|worker| u64::from(worker.config_epoch))
+        .max()
+        .unwrap_or(0);
+    let my_epoch = config
+        .local_worker()
+        .map(|worker| u64::from(worker.config_epoch))
+        .unwrap_or(0);
+    let cluster_state = if slots_assigned == HASH_SLOT_COUNT && slots_fail == 0 {
+        "ok"
+    } else {
+        "fail"
+    };
+    let mut payload = String::new();
+    payload.push_str("cluster_state:");
+    payload.push_str(cluster_state);
+    payload.push_str("\r\ncluster_slots_assigned:");
+    payload.push_str(&slots_assigned.to_string());
+    payload.push_str("\r\ncluster_slots_ok:");
+    payload.push_str(&slots_ok.to_string());
+    payload.push_str("\r\ncluster_slots_pfail:");
+    payload.push_str(&slots_pfail.to_string());
+    payload.push_str("\r\ncluster_slots_fail:");
+    payload.push_str(&slots_fail.to_string());
+    payload.push_str("\r\ncluster_known_nodes:");
+    payload.push_str(&known_nodes.to_string());
+    payload.push_str("\r\ncluster_size:");
+    payload.push_str(&primary_owner_ids.len().to_string());
+    payload.push_str("\r\ncluster_current_epoch:");
+    payload.push_str(&current_epoch.to_string());
+    payload.push_str("\r\ncluster_my_epoch:");
+    payload.push_str(&my_epoch.to_string());
+    payload.push_str("\r\ncluster_stats_messages_sent:0");
+    payload.push_str("\r\ncluster_stats_messages_received:0");
+    payload.push_str("\r\ntotal_cluster_links_buffer_limit_exceeded:0\r\n");
+    if resp_protocol_version.is_resp3() {
+        append_verbatim_string_frame(response_out, b"txt", payload.as_bytes());
+    } else {
+        append_bulk_string_frame(response_out, payload.as_bytes());
+    }
+}
+
+fn append_cluster_nodes_snapshot_frame(response_out: &mut Vec<u8>, config: &ClusterConfig) {
+    let ranges = collect_assigned_cluster_slot_ranges(config);
+    let ranges_by_owner = slot_ranges_by_owner(&ranges);
+    let workers = worker_by_id_map(config);
+    let mut payload = String::new();
+    for worker in workers.values() {
+        let node_id = cluster_node_id_or_default(&worker.node_id);
+        let mut flags = String::new();
+        if worker.id == LOCAL_WORKER_ID {
+            flags.push_str("myself,");
+        }
+        if worker.role == WorkerRole::Replica {
+            flags.push_str("slave");
+        } else {
+            flags.push_str("master");
+        }
+        let master_id = if worker.role == WorkerRole::Replica {
+            cluster_node_id_or_default(worker.replica_of_node_id.as_deref().unwrap_or(""))
+        } else {
+            "-"
+        };
+        payload.push_str(node_id);
+        payload.push(' ');
+        payload.push_str(&worker.host);
+        payload.push(':');
+        payload.push_str(&worker.port.to_string());
+        payload.push('@');
+        payload.push_str(&cluster_bus_port(worker.port).to_string());
+        payload.push(' ');
+        payload.push_str(&flags);
+        payload.push(' ');
+        payload.push_str(master_id);
+        payload.push_str(" 0 0 ");
+        payload.push_str(&u64::from(worker.config_epoch).to_string());
+        payload.push_str(" connected");
+        if let Some(slot_ranges) = ranges_by_owner.get(&worker.id) {
+            for range in slot_ranges {
+                payload.push(' ');
+                payload.push_str(&range.start.to_string());
+                if range.start != range.end {
+                    payload.push('-');
+                    payload.push_str(&range.end.to_string());
+                }
+            }
+        }
+        payload.push('\n');
+    }
+    append_bulk_string_frame(response_out, payload.as_bytes());
+}
+
+fn append_cluster_slots_snapshot_frame(response_out: &mut Vec<u8>, config: &ClusterConfig) {
+    let ranges = collect_assigned_cluster_slot_ranges(config);
+    let workers = worker_by_id_map(config);
+    append_array_length_frame(response_out, ranges.len());
+    for range in ranges {
+        append_array_length_frame(response_out, 3);
+        append_integer_frame(response_out, i64::from(range.start));
+        append_integer_frame(response_out, i64::from(range.end));
+        append_array_length_frame(response_out, 3);
+        if let Some(worker) = workers.get(&range.owner) {
+            append_bulk_string_frame(response_out, worker.host.as_bytes());
+            append_integer_frame(response_out, i64::from(worker.port));
+            append_bulk_string_frame(
+                response_out,
+                cluster_node_id_or_default(&worker.node_id).as_bytes(),
+            );
+        } else {
+            append_bulk_string_frame(response_out, b"127.0.0.1");
+            append_integer_frame(response_out, 6379);
+            append_bulk_string_frame(response_out, ZERO_CLUSTER_NODE_ID.as_bytes());
+        }
+    }
+}
+
+fn append_cluster_shards_snapshot_frame(response_out: &mut Vec<u8>, config: &ClusterConfig) {
+    let ranges = collect_assigned_cluster_slot_ranges(config);
+    let ranges_by_owner = slot_ranges_by_owner(&ranges);
+    let workers = worker_by_id_map(config);
+    let primary_owner_ids = cluster_primary_owner_ids(&ranges_by_owner, &workers);
+    append_array_length_frame(response_out, primary_owner_ids.len());
+    for primary_owner in primary_owner_ids {
+        let Some(primary_worker) = workers.get(&primary_owner) else {
+            continue;
+        };
+        let mut shard_nodes: Vec<&Worker> = vec![*primary_worker];
+        for worker in workers.values() {
+            if worker.id == primary_worker.id {
+                continue;
+            }
+            if worker.role == WorkerRole::Replica
+                && worker
+                    .replica_of_node_id
+                    .as_deref()
+                    .is_some_and(|node_id| node_id == primary_worker.node_id)
+            {
+                shard_nodes.push(*worker);
+            }
+        }
+        append_array_length_frame(response_out, 4);
+        append_bulk_string_frame(response_out, b"slots");
+        let primary_ranges = ranges_by_owner
+            .get(&primary_owner)
+            .cloned()
+            .unwrap_or_default();
+        append_array_length_frame(response_out, primary_ranges.len() * 2);
+        for range in primary_ranges {
+            append_integer_frame(response_out, i64::from(range.start));
+            append_integer_frame(response_out, i64::from(range.end));
+        }
+        append_bulk_string_frame(response_out, b"nodes");
+        append_array_length_frame(response_out, shard_nodes.len());
+        for node in shard_nodes {
+            append_array_length_frame(response_out, 8);
+            append_bulk_string_frame(response_out, b"id");
+            append_bulk_string_frame(
+                response_out,
+                cluster_node_id_or_default(&node.node_id).as_bytes(),
+            );
+            append_bulk_string_frame(response_out, b"port");
+            append_integer_frame(response_out, i64::from(node.port));
+            append_bulk_string_frame(response_out, b"ip");
+            append_bulk_string_frame(response_out, node.host.as_bytes());
+            append_bulk_string_frame(response_out, b"role");
+            append_bulk_string_frame(
+                response_out,
+                if node.role == WorkerRole::Replica {
+                    b"replica"
+                } else {
+                    b"master"
+                },
+            );
+        }
+    }
+}
+
+fn try_handle_live_cluster_snapshot_command(
+    args: &[ArgSlice],
+    response_out: &mut Vec<u8>,
+    cluster_store: &ClusterConfigStore,
+    resp_protocol_version: RespProtocolVersion,
+) -> bool {
+    if args.len() < 2 {
+        return false;
+    }
+    let subcommand = arg_slice_bytes(&args[1]);
+    let arity_ok = args.len() == 2;
+    if ascii_eq_ignore_case(subcommand, b"INFO") {
+        if !arity_ok {
+            append_wrong_arity_error_for_command(response_out, CommandId::Cluster);
+            return true;
+        }
+        let snapshot = cluster_store.load();
+        append_cluster_info_snapshot_frame(response_out, snapshot.as_ref(), resp_protocol_version);
+        return true;
+    }
+    if ascii_eq_ignore_case(subcommand, b"MYID") {
+        if !arity_ok {
+            append_wrong_arity_error_for_command(response_out, CommandId::Cluster);
+            return true;
+        }
+        let snapshot = cluster_store.load();
+        let node_id = snapshot
+            .local_worker()
+            .map(|worker| cluster_node_id_or_default(&worker.node_id))
+            .unwrap_or(ZERO_CLUSTER_NODE_ID);
+        append_bulk_string_frame(response_out, node_id.as_bytes());
+        return true;
+    }
+    if ascii_eq_ignore_case(subcommand, b"NODES") {
+        if !arity_ok {
+            append_wrong_arity_error_for_command(response_out, CommandId::Cluster);
+            return true;
+        }
+        let snapshot = cluster_store.load();
+        append_cluster_nodes_snapshot_frame(response_out, snapshot.as_ref());
+        return true;
+    }
+    if ascii_eq_ignore_case(subcommand, b"SLOTS") {
+        if !arity_ok {
+            append_wrong_arity_error_for_command(response_out, CommandId::Cluster);
+            return true;
+        }
+        let snapshot = cluster_store.load();
+        append_cluster_slots_snapshot_frame(response_out, snapshot.as_ref());
+        return true;
+    }
+    if ascii_eq_ignore_case(subcommand, b"SHARDS") {
+        if !arity_ok {
+            append_wrong_arity_error_for_command(response_out, CommandId::Cluster);
+            return true;
+        }
+        let snapshot = cluster_store.load();
+        append_cluster_shards_snapshot_frame(response_out, snapshot.as_ref());
+        return true;
+    }
+    false
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,16 +883,24 @@ enum ClientReplyMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ClientTrackingMode {
     Off,
+    On,
     OptIn,
     OptOut,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct ClientConnectionState {
     reply_mode: ClientReplyMode,
     tracking_mode: ClientTrackingMode,
+    tracking_redirect_id: Option<i64>,
+    tracking_bcast: bool,
+    tracking_noloop: bool,
+    tracking_prefixes: Vec<Vec<u8>>,
+    tracking_caching: Option<bool>,
+    cluster_read_only: bool,
     no_evict: bool,
     no_touch: bool,
+    selected_db: DbName,
     resp_protocol_version: RespProtocolVersion,
 }
 
@@ -447,10 +909,28 @@ impl Default for ClientConnectionState {
         Self {
             reply_mode: ClientReplyMode::On,
             tracking_mode: ClientTrackingMode::Off,
+            tracking_redirect_id: None,
+            tracking_bcast: false,
+            tracking_noloop: false,
+            tracking_prefixes: Vec::new(),
+            tracking_caching: None,
+            cluster_read_only: false,
             no_evict: false,
             no_touch: false,
+            selected_db: DbName::default(),
             resp_protocol_version: RespProtocolVersion::Resp2,
         }
+    }
+}
+
+impl ClientConnectionState {
+    fn clear_tracking(&mut self) {
+        self.tracking_mode = ClientTrackingMode::Off;
+        self.tracking_redirect_id = None;
+        self.tracking_bcast = false;
+        self.tracking_noloop = false;
+        self.tracking_prefixes.clear();
+        self.tracking_caching = None;
     }
 }
 
@@ -468,6 +948,7 @@ fn apply_reset_command_side_effects(
     *monitor_receiver = None;
     *allow_asking_once = false;
     metrics.set_client_user(client_id, b"default".to_vec());
+    metrics.set_client_selected_db(client_id, client_state.selected_db);
     processor.unregister_pubsub_client(client_id);
 }
 
@@ -523,6 +1004,7 @@ pub(crate) async fn handle_connection(
     let mut client_state = ClientConnectionState::default();
     let mut disconnect_after_write = false;
     let mut monitor_receiver: Option<broadcast::Receiver<Vec<u8>>> = None;
+    let mut wait_target_offset_for_connection = 0u64;
 
     loop {
         processor.set_connected_clients(metrics.connected_client_count());
@@ -530,7 +1012,6 @@ pub(crate) async fn handle_connection(
             return Ok(());
         }
         flush_monitor_events(&mut stream, &mut monitor_receiver).await?;
-        flush_pending_pubsub_messages(&mut stream, &processor, &metrics, client_id).await?;
         // TLA+ : ServerProcessOne (queue intake stage)
         // Moves a flushed request burst from socket into the per-connection receive buffer.
         // Read at least once (await), then drain any immediately-available bytes via try_read.
@@ -542,7 +1023,17 @@ pub(crate) async fn handle_connection(
         .await
         {
             Ok(result) => result?,
-            Err(_) => continue,
+            Err(_) => {
+                flush_pending_pubsub_messages(
+                    &mut stream,
+                    &processor,
+                    &metrics,
+                    client_id,
+                    &client_state,
+                )
+                .await?;
+                continue;
+            }
         };
         if bytes_read == 0 {
             return Ok(());
@@ -684,6 +1175,19 @@ pub(crate) async fn handle_connection(
             } else {
                 None
             };
+            // RESP3 push users commonly issue PING to drain pending pushes.
+            // If an external invalidation arrived after the loop-top flush and
+            // before this frame parse, emit it before the PING response.
+            if command == CommandId::Ping && responses.is_empty() {
+                flush_pending_pubsub_messages(
+                    &mut stream,
+                    &processor,
+                    &metrics,
+                    client_id,
+                    &client_state,
+                )
+                .await?;
+            }
             processor.set_resp_protocol_version(client_state.resp_protocol_version);
             metrics.add_client_input_bytes(client_id, frame_bytes_consumed as u64);
             metrics.set_client_last_command(client_id, command_name, subcommand_name);
@@ -700,7 +1204,7 @@ pub(crate) async fn handle_connection(
             let mut commands_processed = 1u64;
             let execution_count_before = processor.executed_command_count();
 
-            if command == CommandId::Client {
+            if command == CommandId::Client && !transaction.in_multi {
                 command_outcome = handle_client_command(
                     &processor,
                     &metrics,
@@ -840,6 +1344,154 @@ pub(crate) async fn handle_connection(
                     .client_user(client_id)
                     .unwrap_or_else(|| b"default".to_vec());
                 append_bulk_string_frame(&mut responses, &whoami);
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if (command == CommandId::Readonly || command == CommandId::Readwrite)
+                && !transaction.in_multi
+            {
+                if argument_count != 1 {
+                    append_wrong_arity_error_for_command(&mut responses, command);
+                } else if cluster_config.is_none() {
+                    append_error_line(
+                        &mut responses,
+                        b"ERR This instance has cluster support disabled",
+                    );
+                } else {
+                    client_state.cluster_read_only = command == CommandId::Readonly;
+                    append_simple_string(&mut responses, b"OK");
+                }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Select && !transaction.in_multi {
+                if argument_count != 2 {
+                    append_wrong_arity_error_for_command(&mut responses, command);
+                } else {
+                    let index = parse_i64_ascii_bytes(arg_slice_bytes(&args[1]));
+                    match index {
+                        Some(index) if index >= 0 => match usize::try_from(index) {
+                            Ok(index_raw) if index_raw < processor.configured_databases() => {
+                                client_state.selected_db = DbName::new(index_raw);
+                                metrics.set_client_selected_db(client_id, client_state.selected_db);
+                                append_simple_string(&mut responses, b"OK");
+                            }
+                            Ok(_) | Err(_) => {
+                                append_error_line(&mut responses, b"ERR DB index is out of range");
+                            }
+                        },
+                        Some(_) => {
+                            append_error_line(&mut responses, b"ERR DB index is out of range");
+                        }
+                        None => {
+                            append_error_line(
+                                &mut responses,
+                                b"ERR value is not an integer or out of range",
+                            );
+                        }
+                    }
+                }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Wait && !transaction.in_multi {
+                if argument_count != 3 {
+                    append_wrong_arity_error_for_command(&mut responses, command);
+                } else {
+                    let requested_replicas = parse_u64_ascii_bytes(arg_slice_bytes(&args[1]));
+                    let timeout_millis = parse_u64_ascii_bytes(arg_slice_bytes(&args[2]));
+                    match (requested_replicas, timeout_millis) {
+                        (Some(requested_replicas), Some(timeout_millis)) => {
+                            // TLA+ : WaitStart
+                            let acknowledged = replication
+                                .wait_for_replicas(
+                                    requested_replicas,
+                                    timeout_millis,
+                                    wait_target_offset_for_connection,
+                                )
+                                .await;
+                            append_integer_frame(
+                                &mut responses,
+                                i64::try_from(acknowledged).unwrap_or(i64::MAX),
+                            );
+                        }
+                        _ => {
+                            append_error_line(
+                                &mut responses,
+                                b"ERR value is not an integer or out of range",
+                            );
+                        }
+                    }
+                }
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
+            if command == CommandId::Cluster
+                && !transaction.in_multi
+                && let Some(cluster_store) = cluster_config.as_ref()
+                && try_handle_live_cluster_snapshot_command(
+                    &args[..argument_count],
+                    &mut responses,
+                    cluster_store.as_ref(),
+                    client_state.resp_protocol_version,
+                )
+            {
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
                     client_id,
@@ -1014,6 +1666,7 @@ pub(crate) async fn handle_connection(
                     &args[..argument_count],
                     command,
                     allow_asking_once,
+                    client_state.cluster_read_only,
                 )?;
                 if consume_asking {
                     allow_asking_once = false;
@@ -1073,65 +1726,85 @@ pub(crate) async fn handle_connection(
                                                 b"-EXECABORT Transaction discarded because of previous errors.\r\n",
                                             );
                                         }
-                                    } else if let Some(reason) = transaction_runtime_abort_reason(
-                                        &processor,
-                                        &replication,
-                                        &transaction.queued_frames,
-                                        max_resp_arguments,
-                                    ) {
-                                        transaction.reset();
-                                        responses.extend_from_slice(
-                                            transaction_runtime_execabort_message(reason),
-                                        );
                                     } else {
-                                        // CLIENT PAUSE gating at EXEC: if the transaction
-                                        // contains write-pause-affected commands, block until
-                                        // the pause expires or is cancelled.
-                                        let exec_write_affected =
-                                            transaction_has_write_pause_affected_commands(
-                                                &transaction.queued_frames,
-                                                max_resp_arguments,
-                                            );
-                                        if processor.is_client_paused(exec_write_affected) {
-                                            if !responses.is_empty() {
-                                                stream.write_all(&responses).await?;
-                                                responses.clear();
-                                            }
-                                            wait_for_client_unpause(
-                                                &processor,
-                                                &metrics,
-                                                client_id,
-                                                exec_write_affected,
-                                            )
-                                            .await;
-                                        }
-                                        let transaction_outcome = execute_transaction_queue(
-                                            &processor,
-                                            &owner_thread_pool,
-                                            &mut transaction,
-                                            &mut responses,
-                                            max_resp_arguments,
-                                            client_state.no_touch,
-                                            Some(client_id),
-                                        );
-                                        publish_transaction_replication_frames(
+                                        match transaction_runtime_abort_reason(
                                             &processor,
                                             &replication,
-                                            &transaction_outcome,
+                                            &transaction.queued_frames,
                                             max_resp_arguments,
-                                        );
-                                        if let Some(replication_transition) =
-                                            transaction_outcome.pending_replication_transition
-                                        {
-                                            apply_queued_replication_transition(
-                                                &replication,
-                                                replication_transition,
-                                            )
-                                            .await;
+                                        ) {
+                                            Ok(Some(reason)) => {
+                                                transaction.reset();
+                                                responses.extend_from_slice(
+                                                    transaction_runtime_execabort_message(reason),
+                                                );
+                                            }
+                                            Err(error) => {
+                                                transaction.reset();
+                                                processor
+                                                    .record_error_reply(error.info_error_name());
+                                                error.append_resp_error(&mut responses);
+                                            }
+                                            Ok(None) => {
+                                                // CLIENT PAUSE gating at EXEC: if the transaction
+                                                // contains write-pause-affected commands, block until
+                                                // the pause expires or is cancelled.
+                                                let exec_write_affected =
+                                                    transaction_has_write_pause_affected_commands(
+                                                        &transaction.queued_frames,
+                                                        max_resp_arguments,
+                                                    );
+                                                if processor.is_client_paused(exec_write_affected) {
+                                                    if !responses.is_empty() {
+                                                        stream.write_all(&responses).await?;
+                                                        responses.clear();
+                                                    }
+                                                    wait_for_client_unpause(
+                                                        &processor,
+                                                        &metrics,
+                                                        client_id,
+                                                        exec_write_affected,
+                                                    )
+                                                    .await;
+                                                }
+                                                let transaction_outcome = execute_transaction_queue(
+                                                    &processor,
+                                                    &owner_thread_pool,
+                                                    &mut transaction,
+                                                    &mut responses,
+                                                    max_resp_arguments,
+                                                    client_state.no_touch,
+                                                    Some(client_id),
+                                                    client_state.selected_db,
+                                                );
+                                                if let Some(wait_target_offset) =
+                                                    publish_transaction_replication_frames(
+                                                        &processor,
+                                                        &replication,
+                                                        &transaction_outcome,
+                                                        max_resp_arguments,
+                                                        client_state.selected_db,
+                                                    )
+                                                {
+                                                    wait_target_offset_for_connection =
+                                                        wait_target_offset;
+                                                }
+                                                if let Some(replication_transition) =
+                                                    transaction_outcome
+                                                        .pending_replication_transition
+                                                {
+                                                    apply_queued_replication_transition(
+                                                        &replication,
+                                                        replication_transition,
+                                                    )
+                                                    .await;
+                                                }
+                                            }
                                         }
                                     }
                                 }
                                 Err(error) => {
+                                    processor.record_error_reply(error.info_error_name());
                                     error.append_resp_error(&mut responses);
                                 }
                             }
@@ -1181,6 +1854,9 @@ pub(crate) async fn handle_connection(
                             Ok(true) => {
                                 transaction.aborted = true;
                                 transaction.aborted_due_to_busy_script = true;
+                                processor.record_error_reply(
+                                    RequestExecutionError::BusyScript.info_error_name(),
+                                );
                                 RequestExecutionError::BusyScript.append_resp_error(&mut responses);
                                 disconnect_after_write |= finalize_client_command(
                                     &metrics,
@@ -1201,6 +1877,7 @@ pub(crate) async fn handle_connection(
                             Ok(false) => {}
                             Err(error) => {
                                 transaction.aborted = true;
+                                processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                                 disconnect_after_write |= finalize_client_command(
                                     &metrics,
@@ -1279,27 +1956,52 @@ pub(crate) async fn handle_connection(
                             }
                             continue;
                         }
-                        if command_mutating && processor.maxmemory_limit_bytes() > 0 {
-                            transaction.aborted = true;
-                            append_error_line(
-                                &mut responses,
-                                b"OOM command not allowed when used memory > 'maxmemory'.",
-                            );
-                            disconnect_after_write |= finalize_client_command(
-                                &metrics,
-                                client_id,
-                                &mut responses,
-                                response_mark,
-                                &mut client_state,
-                                command,
-                                command_outcome,
-                                commands_processed,
-                            );
-                            consumed += frame_bytes_consumed;
-                            if disconnect_after_write {
-                                break;
+                        match processor
+                            .should_reject_mutating_command_for_maxmemory(command_mutating)
+                        {
+                            Ok(true) => {
+                                transaction.aborted = true;
+                                append_error_line(
+                                    &mut responses,
+                                    b"OOM command not allowed when used memory > 'maxmemory'.",
+                                );
+                                disconnect_after_write |= finalize_client_command(
+                                    &metrics,
+                                    client_id,
+                                    &mut responses,
+                                    response_mark,
+                                    &mut client_state,
+                                    command,
+                                    command_outcome,
+                                    commands_processed,
+                                );
+                                consumed += frame_bytes_consumed;
+                                if disconnect_after_write {
+                                    break;
+                                }
+                                continue;
                             }
-                            continue;
+                            Ok(false) => {}
+                            Err(error) => {
+                                transaction.aborted = true;
+                                processor.record_error_reply(error.info_error_name());
+                                error.append_resp_error(&mut responses);
+                                disconnect_after_write |= finalize_client_command(
+                                    &metrics,
+                                    client_id,
+                                    &mut responses,
+                                    response_mark,
+                                    &mut client_state,
+                                    command,
+                                    command_outcome,
+                                    commands_processed,
+                                );
+                                consumed += frame_bytes_consumed;
+                                if disconnect_after_write {
+                                    break;
+                                }
+                                continue;
+                            }
                         }
                         if replication.is_replica_mode() && command_mutating {
                             responses.extend_from_slice(
@@ -1398,6 +2100,7 @@ pub(crate) async fn handle_connection(
                             }
                             if let Some(error) = watch_error {
                                 transaction.clear_watches();
+                                processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                             } else {
                                 append_simple_string(&mut responses, b"OK");
@@ -1445,6 +2148,11 @@ pub(crate) async fn handle_connection(
                                 cached_script_body_for_pause =
                                     processor.cached_script_body(arg_slice_bytes(&args[1]));
                                 cached_script_body_for_pause.as_deref()
+                            } else if command == CommandId::Script
+                                && argument_count > 2
+                                && ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"LOAD")
+                            {
+                                Some(arg_slice_bytes(&args[2]))
                             } else {
                                 None
                             };
@@ -1465,7 +2173,20 @@ pub(crate) async fn handle_connection(
                         {
                             write_pause_affected = false;
                         }
+                        // Redis returns syntax/arity errors immediately under CLIENT PAUSE WRITE.
+                        if !command_has_valid_arity(command, argument_count) {
+                            write_pause_affected = false;
+                        }
+                        let blocking_request =
+                            request_uses_blocking_wait(command, &args[..argument_count]);
+                        let mut waited_for_client_unpause = false;
+                        let mut resumed_blocking_command_after_pause = false;
                         if processor.is_client_paused(write_pause_affected) {
+                            if blocking_request {
+                                // TLA+ : PauseGateRegisterBlockingClient
+                                processor.register_pause_blocked_blocking_client(client_id);
+                                resumed_blocking_command_after_pause = true;
+                            }
                             // Flush any buffered responses before blocking.
                             if !responses.is_empty() {
                                 stream.write_all(&responses).await?;
@@ -1478,8 +2199,9 @@ pub(crate) async fn handle_connection(
                                 write_pause_affected,
                             )
                             .await;
+                            waited_for_client_unpause = true;
                         }
-                        if is_blocking_command(command) && !responses.is_empty() {
+                        if blocking_request && !responses.is_empty() {
                             stream.write_all(&responses).await?;
                             responses.clear();
                         }
@@ -1492,23 +2214,58 @@ pub(crate) async fn handle_connection(
                         };
                         // TLA+ : ServerProcessOne
                         // Executes one parsed request frame and appends its reply to the buffered response stream.
-                        match execute_blocking_frame_on_owner_thread(
-                            &processor,
-                            &metrics,
-                            &owner_thread_pool,
-                            &args[..argument_count],
-                            command,
-                            command_mutating,
-                            frame,
-                            client_state.no_touch,
-                            client_id,
-                            &mut stream,
-                        )
-                        .await
-                        {
+                        let retry_busy_script_until =
+                            if waited_for_client_unpause && command_is_scripting_family(command) {
+                                Some(Instant::now() + SCRIPT_BUSY_AFTER_UNPAUSE_RETRY_WINDOW)
+                            } else {
+                                None
+                            };
+                        let blocking_outcome = loop {
+                            let execution = execute_blocking_frame_on_owner_thread(
+                                &processor,
+                                &metrics,
+                                &owner_thread_pool,
+                                &args[..argument_count],
+                                command,
+                                command_mutating,
+                                frame,
+                                client_state.no_touch,
+                                client_id,
+                                client_state.selected_db,
+                                &mut stream,
+                                resumed_blocking_command_after_pause,
+                            )
+                            .await;
+                            if matches!(
+                                &execution,
+                                Ok(BlockingExecutionOutcome { frame_response, .. })
+                                    if frame_response.starts_with(BUSY_SCRIPT_RESPONSE_PREFIX)
+                            ) && retry_busy_script_until
+                                .is_some_and(|deadline| Instant::now() < deadline)
+                            {
+                                sleep(SCRIPT_BUSY_AFTER_UNPAUSE_RETRY_POLL).await;
+                                continue;
+                            }
+                            if matches!(
+                                &execution,
+                                Err(OwnerThreadExecutionError::Request(
+                                    RequestExecutionError::BusyScript
+                                ))
+                            ) && retry_busy_script_until
+                                .is_some_and(|deadline| Instant::now() < deadline)
+                            {
+                                sleep(SCRIPT_BUSY_AFTER_UNPAUSE_RETRY_POLL).await;
+                                continue;
+                            }
+                            break execution;
+                        };
+                        match blocking_outcome {
                             Ok(blocking_outcome) => {
                                 wait_for_blocking_progress = blocked_before > 0
-                                    && command_may_wake_blocking_waiters(command);
+                                    && command_may_wake_blocking_waiters(
+                                        command,
+                                        &args[..argument_count],
+                                    );
                                 maybe_apply_hello_side_effects(
                                     command,
                                     &args[..argument_count],
@@ -1531,6 +2288,7 @@ pub(crate) async fn handle_connection(
                             }
                             Err(OwnerThreadExecutionError::Request(error)) => {
                                 processor.record_command_failure(&command_call_name);
+                                processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
                             }
                             Err(OwnerThreadExecutionError::Protocol) => {
@@ -1548,24 +2306,30 @@ pub(crate) async fn handle_connection(
                             command_mutating,
                         );
                         let mut published_select = false;
+                        let mut published_replication_write = false;
                         if publish_lazy_expire_deletes {
                             if !lazy_expired_keys.is_empty() {
-                                publish_select_if_needed(&replication);
+                                publish_select_if_needed(&replication, client_state.selected_db);
                                 published_select = true;
                             }
                             for key in lazy_expired_keys {
-                                let del_frame =
-                                    encode_resp_frame(&[b"DEL".to_vec(), key.into_vec()]);
+                                let del_frame = encode_resp_frame_slices(&[b"DEL", key.as_slice()]);
                                 processor.record_rdb_change(1);
                                 replication.publish_write_frame(&del_frame);
+                                published_replication_write = true;
                             }
                         }
                         if let Some(frame_to_replicate) = replication_frame.as_ref() {
                             if !published_select {
-                                publish_select_if_needed(&replication);
+                                publish_select_if_needed(&replication, client_state.selected_db);
                             }
                             processor.record_rdb_change(1);
                             replication.publish_write_frame(frame_to_replicate);
+                            published_replication_write = true;
+                        }
+                        if published_replication_write {
+                            wait_target_offset_for_connection =
+                                replication.current_master_repl_offset();
                         }
                         if wait_for_blocking_progress {
                             yield_for_blocking_progress(&processor, blocked_before).await;
@@ -1593,6 +2357,7 @@ pub(crate) async fn handle_connection(
             if propagate_frame {
                 processor.record_rdb_change(1);
                 replication.publish_write_frame(frame);
+                wait_target_offset_for_connection = replication.current_master_repl_offset();
             }
             commands_processed =
                 command_execution_delta(&processor, execution_count_before, command);
@@ -1646,6 +2411,12 @@ pub(crate) async fn handle_connection(
             // Makes command replies visible to the client-side read loop.
             stream.write_all(&responses).await?;
         }
+        // Flush any pubsub messages that were generated during command
+        // execution (e.g. PUBLISH inside MULTI/EXEC).  Without this,
+        // subscribers only see the messages on the next read-timeout cycle,
+        // which breaks clients that expect immediate delivery after EXEC.
+        flush_pending_pubsub_messages(&mut stream, &processor, &metrics, client_id, &client_state)
+            .await?;
         if disconnect_after_write {
             return Ok(());
         }
@@ -1712,12 +2483,23 @@ async fn flush_pending_pubsub_messages(
     processor: &RequestProcessor,
     metrics: &ServerMetrics,
     client_id: ClientId,
+    client_state: &ClientConnectionState,
 ) -> io::Result<()> {
     for message in processor.take_pending_pubsub_messages(client_id) {
+        if client_state.reply_mode == ClientReplyMode::Off
+            && !client_state.resp_protocol_version.is_resp3()
+            && is_resp2_tracking_invalidation_message(&message)
+        {
+            continue;
+        }
         stream.write_all(&message).await?;
         metrics.add_client_output_bytes(client_id, message.len() as u64);
     }
     Ok(())
+}
+
+fn is_resp2_tracking_invalidation_message(message: &[u8]) -> bool {
+    message.starts_with(b"*3\r\n$7\r\nmessage\r\n$20\r\n__redis__:invalidate\r\n")
 }
 
 #[inline]
@@ -1738,6 +2520,7 @@ async fn execute_frame_on_owner_thread_async(
     frame: &[u8],
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    selected_db: DbName,
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
     if command_is_scripting_family(command) {
         let owned_args =
@@ -1749,6 +2532,7 @@ async fn execute_frame_on_owner_thread_async(
                 &owned_args,
                 client_no_touch,
                 client_id,
+                selected_db,
             )
         })
         .await
@@ -1764,6 +2548,7 @@ async fn execute_frame_on_owner_thread_async(
         frame,
         client_no_touch,
         client_id,
+        selected_db,
     )
 }
 
@@ -1778,7 +2563,9 @@ async fn execute_blocking_frame_on_owner_thread(
     frame: &[u8],
     client_no_touch: bool,
     client_id: ClientId,
+    selected_db: DbName,
     stream: &mut TcpStream,
+    resumed_blocking_command_after_pause: bool,
 ) -> Result<BlockingExecutionOutcome, OwnerThreadExecutionError> {
     // TLA+ mapping (`formal/tla/specs/BlockingDisconnectLeak.tla`):
     // - ACTIVE: client has no wait-queue registration.
@@ -1788,24 +2575,35 @@ async fn execute_blocking_frame_on_owner_thread(
     // - `Block(c,k)`: first transition into blocked path for current blocking keys.
     // - `PushWake/WakeHead(k)`: owner-thread execution returns non-empty response.
     // - `Disconnect(c)`: disconnect check branch; cleanup must unregister the waiter.
+    let blocking_request = request_uses_blocking_wait(command, args);
     let deadline = blocking_timeout_deadline(command, args);
     let blocking_keys = blocking_wait_keys(command, args);
     let mut blocked = false;
-    processor.clear_client_unblock_request(client_id);
+    // TLA+ : ResumeBlockingAfterPause
+    // For commands that were pause-gated before entering this loop, resume with
+    // the pause-blocked marker carried in from the connection path.
+    let mut pause_blocked_marker_active = resumed_blocking_command_after_pause;
+    if !resumed_blocking_command_after_pause {
+        // TLA+ (`ClientPauseUnblockRace`) fixed path:
+        // clear stale pending unblocks only for non-pause-resume entries.
+        processor.clear_client_unblock_request(client_id);
+    }
     loop {
         if metrics.is_client_killed(client_id) {
-            if blocked {
-                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+            clear_blocking_request_state(processor, metrics, client_id, blocked, &blocking_keys);
+            if pause_blocked_marker_active {
+                processor.unregister_pause_blocked_blocking_client(client_id);
             }
             return Ok(BlockingExecutionOutcome {
                 frame_response: blocking_empty_response_for_command(command).to_vec(),
                 should_replicate: false,
             });
         }
-        if is_blocking_command(command) && blocking_client_disconnected(stream).await {
+        if blocking_request && blocking_client_disconnected(stream).await {
             // `Disconnect(c)` branch: if we were blocked, this must clear all wait-queue state.
-            if blocked {
-                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+            clear_blocking_request_state(processor, metrics, client_id, blocked, &blocking_keys);
+            if pause_blocked_marker_active {
+                processor.unregister_pause_blocked_blocking_client(client_id);
             }
             return Ok(BlockingExecutionOutcome {
                 frame_response: blocking_empty_response_for_command(command).to_vec(),
@@ -1813,6 +2611,7 @@ async fn execute_blocking_frame_on_owner_thread(
             });
         }
 
+        // TLA+ : ObservePendingUnblock
         if blocked && let Some(unblock_mode) = processor.take_client_unblock_request(client_id) {
             clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
             let response = match unblock_mode {
@@ -1821,6 +2620,9 @@ async fn execute_blocking_frame_on_owner_thread(
                     b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
                 }
             };
+            if pause_blocked_marker_active {
+                processor.unregister_pause_blocked_blocking_client(client_id);
+            }
             return Ok(BlockingExecutionOutcome {
                 frame_response: response,
                 should_replicate: false,
@@ -1834,11 +2636,19 @@ async fn execute_blocking_frame_on_owner_thread(
                 processor.increment_blocked_clients();
                 processor.register_blocking_wait(client_id, &blocking_keys);
                 metrics.set_client_blocked(client_id, true);
+                if pause_blocked_marker_active {
+                    processor.unregister_pause_blocked_blocking_client(client_id);
+                    pause_blocked_marker_active = false;
+                }
             }
             if let Some(deadline_time) = deadline {
                 let now = Instant::now();
                 if now >= deadline_time {
+                    // TLA+ : BlockingTimeout
                     clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                    if pause_blocked_marker_active {
+                        processor.unregister_pause_blocked_blocking_client(client_id);
+                    }
                     return Ok(BlockingExecutionOutcome {
                         frame_response: blocking_empty_response_for_command(command).to_vec(),
                         should_replicate: false,
@@ -1865,6 +2675,7 @@ async fn execute_blocking_frame_on_owner_thread(
             frame,
             client_no_touch,
             Some(client_id),
+            selected_db,
         )
         .await
         {
@@ -1875,14 +2686,21 @@ async fn execute_blocking_frame_on_owner_thread(
                 blocking_empty_response_for_command(command).to_vec()
             }
             Err(error) => {
-                if blocked {
-                    clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                clear_blocking_request_state(
+                    processor,
+                    metrics,
+                    client_id,
+                    blocked,
+                    &blocking_keys,
+                );
+                if pause_blocked_marker_active {
+                    processor.unregister_pause_blocked_blocking_client(client_id);
                 }
                 return Err(error);
             }
         };
 
-        let should_replicate = if is_blocking_command(command) {
+        let should_replicate = if blocking_request {
             command_mutating && !is_blocking_empty_response(&frame_response)
         } else {
             command_mutating
@@ -1894,9 +2712,10 @@ async fn execute_blocking_frame_on_owner_thread(
                     pre_string_len,
                 )
         };
-        if !is_blocking_command(command) || !is_blocking_empty_response(&frame_response) {
-            if blocked {
-                clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+        if !blocking_request || !is_blocking_empty_response(&frame_response) {
+            clear_blocking_request_state(processor, metrics, client_id, blocked, &blocking_keys);
+            if pause_blocked_marker_active {
+                processor.unregister_pause_blocked_blocking_client(client_id);
             }
             return Ok(BlockingExecutionOutcome {
                 frame_response,
@@ -1909,12 +2728,20 @@ async fn execute_blocking_frame_on_owner_thread(
             processor.increment_blocked_clients();
             processor.register_blocking_wait(client_id, &blocking_keys);
             metrics.set_client_blocked(client_id, true);
+            if pause_blocked_marker_active {
+                processor.unregister_pause_blocked_blocking_client(client_id);
+                pause_blocked_marker_active = false;
+            }
         }
 
         if let Some(deadline_time) = deadline {
             let now = Instant::now();
             if now >= deadline_time {
+                // TLA+ : BlockingTimeout
                 clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                if pause_blocked_marker_active {
+                    processor.unregister_pause_blocked_blocking_client(client_id);
+                }
                 return Ok(BlockingExecutionOutcome {
                     frame_response,
                     should_replicate,
@@ -1923,10 +2750,22 @@ async fn execute_blocking_frame_on_owner_thread(
 
             let remaining = deadline_time.duration_since(now);
             if remaining > Duration::from_millis(0) {
-                yield_now().await;
+                if blocking_empty_retry_should_sleep(command) {
+                    sleep(std::cmp::min(
+                        remaining,
+                        BLOCKING_STREAM_EMPTY_POLL_INTERVAL,
+                    ))
+                    .await;
+                } else {
+                    yield_now().await;
+                }
             }
         } else {
-            yield_now().await;
+            if blocking_empty_retry_should_sleep(command) {
+                sleep(BLOCKING_STREAM_EMPTY_POLL_INTERVAL).await;
+            } else {
+                yield_now().await;
+            }
         }
     }
 }
@@ -1936,18 +2775,39 @@ struct BlockingExecutionOutcome {
     should_replicate: bool,
 }
 
+fn blocking_empty_retry_should_sleep(command: CommandId) -> bool {
+    matches!(command, CommandId::Xread | CommandId::Xreadgroup)
+}
+
 fn clear_blocking_client_state(
     processor: &RequestProcessor,
     metrics: &ServerMetrics,
     client_id: ClientId,
-    blocking_keys: &[RedisKey],
+    blocking_keys: &[BlockingWaitKey],
 ) {
     // Shared cleanup for both successful wakeups and disconnect/unblock paths.
     // In TLA+ terms this is the queue-removal side of `Disconnect(c)` and wake completion.
     processor.decrement_blocked_clients();
     processor.unregister_blocking_wait(client_id, blocking_keys);
+    processor.clear_blocked_stream_wait_state(client_id);
+    processor.clear_blocked_xread_tail_ids(client_id);
     processor.clear_client_unblock_request(client_id);
     metrics.set_client_blocked(client_id, false);
+}
+
+fn clear_blocking_request_state(
+    processor: &RequestProcessor,
+    metrics: &ServerMetrics,
+    client_id: ClientId,
+    blocked: bool,
+    blocking_keys: &[BlockingWaitKey],
+) {
+    if blocked {
+        clear_blocking_client_state(processor, metrics, client_id, blocking_keys);
+        return;
+    }
+    processor.clear_blocked_stream_wait_state(client_id);
+    processor.clear_blocked_xread_tail_ids(client_id);
 }
 
 async fn yield_for_blocking_progress(processor: &RequestProcessor, initial_blocked: u64) {
@@ -1959,6 +2819,7 @@ async fn yield_for_blocking_progress(processor: &RequestProcessor, initial_block
         if current == 0 {
             return;
         }
+        // TLA+ : ProducerAckWaitReady
         // TLA+ minimal guard (`LinkedBlmoveChainResidue_minimal`): producer ACK should
         // not be exposed while any queued blocking waiter is already ready to run.
         if !processor.has_ready_blocking_waiters() {
@@ -1991,12 +2852,16 @@ fn transaction_has_write_pause_affected_commands(
         } else {
             None
         };
-        let script_body =
-            if matches!(command, CommandId::Eval | CommandId::Evalsha) && meta.argument_count > 1 {
-                Some(arg_slice_bytes(&args[1]))
-            } else {
-                None
-            };
+        let script_body = if command == CommandId::Eval && meta.argument_count > 1 {
+            Some(arg_slice_bytes(&args[1]))
+        } else if command == CommandId::Script
+            && meta.argument_count > 2
+            && ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"LOAD")
+        {
+            Some(arg_slice_bytes(&args[2]))
+        } else {
+            None
+        };
         if command_is_write_pause_affected_with_script(command, subcommand, script_body) {
             return true;
         }
@@ -2027,7 +2892,7 @@ async fn wait_for_client_unpause(
     metrics.set_client_blocked(client_id, false);
 }
 
-fn command_may_wake_blocking_waiters(command: CommandId) -> bool {
+fn command_may_wake_blocking_waiters(command: CommandId, args: &[ArgSlice]) -> bool {
     matches!(
         command,
         CommandId::Lpush
@@ -2039,13 +2904,22 @@ fn command_may_wake_blocking_waiters(command: CommandId) -> bool {
             | CommandId::Rpoplpush
             | CommandId::Zadd
             | CommandId::Zincrby
+            | CommandId::Xadd
+            | CommandId::Del
+            | CommandId::Set
+            | CommandId::Flushall
+            | CommandId::Flushdb
             | CommandId::Rename
             | CommandId::Renamenx
             | CommandId::Copy
             | CommandId::Move
             | CommandId::Restore
             | CommandId::RestoreAsking
-    )
+            | CommandId::Exec
+    ) || (command == CommandId::Xgroup
+        && args.get(1).is_some_and(|subcommand| {
+            ascii_eq_ignore_case(arg_slice_bytes(subcommand), b"DESTROY")
+        }))
 }
 
 async fn blocking_client_disconnected(stream: &mut TcpStream) -> bool {
@@ -2059,7 +2933,7 @@ async fn blocking_client_disconnected(stream: &mut TcpStream) -> bool {
 }
 
 fn blocking_timeout_deadline(command: CommandId, args: &[ArgSlice]) -> Option<Instant> {
-    if !is_blocking_command(command) {
+    if !request_uses_blocking_wait(command, args) {
         return None;
     }
 
@@ -2073,6 +2947,10 @@ fn blocking_timeout_deadline(command: CommandId, args: &[ArgSlice]) -> Option<In
             let timeout_index = args.len().checked_sub(1)?;
             parse_blocking_timeout_arg(args, timeout_index)?
         }
+        CommandId::Xread | CommandId::Xreadgroup => {
+            let timeout_millis = parse_xread_blocking_timeout_millis(command, args)?;
+            timeout_millis as f64 / 1000.0
+        }
         _ => return None,
     };
 
@@ -2084,7 +2962,7 @@ fn blocking_timeout_deadline(command: CommandId, args: &[ArgSlice]) -> Option<In
 }
 
 fn is_blocking_empty_response(frame_response: &[u8]) -> bool {
-    frame_response == b"*-1\r\n" || frame_response == b"$-1\r\n"
+    frame_response == b"*-1\r\n" || frame_response == b"$-1\r\n" || frame_response == b"_\r\n"
 }
 
 fn blocking_empty_response_for_command(command: CommandId) -> &'static [u8] {
@@ -2104,8 +2982,21 @@ fn is_blocking_command(command: CommandId) -> bool {
             | CommandId::Brpoplpush
             | CommandId::Bzpopmin
             | CommandId::Bzpopmax
-            | CommandId::Bzmpop,
+            | CommandId::Bzmpop
+            | CommandId::Xread
+            | CommandId::Xreadgroup,
     )
+}
+
+fn request_uses_blocking_wait(command: CommandId, args: &[ArgSlice]) -> bool {
+    match command {
+        CommandId::Xread => parse_xread_blocking_timeout_millis(command, args).is_some(),
+        CommandId::Xreadgroup => {
+            parse_xread_blocking_timeout_millis(command, args).is_some()
+                && xreadgroup_uses_blocking_special_id(args)
+        }
+        _ => is_blocking_command(command),
+    }
 }
 
 fn command_disallowed_inside_multi(command: CommandId) -> bool {
@@ -2119,10 +3010,10 @@ fn command_is_replication_passthrough(command_name: &[u8]) -> bool {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransactionRuntimeAbortReason {
-    Oom,
     ReadOnlyReplica,
     NoReplicas,
     MasterDown,
+    Oom,
 }
 
 fn transaction_runtime_abort_reason(
@@ -2130,7 +3021,7 @@ fn transaction_runtime_abort_reason(
     replication: &RedisReplicationCoordinator,
     queued_frames: &[Vec<u8>],
     max_resp_arguments: usize,
-) -> Option<TransactionRuntimeAbortReason> {
+) -> Result<Option<TransactionRuntimeAbortReason>, RequestExecutionError> {
     let mut has_mutating_command = false;
     let replica_mode = replication.is_replica_mode();
     let reject_reads_on_stale_replica =
@@ -2160,32 +3051,28 @@ fn transaction_runtime_abort_reason(
         if command_mutating {
             has_mutating_command = true;
             if replica_mode {
-                return Some(TransactionRuntimeAbortReason::ReadOnlyReplica);
+                return Ok(Some(TransactionRuntimeAbortReason::ReadOnlyReplica));
             }
         } else if reject_reads_on_stale_replica {
-            return Some(TransactionRuntimeAbortReason::MasterDown);
+            return Ok(Some(TransactionRuntimeAbortReason::MasterDown));
         }
     }
 
     if !has_mutating_command {
-        return None;
+        return Ok(None);
     }
-    if processor.maxmemory_limit_bytes() > 0 {
-        return Some(TransactionRuntimeAbortReason::Oom);
-    }
-
     let min_replicas_to_write = processor.min_replicas_to_write();
     if min_replicas_to_write > 0 && replication.downstream_replica_count() < min_replicas_to_write {
-        return Some(TransactionRuntimeAbortReason::NoReplicas);
+        return Ok(Some(TransactionRuntimeAbortReason::NoReplicas));
     }
-    None
+    if processor.should_reject_mutating_command_for_maxmemory(has_mutating_command)? {
+        return Ok(Some(TransactionRuntimeAbortReason::Oom));
+    }
+    Ok(None)
 }
 
 fn transaction_runtime_execabort_message(reason: TransactionRuntimeAbortReason) -> &'static [u8] {
     match reason {
-        TransactionRuntimeAbortReason::Oom => {
-            b"-EXECABORT Transaction discarded because of previous errors: OOM command not allowed when used memory > 'maxmemory'.\r\n"
-        }
         TransactionRuntimeAbortReason::ReadOnlyReplica => {
             b"-EXECABORT Transaction discarded because of previous errors: READONLY You can't write against a read only replica.\r\n"
         }
@@ -2195,14 +3082,19 @@ fn transaction_runtime_execabort_message(reason: TransactionRuntimeAbortReason) 
         TransactionRuntimeAbortReason::MasterDown => {
             b"-EXECABORT Transaction discarded because of previous errors: MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.\r\n"
         }
+        TransactionRuntimeAbortReason::Oom => {
+            b"-EXECABORT Transaction discarded because of previous errors: OOM command not allowed when used memory > 'maxmemory'.\r\n"
+        }
     }
 }
 
-fn publish_select_if_needed(replication: &RedisReplicationCoordinator) {
-    if !replication.consume_replication_select_needed() {
+fn publish_select_if_needed(replication: &RedisReplicationCoordinator, selected_db: DbName) {
+    if !replication.consume_replication_select_needed_for_db(selected_db) {
         return;
     }
-    let select_frame = encode_resp_frame(&[b"SELECT".to_vec(), b"0".to_vec()]);
+    let db_index = usize::from(selected_db);
+    let db_index_text = db_index.to_string();
+    let select_frame = encode_resp_frame_slices(&[b"SELECT", db_index_text.as_bytes()]);
     replication.publish_write_frame(&select_frame);
 }
 
@@ -2250,9 +3142,10 @@ fn publish_transaction_replication_frames(
     replication: &RedisReplicationCoordinator,
     transaction_outcome: &TransactionExecutionOutcome,
     max_resp_arguments: usize,
-) {
+    selected_db: DbName,
+) -> Option<u64> {
     if transaction_outcome.pending_replication_transition.is_some() {
-        return;
+        return None;
     }
 
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
@@ -2323,20 +3216,20 @@ fn publish_transaction_replication_frames(
     let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
     if should_publish_lazy_expire_deletes(processor, CommandId::Exec, true) {
         for key in lazy_expired_keys {
-            replication_frames.push(encode_resp_frame(&[b"DEL".to_vec(), key.into_vec()]));
+            replication_frames.push(encode_resp_frame_slices(&[b"DEL", key.as_slice()]));
         }
     }
 
     if replication_frames.is_empty() {
-        return;
+        return None;
     }
 
     if replication_frames.len() > 1 {
-        let multi_frame = encode_resp_frame(&[b"MULTI".to_vec()]);
+        let multi_frame = encode_resp_frame_slices(&[b"MULTI"]);
         processor.record_rdb_change(1);
         replication.publish_write_frame(&multi_frame);
     }
-    publish_select_if_needed(replication);
+    publish_select_if_needed(replication, selected_db);
 
     for replication_frame in &replication_frames {
         processor.record_rdb_change(1);
@@ -2344,10 +3237,11 @@ fn publish_transaction_replication_frames(
     }
 
     if replication_frames.len() > 1 {
-        let exec_frame = encode_resp_frame(&[b"EXEC".to_vec()]);
+        let exec_frame = encode_resp_frame_slices(&[b"EXEC"]);
         processor.record_rdb_change(1);
         replication.publish_write_frame(&exec_frame);
     }
+    Some(replication.current_master_repl_offset())
 }
 
 fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Vec<Vec<u8>> {
@@ -2357,11 +3251,11 @@ fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Ve
     if args.len() < 7 {
         return Vec::new();
     }
-    let group = arg_slice_bytes(&args[2]).to_vec();
-    let consumer = arg_slice_bytes(&args[3]).to_vec();
+    let group = arg_slice_bytes(&args[2]);
+    let consumer = arg_slice_bytes(&args[3]);
 
     let mut count = 1usize;
-    let mut key: Option<Vec<u8>> = None;
+    let mut key: Option<&[u8]> = None;
     let mut index = 4usize;
     while index < args.len() {
         let token = arg_slice_bytes(&args[index]);
@@ -2383,7 +3277,7 @@ fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Ve
             let Some(key_arg) = args.get(index + 1) else {
                 break;
             };
-            key = Some(arg_slice_bytes(key_arg).to_vec());
+            key = Some(arg_slice_bytes(key_arg));
             break;
         }
         break;
@@ -2395,23 +3289,18 @@ fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Ve
 
     let mut frames = Vec::with_capacity(count.saturating_add(1));
     for _ in 0..count {
-        frames.push(encode_resp_frame(&[
-            b"XCLAIM".to_vec(),
-            key.clone(),
-            group.clone(),
-            consumer.clone(),
-            b"0".to_vec(),
-            b"0-0".to_vec(),
+        frames.push(encode_resp_frame_slices(&[
+            b"XCLAIM", key, group, consumer, b"0", b"0-0",
         ]));
     }
-    frames.push(encode_resp_frame(&[
-        b"XGROUP".to_vec(),
-        b"SETID".to_vec(),
+    frames.push(encode_resp_frame_slices(&[
+        b"XGROUP",
+        b"SETID",
         key,
         group,
-        b"0".to_vec(),
-        b"ENTRIESREAD".to_vec(),
-        b"0".to_vec(),
+        b"0",
+        b"ENTRIESREAD",
+        b"0",
     ]));
     frames
 }
@@ -2424,15 +3313,15 @@ fn script_eval_effect_replication_frame(
     if args.len() < 4 {
         return None;
     }
-    let script = match command {
-        CommandId::Eval | CommandId::EvalRo => arg_slice_bytes(&args[1]).to_vec(),
+    let script: Cow<'_, [u8]> = match command {
+        CommandId::Eval | CommandId::EvalRo => Cow::Borrowed(arg_slice_bytes(&args[1])),
         CommandId::Evalsha | CommandId::EvalshaRo => {
             let sha = arg_slice_bytes(&args[1]);
-            processor.cached_script_for_sha(sha)?
+            Cow::Owned(processor.cached_script_for_sha(sha)?)
         }
         _ => return None,
     };
-    let script_text = String::from_utf8_lossy(&script).to_string();
+    let script_text = String::from_utf8_lossy(script.as_ref()).to_string();
     let script_text_lower = script_text.to_ascii_lowercase();
     if !script_text_lower.contains("redis.call('set'")
         && !script_text_lower.contains("redis.call(\"set\"")
@@ -2444,13 +3333,16 @@ fn script_eval_effect_replication_frame(
     if key_count == 0 || args.len() < 3 + key_count {
         return None;
     }
-    let key = arg_slice_bytes(&args[3]).to_vec();
-    let value = if script_text_lower.contains("argv[1]") {
-        arg_slice_bytes(args.get(3 + key_count)?).to_vec()
+    let key = arg_slice_bytes(&args[3]);
+    let value: Cow<'_, [u8]> = if script_text_lower.contains("argv[1]") {
+        Cow::Borrowed(arg_slice_bytes(args.get(3 + key_count)?))
     } else {
-        extract_script_set_literal(&script_text, &script_text_lower)?
+        Cow::Owned(extract_script_set_literal(
+            &script_text,
+            &script_text_lower,
+        )?)
     };
-    Some(encode_resp_frame(&[b"SET".to_vec(), key, value]))
+    Some(encode_resp_frame_slices(&[b"SET", key, value.as_ref()]))
 }
 
 fn extract_script_set_literal(script: &str, script_lower: &str) -> Option<Vec<u8>> {
@@ -2474,6 +3366,9 @@ fn parse_ascii_usize(value: &[u8]) -> Option<usize> {
 fn transaction_command_had_effect(command: CommandId, response: &[u8]) -> bool {
     match command {
         CommandId::Del | CommandId::Unlink => parse_resp_integer(response).unwrap_or(0) > 0,
+        CommandId::Spop => parse_spop_response_members(response)
+            .map(|members| !members.is_empty())
+            .unwrap_or(true),
         _ => true,
     }
 }
@@ -2500,10 +3395,11 @@ fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {
             | CommandId::Bzpopmin
             | CommandId::Bzpopmax
             | CommandId::Bzmpop
+            | CommandId::Xread
     )
 }
 
-fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
+fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
     match command {
         CommandId::Blpop | CommandId::Brpop | CommandId::Bzpopmin | CommandId::Bzpopmax => {
             if args.len() < 3 {
@@ -2512,9 +3408,16 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
             args[1..args.len() - 1]
                 .iter()
                 .map(|arg| {
-                    // SAFETY: The argument slice was parsed from a live request frame and stays valid
-                    // while the request is being executed.
-                    RedisKey::from(arg_slice_bytes(arg))
+                    BlockingWaitKey::new(
+                        // SAFETY: The argument slice was parsed from a live request frame and stays valid
+                        // while the request is being executed.
+                        RedisKey::from(arg_slice_bytes(arg)),
+                        if matches!(command, CommandId::Bzpopmin | CommandId::Bzpopmax) {
+                            BlockingWaitClass::Zset
+                        } else {
+                            BlockingWaitClass::List
+                        },
+                    )
                 })
                 .collect()
         }
@@ -2522,11 +3425,12 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
             if args.len() < 2 {
                 return Vec::new();
             }
-            vec![
+            vec![BlockingWaitKey::new(
                 // SAFETY: The argument slice was parsed from a live request frame and stays valid
                 // while the request is being executed.
                 RedisKey::from(arg_slice_bytes(&args[1])),
-            ]
+                BlockingWaitClass::List,
+            )]
         }
         CommandId::Blmpop | CommandId::Bzmpop => {
             if args.len() < 5 {
@@ -2546,14 +3450,151 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<RedisKey> {
             args[start..end]
                 .iter()
                 .map(|arg| {
-                    // SAFETY: The argument slice was parsed from a live request frame and stays valid
-                    // while the request is being executed.
-                    RedisKey::from(arg_slice_bytes(arg))
+                    BlockingWaitKey::new(
+                        // SAFETY: The argument slice was parsed from a live request frame and stays valid
+                        // while the request is being executed.
+                        RedisKey::from(arg_slice_bytes(arg)),
+                        if command == CommandId::Bzmpop {
+                            BlockingWaitClass::Zset
+                        } else {
+                            BlockingWaitClass::List
+                        },
+                    )
                 })
                 .collect()
         }
+        CommandId::Xread => xread_blocking_wait_keys(args),
+        CommandId::Xreadgroup => xreadgroup_blocking_wait_keys(args),
         _ => Vec::new(),
     }
+}
+
+fn parse_xread_blocking_timeout_millis(command: CommandId, args: &[ArgSlice]) -> Option<u64> {
+    let mut index = match command {
+        CommandId::Xread => 1usize,
+        CommandId::Xreadgroup => 4usize,
+        _ => return None,
+    };
+    while index < args.len() {
+        let token = arg_slice_bytes(args.get(index)?);
+        if command == CommandId::Xreadgroup && ascii_eq_ignore_case(token, b"NOACK") {
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"COUNT")
+            || (command == CommandId::Xreadgroup && ascii_eq_ignore_case(token, b"CLAIM"))
+        {
+            index = index.checked_add(2)?;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"BLOCK") {
+            return parse_u64_ascii(arg_slice_bytes(args.get(index + 1)?));
+        }
+        if ascii_eq_ignore_case(token, b"STREAMS") {
+            return None;
+        }
+        return None;
+    }
+    None
+}
+
+fn xreadgroup_uses_blocking_special_id(args: &[ArgSlice]) -> bool {
+    let Some(streams_index) = find_xreadgroup_streams_index(args) else {
+        return false;
+    };
+    let trailing = args.len().saturating_sub(streams_index);
+    if trailing < 2 || !trailing.is_multiple_of(2) {
+        return false;
+    }
+    let stream_count = trailing / 2;
+    args[streams_index + stream_count..]
+        .iter()
+        .all(|arg| arg_slice_bytes(arg) == b">")
+}
+
+fn xread_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
+    if parse_xread_blocking_timeout_millis(CommandId::Xread, args).is_none() {
+        return Vec::new();
+    }
+    let Some(streams_index) = find_xread_streams_index(args) else {
+        return Vec::new();
+    };
+    let trailing = args.len().saturating_sub(streams_index);
+    if trailing < 2 || !trailing.is_multiple_of(2) {
+        return Vec::new();
+    }
+    let stream_count = trailing / 2;
+    args[streams_index..streams_index + stream_count]
+        .iter()
+        .map(|arg| {
+            BlockingWaitKey::new(
+                RedisKey::from(arg_slice_bytes(arg)),
+                BlockingWaitClass::Stream,
+            )
+        })
+        .collect()
+}
+
+fn xreadgroup_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
+    if !xreadgroup_uses_blocking_special_id(args) {
+        return Vec::new();
+    }
+    let Some(streams_index) = find_xreadgroup_streams_index(args) else {
+        return Vec::new();
+    };
+    let trailing = args.len().saturating_sub(streams_index);
+    if trailing < 2 || !trailing.is_multiple_of(2) {
+        return Vec::new();
+    }
+    let stream_count = trailing / 2;
+    args[streams_index..streams_index + stream_count]
+        .iter()
+        .map(|arg| {
+            BlockingWaitKey::new(
+                RedisKey::from(arg_slice_bytes(arg)),
+                BlockingWaitClass::Stream,
+            )
+        })
+        .collect()
+}
+
+fn find_xread_streams_index(args: &[ArgSlice]) -> Option<usize> {
+    let mut index = 1usize;
+    while index < args.len() {
+        let token = arg_slice_bytes(args.get(index)?);
+        if ascii_eq_ignore_case(token, b"COUNT") || ascii_eq_ignore_case(token, b"BLOCK") {
+            index = index.checked_add(2)?;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"STREAMS") {
+            return index.checked_add(1);
+        }
+        return None;
+    }
+    None
+}
+
+fn find_xreadgroup_streams_index(args: &[ArgSlice]) -> Option<usize> {
+    let mut index = 4usize;
+    while index < args.len() {
+        let token = arg_slice_bytes(args.get(index)?);
+        if ascii_eq_ignore_case(token, b"NOACK") {
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"COUNT")
+            || ascii_eq_ignore_case(token, b"BLOCK")
+            || ascii_eq_ignore_case(token, b"CLAIM")
+        {
+            index = index.checked_add(2)?;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"STREAMS") {
+            return index.checked_add(1);
+        }
+        return None;
+    }
+    None
 }
 
 fn parse_blocking_timeout_arg(args: &[ArgSlice], timeout_index: usize) -> Option<f64> {
@@ -2858,8 +3899,10 @@ fn handle_client_command(
         } else {
             ClientUnblockMode::Timeout
         };
+        let target_is_blocked = metrics.is_client_blocked(target_client_id)
+            || processor.is_pause_blocked_blocking_client(target_client_id);
         let unblocked = target_client_id != client_id
-            && metrics.is_client_blocked(target_client_id)
+            && target_is_blocked
             && processor.request_client_unblock(target_client_id, unblock_mode);
         append_integer_frame(response_out, if unblocked { 1 } else { 0 });
         return outcome;
@@ -2918,12 +3961,18 @@ fn handle_client_command(
         let mode = arg_slice_bytes(&args[2]);
         if ascii_eq_ignore_case(mode, b"ON") {
             client_state.reply_mode = ClientReplyMode::On;
+            if !client_state.resp_protocol_version.is_resp3() {
+                processor.clear_pending_tracking_messages_for_client(client_id);
+            }
             append_simple_string(response_out, b"OK");
             outcome.reply_behavior = ClientCommandReplyBehavior::ForceReply;
             return outcome;
         }
         if ascii_eq_ignore_case(mode, b"OFF") {
             client_state.reply_mode = ClientReplyMode::Off;
+            if !client_state.resp_protocol_version.is_resp3() {
+                processor.clear_pending_tracking_messages_for_client(client_id);
+            }
             append_simple_string(response_out, b"OK");
             outcome.reply_behavior = ClientCommandReplyBehavior::Suppress;
             return outcome;
@@ -2947,13 +3996,63 @@ fn handle_client_command(
         if ascii_eq_ignore_case(mode, b"ON") {
             let mut seen_optin = false;
             let mut seen_optout = false;
-            for option_arg in &args[3..] {
-                let option = arg_slice_bytes(option_arg);
+            let mut bcast = false;
+            let mut noloop = false;
+            let mut redirect_id = None;
+            let mut requested_prefixes = Vec::new();
+            let mut index = 3usize;
+            while index < args.len() {
+                let option = arg_slice_bytes(&args[index]);
+                if ascii_eq_ignore_case(option, b"REDIRECT") {
+                    if index + 1 >= args.len() {
+                        response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                        return outcome;
+                    }
+                    let redirect_arg = arg_slice_bytes(&args[index + 1]);
+                    let Some(parsed_redirect_id) = parse_i64_ascii(redirect_arg) else {
+                        response_out
+                            .extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                        return outcome;
+                    };
+                    if parsed_redirect_id < 0 {
+                        response_out
+                            .extend_from_slice(b"-ERR value is not an integer or out of range\r\n");
+                        return outcome;
+                    }
+                    redirect_id = Some(parsed_redirect_id);
+                    index += 2;
+                    continue;
+                }
+                if ascii_eq_ignore_case(option, b"BCAST") {
+                    bcast = true;
+                    index += 1;
+                    continue;
+                }
+                if ascii_eq_ignore_case(option, b"PREFIX") {
+                    if index + 1 >= args.len() {
+                        response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                        return outcome;
+                    }
+                    requested_prefixes.push(arg_slice_bytes(&args[index + 1]).to_vec());
+                    index += 2;
+                    continue;
+                }
                 if ascii_eq_ignore_case(option, b"OPTIN") {
                     seen_optin = true;
-                } else if ascii_eq_ignore_case(option, b"OPTOUT") {
+                    index += 1;
+                    continue;
+                }
+                if ascii_eq_ignore_case(option, b"OPTOUT") {
                     seen_optout = true;
-                } else {
+                    index += 1;
+                    continue;
+                }
+                if ascii_eq_ignore_case(option, b"NOLOOP") {
+                    noloop = true;
+                    index += 1;
+                    continue;
+                }
+                {
                     response_out.extend_from_slice(b"-ERR syntax error\r\n");
                     return outcome;
                 }
@@ -2962,13 +4061,86 @@ fn handle_client_command(
                 response_out.extend_from_slice(b"-ERR syntax error\r\n");
                 return outcome;
             }
+            if bcast && (seen_optin || seen_optout) {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return outcome;
+            }
+            if !bcast && !requested_prefixes.is_empty() {
+                response_out.extend_from_slice(b"-ERR syntax error\r\n");
+                return outcome;
+            }
+            let mut effective_prefixes = if bcast && client_state.tracking_bcast {
+                client_state.tracking_prefixes.clone()
+            } else {
+                Vec::new()
+            };
+            if bcast {
+                for i in 0..requested_prefixes.len() {
+                    for j in (i + 1)..requested_prefixes.len() {
+                        let first = requested_prefixes[i].as_slice();
+                        let second = requested_prefixes[j].as_slice();
+                        if first == second {
+                            continue;
+                        }
+                        if tracking_prefixes_overlap(first, second) {
+                            append_tracking_prefix_overlap_error(response_out, first, second);
+                            return outcome;
+                        }
+                    }
+                }
+                for prefix in &requested_prefixes {
+                    for existing in &effective_prefixes {
+                        if prefix.as_slice() == existing.as_slice() {
+                            continue;
+                        }
+                        if tracking_prefixes_overlap(prefix, existing) {
+                            append_tracking_prefix_overlap_error(
+                                response_out,
+                                prefix.as_slice(),
+                                existing.as_slice(),
+                            );
+                            return outcome;
+                        }
+                    }
+                }
+                for prefix in requested_prefixes {
+                    if effective_prefixes
+                        .iter()
+                        .any(|existing| existing.as_slice() == prefix.as_slice())
+                    {
+                        continue;
+                    }
+                    effective_prefixes.push(prefix);
+                }
+                if effective_prefixes.is_empty() {
+                    effective_prefixes.push(Vec::new());
+                }
+            }
             client_state.tracking_mode = if seen_optin {
                 ClientTrackingMode::OptIn
             } else if seen_optout {
                 ClientTrackingMode::OptOut
             } else {
-                ClientTrackingMode::Off
+                ClientTrackingMode::On
             };
+            processor.clear_pending_tracking_messages_for_client(client_id);
+            client_state.tracking_redirect_id = redirect_id;
+            client_state.tracking_bcast = bcast;
+            client_state.tracking_noloop = noloop;
+            client_state.tracking_prefixes = effective_prefixes;
+            client_state.tracking_caching = None;
+            let redirect_client_id = redirect_id.map(|value| ClientId::new(value as u64));
+            processor.configure_client_tracking(
+                client_id,
+                ClientTrackingConfig {
+                    mode: client_tracking_mode_setting(client_state.tracking_mode),
+                    redirect_id: redirect_client_id,
+                    bcast: client_state.tracking_bcast,
+                    noloop: client_state.tracking_noloop,
+                    prefixes: client_state.tracking_prefixes.clone(),
+                    caching: client_state.tracking_caching,
+                },
+            );
             append_simple_string(response_out, b"OK");
             return outcome;
         }
@@ -2982,11 +4154,32 @@ fn handle_client_command(
                     return outcome;
                 }
             }
-            client_state.tracking_mode = ClientTrackingMode::Off;
+            client_state.clear_tracking();
+            processor.clear_client_tracking(client_id);
+            processor.clear_pending_tracking_messages_for_client(client_id);
             append_simple_string(response_out, b"OK");
             return outcome;
         }
         response_out.extend_from_slice(b"-ERR syntax error\r\n");
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"TRACKINGINFO") {
+        if args.len() != 2 {
+            append_client_subcommand_wrong_arity(response_out, b"trackinginfo");
+            return outcome;
+        }
+        let broken_redirect = processor.client_tracking_redirect_broken(client_id);
+        append_client_trackinginfo_response(response_out, client_state, broken_redirect);
+        return outcome;
+    }
+
+    if ascii_eq_ignore_case(subcommand, b"GETREDIR") {
+        if args.len() != 2 {
+            append_client_subcommand_wrong_arity(response_out, b"getredir");
+            return outcome;
+        }
+        append_integer_frame(response_out, client_tracking_redirect_reply(client_state));
         return outcome;
     }
 
@@ -2995,7 +4188,9 @@ fn handle_client_command(
             append_client_subcommand_wrong_arity(response_out, b"caching");
             return outcome;
         }
-        if client_state.tracking_mode == ClientTrackingMode::Off {
+        if client_state.tracking_mode != ClientTrackingMode::OptIn
+            && client_state.tracking_mode != ClientTrackingMode::OptOut
+        {
             append_error_line(
                 response_out,
                 b"ERR CLIENT CACHING can be called only when the client is in tracking mode with OPTIN or OPTOUT mode enabled",
@@ -3003,22 +4198,21 @@ fn handle_client_command(
             return outcome;
         }
         let option = arg_slice_bytes(&args[2]);
-        if !ascii_eq_ignore_case(option, b"ON") && !ascii_eq_ignore_case(option, b"OFF") {
+        if !ascii_eq_ignore_case(option, b"YES") && !ascii_eq_ignore_case(option, b"NO") {
             response_out.extend_from_slice(b"-ERR syntax error\r\n");
             return outcome;
         }
-        if client_state.tracking_mode == ClientTrackingMode::OptOut
-            && ascii_eq_ignore_case(option, b"ON")
-        {
+        let caching_yes = ascii_eq_ignore_case(option, b"YES");
+        if client_state.tracking_mode == ClientTrackingMode::OptOut && caching_yes {
             response_out.extend_from_slice(b"-ERR syntax error\r\n");
             return outcome;
         }
-        if client_state.tracking_mode == ClientTrackingMode::OptIn
-            && ascii_eq_ignore_case(option, b"OFF")
-        {
+        if client_state.tracking_mode == ClientTrackingMode::OptIn && !caching_yes {
             response_out.extend_from_slice(b"-ERR syntax error\r\n");
             return outcome;
         }
+        client_state.tracking_caching = Some(caching_yes);
+        processor.set_client_tracking_caching(client_id, Some(caching_yes));
         append_simple_string(response_out, b"OK");
         return outcome;
     }
@@ -3236,15 +4430,58 @@ fn format_monitor_line(tokens: &[Vec<u8>]) -> Vec<u8> {
     frame
 }
 
+fn append_u64_ascii_frame(output: &mut Vec<u8>, value: u64) {
+    let mut digits = [0u8; 20];
+    output.extend_from_slice(u64_ascii_slice(&mut digits, value));
+}
+
+fn u64_ascii_slice(buffer: &mut [u8; 20], mut value: u64) -> &[u8] {
+    let mut cursor = buffer.len();
+    loop {
+        cursor -= 1;
+        buffer[cursor] = b'0' + (value % 10) as u8;
+        value /= 10;
+        if value == 0 {
+            break;
+        }
+    }
+    &buffer[cursor..]
+}
+
+fn append_usize_ascii_frame(output: &mut Vec<u8>, value: usize) {
+    append_u64_ascii_frame(output, value as u64);
+}
+
+fn append_i64_ascii_frame(output: &mut Vec<u8>, value: i64) {
+    if value < 0 {
+        output.push(b'-');
+        append_u64_ascii_frame(output, value.wrapping_neg() as u64);
+    } else {
+        append_u64_ascii_frame(output, value as u64);
+    }
+}
+
 fn append_integer_frame(output: &mut Vec<u8>, value: i64) {
     output.push(b':');
-    output.extend_from_slice(value.to_string().as_bytes());
+    append_i64_ascii_frame(output, value);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn append_array_length_frame(output: &mut Vec<u8>, len: usize) {
+    output.push(b'*');
+    append_usize_ascii_frame(output, len);
+    output.extend_from_slice(b"\r\n");
+}
+
+fn append_map_length_frame(output: &mut Vec<u8>, len: usize) {
+    output.push(b'%');
+    append_usize_ascii_frame(output, len);
     output.extend_from_slice(b"\r\n");
 }
 
 fn append_bulk_string_frame(output: &mut Vec<u8>, value: &[u8]) {
     output.push(b'$');
-    output.extend_from_slice(value.len().to_string().as_bytes());
+    append_usize_ascii_frame(output, value.len());
     output.extend_from_slice(b"\r\n");
     output.extend_from_slice(value);
     output.extend_from_slice(b"\r\n");
@@ -3252,10 +4489,104 @@ fn append_bulk_string_frame(output: &mut Vec<u8>, value: &[u8]) {
 
 fn append_bulk_string_array_frame(output: &mut Vec<u8>, values: &[&[u8]]) {
     output.push(b'*');
-    output.extend_from_slice(values.len().to_string().as_bytes());
+    append_usize_ascii_frame(output, values.len());
     output.extend_from_slice(b"\r\n");
     for value in values {
         append_bulk_string_frame(output, value);
+    }
+}
+
+fn client_tracking_redirect_reply(client_state: &ClientConnectionState) -> i64 {
+    if client_state.tracking_mode == ClientTrackingMode::Off {
+        return -1;
+    }
+    client_state.tracking_redirect_id.unwrap_or(0)
+}
+
+fn client_tracking_mode_setting(mode: ClientTrackingMode) -> ClientTrackingModeSetting {
+    match mode {
+        ClientTrackingMode::Off => ClientTrackingModeSetting::Off,
+        ClientTrackingMode::On => ClientTrackingModeSetting::On,
+        ClientTrackingMode::OptIn => ClientTrackingModeSetting::OptIn,
+        ClientTrackingMode::OptOut => ClientTrackingModeSetting::OptOut,
+    }
+}
+
+fn tracking_prefixes_overlap(left: &[u8], right: &[u8]) -> bool {
+    left.starts_with(right) || right.starts_with(left)
+}
+
+fn append_tracking_prefix_overlap_error(
+    response_out: &mut Vec<u8>,
+    first_prefix: &[u8],
+    second_prefix: &[u8],
+) {
+    let first = String::from_utf8_lossy(first_prefix);
+    let second = String::from_utf8_lossy(second_prefix);
+    let message = format!("ERR Prefix '{first}' overlaps with '{second}'");
+    append_error_line(response_out, message.as_bytes());
+}
+
+fn client_tracking_flags(
+    client_state: &ClientConnectionState,
+    broken_redirect: bool,
+) -> Vec<&'static [u8]> {
+    if client_state.tracking_mode == ClientTrackingMode::Off {
+        return vec![b"off"];
+    }
+
+    let mut flags = vec![&b"on"[..]];
+    if client_state.tracking_bcast {
+        flags.push(b"bcast");
+    }
+    if client_state.tracking_noloop {
+        flags.push(b"noloop");
+    }
+    if client_state.tracking_mode == ClientTrackingMode::OptIn {
+        flags.push(b"optin");
+    }
+    if client_state.tracking_mode == ClientTrackingMode::OptOut {
+        flags.push(b"optout");
+    }
+    if let Some(caching_yes) = client_state.tracking_caching {
+        if caching_yes {
+            flags.push(b"caching-yes");
+        } else {
+            flags.push(b"caching-no");
+        }
+    }
+    if broken_redirect {
+        flags.push(b"broken_redirect");
+    }
+
+    flags
+}
+
+fn append_client_trackinginfo_response(
+    response_out: &mut Vec<u8>,
+    client_state: &ClientConnectionState,
+    broken_redirect: bool,
+) {
+    let flags = client_tracking_flags(client_state, broken_redirect);
+    if client_state.resp_protocol_version.is_resp3() {
+        append_map_length_frame(response_out, 3);
+    } else {
+        append_array_length_frame(response_out, 6);
+    }
+
+    append_bulk_string_frame(response_out, b"flags");
+    append_array_length_frame(response_out, flags.len());
+    for flag in flags {
+        append_bulk_string_frame(response_out, flag);
+    }
+
+    append_bulk_string_frame(response_out, b"redirect");
+    append_integer_frame(response_out, client_tracking_redirect_reply(client_state));
+
+    append_bulk_string_frame(response_out, b"prefixes");
+    append_array_length_frame(response_out, client_state.tracking_prefixes.len());
+    for prefix in &client_state.tracking_prefixes {
+        append_bulk_string_frame(response_out, prefix);
     }
 }
 
@@ -3400,14 +4731,15 @@ fn replication_frame_for_command(
         let Some(script) = processor.cached_script_for_sha(sha1) else {
             return Some(original_frame.to_vec());
         };
-        let mut parts = Vec::with_capacity(args.len());
-        parts.push(b"EVAL".to_vec());
-        parts.push(script);
+        let mut rewritten = Vec::new();
+        append_array_length_frame(&mut rewritten, args.len());
+        append_bulk_string_frame(&mut rewritten, b"EVAL");
+        append_bulk_string_frame(&mut rewritten, &script);
         for arg in &args[2..] {
             // SAFETY: args were parsed from the current request frame.
-            parts.push(arg_slice_bytes(arg).to_vec());
+            append_bulk_string_frame(&mut rewritten, arg_slice_bytes(arg));
         }
-        return Some(encode_resp_frame(&parts));
+        return Some(rewritten);
     }
 
     if matches!(
@@ -3434,43 +4766,84 @@ fn replication_frame_for_command(
         return rewrite_getex_replication_frame(processor, args, frame_response, original_frame);
     }
 
+    if command == CommandId::Getdel {
+        // GETDEL returns null when the key does not exist; no side-effect, so
+        // skip replication.  When the key existed the value was returned and
+        // the key deleted; replicate as a plain DEL.
+        if frame_response == b"$-1\r\n" || frame_response == b"_\r\n" {
+            return None;
+        }
+        return Some(encode_resp_frame_slices(&[
+            b"DEL",
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(1)?),
+        ]));
+    }
+
+    if command == CommandId::Delex {
+        if frame_response != b":1\r\n" {
+            return None;
+        }
+        return Some(encode_resp_frame_slices(&[
+            b"DEL",
+            // SAFETY: args were parsed from the current request frame.
+            arg_slice_bytes(args.get(1)?),
+        ]));
+    }
+
     if matches!(command, CommandId::Restore | CommandId::RestoreAsking) {
         return rewrite_restore_replication_frame(processor, args, frame_response, original_frame);
+    }
+
+    if command == CommandId::Hgetdel {
+        return rewrite_hgetdel_replication_frame(args, frame_response, original_frame);
+    }
+
+    if command == CommandId::Spop {
+        return rewrite_spop_replication_frame(processor, args, frame_response, original_frame);
     }
 
     if command == CommandId::Blmove {
         if frame_response == b"$-1\r\n" {
             return None;
         }
-        return Some(encode_resp_frame(&[
-            b"LMOVE".to_vec(),
+        return Some(encode_resp_frame_slices(&[
+            b"LMOVE",
             // SAFETY: args were parsed from the current request frame.
-            arg_slice_bytes(args.get(1)?).to_vec(),
+            arg_slice_bytes(args.get(1)?),
             // SAFETY: args were parsed from the current request frame.
-            arg_slice_bytes(args.get(2)?).to_vec(),
+            arg_slice_bytes(args.get(2)?),
             // SAFETY: args were parsed from the current request frame.
-            arg_slice_bytes(args.get(3)?).to_vec(),
+            arg_slice_bytes(args.get(3)?),
             // SAFETY: args were parsed from the current request frame.
-            arg_slice_bytes(args.get(4)?).to_vec(),
+            arg_slice_bytes(args.get(4)?),
         ]));
     }
     if command == CommandId::Brpoplpush {
         if frame_response == b"$-1\r\n" {
             return None;
         }
-        return Some(encode_resp_frame(&[
-            b"RPOPLPUSH".to_vec(),
+        return Some(encode_resp_frame_slices(&[
+            b"RPOPLPUSH",
             // SAFETY: args were parsed from the current request frame.
-            arg_slice_bytes(args.get(1)?).to_vec(),
+            arg_slice_bytes(args.get(1)?),
             // SAFETY: args were parsed from the current request frame.
-            arg_slice_bytes(args.get(2)?).to_vec(),
+            arg_slice_bytes(args.get(2)?),
         ]));
     }
     if matches!(command, CommandId::Lmpop | CommandId::Blmpop) {
-        let meta = parse_lmpop_replication_meta(frame_response)?;
+        let meta = parse_mpop_replication_meta(frame_response)?;
         let pop_command = lmpop_pop_command(command, args)?;
-        let count = meta.popped_count.to_string().into_bytes();
-        return Some(encode_resp_frame(&[pop_command.to_vec(), meta.key, count]));
+        let mut count_digits = [0u8; 20];
+        let count = u64_ascii_slice(&mut count_digits, meta.popped_count as u64);
+        return Some(encode_resp_frame_slices(&[pop_command, meta.key, count]));
+    }
+    if matches!(command, CommandId::Zmpop | CommandId::Bzmpop) {
+        let meta = parse_mpop_replication_meta(frame_response)?;
+        let pop_command = zmpop_pop_command(command, args)?;
+        let mut count_digits = [0u8; 20];
+        let count = u64_ascii_slice(&mut count_digits, meta.popped_count as u64);
+        return Some(encode_resp_frame_slices(&[pop_command, meta.key, count]));
     }
     Some(original_frame.to_vec())
 }
@@ -3494,7 +4867,7 @@ fn rewrite_set_family_replication_frame(
             let Some(value) = args.get(2) else {
                 return Some(original_frame.to_vec());
             };
-            let mut pxat_token: Option<Vec<u8>> = None;
+            let mut pxat_token: Option<&[u8]> = None;
             let mut has_expire_option = false;
             let mut index = 3usize;
             while index < args.len() {
@@ -3509,7 +4882,7 @@ fn rewrite_set_family_replication_frame(
                 }
                 if ascii_eq_ignore_case(token, b"PXAT") {
                     has_expire_option = true;
-                    pxat_token = Some(token.to_vec());
+                    pxat_token = Some(token);
                     break;
                 }
                 index += 1;
@@ -3541,22 +4914,19 @@ fn rewrite_set_family_replication_frame(
     };
 
     if let Some(expiration_unix_millis) = processor.expiration_unix_millis_for_key(key) {
-        let mut pxat = pxat_token.unwrap_or_else(|| b"PXAT".to_vec());
-        if pxat.is_empty() {
-            pxat = b"PXAT".to_vec();
-        }
-        return Some(encode_resp_frame(&[
-            b"SET".to_vec(),
-            key.to_vec(),
-            value.to_vec(),
-            pxat,
-            expiration_unix_millis.to_string().into_bytes(),
+        let pxat = pxat_token
+            .filter(|token| !token.is_empty())
+            .unwrap_or(b"PXAT");
+        let mut expiration_digits = [0u8; 20];
+        let expiration = u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
+        return Some(encode_resp_frame_slices(&[
+            b"SET", key, value, pxat, expiration,
         ]));
     }
 
     match processor.key_exists_any(key) {
         Ok(true) => Some(original_frame.to_vec()),
-        Ok(false) => Some(encode_resp_frame(&[b"DEL".to_vec(), key.to_vec()])),
+        Ok(false) => Some(encode_resp_frame_slices(&[b"DEL", key])),
         Err(_) => Some(original_frame.to_vec()),
     }
 }
@@ -3572,15 +4942,13 @@ fn rewrite_expire_family_replication_frame(
     let key = args.get(1).map(arg_slice_bytes)?;
 
     match processor.key_exists_any(key) {
-        Ok(false) => Some(encode_resp_frame(&[b"DEL".to_vec(), key.to_vec()])),
+        Ok(false) => Some(encode_resp_frame_slices(&[b"DEL", key])),
         Ok(true) => processor
             .expiration_unix_millis_for_key(key)
             .map(|expiration_unix_millis| {
-                encode_resp_frame(&[
-                    b"PEXPIREAT".to_vec(),
-                    key.to_vec(),
-                    expiration_unix_millis.to_string().into_bytes(),
-                ])
+                let mut expiration_digits = [0u8; 20];
+                let expiration = u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
+                encode_resp_frame_slices(&[b"PEXPIREAT", key, expiration])
             }),
         Err(_) => None,
     }
@@ -3603,7 +4971,7 @@ fn rewrite_getex_replication_frame(
     let option = args.get(2).map(arg_slice_bytes)?;
 
     if ascii_eq_ignore_case(option, b"PERSIST") {
-        return Some(encode_resp_frame(&[b"PERSIST".to_vec(), key.to_vec()]));
+        return Some(encode_resp_frame_slices(&[b"PERSIST", key]));
     }
 
     if ascii_eq_ignore_case(option, b"EX")
@@ -3612,16 +4980,15 @@ fn rewrite_getex_replication_frame(
         || ascii_eq_ignore_case(option, b"PXAT")
     {
         return match processor.key_exists_any(key) {
-            Ok(false) => Some(encode_resp_frame(&[b"DEL".to_vec(), key.to_vec()])),
+            Ok(false) => Some(encode_resp_frame_slices(&[b"DEL", key])),
             Ok(true) => {
                 processor
                     .expiration_unix_millis_for_key(key)
                     .map(|expiration_unix_millis| {
-                        encode_resp_frame(&[
-                            b"PEXPIREAT".to_vec(),
-                            key.to_vec(),
-                            expiration_unix_millis.to_string().into_bytes(),
-                        ])
+                        let mut expiration_digits = [0u8; 20];
+                        let expiration =
+                            u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
+                        encode_resp_frame_slices(&[b"PEXPIREAT", key, expiration])
                     })
             }
             Err(_) => Some(original_frame.to_vec()),
@@ -3651,12 +5018,12 @@ fn rewrite_restore_replication_frame(
 
     match processor.key_exists_any(key) {
         Ok(false) => {
-            let delete_command = if processor.lazyfree_lazy_server_del_enabled() {
-                b"UNLINK".to_vec()
+            let delete_command: &[u8] = if processor.lazyfree_lazy_server_del_enabled() {
+                b"UNLINK"
             } else {
-                b"DEL".to_vec()
+                b"DEL"
             };
-            return Some(encode_resp_frame(&[delete_command, key.to_vec()]));
+            return Some(encode_resp_frame_slices(&[delete_command, key]));
         }
         Ok(true) => {}
         Err(_) => return Some(original_frame.to_vec()),
@@ -3666,27 +5033,212 @@ fn rewrite_restore_replication_frame(
         return Some(original_frame.to_vec());
     };
 
-    let mut option_parts = Vec::new();
     let mut absttl_present = false;
     for option in &args[4..] {
-        let token = arg_slice_bytes(option).to_vec();
-        if ascii_eq_ignore_case(&token, b"ABSTTL") {
+        let token = arg_slice_bytes(option);
+        if ascii_eq_ignore_case(token, b"ABSTTL") {
             absttl_present = true;
         }
-        option_parts.push(token);
-    }
-    if !absttl_present {
-        option_parts.push(b"ABSTTL".to_vec());
     }
 
-    let mut parts = vec![
-        b"RESTORE".to_vec(),
-        key.to_vec(),
-        expiration_unix_millis.to_string().into_bytes(),
-        payload.to_vec(),
-    ];
-    parts.extend(option_parts);
-    Some(encode_resp_frame(&parts))
+    let option_count = args.len().saturating_sub(4) + usize::from(!absttl_present);
+    let mut rewritten = Vec::new();
+    append_array_length_frame(&mut rewritten, 4 + option_count);
+    append_bulk_string_frame(&mut rewritten, b"RESTORE");
+    append_bulk_string_frame(&mut rewritten, key);
+    let mut expiration_digits = [0u8; 20];
+    let expiration = u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
+    append_bulk_string_frame(&mut rewritten, expiration);
+    append_bulk_string_frame(&mut rewritten, payload);
+    for option in &args[4..] {
+        append_bulk_string_frame(&mut rewritten, arg_slice_bytes(option));
+    }
+    if !absttl_present {
+        append_bulk_string_frame(&mut rewritten, b"ABSTTL");
+    }
+    Some(rewritten)
+}
+
+fn rewrite_spop_replication_frame(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    let Some(key_arg) = args.get(1) else {
+        return Some(original_frame.to_vec());
+    };
+    let members = match parse_spop_response_members(frame_response) {
+        Some(members) => members,
+        None => return Some(original_frame.to_vec()),
+    };
+    if members.is_empty() {
+        return None;
+    }
+
+    let key = arg_slice_bytes(key_arg);
+    match processor.key_exists_any(key) {
+        Ok(false) => {
+            let delete_command: &[u8] = if processor.lazyfree_lazy_server_del_enabled() {
+                b"UNLINK"
+            } else {
+                b"DEL"
+            };
+            Some(encode_resp_frame_slices(&[delete_command, key]))
+        }
+        Ok(true) => {
+            let mut rewritten = Vec::new();
+            append_array_length_frame(&mut rewritten, members.len() + 2);
+            append_bulk_string_frame(&mut rewritten, b"SREM");
+            append_bulk_string_frame(&mut rewritten, key);
+            for member in members {
+                append_bulk_string_frame(&mut rewritten, &member);
+            }
+            Some(rewritten)
+        }
+        Err(_) => Some(original_frame.to_vec()),
+    }
+}
+
+fn rewrite_hgetdel_replication_frame(
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    let deleted_any = match parse_hgetdel_response_deleted_any(frame_response) {
+        Some(deleted_any) => deleted_any,
+        None => return Some(original_frame.to_vec()),
+    };
+    if !deleted_any {
+        return None;
+    }
+
+    if args.len() < 5 {
+        return Some(original_frame.to_vec());
+    }
+    let key = match args.get(1) {
+        Some(key) => arg_slice_bytes(key),
+        None => return Some(original_frame.to_vec()),
+    };
+    if !ascii_eq_ignore_case(arg_slice_bytes(args.get(2)?), b"FIELDS") {
+        return Some(original_frame.to_vec());
+    }
+    let field_count = parse_u64_ascii(arg_slice_bytes(args.get(3)?))? as usize;
+    if args.len() != field_count + 4 {
+        return Some(original_frame.to_vec());
+    }
+
+    let mut rewritten = Vec::new();
+    append_array_length_frame(&mut rewritten, field_count + 2);
+    append_bulk_string_frame(&mut rewritten, b"HDEL");
+    append_bulk_string_frame(&mut rewritten, key);
+    for arg in &args[4..] {
+        append_bulk_string_frame(&mut rewritten, arg_slice_bytes(arg));
+    }
+    Some(rewritten)
+}
+
+fn parse_spop_response_members(frame: &[u8]) -> Option<Vec<Vec<u8>>> {
+    match frame.first().copied()? {
+        b'_' => {
+            if frame == b"_\r\n" {
+                Some(Vec::new())
+            } else {
+                None
+            }
+        }
+        b'$' => {
+            let (member, next_offset) = parse_resp_bulk_string_at(frame, 0)?;
+            if next_offset != frame.len() {
+                return None;
+            }
+            Some(member.into_iter().collect())
+        }
+        b'*' | b'~' => {
+            let (count, mut offset) = parse_resp_length_at(frame, 0, frame[0])?;
+            if count < 0 {
+                return Some(Vec::new());
+            }
+            let count = usize::try_from(count).ok()?;
+            let mut members = Vec::with_capacity(count);
+            for _ in 0..count {
+                let (member, next_offset) = parse_resp_bulk_string_at(frame, offset)?;
+                offset = next_offset;
+                if let Some(member) = member {
+                    members.push(member);
+                }
+            }
+            if offset != frame.len() {
+                return None;
+            }
+            Some(members)
+        }
+        _ => None,
+    }
+}
+
+fn parse_hgetdel_response_deleted_any(frame: &[u8]) -> Option<bool> {
+    if frame.first().copied()? != b'*' {
+        return None;
+    }
+    let (count, mut offset) = parse_resp_length_at(frame, 0, b'*')?;
+    if count < 0 {
+        return Some(false);
+    }
+    let count = usize::try_from(count).ok()?;
+    let mut deleted_any = false;
+    for _ in 0..count {
+        match frame.get(offset).copied()? {
+            b'$' => {
+                let (value, next_offset) = parse_resp_bulk_string_at(frame, offset)?;
+                deleted_any |= value.is_some();
+                offset = next_offset;
+            }
+            b'_' => {
+                if frame.get(offset..offset + 3)? != b"_\r\n" {
+                    return None;
+                }
+                offset += 3;
+            }
+            _ => return None,
+        }
+    }
+    if offset != frame.len() {
+        return None;
+    }
+    Some(deleted_any)
+}
+
+fn parse_resp_length_at(frame: &[u8], start: usize, prefix: u8) -> Option<(i64, usize)> {
+    if *frame.get(start)? != prefix {
+        return None;
+    }
+    let payload_start = start.checked_add(1)?;
+    let mut payload_end = payload_start;
+    while payload_end.checked_add(1)? < frame.len() {
+        if frame[payload_end] == b'\r' && frame[payload_end + 1] == b'\n' {
+            let value = parse_i64_ascii_bytes(&frame[payload_start..payload_end])?;
+            return Some((value, payload_end + 2));
+        }
+        payload_end += 1;
+    }
+    None
+}
+
+fn parse_resp_bulk_string_at(frame: &[u8], start: usize) -> Option<(Option<Vec<u8>>, usize)> {
+    let (len, payload_start) = parse_resp_length_at(frame, start, b'$')?;
+    if len < 0 {
+        return Some((None, payload_start));
+    }
+    let len = usize::try_from(len).ok()?;
+    let payload_end = payload_start.checked_add(len)?;
+    if frame.get(payload_end..payload_end.checked_add(2)?)? != b"\r\n" {
+        return None;
+    }
+    Some((
+        Some(frame[payload_start..payload_end].to_vec()),
+        payload_end + 2,
+    ))
 }
 
 fn parse_resp_integer(frame: &[u8]) -> Option<i64> {
@@ -3727,12 +5279,41 @@ fn lmpop_pop_command(command: CommandId, args: &[ArgSlice]) -> Option<&'static [
     }
 }
 
-struct LmpopReplicationMeta {
-    key: Vec<u8>,
+fn zmpop_pop_command(command: CommandId, args: &[ArgSlice]) -> Option<&'static [u8]> {
+    let direction_index = match command {
+        CommandId::Zmpop => {
+            let numkeys = parse_u64_ascii(
+                // SAFETY: args were parsed from the current request frame.
+                arg_slice_bytes(args.get(1)?),
+            )? as usize;
+            2usize.checked_add(numkeys)?
+        }
+        CommandId::Bzmpop => {
+            let numkeys = parse_u64_ascii(
+                // SAFETY: args were parsed from the current request frame.
+                arg_slice_bytes(args.get(2)?),
+            )? as usize;
+            3usize.checked_add(numkeys)?
+        }
+        _ => return None,
+    };
+    // SAFETY: args were parsed from the current request frame.
+    let direction = arg_slice_bytes(args.get(direction_index)?);
+    if ascii_eq_ignore_case(direction, b"MIN") {
+        Some(b"ZPOPMIN")
+    } else if ascii_eq_ignore_case(direction, b"MAX") {
+        Some(b"ZPOPMAX")
+    } else {
+        None
+    }
+}
+
+struct MpopReplicationMeta<'a> {
+    key: &'a [u8],
     popped_count: usize,
 }
 
-fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<LmpopReplicationMeta> {
+fn parse_mpop_replication_meta(frame_response: &[u8]) -> Option<MpopReplicationMeta<'_>> {
     if frame_response == b"*-1\r\n" {
         return None;
     }
@@ -3752,25 +5333,25 @@ fn parse_lmpop_replication_meta(frame_response: &[u8]) -> Option<LmpopReplicatio
     }
     cursor += 1;
     let parsed = parse_resp_decimal(frame_response, cursor)?;
-    Some(LmpopReplicationMeta {
+    Some(MpopReplicationMeta {
         key,
         popped_count: parsed.value,
     })
 }
 
-struct ParsedBulkString {
-    value: Vec<u8>,
+struct ParsedBulkString<'a> {
+    value: &'a [u8],
     next_cursor: usize,
 }
 
-fn parse_resp_bulk_string(input: &[u8], cursor: usize) -> Option<ParsedBulkString> {
+fn parse_resp_bulk_string<'a>(input: &'a [u8], cursor: usize) -> Option<ParsedBulkString<'a>> {
     if input.get(cursor)? != &b'$' {
         return None;
     }
     let parsed = parse_resp_decimal(input, cursor + 1)?;
     let mut cursor = parsed.next_cursor;
     let end = cursor.checked_add(parsed.value)?;
-    let value = input.get(cursor..end)?.to_vec();
+    let value = input.get(cursor..end)?;
     cursor = end;
     if input.get(cursor..cursor + 2)? != b"\r\n" {
         return None;
@@ -4021,14 +5602,47 @@ fn tokenize_inline_command(line: &[u8]) -> Result<Vec<Vec<u8>>, InlineTokenizeEr
 }
 
 fn encode_resp_frame(parts: &[Vec<u8>]) -> Vec<u8> {
-    let mut out = Vec::new();
-    out.extend_from_slice(format!("*{}\r\n", parts.len()).as_bytes());
+    let mut out = Vec::with_capacity(resp_frame_capacity_from_lengths(
+        parts.len(),
+        parts.iter().map(Vec::len),
+    ));
+    append_array_length_frame(&mut out, parts.len());
     for part in parts {
-        out.extend_from_slice(format!("${}\r\n", part.len()).as_bytes());
-        out.extend_from_slice(part);
-        out.extend_from_slice(b"\r\n");
+        append_bulk_string_frame(&mut out, part);
     }
     out
+}
+
+fn encode_resp_frame_slices(parts: &[&[u8]]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(resp_frame_capacity_from_lengths(
+        parts.len(),
+        parts.iter().map(|part| part.len()),
+    ));
+    append_array_length_frame(&mut out, parts.len());
+    for part in parts {
+        append_bulk_string_frame(&mut out, part);
+    }
+    out
+}
+
+fn resp_frame_capacity_from_lengths(
+    part_count: usize,
+    part_lengths: impl Iterator<Item = usize>,
+) -> usize {
+    let mut capacity = 1 + decimal_ascii_len(part_count) + 2;
+    for part_len in part_lengths {
+        capacity += 1 + decimal_ascii_len(part_len) + 2 + part_len + 2;
+    }
+    capacity
+}
+
+fn decimal_ascii_len(mut value: usize) -> usize {
+    let mut digits = 1usize;
+    while value >= 10 {
+        value /= 10;
+        digits += 1;
+    }
+    digits
 }
 
 fn parse_positive_env_usize(key: &str) -> Option<usize> {
@@ -4059,7 +5673,7 @@ fn parse_bool_env_flag(raw: Option<&str>, key: &str) -> io::Result<bool> {
 
 fn append_too_many_arguments_error(output: &mut Vec<u8>, max_resp_arguments: usize) {
     output.extend_from_slice(b"-ERR too many arguments in request (max ");
-    output.extend_from_slice(max_resp_arguments.to_string().as_bytes());
+    append_usize_ascii_frame(output, max_resp_arguments);
     output.extend_from_slice(b")\r\n");
 }
 
@@ -4088,6 +5702,188 @@ impl Drop for ConnectionLifecycle<'_> {
 mod tests {
     use super::*;
     use garnet_common::parse_resp_command_arg_slices;
+
+    fn decode_bulk_payload(frame: &[u8]) -> Vec<u8> {
+        assert!(frame.starts_with(b"$"));
+        let Some(header_end) = frame.windows(2).position(|window| window == b"\r\n") else {
+            panic!("bulk string frame must contain CRLF header");
+        };
+        let payload_len = std::str::from_utf8(&frame[1..header_end])
+            .unwrap()
+            .parse::<usize>()
+            .unwrap();
+        let payload_start = header_end + 2;
+        let payload_end = payload_start + payload_len;
+        frame[payload_start..payload_end].to_vec()
+    }
+
+    #[test]
+    fn cluster_snapshot_helpers_render_live_info_and_nodes() {
+        let mut config = ClusterConfig::new_local("node-1", "127.0.0.1", 7001);
+        let (next, remote_id) = config
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+        config = next;
+        config = config
+            .set_slot_state(SlotNumber::new(0), LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        config = config
+            .set_slot_state(SlotNumber::new(1), remote_id, SlotState::Stable)
+            .unwrap();
+
+        let mut resp2_info = Vec::new();
+        append_cluster_info_snapshot_frame(&mut resp2_info, &config, RespProtocolVersion::Resp2);
+        let info_payload = decode_bulk_payload(&resp2_info);
+        let info_text = String::from_utf8_lossy(&info_payload);
+        assert!(info_text.contains("cluster_slots_assigned:2"));
+        assert!(info_text.contains("cluster_known_nodes:2"));
+        assert!(info_text.contains("cluster_state:fail"));
+
+        let mut resp3_info = Vec::new();
+        append_cluster_info_snapshot_frame(&mut resp3_info, &config, RespProtocolVersion::Resp3);
+        assert!(resp3_info.starts_with(b"="));
+        assert!(
+            String::from_utf8_lossy(&resp3_info).contains("txt:cluster_state:fail"),
+            "RESP3 cluster info must use verbatim string format"
+        );
+
+        let mut nodes = Vec::new();
+        append_cluster_nodes_snapshot_frame(&mut nodes, &config);
+        let nodes_payload = decode_bulk_payload(&nodes);
+        let nodes_text = String::from_utf8_lossy(&nodes_payload);
+        assert!(nodes_text.contains("node-1 127.0.0.1:7001@17001 myself,master"));
+        assert!(nodes_text.contains("node-2 10.0.0.2:6380@16380 master"));
+        assert!(
+            nodes_text.contains("connected 0") && nodes_text.contains("connected 1"),
+            "cluster nodes should expose slot ownership"
+        );
+    }
+
+    #[test]
+    fn cluster_snapshot_helpers_render_live_slots_and_shards() {
+        let mut config = ClusterConfig::new_local("node-1", "127.0.0.1", 7001);
+        let (next, remote_id) = config
+            .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+            .unwrap();
+        config = next;
+        config = config
+            .set_slot_state(SlotNumber::new(0), LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        config = config
+            .set_slot_state(SlotNumber::new(1), remote_id, SlotState::Stable)
+            .unwrap();
+
+        let mut slots = Vec::new();
+        append_cluster_slots_snapshot_frame(&mut slots, &config);
+        assert!(
+            slots.starts_with(b"*2\r\n"),
+            "CLUSTER SLOTS should include one range per assigned owner in this fixture"
+        );
+        let slots_text = String::from_utf8_lossy(&slots);
+        assert!(slots_text.contains("$9\r\n127.0.0.1\r\n"));
+        assert!(slots_text.contains("$8\r\n10.0.0.2\r\n"));
+        assert!(slots_text.contains("$6\r\nnode-1\r\n"));
+        assert!(slots_text.contains("$6\r\nnode-2\r\n"));
+
+        let mut shards = Vec::new();
+        append_cluster_shards_snapshot_frame(&mut shards, &config);
+        assert!(
+            shards.starts_with(b"*2\r\n"),
+            "CLUSTER SHARDS should include both primaries in this fixture"
+        );
+        let shards_text = String::from_utf8_lossy(&shards);
+        assert!(shards_text.contains("$5\r\nslots\r\n"));
+        assert!(shards_text.contains("$5\r\nnodes\r\n"));
+        assert!(shards_text.contains("$4\r\nrole\r\n$6\r\nmaster\r\n"));
+    }
+
+    #[test]
+    fn cluster_snapshot_command_handler_recognizes_supported_subcommands() {
+        let mut config = ClusterConfig::new_local("node-1", "127.0.0.1", 7001);
+        config = config
+            .set_slot_state(SlotNumber::new(0), LOCAL_WORKER_ID, SlotState::Stable)
+            .unwrap();
+        let cluster_store = ClusterConfigStore::new(config);
+        let mut args = [ArgSlice::EMPTY; 8];
+
+        let myid = encode_resp_frame(&[b"CLUSTER".to_vec(), b"MYID".to_vec()]);
+        let myid_meta = parse_resp_command_arg_slices(&myid, &mut args).unwrap();
+        let mut response = Vec::new();
+        assert!(try_handle_live_cluster_snapshot_command(
+            &args[..myid_meta.argument_count],
+            &mut response,
+            &cluster_store,
+            RespProtocolVersion::Resp2,
+        ));
+        assert_eq!(response, b"$6\r\nnode-1\r\n");
+
+        response.clear();
+        let unknown = encode_resp_frame(&[b"CLUSTER".to_vec(), b"UNKNOWN".to_vec()]);
+        let unknown_meta = parse_resp_command_arg_slices(&unknown, &mut args).unwrap();
+        assert!(
+            !try_handle_live_cluster_snapshot_command(
+                &args[..unknown_meta.argument_count],
+                &mut response,
+                &cluster_store,
+                RespProtocolVersion::Resp2,
+            ),
+            "unsupported subcommands should fall through to request_lifecycle"
+        );
+    }
+
+    #[test]
+    fn xreadgroup_claim_blocking_wait_detection_supports_claim_and_multiple_streams() {
+        let mut args = [ArgSlice::EMPTY; 16];
+
+        let blocking = encode_resp_frame(&[
+            b"XREADGROUP".to_vec(),
+            b"GROUP".to_vec(),
+            b"g".to_vec(),
+            b"c".to_vec(),
+            b"BLOCK".to_vec(),
+            b"100".to_vec(),
+            b"CLAIM".to_vec(),
+            b"50".to_vec(),
+            b"STREAMS".to_vec(),
+            b"s1".to_vec(),
+            b"s2".to_vec(),
+            b">".to_vec(),
+            b">".to_vec(),
+        ]);
+        let blocking_meta = parse_resp_command_arg_slices(&blocking, &mut args).unwrap();
+        let blocking_args = &args[..blocking_meta.argument_count];
+        assert!(request_uses_blocking_wait(
+            CommandId::Xreadgroup,
+            blocking_args
+        ));
+        let wait_keys = xreadgroup_blocking_wait_keys(blocking_args);
+        assert_eq!(wait_keys.len(), 2);
+        assert_eq!(wait_keys[0].key().as_slice(), b"s1");
+        assert_eq!(wait_keys[1].key().as_slice(), b"s2");
+
+        let mixed_ids = encode_resp_frame(&[
+            b"XREADGROUP".to_vec(),
+            b"GROUP".to_vec(),
+            b"g".to_vec(),
+            b"c".to_vec(),
+            b"BLOCK".to_vec(),
+            b"100".to_vec(),
+            b"CLAIM".to_vec(),
+            b"50".to_vec(),
+            b"STREAMS".to_vec(),
+            b"s1".to_vec(),
+            b"s2".to_vec(),
+            b"0".to_vec(),
+            b">".to_vec(),
+        ]);
+        let mixed_meta = parse_resp_command_arg_slices(&mixed_ids, &mut args).unwrap();
+        let mixed_args = &args[..mixed_meta.argument_count];
+        assert!(!request_uses_blocking_wait(
+            CommandId::Xreadgroup,
+            mixed_args
+        ));
+        assert!(xreadgroup_blocking_wait_keys(mixed_args).is_empty());
+    }
 
     #[test]
     fn eval_mutation_detection_skips_read_only_scripts() {
@@ -4371,6 +6167,253 @@ mod tests {
         assert_eq!(rewritten_del_meta.argument_count, 2);
         assert_eq!(arg_slice_bytes(&rewritten_del_args[0]), b"DEL");
         assert_eq!(arg_slice_bytes(&rewritten_del_args[1]), b"foo");
+    }
+
+    #[test]
+    fn replication_rewrites_lmpop_to_pop_with_count() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let lmpop_frame = encode_resp_frame(&[
+            b"LMPOP".to_vec(),
+            b"1".to_vec(),
+            b"mylist".to_vec(),
+            b"LEFT".to_vec(),
+            b"COUNT".to_vec(),
+            b"2".to_vec(),
+        ]);
+        let mut lmpop_args = [ArgSlice::EMPTY; 8];
+        let lmpop_meta = parse_resp_command_arg_slices(&lmpop_frame, &mut lmpop_args).unwrap();
+        let lmpop_response = b"*2\r\n$6\r\nmylist\r\n*2\r\n$1\r\na\r\n$1\r\nb\r\n";
+
+        let rewritten = replication_frame_for_command(
+            &processor,
+            CommandId::Lmpop,
+            &lmpop_args[..lmpop_meta.argument_count],
+            lmpop_response,
+            &lmpop_frame,
+        )
+        .expect("LMPOP replication rewrite must exist");
+
+        let mut rewritten_args = [ArgSlice::EMPTY; 8];
+        let rewritten_meta =
+            parse_resp_command_arg_slices(&rewritten, &mut rewritten_args).unwrap();
+        assert_eq!(rewritten_meta.argument_count, 3);
+        assert_eq!(arg_slice_bytes(&rewritten_args[0]), b"LPOP");
+        assert_eq!(arg_slice_bytes(&rewritten_args[1]), b"mylist");
+        assert_eq!(arg_slice_bytes(&rewritten_args[2]), b"2");
+    }
+
+    #[test]
+    fn replication_rewrites_zmpop_to_pop_with_count() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let zmpop_frame = encode_resp_frame(&[
+            b"ZMPOP".to_vec(),
+            b"2".to_vec(),
+            b"zset1".to_vec(),
+            b"zset2".to_vec(),
+            b"MAX".to_vec(),
+            b"COUNT".to_vec(),
+            b"10".to_vec(),
+        ]);
+        let mut zmpop_args = [ArgSlice::EMPTY; 8];
+        let zmpop_meta = parse_resp_command_arg_slices(&zmpop_frame, &mut zmpop_args).unwrap();
+        let zmpop_response =
+            b"*2\r\n$5\r\nzset2\r\n*3\r\n*2\r\n$4\r\nfour\r\n$1\r\n4\r\n*2\r\n$4\r\nfive\r\n$1\r\n5\r\n*2\r\n$3\r\nsix\r\n$1\r\n6\r\n";
+
+        let rewritten = replication_frame_for_command(
+            &processor,
+            CommandId::Zmpop,
+            &zmpop_args[..zmpop_meta.argument_count],
+            zmpop_response,
+            &zmpop_frame,
+        )
+        .expect("ZMPOP replication rewrite must exist");
+
+        let mut rewritten_args = [ArgSlice::EMPTY; 8];
+        let rewritten_meta =
+            parse_resp_command_arg_slices(&rewritten, &mut rewritten_args).unwrap();
+        assert_eq!(rewritten_meta.argument_count, 3);
+        assert_eq!(arg_slice_bytes(&rewritten_args[0]), b"ZPOPMAX");
+        assert_eq!(arg_slice_bytes(&rewritten_args[1]), b"zset2");
+        assert_eq!(arg_slice_bytes(&rewritten_args[2]), b"3");
+    }
+
+    #[test]
+    fn replication_rewrites_spop_to_srem_and_del_or_unlink() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let mut args = [ArgSlice::EMPTY; 128];
+        let mut response = Vec::new();
+
+        let sadd_partial = encode_resp_frame(&[
+            b"SADD".to_vec(),
+            b"set1".to_vec(),
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"c".to_vec(),
+            b"d".to_vec(),
+        ]);
+        let sadd_partial_meta = parse_resp_command_arg_slices(&sadd_partial, &mut args).unwrap();
+        processor
+            .execute(&args[..sadd_partial_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":4\r\n");
+
+        response.clear();
+        let spop_partial = encode_resp_frame(&[b"SPOP".to_vec(), b"set1".to_vec(), b"2".to_vec()]);
+        let spop_partial_meta = parse_resp_command_arg_slices(&spop_partial, &mut args).unwrap();
+        processor
+            .execute(&args[..spop_partial_meta.argument_count], &mut response)
+            .unwrap();
+        let expected_members =
+            parse_spop_response_members(&response).expect("SPOP response should parse");
+        assert_eq!(expected_members.len(), 2);
+        let rewritten_srem = replication_frame_for_command(
+            &processor,
+            CommandId::Spop,
+            &args[..spop_partial_meta.argument_count],
+            &response,
+            &spop_partial,
+        )
+        .expect("SPOP partial rewrite should exist");
+        let mut rewritten_srem_args = [ArgSlice::EMPTY; 8];
+        let rewritten_srem_meta =
+            parse_resp_command_arg_slices(&rewritten_srem, &mut rewritten_srem_args).unwrap();
+        assert_eq!(rewritten_srem_meta.argument_count, 4);
+        assert_eq!(arg_slice_bytes(&rewritten_srem_args[0]), b"SREM");
+        assert_eq!(arg_slice_bytes(&rewritten_srem_args[1]), b"set1");
+        assert_eq!(
+            arg_slice_bytes(&rewritten_srem_args[2]),
+            expected_members[0].as_slice()
+        );
+        assert_eq!(
+            arg_slice_bytes(&rewritten_srem_args[3]),
+            expected_members[1].as_slice()
+        );
+
+        response.clear();
+        processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+        let sadd_resp3 = encode_resp_frame(&[
+            b"SADD".to_vec(),
+            b"set2".to_vec(),
+            b"1".to_vec(),
+            b"2".to_vec(),
+            b"3".to_vec(),
+        ]);
+        let sadd_resp3_meta = parse_resp_command_arg_slices(&sadd_resp3, &mut args).unwrap();
+        processor
+            .execute(&args[..sadd_resp3_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":3\r\n");
+
+        response.clear();
+        let spop_resp3 = encode_resp_frame(&[b"SPOP".to_vec(), b"set2".to_vec(), b"2".to_vec()]);
+        let spop_resp3_meta = parse_resp_command_arg_slices(&spop_resp3, &mut args).unwrap();
+        processor
+            .execute(&args[..spop_resp3_meta.argument_count], &mut response)
+            .unwrap();
+        assert!(
+            response.starts_with(b"~2\r\n"),
+            "RESP3 SPOP count should return set type, got: {:?}",
+            String::from_utf8_lossy(&response)
+        );
+        let rewritten_resp3 = replication_frame_for_command(
+            &processor,
+            CommandId::Spop,
+            &args[..spop_resp3_meta.argument_count],
+            &response,
+            &spop_resp3,
+        )
+        .expect("RESP3 SPOP partial rewrite should exist");
+        let mut rewritten_resp3_args = [ArgSlice::EMPTY; 8];
+        let rewritten_resp3_meta =
+            parse_resp_command_arg_slices(&rewritten_resp3, &mut rewritten_resp3_args).unwrap();
+        assert_eq!(rewritten_resp3_meta.argument_count, 4);
+        assert_eq!(arg_slice_bytes(&rewritten_resp3_args[0]), b"SREM");
+        assert_eq!(arg_slice_bytes(&rewritten_resp3_args[1]), b"set2");
+        processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+
+        response.clear();
+        let sadd_del = encode_resp_frame(&[
+            b"SADD".to_vec(),
+            b"set3".to_vec(),
+            b"1".to_vec(),
+            b"2".to_vec(),
+            b"3".to_vec(),
+            b"4".to_vec(),
+            b"5".to_vec(),
+        ]);
+        let sadd_del_meta = parse_resp_command_arg_slices(&sadd_del, &mut args).unwrap();
+        processor
+            .execute(&args[..sadd_del_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":5\r\n");
+
+        response.clear();
+        let spop_del = encode_resp_frame(&[b"SPOP".to_vec(), b"set3".to_vec(), b"5".to_vec()]);
+        let spop_del_meta = parse_resp_command_arg_slices(&spop_del, &mut args).unwrap();
+        processor
+            .execute(&args[..spop_del_meta.argument_count], &mut response)
+            .unwrap();
+        let rewritten_del = replication_frame_for_command(
+            &processor,
+            CommandId::Spop,
+            &args[..spop_del_meta.argument_count],
+            &response,
+            &spop_del,
+        )
+        .expect("SPOP full-removal DEL rewrite should exist");
+        let mut rewritten_del_args = [ArgSlice::EMPTY; 8];
+        let rewritten_del_meta =
+            parse_resp_command_arg_slices(&rewritten_del, &mut rewritten_del_args).unwrap();
+        assert_eq!(rewritten_del_meta.argument_count, 2);
+        assert_eq!(arg_slice_bytes(&rewritten_del_args[0]), b"DEL");
+        assert_eq!(arg_slice_bytes(&rewritten_del_args[1]), b"set3");
+
+        response.clear();
+        let config_lazyfree = encode_resp_frame(&[
+            b"CONFIG".to_vec(),
+            b"SET".to_vec(),
+            b"lazyfree-lazy-server-del".to_vec(),
+            b"yes".to_vec(),
+        ]);
+        let config_lazyfree_meta =
+            parse_resp_command_arg_slices(&config_lazyfree, &mut args).unwrap();
+        processor
+            .execute(&args[..config_lazyfree_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let mut sadd_unlink_args = vec![b"SADD".to_vec(), b"set4".to_vec()];
+        for value in 1..=65 {
+            sadd_unlink_args.push(value.to_string().into_bytes());
+        }
+        let sadd_unlink = encode_resp_frame(&sadd_unlink_args);
+        let sadd_unlink_meta = parse_resp_command_arg_slices(&sadd_unlink, &mut args).unwrap();
+        processor
+            .execute(&args[..sadd_unlink_meta.argument_count], &mut response)
+            .unwrap();
+        assert_eq!(response, b":65\r\n");
+
+        response.clear();
+        let spop_unlink = encode_resp_frame(&[b"SPOP".to_vec(), b"set4".to_vec(), b"65".to_vec()]);
+        let spop_unlink_meta = parse_resp_command_arg_slices(&spop_unlink, &mut args).unwrap();
+        processor
+            .execute(&args[..spop_unlink_meta.argument_count], &mut response)
+            .unwrap();
+        let rewritten_unlink = replication_frame_for_command(
+            &processor,
+            CommandId::Spop,
+            &args[..spop_unlink_meta.argument_count],
+            &response,
+            &spop_unlink,
+        )
+        .expect("SPOP full-removal UNLINK rewrite should exist");
+        let mut rewritten_unlink_args = [ArgSlice::EMPTY; 8];
+        let rewritten_unlink_meta =
+            parse_resp_command_arg_slices(&rewritten_unlink, &mut rewritten_unlink_args).unwrap();
+        assert_eq!(rewritten_unlink_meta.argument_count, 2);
+        assert_eq!(arg_slice_bytes(&rewritten_unlink_args[0]), b"UNLINK");
+        assert_eq!(arg_slice_bytes(&rewritten_unlink_args[1]), b"set4");
     }
 
     #[test]
@@ -4894,5 +6937,231 @@ mod tests {
             "expected error for invalid CLIENT KILL ID: {}",
             response_str,
         );
+    }
+
+    #[test]
+    fn client_trackinginfo_and_getredir_follow_connection_state() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let trackinginfo_frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"TRACKINGINFO".to_vec()]);
+        let trackinginfo_meta =
+            parse_resp_command_arg_slices(&trackinginfo_frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..trackinginfo_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(
+            response,
+            b"*6\r\n$5\r\nflags\r\n*1\r\n$3\r\noff\r\n$8\r\nredirect\r\n:-1\r\n$8\r\nprefixes\r\n*0\r\n"
+        );
+
+        response.clear();
+        let getredir_frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"GETREDIR".to_vec()]);
+        let getredir_meta = parse_resp_command_arg_slices(&getredir_frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..getredir_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b":-1\r\n");
+
+        response.clear();
+        let tracking_on = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"TRACKING".to_vec(),
+            b"ON".to_vec(),
+            b"REDIRECT".to_vec(),
+            b"42".to_vec(),
+            b"NOLOOP".to_vec(),
+        ]);
+        let tracking_on_meta = parse_resp_command_arg_slices(&tracking_on, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..tracking_on_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let trackinginfo_meta =
+            parse_resp_command_arg_slices(&trackinginfo_frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..trackinginfo_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(
+            response,
+            b"*6\r\n$5\r\nflags\r\n*2\r\n$2\r\non\r\n$6\r\nnoloop\r\n$8\r\nredirect\r\n:42\r\n$8\r\nprefixes\r\n*0\r\n"
+        );
+
+        response.clear();
+        let getredir_meta = parse_resp_command_arg_slices(&getredir_frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..getredir_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b":42\r\n");
+    }
+
+    #[test]
+    fn client_tracking_and_caching_option_validation_matches_compat_contract() {
+        let processor = RequestProcessor::new().expect("processor must initialize");
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        let mut args = [ArgSlice::EMPTY; 16];
+        let mut response = Vec::new();
+
+        let tracking_bcast = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"TRACKING".to_vec(),
+            b"ON".to_vec(),
+            b"BCAST".to_vec(),
+            b"PREFIX".to_vec(),
+            b"foo".to_vec(),
+            b"PREFIX".to_vec(),
+            b"bar".to_vec(),
+        ]);
+        let tracking_bcast_meta =
+            parse_resp_command_arg_slices(&tracking_bcast, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..tracking_bcast_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let trackinginfo_frame = encode_resp_frame(&[b"CLIENT".to_vec(), b"TRACKINGINFO".to_vec()]);
+        let trackinginfo_meta =
+            parse_resp_command_arg_slices(&trackinginfo_frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..trackinginfo_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        let trackinginfo_text = String::from_utf8_lossy(&response);
+        assert!(
+            trackinginfo_text.contains("bcast"),
+            "expected bcast flag in TRACKINGINFO, got: {trackinginfo_text}"
+        );
+        assert!(
+            trackinginfo_text.contains("foo") && trackinginfo_text.contains("bar"),
+            "expected prefixes in TRACKINGINFO, got: {trackinginfo_text}"
+        );
+
+        response.clear();
+        let tracking_optin = encode_resp_frame(&[
+            b"CLIENT".to_vec(),
+            b"TRACKING".to_vec(),
+            b"ON".to_vec(),
+            b"OPTIN".to_vec(),
+        ]);
+        let tracking_optin_meta =
+            parse_resp_command_arg_slices(&tracking_optin, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..tracking_optin_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let caching_yes =
+            encode_resp_frame(&[b"CLIENT".to_vec(), b"CACHING".to_vec(), b"YES".to_vec()]);
+        let caching_yes_meta = parse_resp_command_arg_slices(&caching_yes, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..caching_yes_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"+OK\r\n");
+
+        response.clear();
+        let trackinginfo_meta =
+            parse_resp_command_arg_slices(&trackinginfo_frame, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..trackinginfo_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        let trackinginfo_text = String::from_utf8_lossy(&response);
+        assert!(
+            trackinginfo_text.contains("caching-yes"),
+            "expected caching-yes in TRACKINGINFO, got: {trackinginfo_text}"
+        );
+
+        response.clear();
+        let caching_on =
+            encode_resp_frame(&[b"CLIENT".to_vec(), b"CACHING".to_vec(), b"ON".to_vec()]);
+        let caching_on_meta = parse_resp_command_arg_slices(&caching_on, &mut args).unwrap();
+        handle_client_command(
+            &processor,
+            &metrics,
+            client_id,
+            &args[..caching_on_meta.argument_count],
+            &mut client_state,
+            &mut response,
+        );
+        assert_eq!(response, b"-ERR syntax error\r\n");
+    }
+
+    #[test]
+    fn encode_resp_frame_preserves_expected_resp2_shape() {
+        let frame = encode_resp_frame(&[
+            b"SET".to_vec(),
+            b"key".to_vec(),
+            b"value".to_vec(),
+            b"".to_vec(),
+        ]);
+        assert_eq!(
+            frame,
+            b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$0\r\n\r\n"
+        );
+    }
+
+    #[test]
+    fn append_integer_frame_handles_i64_min() {
+        let mut out = Vec::new();
+        append_integer_frame(&mut out, i64::MIN);
+        assert_eq!(out, b":-9223372036854775808\r\n");
     }
 }

@@ -10,6 +10,7 @@ RUNTEXT_BIN="${REDIS_RUNTEXT_BIN:-${REDIS_REPO_ROOT}/runtest}"
 RESULT_DIR="${RESULT_DIR:-${SCRIPT_DIR}/results/redis-runtest-external-$(date +%Y%m%d-%H%M%S)}"
 GARNET_PORT="${GARNET_PORT:-6396}"
 GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED:-1}"
 REDIS_RUNTEXT_MODE="${REDIS_RUNTEXT_MODE:-full}"
 RUNTEXT_ENABLE_CORE_DUMP="${RUNTEXT_ENABLE_CORE_DUMP:-1}"
@@ -28,9 +29,22 @@ RUNTEXT_WALL_TIMEOUT_SECONDS="${RUNTEXT_WALL_TIMEOUT_SECONDS:-1800}"
 RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
 RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
 EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-${SCRIPT_DIR}/known-failed-tests-singledb.txt}"
+RUNTEXT_SKIP_QUERYBUF_IN_FULL="${RUNTEXT_SKIP_QUERYBUF_IN_FULL:-1}"
+RUNTEXT_RUN_QUERYBUF_ISOLATED="${RUNTEXT_RUN_QUERYBUF_ISOLATED:-1}"
+RUNTEXT_SKIP_SCRIPTING_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_IN_FULL:-1}"
+RUNTEXT_RUN_SCRIPTING_ISOLATED="${RUNTEXT_RUN_SCRIPTING_ISOLATED:-1}"
+RUNTEXT_SKIP_OTHER_IN_FULL="${RUNTEXT_SKIP_OTHER_IN_FULL:-1}"
+RUNTEXT_RUN_OTHER_ISOLATED="${RUNTEXT_RUN_OTHER_ISOLATED:-1}"
+
+if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" && "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
+    # Keep full external probes from stalling for the runtest default (20 minutes)
+    # when a single case blocks indefinitely.
+    RUNTEXT_TIMEOUT_SECONDS="120"
+fi
 
 mkdir -p "${RESULT_DIR}"
 SUMMARY_CSV="${RESULT_DIR}/summary.csv"
+GARNET_LOG_FILE="${RESULT_DIR}/garnet-server.log"
 echo "case,status,details" > "${SUMMARY_CSV}"
 
 require_cmd() {
@@ -58,6 +72,102 @@ wait_for_ping() {
         sleep 0.1
     done
     return 1
+}
+
+garnet_process_id() {
+    local info_output=""
+    local process_id=""
+
+    info_output="$(redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw INFO SERVER 2>/dev/null || true)"
+    process_id="$(
+        printf '%s\n' "${info_output}" |
+            awk -F: '/^process_id:/ { gsub(/\r/, "", $2); print $2; exit }'
+    )"
+    if [[ "${process_id}" =~ ^[0-9]+$ ]]; then
+        echo "${process_id}"
+        return 0
+    fi
+    return 1
+}
+
+install_redis_external_pid_patch() {
+    local server_tcl="${REDIS_REPO_ROOT}/tests/support/server.tcl"
+    local patch_marker="# garnet-rs external pid injection"
+
+    if grep -Fq "${patch_marker}" "${server_tcl}"; then
+        return 0
+    fi
+
+    REDIS_SERVER_TCL_BACKUP="${RESULT_DIR}/server.tcl.before-garnet-external-pid-patch"
+    cp "${server_tcl}" "${REDIS_SERVER_TCL_BACKUP}"
+
+    perl -0pi -e '
+        s/set client \[redis \$::host \$::port 0 \$::tls\]\n    dict set srv "client" \$client\n/set client [redis \$::host \$::port 0 \$::tls]\n    dict set srv "client" \$client\n    # garnet-rs external pid injection\n    if {[info exists ::env(GARNET_EXTERNAL_SERVER_PID)] && \$::env(GARNET_EXTERNAL_SERVER_PID) ne ""} {\n        dict set srv "pid" \$::env(GARNET_EXTERNAL_SERVER_PID)\n    }\n/
+    ' "${server_tcl}"
+
+    if ! grep -Fq "${patch_marker}" "${server_tcl}"; then
+        cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
+        echo "failed to install Redis external pid patch into ${server_tcl}" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+restore_redis_external_pid_patch() {
+    local server_tcl="${REDIS_REPO_ROOT}/tests/support/server.tcl"
+    if [[ -n "${REDIS_SERVER_TCL_BACKUP:-}" && -f "${REDIS_SERVER_TCL_BACKUP}" ]]; then
+        cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
+        REDIS_SERVER_TCL_BACKUP=""
+    fi
+}
+
+start_garnet_server() {
+    if [[ -n "${GARNET_PID:-}" ]] && kill -0 "${GARNET_PID}" >/dev/null 2>&1; then
+        return 0
+    fi
+
+    (
+        cd "${GARNET_RS_ROOT}"
+        if [[ "${RUNTEXT_ENABLE_CORE_DUMP}" == "1" ]]; then
+            ulimit -c unlimited >/dev/null 2>&1 || true
+        fi
+        GARNET_BIND_ADDR="127.0.0.1:${GARNET_PORT}" \
+        RUST_BACKTRACE="${RUST_BACKTRACE}" \
+        GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED}" \
+        GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}" \
+        bash -lc "${GARNET_SERVER_CMD}"
+    ) >>"${GARNET_LOG_FILE}" 2>&1 &
+    GARNET_PID="$!"
+
+    if ! wait_for_ping "${GARNET_PORT}"; then
+        echo "garnet server failed to start on port ${GARNET_PORT}" >&2
+        stop_garnet_server
+        return 1
+    fi
+
+    if ! GARNET_EXTERNAL_SERVER_PID="$(garnet_process_id)"; then
+        echo "failed to determine garnet server process_id via INFO SERVER" >&2
+        stop_garnet_server
+        return 1
+    fi
+    export GARNET_EXTERNAL_SERVER_PID
+
+    return 0
+}
+
+stop_garnet_server() {
+    if [[ -n "${GARNET_PID:-}" ]]; then
+        kill "${GARNET_PID}" >/dev/null 2>&1 || true
+        wait "${GARNET_PID}" >/dev/null 2>&1 || true
+        GARNET_PID=""
+    fi
+    unset GARNET_EXTERNAL_SERVER_PID || true
+}
+
+restart_garnet_server() {
+    stop_garnet_server
+    start_garnet_server
 }
 
 kill_process_tree() {
@@ -233,6 +343,9 @@ run_full_runtest_case() {
         --dont-clean
         --durable
     )
+    local skip_querybuf_applied=0
+    local skip_scripting_applied=0
+    local skip_other_applied=0
     local extra_args=()
     local case_start_epoch
     case_start_epoch="$(date +%s)"
@@ -249,6 +362,28 @@ run_full_runtest_case() {
         # shellcheck disable=SC2294,SC2206
         eval "extra_args=(${RUNTEXT_EXTRA_ARGS})"
         cmd+=("${extra_args[@]}")
+    else
+        if [[ "${RUNTEXT_SKIP_QUERYBUF_IN_FULL}" == "1" ]]; then
+            # `unit/querybuf` can leave `DEBUG PAUSE-CRON 1` behind when it fails early,
+            # which contaminates later suites (notably `unit/tracking` expiration cases).
+            # Run it separately in isolation to keep full-run progression deterministic.
+            cmd+=(--skipunit "unit/querybuf")
+            skip_querybuf_applied=1
+        fi
+        if [[ "${RUNTEXT_SKIP_SCRIPTING_IN_FULL}" == "1" ]]; then
+            # `unit/scripting` failures can leave DEBUG expiration toggles behind
+            # (for example SET-ACTIVE-EXPIRE 0), which also contaminates `unit/tracking`.
+            # Run it separately in isolation to keep full-run progression deterministic.
+            cmd+=(--skipunit "unit/scripting")
+            skip_scripting_applied=1
+        fi
+        if [[ "${RUNTEXT_SKIP_OTHER_IN_FULL}" == "1" ]]; then
+            # `unit/other` currently passes on a fresh server but can time out in the
+            # long-lived full-run process at the inline pipeline stresser. Run it in
+            # isolation with a server restart so the main full probe can continue.
+            cmd+=(--skipunit "unit/other")
+            skip_other_applied=1
+        fi
     fi
 
     local exit_code=0
@@ -287,7 +422,7 @@ run_full_runtest_case() {
             gsub(/\r/, "", line)
             if (line ~ /^\[ok\]:/) {
                 ok++
-            } else if (line ~ /^\[err\]:/) {
+            } else if (line ~ /^\[err\]:/ || line ~ /^\[exception\]:/) {
                 err++
             } else if (line ~ /^\[ignore\]:/) {
                 ignore++
@@ -310,6 +445,9 @@ run_full_runtest_case() {
         gsub(/\r/, "", line)
         if (line ~ /^\[err\]:/) {
             sub(/^\[err\]:[[:space:]]*/, "", line)
+            print line
+        } else if (line ~ /^\[exception\]:/) {
+            sub(/^\[exception\]:[[:space:]]*/, "", line)
             print line
         } else if (line ~ /^sock[0-9]+ => \(IN PROGRESS\)/) {
             sub(/^sock[0-9]+ => \(IN PROGRESS\)[[:space:]]*/, "", line)
@@ -345,7 +483,7 @@ run_full_runtest_case() {
     fi
 
     local details
-    details="mode=full; tsavorite_pages=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
+    details="mode=full; tsavorite_pages=${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}; skipunit_querybuf=${skip_querybuf_applied}; skipunit_scripting=${skip_scripting_applied}; skipunit_other=${skip_other_applied}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}; expected_failed_tests=${expected_fail_count}; unexpected_failed_tests=${unexpected_fail_count}"
 
     if [[ "${RUNTEXT_CAPTURE_CRASH_REPORT}" == "1" ]]; then
         local crash_report
@@ -370,14 +508,132 @@ run_full_runtest_case() {
     record_result "${case_name}" "${status}" "${details}"
 }
 
+run_isolated_unit_case() {
+    local case_name="$1"
+    local unit="$2"
+    local log_file="${RESULT_DIR}/${case_name}.log"
+    local failed_tests_file="${RESULT_DIR}/${case_name}.failed-tests.txt"
+    local cmd=(
+        "${RUNTEXT_BIN}"
+        --host 127.0.0.1
+        --port "${GARNET_PORT}"
+        --singledb
+        --dont-clean
+        --durable
+        --single "${unit}"
+    )
+
+    if [[ -n "${RUNTEXT_TIMEOUT_SECONDS}" ]]; then
+        cmd+=(--timeout "${RUNTEXT_TIMEOUT_SECONDS}")
+    fi
+    if [[ -n "${RUNTEXT_CLIENTS}" ]]; then
+        cmd+=(--clients "${RUNTEXT_CLIENTS}")
+    fi
+
+    local exit_code=0
+    local exit_reason="completed"
+    if (
+        cd "${REDIS_REPO_ROOT}"
+        run_with_watchdogs "${RUNTEXT_WALL_TIMEOUT_SECONDS}" "${cmd[@]}"
+    ) >"${log_file}" 2>&1; then
+        exit_code=0
+    else
+        exit_code=$?
+    fi
+
+    case "${exit_code}" in
+        124)
+            exit_reason="wall_timeout"
+            ;;
+        125)
+            exit_reason="garnet_server_exited"
+            ;;
+        0)
+            exit_reason="completed"
+            ;;
+        *)
+            exit_reason="runtest_exit_nonzero"
+            ;;
+    esac
+
+    local parsed_counts
+    parsed_counts="$(
+        awk '
+        BEGIN { esc = sprintf("%c", 27); ok = 0; err = 0; ignore = 0; timeout = 0 }
+        {
+            line = $0
+            gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
+            gsub(/\r/, "", line)
+            if (line ~ /^\[ok\]:/) {
+                ok++
+            } else if (line ~ /^\[err\]:/ || line ~ /^\[exception\]:/) {
+                err++
+            } else if (line ~ /^\[ignore\]:/) {
+                ignore++
+            } else if (line ~ /^\[TIMEOUT\]:/) {
+                timeout++
+            }
+        }
+        END { printf("%d,%d,%d,%d\n", ok + 0, err + 0, ignore + 0, timeout + 0) }
+        ' "${log_file}"
+    )"
+
+    local ok_count err_count ignore_count timeout_count
+    IFS=',' read -r ok_count err_count ignore_count timeout_count <<<"${parsed_counts}"
+
+    awk '
+    BEGIN { esc = sprintf("%c", 27) }
+    {
+        line = $0
+        gsub(esc "\\[[0-9;]*[A-Za-z]", "", line)
+        gsub(/\r/, "", line)
+        if (line ~ /^\[err\]:/) {
+            sub(/^\[err\]:[[:space:]]*/, "", line)
+            print line
+        } else if (line ~ /^\[exception\]:/) {
+            sub(/^\[exception\]:[[:space:]]*/, "", line)
+            print line
+        } else if (line ~ /^sock[0-9]+ => \(IN PROGRESS\)/) {
+            sub(/^sock[0-9]+ => \(IN PROGRESS\)[[:space:]]*/, "", line)
+            print line
+        }
+    }
+    ' "${log_file}" > "${failed_tests_file}"
+
+    local failed_tests_count
+    failed_tests_count="$(awk 'END {print NR+0}' "${failed_tests_file}")"
+
+    local status="FAIL"
+    if [[ "${exit_code}" -eq 0 && "${err_count}" -eq 0 && "${timeout_count}" -eq 0 && "${failed_tests_count}" -eq 0 ]]; then
+        status="PASS"
+    fi
+
+    local details
+    details="mode=full; isolated_unit=${unit}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
+    record_result "${case_name}" "${status}" "${details}"
+}
+
+reset_expiration_debug_state() {
+    redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw DEBUG PAUSE-CRON 0 >/dev/null 2>&1 || true
+    redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw DEBUG SET-ACTIVE-EXPIRE 1 >/dev/null 2>&1 || true
+}
+
 reset_server_after_runtest() {
     # External runtest can leave the server in BUSY_SCRIPT and/or read-only
     # replica state. Clear these so post-run probes observe steady behavior.
     redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw SCRIPT KILL >/dev/null 2>&1 || true
     redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION KILL >/dev/null 2>&1 || true
     redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw REPLICAOF NO ONE >/dev/null 2>&1 || true
+    redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw CLIENT UNPAUSE >/dev/null 2>&1 || true
+    reset_expiration_debug_state
     if ! wait_for_server_not_busy 100; then
-        echo "warning: server remained BUSY after reset attempts; CLI probes may fail" >&2
+        echo "warning: server remained BUSY after reset attempts; restarting server for CLI probes" >&2
+        if restart_garnet_server; then
+            reset_expiration_debug_state
+            wait_for_server_not_busy 50 >/dev/null 2>&1 || true
+        else
+            echo "warning: failed to restart server for post-run probes" >&2
+        fi
     fi
 }
 
@@ -391,6 +647,9 @@ wait_for_server_not_busy() {
         if [[ "${ping_output}" == "PONG" ]]; then
             return 0
         fi
+        # Pause tests may leave CLIENT PAUSE active; clear it so probe cleanup
+        # and post-runtest redis-cli checks cannot block indefinitely.
+        redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw CLIENT UNPAUSE >/dev/null 2>&1 || true
         if [[ "${ping_output}" == *"BUSY Redis is busy running a script"* ]]; then
             redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw SCRIPT KILL >/dev/null 2>&1 || true
             redis-cli -h 127.0.0.1 -p "${GARNET_PORT}" --raw FUNCTION KILL >/dev/null 2>&1 || true
@@ -468,6 +727,7 @@ run_cli_scripting_probe_case() {
 require_cmd redis-cli
 require_cmd cargo
 require_cmd pgrep
+require_cmd perl
 require_cmd "${RUNTEXT_BIN}"
 
 if [[ ! -x "${RUNTEXT_BIN}" ]]; then
@@ -476,34 +736,52 @@ if [[ ! -x "${RUNTEXT_BIN}" ]]; then
 fi
 
 GARNET_PID=""
+REDIS_SERVER_TCL_BACKUP=""
 cleanup() {
-    if [[ -n "${GARNET_PID}" ]]; then
-        kill "${GARNET_PID}" >/dev/null 2>&1 || true
-        wait "${GARNET_PID}" >/dev/null 2>&1 || true
-    fi
+    restore_redis_external_pid_patch
+    stop_garnet_server
 }
 trap cleanup EXIT
 
-(
-    cd "${GARNET_RS_ROOT}"
-    if [[ "${RUNTEXT_ENABLE_CORE_DUMP}" == "1" ]]; then
-        ulimit -c unlimited >/dev/null 2>&1 || true
-    fi
-    GARNET_BIND_ADDR="127.0.0.1:${GARNET_PORT}" \
-    GARNET_SCRIPTING_ENABLED="${GARNET_SCRIPTING_ENABLED}" \
-    GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES="${GARNET_TSAVORITE_MAX_IN_MEMORY_PAGES}" \
-    bash -lc "${GARNET_SERVER_CMD}"
-) >"${RESULT_DIR}/garnet-server.log" 2>&1 &
-GARNET_PID="$!"
+: > "${GARNET_LOG_FILE}"
 
-if ! wait_for_ping "${GARNET_PORT}"; then
-    echo "garnet server failed to start on port ${GARNET_PORT}" >&2
+if ! install_redis_external_pid_patch; then
+    exit 1
+fi
+
+if ! start_garnet_server; then
     exit 1
 fi
 
 case "${REDIS_RUNTEXT_MODE}" in
     full)
         run_full_runtest_case "redis_runtest_full_external"
+        if [[ "${RUNTEXT_RUN_SCRIPTING_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
+            if ! restart_garnet_server; then
+                echo "warning: failed to restart server before isolated scripting run" >&2
+            fi
+            reset_expiration_debug_state
+            run_isolated_unit_case "redis_runtest_unit_scripting_external" "unit/scripting"
+            reset_expiration_debug_state
+        fi
+        if [[ "${RUNTEXT_RUN_QUERYBUF_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
+            # Keep querybuf coverage in a separate run, with explicit debug-state reset,
+            # so querybuf failures cannot stall later suites in the main full probe.
+            if ! restart_garnet_server; then
+                echo "warning: failed to restart server before isolated querybuf run" >&2
+            fi
+            reset_expiration_debug_state
+            run_isolated_unit_case "redis_runtest_unit_querybuf_external" "unit/querybuf"
+            reset_expiration_debug_state
+        fi
+        if [[ "${RUNTEXT_RUN_OTHER_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
+            if ! restart_garnet_server; then
+                echo "warning: failed to restart server before isolated unit/other run" >&2
+            fi
+            reset_expiration_debug_state
+            run_isolated_unit_case "redis_runtest_unit_other_external" "unit/other"
+            reset_expiration_debug_state
+        fi
         ;;
     subset)
         run_runtest_case \

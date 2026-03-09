@@ -9,79 +9,35 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut inserted = 0i64;
-
-        match self.load_set_object_payload(&key)? {
-            None => {
+        let inserted = self.with_set_hot_entry(&key, |entry| {
+            if entry.is_none() {
                 if let Some((range, inserted_count)) = try_build_contiguous_i64_range(&args[2..]) {
-                    self.save_contiguous_i64_range_set_object(&key, range)?;
-                    inserted = inserted_count as i64;
-                } else {
-                    let mut set = BTreeSet::new();
-                    for member in &args[2..] {
-                        if set.insert((*member).to_vec()) {
-                            inserted += 1;
-                        }
-                    }
-                    self.save_set_object(&key, &set)?;
+                    let mut new_entry = SetObjectHotEntry::new(
+                        DecodedSetObjectPayload::ContiguousI64Range(range),
+                        false,
+                    );
+                    self.mark_set_hot_entry_dirty(&key, &mut new_entry, false);
+                    *entry = Some(new_entry);
+                    return Ok(inserted_count as i64);
+                }
+                *entry = Some(SetObjectHotEntry::new(
+                    DecodedSetObjectPayload::Members(BTreeSet::new()),
+                    false,
+                ));
+            }
+
+            let entry = entry.as_mut().unwrap();
+            let mut inserted = 0i64;
+            for member in &args[2..] {
+                if entry.payload.insert_member(member) {
+                    inserted += 1;
                 }
             }
-            Some(DecodedSetObjectPayload::Members(mut set)) => {
-                for member in &args[2..] {
-                    if set.insert((*member).to_vec()) {
-                        inserted += 1;
-                    }
-                }
-                self.save_set_object(&key, &set)?;
+            if inserted > 0 {
+                self.mark_set_hot_entry_dirty(&key, entry, false);
             }
-            Some(DecodedSetObjectPayload::ContiguousI64Range(mut range)) => {
-                let mut fallback_set: Option<BTreeSet<Vec<u8>>> = None;
-
-                for member in &args[2..] {
-                    if let Some(set) = fallback_set.as_mut() {
-                        if set.insert((*member).to_vec()) {
-                            inserted += 1;
-                        }
-                        continue;
-                    }
-
-                    let Some(value) = parse_canonical_i64_member(member) else {
-                        let mut set = materialize_contiguous_i64_range_set(range);
-                        if set.insert((*member).to_vec()) {
-                            inserted += 1;
-                        }
-                        fallback_set = Some(set);
-                        continue;
-                    };
-
-                    if range.contains(value) {
-                        continue;
-                    }
-                    if range.can_extend_left_with(value) {
-                        range.extend_left();
-                        inserted += 1;
-                        continue;
-                    }
-                    if range.can_extend_right_with(value) {
-                        range.extend_right();
-                        inserted += 1;
-                        continue;
-                    }
-
-                    let mut set = materialize_contiguous_i64_range_set(range);
-                    if set.insert((*member).to_vec()) {
-                        inserted += 1;
-                    }
-                    fallback_set = Some(set);
-                }
-
-                if let Some(set) = fallback_set {
-                    self.save_set_object(&key, &set)?;
-                } else {
-                    self.save_contiguous_i64_range_set_object(&key, range)?;
-                }
-            }
-        }
+            Ok(inserted)
+        })?;
 
         if inserted > 0 {
             self.notify_keyspace_event(NOTIFY_SET, b"sadd", &key);
@@ -98,30 +54,38 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut set = match self.load_set_object(&key)? {
-            Some(set) => set,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
+        let (removed, delete_key) = self.with_set_hot_entry(&key, |entry| {
+            let Some(current_entry) = entry.as_mut() else {
+                return Ok((0i64, false));
+            };
+
+            let mut removed = 0i64;
+            for member in &args[2..] {
+                if current_entry.payload.remove_member(member) {
+                    removed += 1;
+                }
             }
-        };
-        let mut removed = 0i64;
-        for member in &args[2..] {
-            if set.remove(*member) {
-                removed += 1;
+            if removed == 0 {
+                return Ok((0i64, false));
             }
-        }
+
+            if current_entry.payload.is_empty() {
+                *entry = None;
+                return Ok((removed, true));
+            }
+
+            self.mark_set_hot_entry_dirty(&key, current_entry, false);
+            Ok((removed, false))
+        })?;
 
         if removed > 0 {
             self.notify_keyspace_event(NOTIFY_SET, b"srem", &key);
         }
-        if set.is_empty() {
+        if delete_key {
             let _ = self.object_delete(&key)?;
             if removed > 0 {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
-        } else {
-            self.save_set_object(&key, &set)?;
         }
         append_integer(response_out, removed);
         Ok(())
@@ -147,6 +111,7 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
+        self.record_set_debug_ht_activity(&key, set.len());
 
         if resp3 {
             append_set_length(response_out, set.len());
@@ -175,6 +140,7 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
+        self.record_set_debug_ht_activity(&key, set.len());
         append_integer(response_out, if set.contains(member) { 1 } else { 0 });
         Ok(())
     }
@@ -187,9 +153,14 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "SCARD", "SCARD key")?;
 
         let key = RedisKey::from(args[1]);
-        let len = self
-            .load_set_object(&key)?
-            .map_or(0, |set| set.len() as i64);
+        let len = self.with_set_hot_entry(&key, |entry| {
+            Ok(entry
+                .as_ref()
+                .map_or(0, |entry| entry.payload.member_count() as i64))
+        })?;
+        if len > 0 {
+            self.record_set_debug_ht_activity(&key, len as usize);
+        }
         append_integer(response_out, len);
         Ok(())
     }
@@ -211,10 +182,44 @@ impl RequestProcessor {
         let scan_options = parse_scan_match_count_options(args, 3)?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
+        if scan_options.pattern.is_none() {
+            let (member_count, next_cursor, page) = self.with_set_hot_entry(&key, |entry| {
+                let Some(entry) = entry.as_mut() else {
+                    return Ok((0usize, 0u64, Vec::new()));
+                };
+                let values = entry.ordered_members();
+                let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+                let start = if raw_start >= values.len() {
+                    0
+                } else {
+                    raw_start
+                };
+                let end = start.saturating_add(scan_options.count).min(values.len());
+                let next_cursor = if end >= values.len() { 0 } else { end as u64 };
+                Ok((values.len(), next_cursor, values[start..end].to_vec()))
+            })?;
+            if member_count > 0 {
+                self.record_set_debug_ht_activity(&key, member_count);
+            }
+
+            append_array_length(response_out, 2);
+            append_bulk_string(response_out, next_cursor.to_string().as_bytes());
+            if resp3 {
+                append_set_length(response_out, page.len());
+            } else {
+                append_array_length(response_out, page.len());
+            }
+            for member in &page {
+                append_bulk_string(response_out, member);
+            }
+            return Ok(());
+        }
+
         let Some(set) = self.load_set_object(&key)? else {
             append_set_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
+        self.record_set_debug_ht_activity(&key, set.len());
 
         let mut matched = Vec::new();
         for member in &set {
@@ -244,6 +249,9 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let set = self.load_set_object(&key)?;
+        if let Some(set) = &set {
+            self.record_set_debug_ht_activity(&key, set.len());
+        }
         let members = &args[2..];
         append_array_length(response_out, members.len());
         for member in members {
@@ -262,9 +270,19 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let set = self.load_set_object(&key)?;
         if args.len() == 2 {
-            let Some(set) = set else {
+            let sampled = self.with_set_hot_entry(&key, |entry| {
+                let Some(entry) = entry.as_mut() else {
+                    return Ok(None);
+                };
+                let members = entry.ordered_members();
+                if members.is_empty() {
+                    return Ok(None);
+                }
+                let random_index = (self.next_random_u64() as usize) % members.len();
+                Ok(Some((members.len(), members[random_index].clone())))
+            })?;
+            let Some((member_count, member)) = sampled else {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -272,16 +290,8 @@ impl RequestProcessor {
                 }
                 return Ok(());
             };
-            if set.is_empty() {
-                if resp3 {
-                    append_null(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
-                }
-                return Ok(());
-            }
-            let members = select_random_members_distinct(self, &set, 1);
-            append_bulk_string(response_out, &members[0]);
+            self.record_set_debug_ht_activity(&key, member_count);
+            append_bulk_string(response_out, &member);
             return Ok(());
         }
 
@@ -289,15 +299,39 @@ impl RequestProcessor {
         // Positive count: distinct sampling → set type in RESP3.
         // Negative count: with-replacement → array type (may have duplicates).
         let use_set_type = resp3 && count > 0;
-        let Some(set) = set else {
-            if use_set_type {
-                append_set_length(response_out, 0);
-            } else {
-                append_array_length(response_out, 0);
+        let sampled = self.with_set_hot_entry(&key, |entry| {
+            let Some(entry) = entry.as_mut() else {
+                return Ok((0usize, Vec::new()));
+            };
+            let members = entry.ordered_members();
+            if members.is_empty() || count == 0 {
+                return Ok((members.len(), Vec::new()));
             }
-            return Ok(());
-        };
-        if set.is_empty() || count == 0 {
+            if count > 0 {
+                let requested =
+                    usize::try_from(count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                let sampled = if requested == 1 {
+                    let random_index = (self.next_random_u64() as usize) % members.len();
+                    vec![members[random_index].clone()]
+                } else {
+                    select_random_members_distinct_from_ordered(self, members, requested)
+                };
+                return Ok((members.len(), sampled));
+            }
+
+            let requested = count
+                .checked_abs()
+                .ok_or(RequestExecutionError::ValueOutOfRange)
+                .and_then(|value| {
+                    usize::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)
+                })?;
+            Ok((
+                members.len(),
+                sample_random_members_with_replacement_from_ordered(self, members, requested),
+            ))
+        })?;
+        let (member_count, sampled) = sampled;
+        if member_count == 0 {
             if use_set_type {
                 append_set_length(response_out, 0);
             } else {
@@ -305,15 +339,14 @@ impl RequestProcessor {
             }
             return Ok(());
         }
-
-        let sampled = if count > 0 {
-            let requested = usize::try_from(count).unwrap_or(usize::MAX);
-            select_random_members_distinct(self, &set, requested)
-        } else {
-            let requested = usize::try_from(count.unsigned_abs())
-                .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-            select_random_members_with_replacement(self, &set, requested)
-        };
+        self.record_set_debug_ht_activity(&key, member_count);
+        if count < 0 {
+            append_array_length(response_out, sampled.len());
+            for member in sampled {
+                append_bulk_string(response_out, &member);
+            }
+            return Ok(());
+        }
         if use_set_type {
             append_set_length(response_out, sampled.len());
         } else {
@@ -435,25 +468,36 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        if !source_set.contains(&member) {
-            append_integer(response_out, 0);
-            return Ok(());
-        }
         if source == destination {
+            if !source_set.contains(&member) {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
             append_integer(response_out, 1);
             return Ok(());
         }
 
-        source_set.remove(&member);
         let mut destination_set = self.load_set_object(&destination)?.unwrap_or_default();
-        destination_set.insert(member);
+        if !source_set.contains(&member) {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        source_set.remove(&member);
+        let destination_changed = destination_set.insert(member);
 
         if source_set.is_empty() {
             let _ = self.object_delete(&source)?;
+            self.notify_keyspace_event(NOTIFY_SET, b"srem", &source);
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &source);
         } else {
             self.save_set_object(&source, &source_set)?;
+            self.notify_keyspace_event(NOTIFY_SET, b"srem", &source);
         }
-        self.save_set_object(&destination, &destination_set)?;
+        if destination_changed {
+            self.save_set_object(&destination, &destination_set)?;
+            self.notify_keyspace_event(NOTIFY_SET, b"sadd", &destination);
+        }
         append_integer(response_out, 1);
         Ok(())
     }
@@ -495,16 +539,17 @@ impl RequestProcessor {
             "SINTERCARD",
             "SINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let num_keys = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        if num_keys == 0 {
-            return Err(RequestExecutionError::SyntaxError);
-        }
         let num_keys =
-            usize::try_from(num_keys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+            parse_i64_ascii(args[1]).ok_or(RequestExecutionError::NumkeysMustBeGreaterThanZero)?;
+        if num_keys <= 0 {
+            return Err(RequestExecutionError::NumkeysMustBeGreaterThanZero);
+        }
+        let num_keys = usize::try_from(num_keys)
+            .map_err(|_| RequestExecutionError::NumkeysMustBeGreaterThanZero)?;
         let key_start = 2usize;
         let key_end = key_start + num_keys;
         if args.len() < key_end {
-            return Err(RequestExecutionError::SyntaxError);
+            return Err(RequestExecutionError::NumberOfKeysCantBeGreaterThanArgs);
         }
 
         let mut limit = 0usize;
@@ -516,8 +561,11 @@ impl RequestProcessor {
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let parsed_limit =
-                parse_u64_ascii(args[key_end + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let parsed_limit = parse_i64_ascii(args[key_end + 1])
+                .ok_or(RequestExecutionError::LimitCantBeNegative)?;
+            if parsed_limit < 0 {
+                return Err(RequestExecutionError::LimitCantBeNegative);
+            }
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         }
@@ -624,21 +672,38 @@ fn select_random_members_distinct(
     members
 }
 
-fn select_random_members_with_replacement(
+fn select_random_members_distinct_from_ordered(
     processor: &RequestProcessor,
-    set: &BTreeSet<Vec<u8>>,
+    members: &[Vec<u8>],
     count: usize,
 ) -> Vec<Vec<u8>> {
-    let members: Vec<Vec<u8>> = set.iter().cloned().collect();
+    let mut members = members.to_vec();
+    if members.len() <= 1 {
+        members.truncate(count.min(members.len()));
+        return members;
+    }
+    for index in (1..members.len()).rev() {
+        let random_index = (processor.next_random_u64() as usize) % (index + 1);
+        members.swap(index, random_index);
+    }
+    members.truncate(count.min(members.len()));
+    members
+}
+
+fn sample_random_members_with_replacement_from_ordered(
+    processor: &RequestProcessor,
+    members: &[Vec<u8>],
+    count: usize,
+) -> Vec<Vec<u8>> {
     if members.is_empty() || count == 0 {
         return Vec::new();
     }
-    let mut selected = Vec::with_capacity(count);
+    let mut sampled = Vec::with_capacity(count);
     for _ in 0..count {
         let index = (processor.next_random_u64() as usize) % members.len();
-        selected.push(members[index].clone());
+        sampled.push(members[index].clone());
     }
-    selected
+    sampled
 }
 
 fn collect_set_keys(args: &[&[u8]], first_key_index: usize) -> Vec<Vec<u8>> {
@@ -715,23 +780,22 @@ fn compute_sinter(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeSet::new());
     };
-    let mut inter = match processor.load_set_object(first_key)? {
-        Some(set) => set,
-        None => return Ok(BTreeSet::new()),
-    };
-
+    let mut inter = processor.load_set_object(first_key)?;
     for key in remaining_keys {
-        let Some(other_set) = processor.load_set_object(key)? else {
-            inter.clear();
-            break;
-        };
-        inter.retain(|member| other_set.contains(member));
-        if inter.is_empty() {
-            break;
+        let other_set = processor.load_set_object(key)?;
+        if let Some(inter_set) = inter.as_mut() {
+            let Some(other_set) = other_set else {
+                inter = None;
+                continue;
+            };
+            inter_set.retain(|member| other_set.contains(member));
+            if inter_set.is_empty() {
+                inter = None;
+            }
         }
     }
 
-    Ok(inter)
+    Ok(inter.unwrap_or_default())
 }
 
 fn compute_sdiff(
@@ -741,22 +805,22 @@ fn compute_sdiff(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeSet::new());
     };
-    let mut diff = match processor.load_set_object(first_key)? {
-        Some(set) => set,
-        None => return Ok(BTreeSet::new()),
-    };
+    let mut diff = processor.load_set_object(first_key)?;
 
     for key in remaining_keys {
-        let Some(other_set) = processor.load_set_object(key)? else {
-            continue;
-        };
-        diff.retain(|member| !other_set.contains(member));
-        if diff.is_empty() {
-            break;
+        let other_set = processor.load_set_object(key)?;
+        if let Some(diff_set) = diff.as_mut() {
+            let Some(other_set) = other_set else {
+                continue;
+            };
+            diff_set.retain(|member| !other_set.contains(member));
+            if diff_set.is_empty() {
+                diff = None;
+            }
         }
     }
 
-    Ok(diff)
+    Ok(diff.unwrap_or_default())
 }
 
 fn try_build_contiguous_i64_range(members: &[&[u8]]) -> Option<(ContiguousI64RangeSet, usize)> {
@@ -788,7 +852,8 @@ fn store_set_result(
     result_set: &BTreeSet<Vec<u8>>,
 ) -> Result<(), RequestExecutionError> {
     processor.expire_key_if_needed(destination)?;
-    let destination_had_string = processor.key_exists(destination)?;
+    let (destination_had_string, destination_object_type) =
+        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_object_overwrite(processor, destination)?
     } else {
@@ -803,7 +868,14 @@ fn store_set_result(
         return Ok(());
     }
 
-    processor.save_set_object(destination, result_set)
+    processor.save_set_object_replacing_existing(destination, result_set)?;
+    processor.notify_setkey_overwrite_events(
+        destination,
+        destination_had_string,
+        destination_object_type,
+        Some(ObjectTypeTag::Set),
+    );
+    Ok(())
 }
 
 fn delete_string_value_for_object_overwrite(

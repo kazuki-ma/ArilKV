@@ -1,3 +1,4 @@
+use super::object_store::list_listpack_compatible;
 use super::*;
 use crate::command_spec::ArityPolicy;
 use crate::command_spec::KeyAccessPattern;
@@ -149,6 +150,33 @@ const PUBSUB_HELP_LINES: [&[u8]; 13] = [
     b"HELP",
     b"    Print this help.",
 ];
+
+struct TrackingReadsDisabledScope {
+    previous_enabled: bool,
+}
+
+impl TrackingReadsDisabledScope {
+    fn enter() -> Self {
+        let previous_enabled = REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            let previous = context.tracking_reads_enabled;
+            context.tracking_reads_enabled = false;
+            state.set(context);
+            previous
+        });
+        Self { previous_enabled }
+    }
+}
+
+impl Drop for TrackingReadsDisabledScope {
+    fn drop(&mut self) {
+        REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            context.tracking_reads_enabled = self.previous_enabled;
+            state.set(context);
+        });
+    }
+}
 const COMMAND_HELP_LINES: [&[u8]; 15] = [
     b"COMMAND <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"COUNT",
@@ -218,13 +246,15 @@ const CLIENT_HELP_LINES: [&[u8]; 35] = [
     b"UNBLOCK <clientid> [TIMEOUT|ERROR]",
     b"    Unblock a client blocked by a blocking command.",
 ];
-const DEBUG_HELP_LINES: [&[u8]; 22] = [
+const DEBUG_HELP_LINES: [&[u8]; 26] = [
     b"DEBUG <subcommand> [<arg> [value] [opt] ...]",
     b"Available subcommands:",
     b"DIGEST",
     b"    Compute a dataset digest.",
     b"DIGEST-VALUE <key>",
     b"    Compute a digest for the value stored at <key>.",
+    b"HTSTATS-KEY <key> [full]",
+    b"    Return synthetic hash table stats for hash-table-backed values.",
     b"LOADAOF",
     b"    Flush and reload the dataset from the AOF file.",
     b"OBJECT <key>",
@@ -239,6 +269,8 @@ const DEBUG_HELP_LINES: [&[u8]; 22] = [
     b"    Control reply buffer settings.",
     b"SET-ACTIVE-EXPIRE <0|1>",
     b"    Enable or disable active expiration sweeps.",
+    b"SET-DISABLE-DENY-SCRIPTS <0|1>",
+    b"    Temporarily allow/disallow commands that are usually blocked from scripts.",
     b"SLEEP <seconds>",
     b"    Sleep for the specified number of seconds.",
 ];
@@ -313,6 +345,7 @@ enum InfoSection {
     Keyspace,
     Keysizes,
     Commandstats,
+    Errorstats,
 }
 
 fn push_info_section_once(sections: &mut Vec<InfoSection>, section: InfoSection) {
@@ -340,6 +373,7 @@ fn push_all_info_sections(sections: &mut Vec<InfoSection>) {
     push_default_info_sections(sections);
     push_info_section_once(sections, InfoSection::Keysizes);
     push_info_section_once(sections, InfoSection::Commandstats);
+    push_info_section_once(sections, InfoSection::Errorstats);
 }
 
 fn append_info_sections_from_token(sections: &mut Vec<InfoSection>, token: &[u8]) {
@@ -389,6 +423,10 @@ fn append_info_sections_from_token(sections: &mut Vec<InfoSection>, token: &[u8]
     }
     if ascii_eq_ignore_case(token, b"COMMANDSTATS") {
         push_info_section_once(sections, InfoSection::Commandstats);
+        return;
+    }
+    if ascii_eq_ignore_case(token, b"ERRORSTATS") {
+        push_info_section_once(sections, InfoSection::Errorstats);
     }
 }
 
@@ -536,20 +574,29 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 1, "INFO", "INFO [section [section ...]]")?;
+        // INFO performs internal full-key scans (for memory/dbsize estimates).
+        // These reads must not be added to CLIENT TRACKING tables.
+        let _tracking_reads_disabled = TrackingReadsDisabledScope::enter();
 
         let dbsize = self.active_key_count()?;
         let blocked_clients = self.blocked_clients();
+        let (total_blocking_keys, total_blocking_keys_on_nokey) = self.blocking_key_counts();
         let connected_clients = self.connected_clients();
         let watching_clients = self.watching_clients();
         let rdb_bgsave_in_progress = if self.rdb_bgsave_in_progress() { 1 } else { 0 };
         let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
         let expired_keys = self.expired_keys();
         let expired_keys_active = self.expired_keys_active();
+        let total_error_replies = self.total_error_replies();
         let lazyfree_pending_objects = self.lazyfree_pending_objects();
         let lazyfreed_objects = self.lazyfreed_objects();
         let used_memory = self.estimated_used_memory_bytes()?;
+        let cached_script_count = self.script_cache_entry_count();
         let scripting_runtime = self.scripting_runtime_config();
         let used_memory_vm_functions = self.used_memory_vm_functions();
+        let process_id = std::process::id();
+        let (tracking_total_items, tracking_total_keys, tracking_total_prefixes, tracking_clients) =
+            self.tracking_info_snapshot();
 
         let mut sections = Vec::new();
         if args.len() == 1 {
@@ -565,14 +612,16 @@ impl RequestProcessor {
             match section {
                 InfoSection::Server => {
                     payload.push_str(
-                        "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
+                        format!(
+                            "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\nprocess_id:{process_id}\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
+                        )
+                        .as_str(),
                     );
                 }
                 InfoSection::Clients => {
                     payload.push_str(
                         format!(
-                            "# Clients\r\nconnected_clients:{}\r\nblocked_clients:{}\r\ntracking_clients:0\r\nclients_in_timeout_table:0\r\ntotal_blocking_clients:{}\r\nwatching_clients:{}\r\n",
-                            connected_clients, blocked_clients, blocked_clients, watching_clients
+                            "# Clients\r\nconnected_clients:{connected_clients}\r\nblocked_clients:{blocked_clients}\r\ntracking_clients:{tracking_clients}\r\ntracking_total_items:{tracking_total_items}\r\ntracking_total_keys:{tracking_total_keys}\r\ntracking_total_prefixes:{tracking_total_prefixes}\r\nclients_in_timeout_table:0\r\ntotal_blocking_clients:{blocked_clients}\r\ntotal_blocking_keys:{total_blocking_keys}\r\ntotal_blocking_keys_on_nokey:{total_blocking_keys_on_nokey}\r\nwatching_clients:{watching_clients}\r\n",
                         )
                         .as_str(),
                     );
@@ -580,9 +629,10 @@ impl RequestProcessor {
                 InfoSection::Memory => {
                     payload.push_str(
                         format!(
-                            "# Memory\r\nused_memory:{used_memory}\r\nused_memory_human:{used_memory_human}\r\nused_memory_rss:{used_memory}\r\nused_memory_peak:{used_memory}\r\nused_memory_peak_human:{used_memory_human}\r\nmaxmemory:{maxmemory}\r\nmaxmemory_human:{maxmemory_human}\r\nmaxmemory_policy:noeviction\r\nmem_fragmentation_ratio:1.00\r\n",
+                            "# Memory\r\nused_memory:{used_memory}\r\nused_memory_human:{used_memory_human}\r\nused_memory_rss:{used_memory}\r\nused_memory_peak:{used_memory}\r\nused_memory_peak_human:{used_memory_human}\r\nallocator_allocated:{used_memory}\r\nallocator_active:{used_memory}\r\nallocator_resident:{used_memory}\r\nnumber_of_cached_scripts:{cached_script_count}\r\nmaxmemory:{maxmemory}\r\nmaxmemory_human:{maxmemory_human}\r\nmaxmemory_policy:noeviction\r\nmem_not_counted_for_evict:0\r\nmem_fragmentation_ratio:1.00\r\n",
                             used_memory = used_memory,
                             used_memory_human = format_human_bytes(used_memory),
+                            cached_script_count = cached_script_count,
                             maxmemory = self.maxmemory_limit_bytes.load(Ordering::Acquire),
                             maxmemory_human = format_human_bytes(self.maxmemory_limit_bytes.load(Ordering::Acquire)),
                         )
@@ -592,7 +642,8 @@ impl RequestProcessor {
                 InfoSection::Stats => {
                     payload.push_str(
                         format!(
-                            "# Stats\r\ntotal_connections_received:0\r\ntotal_commands_processed:0\r\ninstantaneous_ops_per_sec:0\r\ntotal_net_input_bytes:0\r\ntotal_net_output_bytes:0\r\ninstantaneous_input_kbps:0.00\r\ninstantaneous_output_kbps:0.00\r\nrejected_connections:0\r\nkeyspace_hits:0\r\nkeyspace_misses:0\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
+                            "# Stats\r\ntotal_connections_received:0\r\ntotal_commands_processed:0\r\ninstantaneous_ops_per_sec:0\r\ntotal_net_input_bytes:0\r\ntotal_net_output_bytes:0\r\ninstantaneous_input_kbps:0.00\r\ninstantaneous_output_kbps:0.00\r\nrejected_connections:0\r\nkeyspace_hits:0\r\nkeyspace_misses:0\r\ntotal_error_replies:{}\r\ndbsize:{}\r\nrdb_bgsave_in_progress:{}\r\nrdb_changes_since_last_save:{}\r\nexpired_keys:{}\r\nexpired_keys_active:{}\r\nlazyfree_pending_objects:{}\r\nlazyfreed_objects:{}\r\nmigrate_cached_sockets:0\r\n",
+                            total_error_replies,
                             dbsize,
                             rdb_bgsave_in_progress,
                             rdb_changes_since_last_save,
@@ -649,6 +700,9 @@ impl RequestProcessor {
                 InfoSection::Commandstats => {
                     payload.push_str(&self.render_commandstats_info_payload());
                 }
+                InfoSection::Errorstats => {
+                    payload.push_str(&self.render_errorstats_info_payload());
+                }
             }
         }
 
@@ -685,10 +739,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SELECT", "SELECT index")?;
-        let index = parse_i64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        if index != 0 {
-            return Err(RequestExecutionError::DbIndexOutOfRange);
-        }
+        parse_configured_db_name_arg(args[1], self.configured_databases())?;
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -699,15 +750,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
-        let target_db = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        if target_db == 0 {
+        let target_db = parse_db_name_arg(args[2])?;
+        if target_db == super::current_request_selected_db() {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
         }
-        if target_db < 0 {
-            return Err(RequestExecutionError::DbIndexOutOfRange);
-        }
-        let target_db =
-            usize::try_from(target_db).map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
         let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(&key)?;
@@ -800,9 +846,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SWAPDB", "SWAPDB index1 index2")?;
-        let index1 = parse_i64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let index2 = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        if index1 != 0 || index2 != 0 {
+        let index1 = parse_configured_db_name_arg(args[1], self.configured_databases())?;
+        let index2 = parse_configured_db_name_arg(args[2], self.configured_databases())?;
+        if index1 != index2 {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
         append_simple_string(response_out, b"OK");
@@ -997,6 +1043,7 @@ impl RequestProcessor {
             let client_id = super::current_request_client_id()
                 .map(u64::from)
                 .unwrap_or(1);
+            let selected_db = usize::from(super::current_request_selected_db());
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
             let lib_name = self
@@ -1010,7 +1057,7 @@ impl RequestProcessor {
                 .unwrap_or_else(|e| e.into_inner());
             let lib_ver_str = String::from_utf8_lossy(&lib_ver);
             let client_info = format!(
-                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
+                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db={selected_db} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|list user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", client_info.as_bytes());
@@ -1081,6 +1128,7 @@ impl RequestProcessor {
             let client_id = super::current_request_client_id()
                 .map(u64::from)
                 .unwrap_or(1);
+            let selected_db = usize::from(super::current_request_selected_db());
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
             let lib_name = self
@@ -1094,7 +1142,7 @@ impl RequestProcessor {
                 .unwrap_or_else(|e| e.into_inner());
             let lib_ver_str = String::from_utf8_lossy(&lib_ver);
             let info_line = format!(
-                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
+                "id={client_id} addr=127.0.0.1:0 fd=0 name={name_str} db={selected_db} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf=0 qbuf-free=0 argv-mem=0 multi-mem=0 tot-mem=0 net-i=0 net-o=0 age=0 idle=0 flags=N events=r cmd=client|info user=default lib-name={lib_name_str} lib-ver={lib_ver_str}\n"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", info_line.as_bytes());
@@ -1424,6 +1472,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "DEBUG", "DEBUG subcommand [arguments...]")?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
+            require_exact_arity(args, 2, "DEBUG", "DEBUG HELP")?;
             append_bulk_array(response_out, &DEBUG_HELP_LINES);
             return Ok(());
         }
@@ -1483,8 +1532,11 @@ impl RequestProcessor {
                 );
                 return Ok(());
             }
-            // Compatibility path: in-memory test mode has no RDB reload boundary.
-            // Redis tests use DEBUG RELOAD as a persistence synchronization hook.
+            // Compatibility path: in-memory test mode has no real RDB reload boundary.
+            // Our list encoding model uses forced flags to emulate quicklist state that
+            // would normally be recalculated on load, so clear them here to mimic the
+            // reload-time re-encoding boundary Redis exposes to tests.
+            self.clear_all_forced_list_quicklist_encodings();
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1500,6 +1552,81 @@ impl RequestProcessor {
             require_exact_arity(args, 2, "DEBUG", "DEBUG DIGEST")?;
             let digest = self.debug_dataset_digest()?;
             append_bulk_string(response_out, &digest);
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"HTSTATS-KEY") {
+            ensure_ranged_arity(args, 3, 4, "DEBUG", "DEBUG HTSTATS-KEY <key> [FULL]")?;
+            let full = if args.len() == 4 {
+                if !ascii_eq_ignore_case(args[3], b"FULL") {
+                    return Err(RequestExecutionError::SyntaxError);
+                }
+                true
+            } else {
+                false
+            };
+
+            let key = RedisKey::from(args[2]);
+            self.expire_key_if_needed(&key)?;
+
+            let object = match self.object_read(&key)? {
+                Some(object) => object,
+                None => {
+                    if self.key_exists_any(&key)? {
+                        append_error(
+                            response_out,
+                            b"ERR The value stored at the specified key is not represented using an hash table",
+                        );
+                        return Ok(());
+                    }
+                    return Err(RequestExecutionError::NoSuchKey);
+                }
+            };
+
+            let zset_max = self.zset_max_listpack_entries.load(Ordering::Acquire);
+            let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
+            let hash_max = self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let set_max_lp = self.set_max_listpack_entries.load(Ordering::Acquire);
+            let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
+            let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
+            let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
+                self.set_encoding_floor(key.as_slice())
+            } else {
+                None
+            };
+            let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
+                && self.has_hash_field_expirations_for_key(key.as_slice());
+
+            let encoding = object_encoding_name(
+                object.object_type,
+                &object.payload,
+                zset_max,
+                list_max,
+                hash_max,
+                set_max_lp,
+                set_max_lp_value,
+                set_max_is,
+                set_encoding_floor,
+                hash_has_field_expirations,
+            )?;
+            if object.object_type != SET_OBJECT_TYPE_TAG || encoding != b"hashtable" {
+                append_error(
+                    response_out,
+                    b"ERR The value stored at the specified key is not represented using an hash table",
+                );
+                return Ok(());
+            }
+
+            let payload = decode_set_object_payload(&object.payload).ok_or_else(|| {
+                storage_failure("debug.htstats-key", "failed to decode set payload")
+            })?;
+            let member_count = payload.member_count();
+            let snapshot = self.set_debug_ht_stats_snapshot(&key, member_count);
+            let stats = format_set_debug_ht_stats_payload(snapshot, member_count, full);
+            if self.resp_protocol_version().is_resp3() {
+                append_verbatim_string(response_out, b"txt", &stats);
+            } else {
+                append_bulk_string(response_out, &stats);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"PROTOCOL") {
@@ -1561,15 +1688,45 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::NoSuchKey);
             }
             let (encoding, serialized_len) = if let Some(value) = self.read_string_value(&key)? {
-                let enc = String::from_utf8_lossy(string_encoding_name(&value)).into_owned();
+                let enc = String::from_utf8_lossy(string_encoding_name(
+                    &value,
+                    self.string_encoding_is_forced_raw(key.as_slice()),
+                ))
+                .into_owned();
                 let len = value.len();
                 (enc, len)
             } else if let Some(object) = self.object_read(&key)? {
+                // Check forced-quicklist flag so DEBUG OBJECT is consistent
+                // with OBJECT ENCODING for lists with oversized elements.
+                if object.object_type == LIST_OBJECT_TYPE_TAG
+                    && self.list_quicklist_encoding_is_forced(&key)
+                {
+                    let len = object.payload.len();
+                    let lru = self.key_lru_millis(&key).unwrap_or(0);
+                    let idle = self.key_idle_seconds(&key).unwrap_or(0);
+                    let payload = format!(
+                        "Value at:0x0 refcount:1 encoding:quicklist serializedlength:{len} lru:{lru} lru_seconds_idle:{idle}"
+                    );
+                    if self.resp_protocol_version().is_resp3() {
+                        append_verbatim_string(response_out, b"txt", payload.as_bytes());
+                    } else {
+                        append_bulk_string(response_out, payload.as_bytes());
+                    }
+                    return Ok(());
+                }
                 let zset_max = self.zset_max_listpack_entries.load(Ordering::Acquire);
                 let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
                 let hash_max = self.hash_max_listpack_entries.load(Ordering::Acquire);
                 let set_max_lp = self.set_max_listpack_entries.load(Ordering::Acquire);
+                let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
                 let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
+                let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
+                    self.set_encoding_floor(key.as_slice())
+                } else {
+                    None
+                };
+                let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
+                    && self.has_hash_field_expirations_for_key(key.as_slice());
                 let enc = match object_encoding_name(
                     object.object_type,
                     &object.payload,
@@ -1577,7 +1734,10 @@ impl RequestProcessor {
                     list_max,
                     hash_max,
                     set_max_lp,
+                    set_max_lp_value,
                     set_max_is,
+                    set_encoding_floor,
+                    hash_has_field_expirations,
                 ) {
                     Ok(name) => String::from_utf8_lossy(name).into_owned(),
                     Err(_) => "raw".to_owned(),
@@ -1606,6 +1766,16 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::SyntaxError);
             }
             self.set_debug_pause_cron(flag == b"1");
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"SET-DISABLE-DENY-SCRIPTS") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG SET-DISABLE-DENY-SCRIPTS <0|1>")?;
+            let flag = args[2];
+            if flag != b"0" && flag != b"1" {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            self.set_debug_disable_deny_scripts(flag == b"1");
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -1647,6 +1817,25 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"QUICKLIST-PACKED-THRESHOLD") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG QUICKLIST-PACKED-THRESHOLD <bytes>")?;
+            // Redis accepts an optional trailing 'b'/'B' suffix (meaning bytes).
+            let raw = args[2];
+            let num_bytes = if raw.last().map_or(false, |c| *c == b'b' || *c == b'B') {
+                &raw[..raw.len() - 1]
+            } else {
+                raw
+            };
+            let threshold =
+                parse_i64_ascii(num_bytes).ok_or(RequestExecutionError::ValueNotInteger)?;
+            if threshold < 0 {
+                return Err(RequestExecutionError::ValueNotInteger);
+            }
+            self.quicklist_packed_threshold
+                .store(threshold as usize, Ordering::Release);
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         Err(RequestExecutionError::UnknownSubcommand)
     }
 
@@ -1677,7 +1866,10 @@ impl RequestProcessor {
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
             if let Some(value) = self.read_string_value(&key)? {
-                let encoding = string_encoding_name(&value);
+                let encoding = string_encoding_name(
+                    &value,
+                    self.string_encoding_is_forced_raw(key.as_slice()),
+                );
                 append_bulk_string(response_out, encoding);
                 return Ok(());
             }
@@ -1699,7 +1891,15 @@ impl RequestProcessor {
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let hash_max_listpack_entries = self.hash_max_listpack_entries.load(Ordering::Acquire);
             let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
+            let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
+            let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
+                self.set_encoding_floor(key.as_slice())
+            } else {
+                None
+            };
+            let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
+                && self.has_hash_field_expirations_for_key(key.as_slice());
             let encoding = object_encoding_name(
                 object.object_type,
                 &object.payload,
@@ -1707,7 +1907,10 @@ impl RequestProcessor {
                 list_max_listpack_size,
                 hash_max_listpack_entries,
                 set_max_listpack_entries,
+                set_max_listpack_value,
                 set_max_intset_entries,
+                set_encoding_floor,
+                hash_has_field_expirations,
             )?;
             append_bulk_string(response_out, encoding);
             return Ok(());
@@ -1812,9 +2015,17 @@ impl RequestProcessor {
 
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
+        let expire_paused = self.is_expire_action_paused();
 
         let mut live_keys = Vec::new();
         for key in keys {
+            if expire_paused {
+                // During CLIENT PAUSE, keep keys discoverable for RANDOMKEY even
+                // when they are logically expired. This matches Redis behavior
+                // and avoids spinning when only paused-expired keys exist.
+                live_keys.push(key);
+                continue;
+            }
             self.expire_key_if_needed(key.as_slice())?;
 
             let string_exists = self.key_exists(key.as_slice())?;
@@ -2234,6 +2445,24 @@ impl RequestProcessor {
             keys.push(args[3]);
             let end = 5 + key_count;
             keys.extend_from_slice(&args[5..end]);
+        } else if ascii_eq_ignore_case(target, b"SORT") || ascii_eq_ignore_case(target, b"SORT_RO")
+        {
+            ensure_min_arity(args, 4, "COMMAND", "COMMAND GETKEYS SORT key [option ...]")?;
+            keys.push(args[3]);
+            // Scan for the last STORE destination key.
+            let mut last_store: Option<&[u8]> = None;
+            let mut index = 4usize;
+            while index < args.len() {
+                if ascii_eq_ignore_case(args[index], b"STORE") && index + 1 < args.len() {
+                    last_store = Some(args[index + 1]);
+                    index += 2;
+                } else {
+                    index += 1;
+                }
+            }
+            if let Some(store_key) = last_store {
+                keys.push(store_key);
+            }
         } else {
             let target_command = command_id_from_name(target);
             match target_command {
@@ -2284,7 +2513,11 @@ impl RequestProcessor {
                     index += 1;
                     continue;
                 }
-                if ascii_eq_ignore_case(token, b"IFEQ") {
+                if ascii_eq_ignore_case(token, b"IFEQ")
+                    || ascii_eq_ignore_case(token, b"IFNE")
+                    || ascii_eq_ignore_case(token, b"IFDEQ")
+                    || ascii_eq_ignore_case(token, b"IFDNE")
+                {
                     if index + 1 >= args.len() {
                         return Err(RequestExecutionError::InvalidArguments);
                     }
@@ -2336,7 +2569,8 @@ impl RequestProcessor {
             )?;
             entries.push((args[3].to_vec(), &COMMAND_FLAGS_RW_ACCESS_DELETE));
             entries.push((args[4].to_vec(), &COMMAND_FLAGS_RW_INSERT));
-        } else if ascii_eq_ignore_case(target, b"SORT") {
+        } else if ascii_eq_ignore_case(target, b"SORT") || ascii_eq_ignore_case(target, b"SORT_RO")
+        {
             ensure_min_arity(
                 args,
                 4,
@@ -2344,27 +2578,39 @@ impl RequestProcessor {
                 "COMMAND GETKEYSANDFLAGS SORT key [option ...]",
             )?;
             entries.push((args[3].to_vec(), &COMMAND_FLAGS_RO_ACCESS));
+            // Track the last STORE destination (Redis uses the last one when
+            // multiple STORE tokens appear).
+            let mut last_store: Option<&[u8]> = None;
             let mut index = 4usize;
             while index < args.len() {
                 if ascii_eq_ignore_case(args[index], b"STORE") {
                     if index + 1 >= args.len() {
                         return Err(RequestExecutionError::InvalidArguments);
                     }
-                    entries.push((args[index + 1].to_vec(), &COMMAND_FLAGS_OW_UPDATE));
-                    break;
+                    last_store = Some(args[index + 1]);
+                    index += 2;
+                } else {
+                    index += 1;
                 }
-                index += 1;
+            }
+            if let Some(store_key) = last_store {
+                entries.push((store_key.to_vec(), &COMMAND_FLAGS_OW_UPDATE));
             }
         } else if ascii_eq_ignore_case(target, b"DELEX") {
             ensure_min_arity(
                 args,
                 4,
                 "COMMAND",
-                "COMMAND GETKEYSANDFLAGS DELEX key [IFEQ value]",
+                "COMMAND GETKEYSANDFLAGS DELEX key [IFEQ value|IFNE value|IFDEQ digest|IFDNE digest]",
             )?;
             if args.len() == 4 {
                 entries.push((args[3].to_vec(), &COMMAND_FLAGS_RM_DELETE));
-            } else if args.len() == 6 && ascii_eq_ignore_case(args[4], b"IFEQ") {
+            } else if args.len() == 6
+                && (ascii_eq_ignore_case(args[4], b"IFEQ")
+                    || ascii_eq_ignore_case(args[4], b"IFNE")
+                    || ascii_eq_ignore_case(args[4], b"IFDEQ")
+                    || ascii_eq_ignore_case(args[4], b"IFDNE"))
+            {
                 entries.push((args[3].to_vec(), &COMMAND_FLAGS_RW_DELETE));
             } else {
                 return Err(RequestExecutionError::InvalidArguments);
@@ -2496,7 +2742,7 @@ impl RequestProcessor {
         )?;
         let subcommand = args[1];
         if ascii_eq_ignore_case(subcommand, b"HELP") {
-            require_exact_arity(args, 2, "LATENCY", "LATENCY HELP")?;
+            require_exact_arity(args, 2, "LATENCY|HELP", "LATENCY HELP")?;
             append_bulk_array(response_out, &LATENCY_HELP_LINES);
             return Ok(());
         }
@@ -2542,11 +2788,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"DOCTOR") {
             require_exact_arity(args, 2, "LATENCY", "LATENCY DOCTOR")?;
             if self.resp_protocol_version().is_resp3() {
-                append_verbatim_string(
-                    response_out,
-                    b"txt",
-                    LATENCY_DOCTOR_DISABLED_MESSAGE,
-                );
+                append_verbatim_string(response_out, b"txt", LATENCY_DOCTOR_DISABLED_MESSAGE);
             } else {
                 append_bulk_string(response_out, LATENCY_DOCTOR_DISABLED_MESSAGE);
             }
@@ -2714,7 +2956,13 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"GET") {
             ensure_ranged_arity(args, 2, 3, "SLOWLOG", "SLOWLOG GET [count]")?;
             if args.len() == 3 {
-                parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+                let count =
+                    parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+                if count < -1 {
+                    return Err(
+                        RequestExecutionError::SlowlogCountMustBeGreaterThanOrEqualToMinusOne,
+                    );
+                }
             }
             append_array_length(response_out, 0);
             return Ok(());
@@ -2948,7 +3196,9 @@ impl RequestProcessor {
                 append_error(response_out, b"ERR Invalid or out of range slot");
                 return Ok(());
             }
-            append_integer(response_out, 0);
+            let slot = garnet_cluster::SlotNumber::new(slot as u16);
+            let keys = self.migration_keys_for_slot(slot, usize::MAX);
+            append_integer(response_out, i64::try_from(keys.len()).unwrap_or(i64::MAX));
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GETKEYSINSLOT") {
@@ -2958,8 +3208,14 @@ impl RequestProcessor {
                 append_error(response_out, b"ERR Invalid or out of range slot");
                 return Ok(());
             }
-            let _count = parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-            append_array_length(response_out, 0);
+            let count = parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let max_keys = usize::try_from(count).unwrap_or(usize::MAX);
+            let slot = garnet_cluster::SlotNumber::new(slot as u16);
+            let keys = self.migration_keys_for_slot(slot, max_keys);
+            append_array_length(response_out, keys.len());
+            for key in keys {
+                append_bulk_string(response_out, &key);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"RESET") {
@@ -3256,6 +3512,7 @@ impl RequestProcessor {
             self.reset_lazyfree_pending_objects();
             self.reset_lazyfreed_objects();
             self.reset_commandstats();
+            self.reset_error_reply_stats();
             self.record_command_call(b"config|resetstat");
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -3336,7 +3593,7 @@ impl RequestProcessor {
                     let Some(flags) = super::keyspace_events_string_to_flags(&value) else {
                         append_error(
                             response_out,
-                            b"ERR Invalid event class character. Use 'g$lszhxeKEtmdn'.",
+                            b"ERR Invalid event class character. Use 'g$lszhxeKEtmdnoc'.",
                         );
                         return Ok(());
                     };
@@ -3448,18 +3705,78 @@ impl RequestProcessor {
                     );
                     return Ok(());
                 }
+                if parameter == b"stream-idmp-duration" || parameter == b"stream-idmp-maxsize" {
+                    let parsed = match parse_i64_ascii(&value) {
+                        Some(parsed) => parsed,
+                        None => {
+                            append_error(
+                                response_out,
+                                format!(
+                                    "ERR CONFIG SET failed (possibly related to argument '{}') - argument must be a valid integer",
+                                    String::from_utf8_lossy(&parameter)
+                                )
+                                .as_bytes(),
+                            );
+                            return Ok(());
+                        }
+                    };
+                    let (minimum, maximum) = if parameter == b"stream-idmp-duration" {
+                        (1i64, 86_400i64)
+                    } else {
+                        (1i64, 10_000i64)
+                    };
+                    if parsed < minimum || parsed > maximum {
+                        append_error(
+                            response_out,
+                            format!(
+                                "ERR CONFIG SET failed (possibly related to argument '{}') - argument must be between {} and {} inclusive",
+                                String::from_utf8_lossy(&parameter),
+                                minimum,
+                                maximum
+                            )
+                            .as_bytes(),
+                        );
+                        return Ok(());
+                    }
+                }
+                if parameter == b"slowlog-log-slower-than" {
+                    let parsed =
+                        parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger);
+                    let Ok(parsed) = parsed else {
+                        append_error(
+                            response_out,
+                            format!(
+                                "ERR CONFIG SET failed (possibly related to argument '{}') - argument couldn't be parsed into an integer",
+                                String::from_utf8_lossy(&parameter)
+                            )
+                            .as_bytes(),
+                        );
+                        return Ok(());
+                    };
+                    if parsed < -1 {
+                        append_error(
+                            response_out,
+                            format!(
+                                "ERR CONFIG SET failed (possibly related to argument '{}') - argument must be greater than or equal to -1",
+                                String::from_utf8_lossy(&parameter)
+                            )
+                            .as_bytes(),
+                        );
+                        return Ok(());
+                    }
+                }
                 if (parameter == b"timeout"
                     || parameter == b"tcp-keepalive"
                     || parameter == b"databases"
                     || parameter == b"lua-time-limit"
                     || parameter == b"slowlog-max-len"
-                    || parameter == b"slowlog-log-slower-than"
                     || parameter == b"repl-backlog-size"
                     || parameter == b"repl-diskless-sync-delay"
                     || parameter == b"hash-max-listpack-entries"
                     || parameter == b"hash-max-listpack-value"
                     || parameter == b"set-max-intset-entries"
                     || parameter == b"set-max-listpack-entries"
+                    || parameter == b"set-max-listpack-value"
                     || parameter == b"proto-max-bulk-len"
                     || parameter == b"client-query-buffer-limit"
                     || parameter == b"lfu-log-factor"
@@ -3471,6 +3788,7 @@ impl RequestProcessor {
                     || parameter == b"repl-backlog-ttl"
                     || parameter == b"repl-min-slaves-to-write"
                     || parameter == b"cluster-node-timeout"
+                    || parameter == b"tracking-table-max-keys"
                     || parameter == b"min-replicas-max-lag"
                     || parameter == b"min-slaves-max-lag"
                     || parameter == b"repl-min-slaves-max-lag")
@@ -3525,6 +3843,11 @@ impl RequestProcessor {
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.set_max_listpack_entries
                         .store(parsed as usize, Ordering::Release);
+                } else if parameter == b"set-max-listpack-value" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.set_max_listpack_value
+                        .store(parsed as usize, Ordering::Release);
                 } else if parameter == b"set-max-intset-entries" {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -3539,6 +3862,7 @@ impl RequestProcessor {
                         return Ok(());
                     };
                     self.set_maxmemory_limit_bytes(parsed);
+                    self.evict_keys_to_fit_maxmemory(parsed)?;
                 } else if parameter == b"min-replicas-to-write"
                     || parameter == b"min-slaves-to-write"
                 {
@@ -3551,6 +3875,11 @@ impl RequestProcessor {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.set_rdb_key_save_delay_micros(parsed);
+                } else if parameter == b"tracking-table-max-keys" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.set_tracking_table_max_keys(parsed);
+                    self.enforce_tracking_table_max_keys();
                 } else if parameter == b"notify-keyspace-events" {
                     // Already handled in the validation pass above.
                     continue;
@@ -3574,6 +3903,8 @@ impl RequestProcessor {
             let hash_max_listpack_entries_value = hash_max_listpack_entries.to_string();
             let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
             let set_max_listpack_entries_value = set_max_listpack_entries.to_string();
+            let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
+            let set_max_listpack_value_value = set_max_listpack_value.to_string();
             let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
             let set_max_intset_entries_value = set_max_intset_entries.to_string();
             let maxmemory_value = self.maxmemory_limit_bytes().to_string();
@@ -3628,6 +3959,10 @@ impl RequestProcessor {
             config_map.insert(
                 b"set-max-listpack-entries".to_vec(),
                 set_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"set-max-listpack-value".to_vec(),
+                set_max_listpack_value_value.as_bytes().to_vec(),
             );
             config_map.insert(
                 b"set-max-intset-entries".to_vec(),
@@ -3708,6 +4043,8 @@ impl RequestProcessor {
     fn flush_all_keys(&self) -> Result<u64, RequestExecutionError> {
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
+        // FLUSH* invalidates the full tracking table with an empty-key payload.
+        self.invalidate_all_tracking_entries();
         self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
 
         let mut deleted_count = 0u64;
@@ -3819,6 +4156,143 @@ impl RequestProcessor {
         Ok(total_bytes)
     }
 
+    fn maxmemory_policy_value(&self) -> Vec<u8> {
+        self.config_items_snapshot()
+            .into_iter()
+            .find_map(|(parameter, value)| {
+                if parameter == b"maxmemory-policy" {
+                    Some(value)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| b"noeviction".to_vec())
+    }
+
+    pub(crate) fn should_reject_mutating_command_for_maxmemory(
+        &self,
+        command_mutating: bool,
+    ) -> Result<bool, RequestExecutionError> {
+        if !command_mutating {
+            return Ok(false);
+        }
+        let maxmemory_limit_bytes = self.maxmemory_limit_bytes();
+        if maxmemory_limit_bytes == 0 {
+            return Ok(false);
+        }
+        let maxmemory_policy = self.maxmemory_policy_value();
+        if !maxmemory_policy.eq_ignore_ascii_case(b"noeviction") {
+            return Ok(false);
+        }
+        let used_memory_bytes = self.estimated_used_memory_bytes()?;
+        Ok(used_memory_bytes > maxmemory_limit_bytes)
+    }
+
+    pub(crate) fn evict_keys_to_fit_maxmemory(
+        &self,
+        maxmemory_limit_bytes: u64,
+    ) -> Result<bool, RequestExecutionError> {
+        if maxmemory_limit_bytes == 0 {
+            return Ok(false);
+        }
+        let maxmemory_policy = self.maxmemory_policy_value();
+        if maxmemory_policy.eq_ignore_ascii_case(b"noeviction") {
+            return Ok(false);
+        }
+
+        let mut remaining_steps = 1024usize;
+        let mut evicted_any = false;
+        while remaining_steps > 0 {
+            let used_memory_bytes = self.estimated_used_memory_bytes()?;
+            if used_memory_bytes <= maxmemory_limit_bytes {
+                break;
+            }
+            if !self.evict_single_key_for_maxmemory(&maxmemory_policy)? {
+                break;
+            }
+            evicted_any = true;
+            remaining_steps -= 1;
+        }
+        Ok(evicted_any)
+    }
+
+    pub(crate) fn evict_single_key_for_maxmemory(
+        &self,
+        maxmemory_policy: &[u8],
+    ) -> Result<bool, RequestExecutionError> {
+        let mut keys: Vec<RedisKey> = self.string_keys_snapshot();
+        keys.extend(self.object_keys_snapshot());
+        if keys.is_empty() {
+            return Ok(false);
+        }
+
+        let policy_is_volatile = maxmemory_policy.eq_ignore_ascii_case(b"volatile-lru")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lfu")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-random")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl");
+        if policy_is_volatile {
+            let now = Instant::now();
+            keys.retain(|key| {
+                self.string_expiration_deadline(key.as_slice())
+                    .is_some_and(|deadline| deadline > now)
+            });
+            if keys.is_empty() {
+                return Ok(false);
+            }
+        }
+
+        if maxmemory_policy.eq_ignore_ascii_case(b"allkeys-lru")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lru")
+            || maxmemory_policy.eq_ignore_ascii_case(b"allkeys-lfu")
+            || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lfu")
+        {
+            keys.sort_by_key(|key| self.key_lru_millis(key.as_slice()).unwrap_or(0));
+        } else if maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl") {
+            keys.sort_by_key(|key| {
+                self.string_expiration_deadline(key.as_slice())
+                    .map_or(u128::MAX, |deadline| {
+                        deadline
+                            .saturating_duration_since(Instant::now())
+                            .as_millis()
+                    })
+            });
+        }
+
+        for key in keys {
+            let shard_index = self.string_store_shard_index_for_key(key.as_slice());
+            let mut string_deleted = false;
+            {
+                let mut store = self.lock_string_store_for_shard(shard_index);
+                let mut session = store.session(&self.functions);
+                let mut info = DeleteInfo::default();
+                let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
+                match status {
+                    DeleteOperationStatus::TombstonedInPlace
+                    | DeleteOperationStatus::AppendedTombstone => {
+                        string_deleted = true;
+                    }
+                    DeleteOperationStatus::NotFound => {}
+                    DeleteOperationStatus::RetryLater => {
+                        return Err(RequestExecutionError::StorageBusy);
+                    }
+                }
+            }
+            if string_deleted {
+                self.remove_string_key_metadata_in_shard(key.as_slice(), shard_index);
+            }
+            let object_deleted = self.object_delete(key.as_slice())?;
+            if !string_deleted && !object_deleted {
+                continue;
+            }
+            if string_deleted || object_deleted {
+                self.bump_watch_version_server_origin(key.as_slice());
+            }
+            self.notify_keyspace_event(NOTIFY_EVICTED, b"evicted", key.as_slice());
+            return Ok(true);
+        }
+        Ok(false)
+    }
+
     fn render_keysizes_info_payload(&self) -> Result<String, RequestExecutionError> {
         let mut payload = String::from("# Keysizes\r\n");
         let mut histograms =
@@ -3852,7 +4326,7 @@ impl RequestProcessor {
             histograms[histogram_entry.histogram_type_index][bin_index] += 1;
         }
 
-        histograms_by_db.insert(0usize, histograms);
+        histograms_by_db.insert(DbName::default(), histograms);
         {
             let moved_keysizes_by_db = self
                 .moved_keysizes_by_db
@@ -3872,31 +4346,31 @@ impl RequestProcessor {
         for (db_index, db_histograms) in histograms_by_db {
             append_keysizes_histogram_line(
                 &mut payload,
-                db_index,
+                usize::from(db_index),
                 "distrib_strings_sizes",
                 &db_histograms[0],
             );
             append_keysizes_histogram_line(
                 &mut payload,
-                db_index,
+                usize::from(db_index),
                 "distrib_lists_items",
                 &db_histograms[1],
             );
             append_keysizes_histogram_line(
                 &mut payload,
-                db_index,
+                usize::from(db_index),
                 "distrib_sets_items",
                 &db_histograms[2],
             );
             append_keysizes_histogram_line(
                 &mut payload,
-                db_index,
+                usize::from(db_index),
                 "distrib_zsets_items",
                 &db_histograms[3],
             );
             append_keysizes_histogram_line(
                 &mut payload,
-                db_index,
+                usize::from(db_index),
                 "distrib_hashes_items",
                 &db_histograms[4],
             );
@@ -3976,6 +4450,19 @@ fn restore_from_dump_blob(
         return Err(RequestExecutionError::BusyKey);
     }
     let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
+    let restored_type = match &value {
+        MigrationValue::String(_) => None,
+        MigrationValue::Object { object_type, .. } => Some(*object_type),
+    };
+    let previous_string_exists = processor.key_exists(&key)?;
+    let previous_type = if previous_string_exists {
+        None
+    } else {
+        processor
+            .object_read(&key)?
+            .map(|object| object.object_type)
+    };
+    let had_previous_value = previous_string_exists || previous_type.is_some();
 
     if options.replace {
         processor.delete_string_key_for_migration(&key)?;
@@ -4024,6 +4511,13 @@ fn restore_from_dump_blob(
     }
     if let Some(frequency) = options.frequency {
         processor.set_key_frequency(&key, frequency);
+    }
+    processor.notify_keyspace_event(NOTIFY_GENERIC, b"restore", &key);
+    if had_previous_value {
+        processor.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+        if previous_type != restored_type {
+            processor.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+        }
     }
 
     append_simple_string(response_out, b"OK");
@@ -4114,7 +4608,7 @@ fn encode_dump_blob(value: MigrationValue) -> Vec<u8> {
 
 fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
     if !encoded.starts_with(DUMP_BLOB_MAGIC) {
-        return None;
+        return decode_redis_dump_blob(encoded);
     }
     let mut index = DUMP_BLOB_MAGIC.len();
     let kind = *encoded.get(index)?;
@@ -4139,6 +4633,581 @@ fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
         }
         _ => None,
     }
+}
+
+const REDIS_DUMP_FOOTER_LEN: usize = 10;
+const REDIS_DUMP_MAX_RDB_VERSION: u16 = 13;
+const REDIS_RDB_TYPE_STRING: u8 = 0;
+const REDIS_RDB_TYPE_STREAM_LISTPACKS: u8 = 15;
+const REDIS_RDB_TYPE_STREAM_LISTPACKS_2: u8 = 19;
+const REDIS_RDB_TYPE_STREAM_LISTPACKS_3: u8 = 21;
+const REDIS_RDB_ENC_INT8: u64 = 0;
+const REDIS_RDB_ENC_INT16: u64 = 1;
+const REDIS_RDB_ENC_INT32: u64 = 2;
+const REDIS_RDB_ENC_LZF: u64 = 3;
+const STREAM_ITEM_FLAG_DELETED: i64 = 1 << 0;
+const STREAM_ITEM_FLAG_SAMEFIELDS: i64 = 1 << 1;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum RedisRdbLen {
+    Normal(u64),
+    Encoded(u64),
+}
+
+struct RedisDumpReader<'a> {
+    bytes: &'a [u8],
+    cursor: usize,
+}
+
+impl<'a> RedisDumpReader<'a> {
+    fn new(bytes: &'a [u8]) -> Self {
+        Self { bytes, cursor: 0 }
+    }
+
+    fn is_exhausted(&self) -> bool {
+        self.cursor == self.bytes.len()
+    }
+
+    fn read_u8(&mut self) -> Option<u8> {
+        let byte = *self.bytes.get(self.cursor)?;
+        self.cursor += 1;
+        Some(byte)
+    }
+
+    fn read_exact(&mut self, len: usize) -> Option<&'a [u8]> {
+        let end = self.cursor.checked_add(len)?;
+        let bytes = self.bytes.get(self.cursor..end)?;
+        self.cursor = end;
+        Some(bytes)
+    }
+
+    fn read_len(&mut self) -> Option<RedisRdbLen> {
+        let first = self.read_u8()?;
+        match first >> 6 {
+            0 => Some(RedisRdbLen::Normal(u64::from(first & 0x3f))),
+            1 => {
+                let second = self.read_u8()?;
+                let len = (u64::from(first & 0x3f) << 8) | u64::from(second);
+                Some(RedisRdbLen::Normal(len))
+            }
+            2 if first == 0x80 => {
+                let mut raw = [0u8; 4];
+                raw.copy_from_slice(self.read_exact(4)?);
+                Some(RedisRdbLen::Normal(u64::from(u32::from_be_bytes(raw))))
+            }
+            2 if first == 0x81 => {
+                let mut raw = [0u8; 8];
+                raw.copy_from_slice(self.read_exact(8)?);
+                Some(RedisRdbLen::Normal(u64::from_be_bytes(raw)))
+            }
+            3 => Some(RedisRdbLen::Encoded(u64::from(first & 0x3f))),
+            _ => None,
+        }
+    }
+
+    fn read_normal_len(&mut self) -> Option<u64> {
+        match self.read_len()? {
+            RedisRdbLen::Normal(len) => Some(len),
+            RedisRdbLen::Encoded(_) => None,
+        }
+    }
+
+    fn read_string(&mut self) -> Option<Vec<u8>> {
+        match self.read_len()? {
+            RedisRdbLen::Normal(len) => Some(self.read_exact(usize::try_from(len).ok()?)?.to_vec()),
+            RedisRdbLen::Encoded(REDIS_RDB_ENC_INT8) => {
+                let raw = self.read_u8()? as i8;
+                Some(raw.to_string().into_bytes())
+            }
+            RedisRdbLen::Encoded(REDIS_RDB_ENC_INT16) => {
+                let mut raw = [0u8; 2];
+                raw.copy_from_slice(self.read_exact(2)?);
+                Some(i16::from_le_bytes(raw).to_string().into_bytes())
+            }
+            RedisRdbLen::Encoded(REDIS_RDB_ENC_INT32) => {
+                let mut raw = [0u8; 4];
+                raw.copy_from_slice(self.read_exact(4)?);
+                Some(i32::from_le_bytes(raw).to_string().into_bytes())
+            }
+            RedisRdbLen::Encoded(REDIS_RDB_ENC_LZF) => {
+                let compressed_len = usize::try_from(self.read_normal_len()?).ok()?;
+                let original_len = usize::try_from(self.read_normal_len()?).ok()?;
+                let compressed = self.read_exact(compressed_len)?;
+                redis_lzf_decompress(compressed, original_len)
+            }
+            RedisRdbLen::Encoded(_) => None,
+        }
+    }
+
+    fn read_millis(&mut self) -> Option<u64> {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(self.read_exact(8)?);
+        Some(u64::from_le_bytes(raw))
+    }
+
+    fn read_stream_id_raw(&mut self) -> Option<StreamId> {
+        let raw = self.read_exact(16)?;
+        decode_redis_stream_raw_id(raw)
+    }
+}
+
+fn decode_redis_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {
+    let payload = verify_and_strip_redis_dump_footer(encoded)?;
+    let mut reader = RedisDumpReader::new(payload);
+    let rdb_type = reader.read_u8()?;
+    match rdb_type {
+        REDIS_RDB_TYPE_STRING => {
+            let value = reader.read_string()?;
+            if !reader.is_exhausted() {
+                return None;
+            }
+            Some(MigrationValue::String(value.into()))
+        }
+        REDIS_RDB_TYPE_STREAM_LISTPACKS
+        | REDIS_RDB_TYPE_STREAM_LISTPACKS_2
+        | REDIS_RDB_TYPE_STREAM_LISTPACKS_3 => {
+            let mut stream = decode_redis_stream_dump_payload(&mut reader, rdb_type)?;
+            stream.ensure_node_sizes(100);
+            if !reader.is_exhausted() {
+                return None;
+            }
+            Some(MigrationValue::Object {
+                object_type: STREAM_OBJECT_TYPE_TAG,
+                payload: serialize_stream_object_payload(&stream),
+            })
+        }
+        _ => None,
+    }
+}
+
+fn verify_and_strip_redis_dump_footer(encoded: &[u8]) -> Option<&[u8]> {
+    if encoded.len() < REDIS_DUMP_FOOTER_LEN {
+        return None;
+    }
+    let footer_start = encoded.len() - REDIS_DUMP_FOOTER_LEN;
+    let version = u16::from_le_bytes([encoded[footer_start], encoded[footer_start + 1]]);
+    if version > REDIS_DUMP_MAX_RDB_VERSION {
+        return None;
+    }
+
+    let mut checksum_bytes = [0u8; 8];
+    checksum_bytes.copy_from_slice(&encoded[footer_start + 2..]);
+    let expected_checksum = u64::from_le_bytes(checksum_bytes);
+    if expected_checksum != 0 {
+        let actual_checksum = redis_crc64(&encoded[..encoded.len() - 8]);
+        if actual_checksum != expected_checksum {
+            return None;
+        }
+    }
+
+    Some(&encoded[..footer_start])
+}
+
+fn redis_crc64(payload: &[u8]) -> u64 {
+    const POLY: u64 = 0xad93_d235_94c9_35a9;
+
+    let mut crc = 0u64;
+    for &byte in payload {
+        let mut mask = 1u8;
+        while mask != 0 {
+            let mut bit = (crc & (1u64 << 63)) != 0;
+            if byte & mask != 0 {
+                bit = !bit;
+            }
+            crc <<= 1;
+            if bit {
+                crc ^= POLY;
+            }
+            mask = mask.wrapping_shl(1);
+        }
+    }
+
+    crc.reverse_bits()
+}
+
+fn redis_lzf_decompress(compressed: &[u8], expected_len: usize) -> Option<Vec<u8>> {
+    let mut input_index = 0usize;
+    let mut output = Vec::with_capacity(expected_len);
+
+    while input_index < compressed.len() {
+        let ctrl = *compressed.get(input_index)?;
+        input_index += 1;
+
+        if ctrl < (1 << 5) {
+            let literal_len = usize::from(ctrl) + 1;
+            let literal_end = input_index.checked_add(literal_len)?;
+            output.extend_from_slice(compressed.get(input_index..literal_end)?);
+            input_index = literal_end;
+            continue;
+        }
+
+        let mut len = usize::from(ctrl >> 5);
+        let ref_offset_high = usize::from(ctrl & 0x1f) << 8;
+        if len == 7 {
+            len = len.checked_add(usize::from(*compressed.get(input_index)?))?;
+            input_index += 1;
+        }
+        let ref_offset_low = usize::from(*compressed.get(input_index)?);
+        input_index += 1;
+
+        let distance = ref_offset_high
+            .checked_add(ref_offset_low)?
+            .checked_add(1)?;
+        let copy_len = len.checked_add(2)?;
+        if distance > output.len() {
+            return None;
+        }
+        let mut ref_index = output.len() - distance;
+        for _ in 0..copy_len {
+            let value = *output.get(ref_index)?;
+            output.push(value);
+            ref_index += 1;
+        }
+    }
+
+    if output.len() != expected_len {
+        return None;
+    }
+    Some(output)
+}
+
+fn decode_redis_stream_dump_payload(
+    reader: &mut RedisDumpReader<'_>,
+    rdb_type: u8,
+) -> Option<StreamObject> {
+    let listpack_count = usize::try_from(reader.read_normal_len()?).ok()?;
+    let mut entries = BTreeMap::new();
+    for _ in 0..listpack_count {
+        let master_id = decode_redis_stream_raw_id(&reader.read_string()?)?;
+        let listpack = reader.read_string()?;
+        decode_redis_stream_listpack_entries(&listpack, master_id, &mut entries)?;
+    }
+
+    let stream_length = reader.read_normal_len()?;
+    let last_generated_id = StreamId::new(reader.read_normal_len()?, reader.read_normal_len()?);
+    let (max_deleted_entry_id, entries_added) = if rdb_type >= REDIS_RDB_TYPE_STREAM_LISTPACKS_2 {
+        let _first_entry_id = StreamId::new(reader.read_normal_len()?, reader.read_normal_len()?);
+        let max_deleted_entry_id =
+            StreamId::new(reader.read_normal_len()?, reader.read_normal_len()?);
+        (max_deleted_entry_id, reader.read_normal_len()?)
+    } else {
+        (StreamId::zero(), stream_length)
+    };
+
+    if usize::try_from(stream_length).ok()? != entries.len() {
+        return None;
+    }
+
+    let group_count = usize::try_from(reader.read_normal_len()?).ok()?;
+    let mut groups = BTreeMap::new();
+    for _ in 0..group_count {
+        let group_name = reader.read_string()?;
+        let last_delivered_id = StreamId::new(reader.read_normal_len()?, reader.read_normal_len()?);
+        let entries_read = if rdb_type >= REDIS_RDB_TYPE_STREAM_LISTPACKS_2 {
+            Some(reader.read_normal_len()?.min(entries_added))
+        } else {
+            estimate_legacy_stream_entries_read(
+                &entries,
+                last_generated_id,
+                max_deleted_entry_id,
+                entries_added,
+                last_delivered_id,
+            )
+        };
+
+        let group_pending_count = usize::try_from(reader.read_normal_len()?).ok()?;
+        let mut pending = BTreeMap::new();
+        for _ in 0..group_pending_count {
+            let pending_id = reader.read_stream_id_raw()?;
+            let last_delivery_time_millis = reader.read_millis()?;
+            let delivery_count = reader.read_normal_len()?;
+            pending.insert(
+                pending_id,
+                StreamPendingEntry {
+                    consumer: Vec::new(),
+                    last_delivery_time_millis,
+                    delivery_count,
+                },
+            );
+        }
+
+        let consumer_count = usize::try_from(reader.read_normal_len()?).ok()?;
+        let mut consumers = BTreeMap::new();
+        for _ in 0..consumer_count {
+            let consumer_name = reader.read_string()?;
+            let seen_time_millis = reader.read_millis()?;
+            let active_time_millis = if rdb_type >= REDIS_RDB_TYPE_STREAM_LISTPACKS_3 {
+                Some(reader.read_millis()?)
+            } else {
+                Some(seen_time_millis)
+            };
+
+            let consumer_pending_count = usize::try_from(reader.read_normal_len()?).ok()?;
+            let mut consumer_state = StreamConsumerState {
+                pending: BTreeSet::new(),
+                seen_time_millis,
+                active_time_millis,
+            };
+            for _ in 0..consumer_pending_count {
+                let pending_id = reader.read_stream_id_raw()?;
+                let pending_entry = pending.get_mut(&pending_id)?;
+                pending_entry.consumer = consumer_name.clone();
+                consumer_state.pending.insert(pending_id);
+            }
+
+            if consumers.insert(consumer_name, consumer_state).is_some() {
+                return None;
+            }
+        }
+
+        if pending.values().any(|entry| entry.consumer.is_empty()) {
+            return None;
+        }
+
+        groups.insert(
+            group_name,
+            StreamGroupState {
+                last_delivered_id,
+                entries_read,
+                consumers,
+                pending,
+            },
+        );
+    }
+
+    Some(StreamObject {
+        entries,
+        node_sizes: VecDeque::new(),
+        groups,
+        last_generated_id,
+        max_deleted_entry_id,
+        entries_added,
+        idmp_duration_seconds: super::DEFAULT_STREAM_IDMP_DURATION_SECONDS,
+        idmp_maxsize: super::DEFAULT_STREAM_IDMP_MAXSIZE,
+        idmp_producers: BTreeMap::new(),
+        iids_added: 0,
+        iids_duplicates: 0,
+    })
+}
+
+fn estimate_legacy_stream_entries_read(
+    entries: &BTreeMap<StreamId, Vec<(Vec<u8>, Vec<u8>)>>,
+    last_generated_id: StreamId,
+    max_deleted_entry_id: StreamId,
+    entries_added: u64,
+    last_delivered_id: StreamId,
+) -> Option<u64> {
+    if entries_added == 0 {
+        return Some(0);
+    }
+
+    let length = u64::try_from(entries.len()).ok()?;
+    if length == 0 && last_delivered_id <= last_generated_id {
+        return Some(entries_added);
+    }
+
+    if last_delivered_id != StreamId::zero() && last_delivered_id < max_deleted_entry_id {
+        return None;
+    }
+
+    match last_delivered_id.cmp(&last_generated_id) {
+        core::cmp::Ordering::Equal => return Some(entries_added),
+        core::cmp::Ordering::Greater => return None,
+        core::cmp::Ordering::Less => {}
+    }
+
+    let first_entry_id = *entries.keys().next()?;
+    if max_deleted_entry_id == StreamId::zero() || max_deleted_entry_id < first_entry_id {
+        if last_delivered_id < first_entry_id {
+            return Some(entries_added.saturating_sub(length));
+        }
+        if last_delivered_id == first_entry_id {
+            return Some(entries_added.saturating_sub(length).saturating_add(1));
+        }
+    }
+
+    None
+}
+
+fn decode_redis_stream_raw_id(raw: &[u8]) -> Option<StreamId> {
+    if raw.len() != 16 {
+        return None;
+    }
+    let mut millis = [0u8; 8];
+    millis.copy_from_slice(&raw[..8]);
+    let mut sequence = [0u8; 8];
+    sequence.copy_from_slice(&raw[8..]);
+    Some(StreamId::new(
+        u64::from_be_bytes(millis),
+        u64::from_be_bytes(sequence),
+    ))
+}
+
+fn decode_redis_stream_listpack_entries(
+    listpack: &[u8],
+    master_id: StreamId,
+    entries_out: &mut BTreeMap<StreamId, Vec<(Vec<u8>, Vec<u8>)>>,
+) -> Option<()> {
+    if listpack.len() < 7 {
+        return None;
+    }
+    let total_bytes = u32::from_le_bytes(listpack.get(0..4)?.try_into().ok()?) as usize;
+    if total_bytes != listpack.len() || *listpack.last()? != 0xff {
+        return None;
+    }
+
+    let mut offset = 6usize;
+    let entry_count = usize::try_from(redis_listpack_parse_i64(listpack, &mut offset)?).ok()?;
+    let deleted_count = usize::try_from(redis_listpack_parse_i64(listpack, &mut offset)?).ok()?;
+    let master_field_count =
+        usize::try_from(redis_listpack_parse_i64(listpack, &mut offset)?).ok()?;
+    let mut master_fields = Vec::with_capacity(master_field_count);
+    for _ in 0..master_field_count {
+        master_fields.push(redis_listpack_parse_bytes(listpack, &mut offset)?);
+    }
+    if redis_listpack_parse_i64(listpack, &mut offset)? != 0 {
+        return None;
+    }
+
+    let total_entries = entry_count.checked_add(deleted_count)?;
+    for _ in 0..total_entries {
+        let flags = redis_listpack_parse_i64(listpack, &mut offset)?;
+        let ms_delta = u64::try_from(redis_listpack_parse_i64(listpack, &mut offset)?).ok()?;
+        let seq_delta = u64::try_from(redis_listpack_parse_i64(listpack, &mut offset)?).ok()?;
+        let entry_id = StreamId::new(
+            master_id.timestamp_millis().checked_add(ms_delta)?,
+            master_id.sequence().checked_add(seq_delta)?,
+        );
+
+        let same_fields = (flags & STREAM_ITEM_FLAG_SAMEFIELDS) != 0;
+        let field_names = if same_fields {
+            master_fields.clone()
+        } else {
+            let field_count =
+                usize::try_from(redis_listpack_parse_i64(listpack, &mut offset)?).ok()?;
+            let mut field_names = Vec::with_capacity(field_count);
+            for _ in 0..field_count {
+                field_names.push(redis_listpack_parse_bytes(listpack, &mut offset)?);
+            }
+            field_names
+        };
+
+        let mut field_pairs = Vec::with_capacity(field_names.len());
+        for field_name in field_names {
+            let value = redis_listpack_parse_bytes(listpack, &mut offset)?;
+            field_pairs.push((field_name, value));
+        }
+
+        let expected_piece_count = if same_fields {
+            field_pairs.len() + 3
+        } else {
+            field_pairs.len() * 2 + 4
+        };
+        if redis_listpack_parse_i64(listpack, &mut offset)? != expected_piece_count as i64 {
+            return None;
+        }
+
+        if (flags & STREAM_ITEM_FLAG_DELETED) != 0 {
+            continue;
+        }
+        if entries_out.insert(entry_id, field_pairs).is_some() {
+            return None;
+        }
+    }
+
+    if offset != listpack.len() - 1 {
+        return None;
+    }
+    Some(())
+}
+
+fn redis_listpack_parse_i64(listpack: &[u8], offset: &mut usize) -> Option<i64> {
+    parse_i64_ascii(&redis_listpack_parse_bytes(listpack, offset)?)
+}
+
+fn redis_listpack_parse_bytes(listpack: &[u8], offset: &mut usize) -> Option<Vec<u8>> {
+    let start = *offset;
+    let entry = listpack.get(start..)?;
+    let first = *entry.first()?;
+
+    let (payload, encoded_size) = if first & 0x80 == 0 {
+        (i64::from(first & 0x7f).to_string().into_bytes(), 1usize)
+    } else if first & 0xc0 == 0x80 {
+        let len = usize::from(first & 0x3f);
+        let payload_start = start.checked_add(1)?;
+        let payload_end = payload_start.checked_add(len)?;
+        (listpack.get(payload_start..payload_end)?.to_vec(), 1 + len)
+    } else if first & 0xe0 == 0xc0 {
+        let second = *listpack.get(start + 1)?;
+        let mut value = i64::from((i16::from(first & 0x1f) << 8) | i16::from(second));
+        if value >= (1 << 12) {
+            value -= 1 << 13;
+        }
+        (value.to_string().into_bytes(), 2)
+    } else if first == 0xf1 {
+        let mut raw = [0u8; 2];
+        raw.copy_from_slice(listpack.get(start + 1..start + 3)?);
+        (i16::from_le_bytes(raw).to_string().into_bytes(), 3)
+    } else if first == 0xf2 {
+        let bytes = listpack.get(start + 1..start + 4)?;
+        let mut value =
+            i64::from(bytes[0]) | (i64::from(bytes[1]) << 8) | (i64::from(bytes[2]) << 16);
+        if value >= (1 << 23) {
+            value -= 1 << 24;
+        }
+        (value.to_string().into_bytes(), 4)
+    } else if first == 0xf3 {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(listpack.get(start + 1..start + 5)?);
+        (i32::from_le_bytes(raw).to_string().into_bytes(), 5)
+    } else if first == 0xf4 {
+        let mut raw = [0u8; 8];
+        raw.copy_from_slice(listpack.get(start + 1..start + 9)?);
+        (i64::from_le_bytes(raw).to_string().into_bytes(), 9)
+    } else if first & 0xf0 == 0xe0 {
+        let second = *listpack.get(start + 1)?;
+        let len = usize::from((u16::from(first & 0x0f) << 8) | u16::from(second));
+        let payload_start = start.checked_add(2)?;
+        let payload_end = payload_start.checked_add(len)?;
+        (listpack.get(payload_start..payload_end)?.to_vec(), 2 + len)
+    } else if first == 0xf0 {
+        let mut raw = [0u8; 4];
+        raw.copy_from_slice(listpack.get(start + 1..start + 5)?);
+        let len = u32::from_le_bytes(raw) as usize;
+        let payload_start = start.checked_add(5)?;
+        let payload_end = payload_start.checked_add(len)?;
+        (listpack.get(payload_start..payload_end)?.to_vec(), 5 + len)
+    } else {
+        return None;
+    };
+
+    let expected_backlen = redis_listpack_encode_backlen(encoded_size);
+    let backlen_start = start.checked_add(encoded_size)?;
+    let backlen_end = backlen_start.checked_add(expected_backlen.len())?;
+    if listpack.get(backlen_start..backlen_end)? != expected_backlen.as_slice() {
+        return None;
+    }
+    *offset = backlen_end;
+    Some(payload)
+}
+
+fn redis_listpack_encode_backlen(entry_len: usize) -> Vec<u8> {
+    let mut value = u64::try_from(entry_len).unwrap_or(u64::MAX);
+    if value <= 127 {
+        return vec![value as u8];
+    }
+
+    let mut bytes = Vec::new();
+    while value > 0 {
+        let chunk = (value & 0x7f) as u8;
+        bytes.push(chunk | 0x80);
+        value >>= 7;
+    }
+    if let Some(last) = bytes.last_mut() {
+        *last &= 0x7f;
+    }
+    bytes.reverse();
+    bytes
 }
 
 fn append_subscription_acks(
@@ -4229,7 +5298,10 @@ fn saturating_usize_to_i64(value: usize) -> i64 {
 /// - "raw": all other strings
 const EMBSTR_MAX_LEN: usize = 44;
 
-fn string_encoding_name(value: &[u8]) -> &'static [u8] {
+fn string_encoding_name(value: &[u8], force_raw: bool) -> &'static [u8] {
+    if force_raw {
+        return b"raw";
+    }
     if parse_i64_ascii(value).is_some() {
         return b"int";
     }
@@ -4247,7 +5319,10 @@ fn object_encoding_name(
     list_max_listpack_size: i64,
     hash_listpack_max_entries: usize,
     set_listpack_max_entries: usize,
+    set_listpack_max_value: usize,
     set_intset_max_entries: usize,
+    set_encoding_floor: Option<SetEncodingFloor>,
+    hash_has_field_expirations: bool,
 ) -> Result<&'static [u8], RequestExecutionError> {
     const SMALL_ELEMENT_BYTES: usize = 64;
 
@@ -4269,16 +5344,26 @@ fn object_encoding_name(
             })?;
             let intset = set.iter().all(|member| parse_i64_ascii(member).is_some())
                 && set.len() <= set_intset_max_entries;
-            if intset {
-                return Ok(b"intset");
-            }
             let compact = set.len() <= set_listpack_max_entries
-                && set.iter().all(|member| member.len() <= SMALL_ELEMENT_BYTES);
-            if compact {
-                Ok(b"listpack")
+                && set
+                    .iter()
+                    .all(|member| member.len() <= set_listpack_max_value);
+            let inferred: &'static [u8] = if intset {
+                b"intset"
+            } else if compact {
+                b"listpack"
             } else {
-                Ok(b"hashtable")
+                b"hashtable"
+            };
+            if inferred == b"intset" && set_encoding_floor == Some(SetEncodingFloor::Listpack) {
+                return Ok(b"listpack");
             }
+            if (inferred == b"intset" || inferred == b"listpack")
+                && set_encoding_floor == Some(SetEncodingFloor::Hashtable)
+            {
+                return Ok(b"hashtable");
+            }
+            Ok(inferred)
         }
         HASH_OBJECT_TYPE_TAG => {
             let hash = deserialize_hash_object_payload(payload).ok_or_else(|| {
@@ -4289,7 +5374,11 @@ fn object_encoding_name(
                     field.len() <= SMALL_ELEMENT_BYTES && value.len() <= SMALL_ELEMENT_BYTES
                 });
             if compact {
-                Ok(b"listpack")
+                if hash_has_field_expirations {
+                    Ok(b"listpackex")
+                } else {
+                    Ok(b"listpack")
+                }
             } else {
                 Ok(b"hashtable")
             }
@@ -4312,37 +5401,77 @@ fn object_encoding_name(
     }
 }
 
-fn list_listpack_compatible(list: &[Vec<u8>], configured_size: i64) -> bool {
-    const LISTPACK_POSITIVE_MIN: i64 = 1;
-    const LISTPACK_NEGATIVE_MIN: i64 = -5;
-    const LISTPACK_NEGATIVE_MAX: i64 = -1;
+fn format_set_debug_ht_stats_payload(
+    snapshot: SetDebugHtStatsSnapshot,
+    member_count: usize,
+    full: bool,
+) -> Vec<u8> {
+    let mut payload = String::new();
+    append_set_debug_ht_stats_section(
+        &mut payload,
+        0,
+        "main hash table",
+        snapshot.main_table_size,
+        member_count,
+        full,
+    );
+    if let Some(target_size) = snapshot.rehash_target_size {
+        append_set_debug_ht_stats_section(
+            &mut payload,
+            1,
+            "rehashing target",
+            target_size,
+            member_count,
+            full,
+        );
+    }
+    payload.into_bytes()
+}
 
-    let normalized = match configured_size {
-        0 => LISTPACK_POSITIVE_MIN,
-        value if value < LISTPACK_NEGATIVE_MIN => LISTPACK_NEGATIVE_MIN,
-        value if value > 0 => value,
-        value if (LISTPACK_NEGATIVE_MIN..=LISTPACK_NEGATIVE_MAX).contains(&value) => value,
-        _ => LISTPACK_POSITIVE_MIN,
-    };
-
-    if normalized > 0 {
-        return list.len() <= normalized as usize;
+fn append_set_debug_ht_stats_section(
+    payload: &mut String,
+    table_index: usize,
+    table_name: &str,
+    table_size: usize,
+    member_count: usize,
+    full: bool,
+) {
+    if member_count == 0 {
+        payload.push_str(&format!(
+            "Hash table {table_index} stats ({table_name}):\nNo stats available for empty dictionaries\n"
+        ));
+        return;
     }
 
-    let max_bytes = match normalized {
-        -1 => 4 * 1024usize,
-        -2 => 8 * 1024usize,
-        -3 => 16 * 1024usize,
-        -4 => 32 * 1024usize,
-        _ => 64 * 1024usize,
-    };
-    // Approximate listpack footprint from member payload plus small per-entry overhead.
-    let estimated_bytes = list
-        .iter()
-        .map(|value| value.len().saturating_add(2))
-        .sum::<usize>();
-    estimated_bytes <= max_bytes
+    payload.push_str(&format!(
+        "Hash table {table_index} stats ({table_name}):\n table size: {table_size}\n number of elements: {member_count}\n"
+    ));
+
+    if !full {
+        return;
+    }
+
+    let different_slots = 1usize;
+    let max_chain_length = member_count;
+    let average_chain = member_count as f64;
+    let empty_slots = table_size.saturating_sub(different_slots);
+
+    payload.push_str(&format!(
+        " different slots: {different_slots}\n max chain length: {max_chain_length}\n avg chain length (counted): {average_chain:.02}\n avg chain length (computed): {average_chain:.02}\n Chain length distribution:\n"
+    ));
+    if empty_slots > 0 {
+        payload.push_str(&format!(
+            "   0: {empty_slots} ({:.02}%)\n",
+            (empty_slots as f64 * 100.0) / table_size as f64
+        ));
+    }
+    payload.push_str(&format!(
+        "   {max_chain_length}: 1 ({:.02}%)\n",
+        100.0 / table_size as f64
+    ));
 }
+
+// list_listpack_compatible lives in object_store.rs as the single source of truth.
 
 fn fnv_hex_digest(tag: u8, payload: &[u8]) -> Vec<u8> {
     let mut hash = 0xcbf29ce484222325u64;
@@ -4613,6 +5742,26 @@ fn parse_scan_type_filter(input: &[u8]) -> Option<ScanTypeFilter> {
         return Some(ScanTypeFilter::Stream);
     }
     None
+}
+
+fn parse_db_name_arg(value: &[u8]) -> Result<DbName, RequestExecutionError> {
+    let index = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+    if index < 0 {
+        return Err(RequestExecutionError::DbIndexOutOfRange);
+    }
+    let index = usize::try_from(index).map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
+    Ok(DbName::new(index))
+}
+
+fn parse_configured_db_name_arg(
+    value: &[u8],
+    configured_databases: usize,
+) -> Result<DbName, RequestExecutionError> {
+    let db_name = parse_db_name_arg(value)?;
+    if usize::from(db_name) >= configured_databases {
+        return Err(RequestExecutionError::DbIndexOutOfRange);
+    }
+    Ok(db_name)
 }
 
 fn scan_object_type_matches_filter(object_type: ObjectTypeTag, filter: ScanTypeFilter) -> bool {

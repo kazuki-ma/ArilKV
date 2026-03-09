@@ -1,7 +1,7 @@
 use super::*;
 
 impl RequestProcessor {
-    pub(super) fn object_upsert(
+    fn object_upsert_raw(
         &self,
         key: &[u8],
         object_type: ObjectTypeTag,
@@ -22,7 +22,7 @@ impl RequestProcessor {
         Ok(())
     }
 
-    pub(super) fn object_read(
+    fn object_read_raw(
         &self,
         key: &[u8],
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
@@ -35,16 +35,20 @@ impl RequestProcessor {
             .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                self.track_read_key_for_current_client(&key);
                 decode_object_value(&output).map(Some).ok_or_else(|| {
                     storage_failure("object_read", "failed to decode object value payload")
                 })
             }
-            ReadOperationStatus::NotFound => Ok(None),
+            ReadOperationStatus::NotFound => {
+                self.track_read_key_for_current_client(&key);
+                Ok(None)
+            }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
-    pub(super) fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+    fn object_delete_raw(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         let shard_index = self.object_store_shard_index_for_key(key);
         let key = key.to_vec();
         let mut store = self.lock_object_store_for_shard(shard_index);
@@ -57,6 +61,8 @@ impl RequestProcessor {
                 self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
+                self.clear_forced_set_encoding_floor(&key);
+                self.clear_set_debug_ht_state(&key);
                 self.bump_watch_version(&key);
                 Ok(true)
             }
@@ -64,10 +70,187 @@ impl RequestProcessor {
                 self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
+                self.clear_forced_set_encoding_floor(&key);
+                self.clear_set_debug_ht_state(&key);
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
+    }
+
+    fn serialize_set_hot_payload(payload: &DecodedSetObjectPayload) -> Vec<u8> {
+        match payload {
+            DecodedSetObjectPayload::Members(set) => serialize_set_object_payload(set),
+            DecodedSetObjectPayload::ContiguousI64Range(range) => {
+                serialize_contiguous_i64_range_set_payload(*range)
+            }
+        }
+    }
+
+    fn take_set_hot_entry(&self, key: &[u8]) -> Option<SetObjectHotEntry> {
+        let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+            return None;
+        };
+        if let Some(index) = hot_state
+            .lru
+            .iter()
+            .position(|candidate| candidate.as_slice() == key)
+        {
+            let _ = hot_state.lru.remove(index);
+        }
+        hot_state.entries.remove(key)
+    }
+
+    fn upsert_set_hot_entry(
+        &self,
+        key: &[u8],
+        entry: SetObjectHotEntry,
+    ) -> Result<(), RequestExecutionError> {
+        let mut evicted = None;
+        {
+            let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            hot_state.entries.insert(RedisKey::from(key), entry);
+            hot_state.touch(key);
+            while hot_state.entries.len() > SET_OBJECT_HOT_STATE_CAPACITY {
+                let Some(oldest_key) = hot_state.lru.pop_front() else {
+                    break;
+                };
+                if oldest_key.as_slice() == key {
+                    hot_state.lru.push_back(oldest_key);
+                    break;
+                }
+                if let Some(oldest_entry) = hot_state.entries.remove(&oldest_key) {
+                    evicted = Some((oldest_key, oldest_entry));
+                    break;
+                }
+            }
+        }
+        if let Some((oldest_key, oldest_entry)) = evicted
+            && oldest_entry.dirty
+        {
+            let payload = Self::serialize_set_hot_payload(&oldest_entry.payload);
+            self.object_upsert_raw(oldest_key.as_slice(), SET_OBJECT_TYPE_TAG, &payload)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn has_set_hot_entry(&self, key: &[u8]) -> bool {
+        self.set_object_hot_state
+            .lock()
+            .map(|hot_state| hot_state.entries.contains_key(key))
+            .unwrap_or(false)
+    }
+
+    fn set_hot_payload_for_object_read(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+            return None;
+        };
+        let payload = {
+            let entry = hot_state.entries.get(key)?;
+            Self::serialize_set_hot_payload(&entry.payload)
+        };
+        hot_state.touch(key);
+        Some(payload)
+    }
+
+    pub(super) fn with_set_hot_entry<R>(
+        &self,
+        key: &[u8],
+        operation: impl FnOnce(&mut Option<SetObjectHotEntry>) -> Result<R, RequestExecutionError>,
+    ) -> Result<R, RequestExecutionError> {
+        self.expire_key_if_needed(key)?;
+
+        let mut entry = self.take_set_hot_entry(key);
+        if entry.is_none() {
+            let object = match self.object_read_raw(key)? {
+                Some(object) => object,
+                None => {
+                    if self.key_exists(key)? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    DecodedObjectValue {
+                        object_type: SET_OBJECT_TYPE_TAG,
+                        payload: Vec::new(),
+                    }
+                }
+            };
+            if !object.payload.is_empty() {
+                if object.object_type != SET_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                let payload = decode_set_object_payload(&object.payload).ok_or_else(|| {
+                    storage_failure(
+                        "with_set_hot_entry",
+                        "failed to deserialize cached set payload",
+                    )
+                })?;
+                entry = Some(SetObjectHotEntry::new(payload, false));
+            }
+        }
+
+        let result = operation(&mut entry);
+        if let Some(entry) = entry {
+            self.upsert_set_hot_entry(key, entry)?;
+        }
+        result
+    }
+
+    pub(super) fn mark_set_hot_entry_dirty(
+        &self,
+        key: &[u8],
+        entry: &mut SetObjectHotEntry,
+        replace_existing: bool,
+    ) {
+        entry.invalidate_ordered_members();
+        entry.dirty = true;
+        self.record_set_debug_ht_activity(key, entry.payload.member_count());
+        if let DecodedSetObjectPayload::Members(set) = &entry.payload {
+            self.update_set_encoding_floor_for_members(key, set, replace_existing);
+        }
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.track_object_key_in_shard(key, shard_index);
+        self.bump_watch_version(key);
+    }
+
+    pub(super) fn object_upsert(
+        &self,
+        key: &[u8],
+        object_type: ObjectTypeTag,
+        payload: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        if object_type == SET_OBJECT_TYPE_TAG {
+            let _ = self.take_set_hot_entry(key);
+            if let Some(decoded) = decode_set_object_payload(payload) {
+                self.upsert_set_hot_entry(key, SetObjectHotEntry::new(decoded, false))?;
+            }
+        }
+        self.object_upsert_raw(key, object_type, payload)
+    }
+
+    pub(super) fn object_read(
+        &self,
+        key: &[u8],
+    ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
+        if let Some(payload) = self.set_hot_payload_for_object_read(key) {
+            self.track_read_key_for_current_client(key);
+            return Ok(Some(DecodedObjectValue {
+                object_type: SET_OBJECT_TYPE_TAG,
+                payload,
+            }));
+        }
+        self.object_read_raw(key)
+    }
+
+    pub(super) fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        let had_hot_entry = self.take_set_hot_entry(key).is_some();
+        let deleted = self.object_delete_raw(key)?;
+        if had_hot_entry && !deleted {
+            self.bump_watch_version(key);
+            return Ok(true);
+        }
+        Ok(deleted)
     }
 
     #[allow(clippy::type_complexity)]
@@ -134,10 +317,10 @@ impl RequestProcessor {
         list: &[Vec<u8>],
     ) -> Result<(), RequestExecutionError> {
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        if list_listpack_compatible(list, configured_size) {
-            self.clear_forced_list_quicklist_encoding(key);
-        } else {
+        if !list_listpack_compatible(list, configured_size) {
             self.force_list_quicklist_encoding(key);
+        } else {
+            self.clear_forced_list_quicklist_encoding(key);
         }
         let payload = serialize_list_object_payload(list);
         self.object_upsert(key, LIST_OBJECT_TYPE_TAG, &payload)
@@ -191,6 +374,19 @@ impl RequestProcessor {
         key: &[u8],
         set: &BTreeSet<Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
+        self.update_set_encoding_floor_for_members(key, set, false);
+        self.record_set_debug_ht_activity(key, set.len());
+        let payload = serialize_set_object_payload(set);
+        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
+    }
+
+    pub(super) fn save_set_object_replacing_existing(
+        &self,
+        key: &[u8],
+        set: &BTreeSet<Vec<u8>>,
+    ) -> Result<(), RequestExecutionError> {
+        self.update_set_encoding_floor_for_members(key, set, true);
+        self.record_set_debug_ht_activity(key, set.len());
         let payload = serialize_set_object_payload(set);
         self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
@@ -200,6 +396,9 @@ impl RequestProcessor {
         key: &[u8],
         range: ContiguousI64RangeSet,
     ) -> Result<(), RequestExecutionError> {
+        let member_count = usize::try_from(i128::from(range.end()) - i128::from(range.start()) + 1)
+            .unwrap_or(usize::MAX);
+        self.record_set_debug_ht_activity(key, member_count);
         let payload = serialize_contiguous_i64_range_set_payload(range);
         self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
@@ -254,11 +453,11 @@ impl RequestProcessor {
         if object.object_type != STREAM_OBJECT_TYPE_TAG {
             return Err(RequestExecutionError::WrongType);
         }
-        deserialize_stream_object_payload(&object.payload)
-            .map(Some)
-            .ok_or_else(|| {
-                storage_failure("load_stream_object", "failed to deserialize stream payload")
-            })
+        let mut stream = deserialize_stream_object_payload(&object.payload).ok_or_else(|| {
+            storage_failure("load_stream_object", "failed to deserialize stream payload")
+        })?;
+        stream.ensure_node_sizes(self.stream_node_max_entries());
+        Ok(Some(stream))
     }
 
     pub(super) fn save_stream_object(
@@ -266,12 +465,20 @@ impl RequestProcessor {
         key: &[u8],
         stream: &StreamObject,
     ) -> Result<(), RequestExecutionError> {
-        let payload = serialize_stream_object_payload(stream);
+        let mut stream_to_save = stream.clone();
+        stream_to_save.ensure_node_sizes(self.stream_node_max_entries());
+        let payload = serialize_stream_object_payload(&stream_to_save);
         self.object_upsert(key, STREAM_OBJECT_TYPE_TAG, &payload)
     }
 }
 
-fn list_listpack_compatible(list: &[Vec<u8>], configured_size: i64) -> bool {
+/// Check whether a list is eligible for listpack (compact) encoding based
+/// solely on `list-max-listpack-size`.
+///
+/// The `DEBUG QUICKLIST-PACKED-THRESHOLD` setting does NOT affect OBJECT
+/// ENCODING; it is an internal quicklist node-packing detail.  Keys with
+/// oversized elements are tracked separately via the forced-quicklist flag.
+pub(super) fn list_listpack_compatible(list: &[Vec<u8>], configured_size: i64) -> bool {
     const LISTPACK_POSITIVE_MIN: i64 = 1;
     const LISTPACK_NEGATIVE_MIN: i64 = -5;
     const LISTPACK_NEGATIVE_MAX: i64 = -1;
@@ -295,9 +502,106 @@ fn list_listpack_compatible(list: &[Vec<u8>], configured_size: i64) -> bool {
         -4 => 32 * 1024usize,
         _ => 64 * 1024usize,
     };
+
+    // In byte-limit mode, also reject if any single element exceeds the per-node
+    // byte budget (matching Redis quicklist plain-node promotion logic).
+    if list.iter().any(|v| v.len().saturating_add(2) > max_bytes) {
+        return false;
+    }
+
     let estimated_bytes = list
         .iter()
         .map(|value| value.len().saturating_add(2))
         .sum::<usize>();
     estimated_bytes <= max_bytes
+}
+
+pub(super) fn listpack_growth_would_force_quicklist(
+    list: &[Vec<u8>],
+    configured_size: i64,
+    added_values: &[&[u8]],
+) -> bool {
+    if added_values.is_empty() {
+        return false;
+    }
+
+    const LISTPACK_POSITIVE_MIN: i64 = 1;
+    const LISTPACK_NEGATIVE_MIN: i64 = -5;
+    const LISTPACK_NEGATIVE_MAX: i64 = -1;
+    const LISTPACK_SIZE_SAFETY_LIMIT: usize = 8 * 1024usize;
+
+    let normalized = match configured_size {
+        0 => LISTPACK_POSITIVE_MIN,
+        value if value < LISTPACK_NEGATIVE_MIN => LISTPACK_NEGATIVE_MIN,
+        value if value > 0 => value,
+        value if (LISTPACK_NEGATIVE_MIN..=LISTPACK_NEGATIVE_MAX).contains(&value) => value,
+        _ => LISTPACK_POSITIVE_MIN,
+    };
+
+    let current_estimated_bytes = list
+        .iter()
+        .map(|value| value.len().saturating_add(2))
+        .sum::<usize>();
+    let added_estimated_bytes = added_values
+        .iter()
+        .map(|value| value.len().saturating_add(2))
+        .sum::<usize>();
+    let new_estimated_bytes = current_estimated_bytes.saturating_add(added_estimated_bytes);
+
+    if normalized > 0 {
+        let count_limit = normalized as usize;
+        if new_estimated_bytes > LISTPACK_SIZE_SAFETY_LIMIT {
+            return true;
+        }
+        return list.len().saturating_add(added_values.len()) > count_limit;
+    }
+
+    let max_bytes = match normalized {
+        -1 => 4 * 1024usize,
+        -2 => 8 * 1024usize,
+        -3 => 16 * 1024usize,
+        -4 => 32 * 1024usize,
+        _ => 64 * 1024usize,
+    };
+
+    new_estimated_bytes > max_bytes
+}
+
+pub(super) fn listpack_shrink_should_keep_quicklist(
+    list: &[Vec<u8>],
+    configured_size: i64,
+) -> bool {
+    if list.is_empty() {
+        return false;
+    }
+
+    const LISTPACK_POSITIVE_MIN: i64 = 1;
+    const LISTPACK_NEGATIVE_MIN: i64 = -5;
+    const LISTPACK_NEGATIVE_MAX: i64 = -1;
+
+    let normalized = match configured_size {
+        0 => LISTPACK_POSITIVE_MIN,
+        value if value < LISTPACK_NEGATIVE_MIN => LISTPACK_NEGATIVE_MIN,
+        value if value > 0 => value,
+        value if (LISTPACK_NEGATIVE_MIN..=LISTPACK_NEGATIVE_MAX).contains(&value) => value,
+        _ => LISTPACK_POSITIVE_MIN,
+    };
+
+    if normalized > 0 {
+        let count_limit = normalized as usize;
+        return list.len() > (count_limit / 2);
+    }
+
+    let max_bytes = match normalized {
+        -1 => 4 * 1024usize,
+        -2 => 8 * 1024usize,
+        -3 => 16 * 1024usize,
+        -4 => 32 * 1024usize,
+        _ => 64 * 1024usize,
+    };
+    let estimated_bytes = list
+        .iter()
+        .map(|value| value.len().saturating_add(2))
+        .sum::<usize>();
+    estimated_bytes > (max_bytes / 2)
 }

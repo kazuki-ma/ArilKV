@@ -1,8 +1,16 @@
 //! Request lifecycle: parse result -> dispatch -> storage op -> RESP response.
+//!
+//! TLA+ model linkage:
+//! - formal/tla/specs/BlockingDisconnectLeak.tla
+//! - formal/tla/specs/BlockingWaitClassIsolation.tla
+//! - formal/tla/specs/BlockingStreamAckGate.tla
+//! - formal/tla/specs/ClientPauseUnblockRace.tla
+//! - formal/tla/specs/StreamPelOwnership.tla
 
 use crate::ClientId;
 use crate::CommandId;
 use crate::command_spec::command_allowed_while_script_busy;
+use crate::command_spec::command_is_effectively_mutating;
 use crate::debug_concurrency::LockClass;
 use crate::debug_concurrency::OrderedMutex;
 use crate::debug_concurrency::OrderedMutexGuard;
@@ -10,11 +18,15 @@ use crate::dispatch_command_name;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::cell::Cell;
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::process::Child;
+use std::process::Command;
+use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicBool;
@@ -62,6 +74,8 @@ const NOTIFY_STREAM: u32 = 1 << 10; // t
 const NOTIFY_KEY_MISS: u32 = 1 << 11; // m
 const NOTIFY_MODULE: u32 = 1 << 13; // d
 const NOTIFY_NEW: u32 = 1 << 14; // n
+const NOTIFY_OVERWRITTEN: u32 = 1 << 15; // o
+const NOTIFY_TYPE_CHANGED: u32 = 1 << 16; // c
 const NOTIFY_ALL: u32 = NOTIFY_GENERIC
     | NOTIFY_STRING
     | NOTIFY_LIST
@@ -88,12 +102,20 @@ const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 22;
 const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 20;
 const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
+/// Default quicklist packed threshold: 0 means disabled (no per-element byte-size limit
+/// beyond the normal listpack byte-budget).  Redis uses 0 as the disabled sentinel.
+const DEFAULT_QUICKLIST_PACKED_THRESHOLD: usize = 0;
 const DEFAULT_HASH_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_SET_MAX_LISTPACK_ENTRIES: usize = 128;
+const DEFAULT_SET_MAX_LISTPACK_VALUE: usize = 64;
 const DEFAULT_SET_MAX_INTSET_ENTRIES: usize = 512;
+const DEFAULT_PROTO_MAX_BULK_LEN: usize = 512 * 1024 * 1024;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
+const TRACKING_INVALIDATE_CHANNEL: &[u8] = b"__redis__:invalidate";
+const SET_OBJECT_HOT_STATE_CAPACITY: usize = 8;
+const SET_DEBUG_HT_MIN_TABLE_SIZE: usize = 4;
 
 thread_local! {
     static REQUEST_EXECUTION_CONTEXT: Cell<RequestExecutionContext> = const {
@@ -101,7 +123,15 @@ thread_local! {
             client_no_touch: false,
             client_id: None,
             in_transaction: false,
+            selected_db: DbName::new(0),
+            tracking_reads_enabled: false,
         })
+    };
+    static TRACKING_INVALIDATION_STACK: RefCell<Vec<Vec<RedisKey>>> = const {
+        RefCell::new(Vec::new())
+    };
+    static TRACKING_READ_STACK: RefCell<Vec<Vec<RedisKey>>> = const {
+        RefCell::new(Vec::new())
     };
 }
 
@@ -110,6 +140,8 @@ struct RequestExecutionContext {
     client_no_touch: bool,
     client_id: Option<ClientId>,
     in_transaction: bool,
+    selected_db: DbName,
+    tracking_reads_enabled: bool,
 }
 
 struct RequestExecutionContextScope {
@@ -147,6 +179,112 @@ fn current_request_client_id() -> Option<ClientId> {
 #[inline]
 fn current_request_in_transaction() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().in_transaction)
+}
+
+#[inline]
+fn current_request_selected_db() -> DbName {
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db)
+}
+
+#[inline]
+fn current_request_tracking_reads_enabled() -> bool {
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().tracking_reads_enabled)
+}
+
+#[inline]
+fn begin_tracking_invalidation_collection() {
+    TRACKING_INVALIDATION_STACK.with(|stack| stack.borrow_mut().push(Vec::new()));
+}
+
+#[inline]
+fn finish_tracking_invalidation_collection() -> Vec<RedisKey> {
+    TRACKING_INVALIDATION_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or_default())
+}
+
+#[inline]
+fn finish_tracking_invalidation_collection_into_parent() -> Vec<RedisKey> {
+    TRACKING_INVALIDATION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(current) = stack.pop() else {
+            return Vec::new();
+        };
+        let Some(parent) = stack.last_mut() else {
+            return current;
+        };
+        for key in current {
+            if parent
+                .iter()
+                .any(|existing| existing.as_slice() == key.as_slice())
+            {
+                continue;
+            }
+            parent.push(key);
+        }
+        Vec::new()
+    })
+}
+
+#[inline]
+fn collect_tracking_invalidation_key(key: &[u8]) -> bool {
+    TRACKING_INVALIDATION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(current) = stack.last_mut() else {
+            return false;
+        };
+        if current.iter().any(|existing| existing.as_slice() == key) {
+            return true;
+        }
+        current.push(RedisKey::from(key));
+        true
+    })
+}
+
+#[inline]
+fn begin_tracking_read_collection() {
+    TRACKING_READ_STACK.with(|stack| stack.borrow_mut().push(Vec::new()));
+}
+
+#[inline]
+fn finish_tracking_read_collection() -> Vec<RedisKey> {
+    TRACKING_READ_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or_default())
+}
+
+#[inline]
+fn finish_tracking_read_collection_into_parent() -> Vec<RedisKey> {
+    TRACKING_READ_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(current) = stack.pop() else {
+            return Vec::new();
+        };
+        let Some(parent) = stack.last_mut() else {
+            return current;
+        };
+        for key in current {
+            if parent
+                .iter()
+                .any(|existing| existing.as_slice() == key.as_slice())
+            {
+                continue;
+            }
+            parent.push(key);
+        }
+        Vec::new()
+    })
+}
+
+#[inline]
+fn collect_tracking_read_key(key: &[u8]) -> bool {
+    TRACKING_READ_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(current) = stack.last_mut() else {
+            return false;
+        };
+        if current.iter().any(|existing| existing.as_slice() == key) {
+            return true;
+        }
+        current.push(RedisKey::from(key));
+        true
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -209,111 +347,55 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());
     values.insert(b"slowlog-log-slower-than".to_vec(), b"10000".to_vec());
     values.insert(b"slowlog-max-len".to_vec(), b"128".to_vec());
-    values.insert(
-        b"hash-max-listpack-entries".to_vec(),
-        b"128".to_vec(),
-    );
-    values.insert(
-        b"hash-max-listpack-value".to_vec(),
-        b"64".to_vec(),
-    );
-    values.insert(
-        b"set-max-intset-entries".to_vec(),
-        b"512".to_vec(),
-    );
-    values.insert(
-        b"set-max-listpack-entries".to_vec(),
-        b"128".to_vec(),
-    );
+    values.insert(b"hash-max-listpack-entries".to_vec(), b"128".to_vec());
+    values.insert(b"hash-max-listpack-value".to_vec(), b"64".to_vec());
+    values.insert(b"set-max-intset-entries".to_vec(), b"512".to_vec());
+    values.insert(b"set-max-listpack-entries".to_vec(), b"128".to_vec());
+    values.insert(b"set-max-listpack-value".to_vec(), b"64".to_vec());
     values.insert(b"activedefrag".to_vec(), b"no".to_vec());
     values.insert(
         b"proto-max-bulk-len".to_vec(),
-        b"512000000".to_vec(),
+        DEFAULT_PROTO_MAX_BULK_LEN.to_string().into_bytes(),
     );
     values.insert(b"appendfilename".to_vec(), b"appendonly.aof".to_vec());
     values.insert(b"appendfsync".to_vec(), b"everysec".to_vec());
-    values.insert(
-        b"stop-writes-on-bgsave-error".to_vec(),
-        b"yes".to_vec(),
-    );
+    values.insert(b"stop-writes-on-bgsave-error".to_vec(), b"yes".to_vec());
     values.insert(b"rdbcompression".to_vec(), b"yes".to_vec());
     values.insert(b"rdbchecksum".to_vec(), b"yes".to_vec());
     values.insert(b"replica-read-only".to_vec(), b"yes".to_vec());
-    values.insert(
-        b"repl-diskless-sync".to_vec(),
-        b"yes".to_vec(),
-    );
-    values.insert(
-        b"repl-diskless-sync-delay".to_vec(),
-        b"5".to_vec(),
-    );
+    values.insert(b"repl-diskless-sync".to_vec(), b"yes".to_vec());
+    values.insert(b"repl-diskless-sync-delay".to_vec(), b"5".to_vec());
     values.insert(b"aof-use-rdb-preamble".to_vec(), b"yes".to_vec());
     values.insert(b"list-compress-depth".to_vec(), b"0".to_vec());
-    values.insert(
-        b"zset-max-ziplist-value".to_vec(),
-        b"64".to_vec(),
-    );
-    values.insert(
-        b"zset-max-listpack-value".to_vec(),
-        b"64".to_vec(),
-    );
-    values.insert(
-        b"stream-node-max-bytes".to_vec(),
-        b"4096".to_vec(),
-    );
-    values.insert(
-        b"stream-node-max-entries".to_vec(),
-        b"100".to_vec(),
-    );
+    values.insert(b"zset-max-ziplist-value".to_vec(), b"64".to_vec());
+    values.insert(b"zset-max-listpack-value".to_vec(), b"64".to_vec());
+    values.insert(b"stream-node-max-bytes".to_vec(), b"4096".to_vec());
+    values.insert(b"stream-node-max-entries".to_vec(), b"100".to_vec());
+    values.insert(b"stream-idmp-duration".to_vec(), b"100".to_vec());
+    values.insert(b"stream-idmp-maxsize".to_vec(), b"100".to_vec());
     values.insert(b"maxclients".to_vec(), b"10000".to_vec());
     values.insert(b"repl-backlog-ttl".to_vec(), b"3600".to_vec());
     values.insert(b"cluster-enabled".to_vec(), b"no".to_vec());
-    values.insert(
-        b"cluster-node-timeout".to_vec(),
-        b"15000".to_vec(),
-    );
+    values.insert(b"cluster-node-timeout".to_vec(), b"15000".to_vec());
     values.insert(b"latency-tracking".to_vec(), b"yes".to_vec());
     values.insert(
         b"latency-tracking-info-percentiles".to_vec(),
         b"50 99 99.9".to_vec(),
     );
-    values.insert(
-        b"close-on-oom".to_vec(),
-        b"no".to_vec(),
-    );
-    values.insert(
-        b"close-files-after-invoked-defer".to_vec(),
-        b"no".to_vec(),
-    );
-    values.insert(
-        b"min-replicas-max-lag".to_vec(),
-        b"10".to_vec(),
-    );
-    values.insert(
-        b"min-slaves-max-lag".to_vec(),
-        b"10".to_vec(),
-    );
+    values.insert(b"tracking-table-max-keys".to_vec(), b"1000000".to_vec());
+    values.insert(b"close-on-oom".to_vec(), b"no".to_vec());
+    values.insert(b"close-files-after-invoked-defer".to_vec(), b"no".to_vec());
+    values.insert(b"min-replicas-max-lag".to_vec(), b"10".to_vec());
+    values.insert(b"min-slaves-max-lag".to_vec(), b"10".to_vec());
     values.insert(b"lfu-log-factor".to_vec(), b"10".to_vec());
     values.insert(b"lfu-decay-time".to_vec(), b"1".to_vec());
-    values.insert(
-        b"lazyfree-lazy-user-flush".to_vec(),
-        b"no".to_vec(),
-    );
+    values.insert(b"lazyfree-lazy-user-flush".to_vec(), b"no".to_vec());
     values.insert(b"jemalloc-bg-thread".to_vec(), b"yes".to_vec());
     values.insert(b"activerehashing".to_vec(), b"yes".to_vec());
-    values.insert(
-        b"no-appendfsync-on-rewrite".to_vec(),
-        b"no".to_vec(),
-    );
+    values.insert(b"no-appendfsync-on-rewrite".to_vec(), b"no".to_vec());
     values.insert(b"set-proc-title".to_vec(), b"yes".to_vec());
-    values.insert(
-        b"repl-min-slaves-to-write".to_vec(),
-        b"0".to_vec(),
-    );
-    values.insert(
-        b"repl-min-slaves-max-lag".to_vec(),
-        b"10".to_vec(),
-    );
+    values.insert(b"repl-min-slaves-to-write".to_vec(), b"0".to_vec());
+    values.insert(b"repl-min-slaves-max-lag".to_vec(), b"10".to_vec());
     values
 }
 
@@ -406,6 +488,7 @@ use self::value_codec::encode_object_value;
 use self::value_codec::encode_stored_value;
 use self::value_codec::materialize_contiguous_i64_range_set;
 use self::value_codec::parse_f64_ascii;
+use self::value_codec::parse_f64_ascii_allow_non_finite;
 use self::value_codec::parse_i64_ascii;
 use self::value_codec::parse_u64_ascii;
 use self::value_codec::serialize_contiguous_i64_range_set_payload;
@@ -582,6 +665,22 @@ impl From<RedisKey> for ItemKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
+pub(crate) struct DbName(usize);
+
+impl DbName {
+    pub(crate) const fn new(raw: usize) -> Self {
+        Self(raw)
+    }
+}
+
+impl From<DbName> for usize {
+    fn from(value: DbName) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[repr(transparent)]
 pub struct ShardIndex(usize);
 
 impl ShardIndex {
@@ -690,7 +789,7 @@ impl RespProtocolVersion {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct StreamId {
     timestamp_millis: u64,
     sequence: u64,
@@ -709,22 +808,19 @@ impl StreamId {
     }
 
     pub(crate) fn parse(id: &[u8]) -> Option<Self> {
+        Self::parse_with_missing_sequence(id, 0)
+    }
+
+    pub(crate) fn parse_with_missing_sequence(id: &[u8], missing_sequence: u64) -> Option<Self> {
         let text = core::str::from_utf8(id).ok()?;
         if let Some((ms, seq)) = text.split_once('-') {
             return Some(Self::new(ms.parse::<u64>().ok()?, seq.parse::<u64>().ok()?));
         }
-        Some(Self::new(text.parse::<u64>().ok()?, 0))
+        Some(Self::new(text.parse::<u64>().ok()?, missing_sequence))
     }
 
     pub(crate) fn encode(self) -> Vec<u8> {
         format!("{}-{}", self.timestamp_millis, self.sequence).into_bytes()
-    }
-
-    pub(crate) fn compare_bytes(self, rhs: &[u8]) -> core::cmp::Ordering {
-        match Self::parse(rhs) {
-            Some(rhs_id) => self.cmp(&rhs_id),
-            None => self.encode().as_slice().cmp(rhs),
-        }
     }
 
     pub(crate) const fn timestamp_millis(self) -> u64 {
@@ -841,11 +937,206 @@ pub struct MigrationEntry {
     pub expiration_unix_millis: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+const DEFAULT_STREAM_IDMP_DURATION_SECONDS: u64 = 100;
+const DEFAULT_STREAM_IDMP_MAXSIZE: u64 = 100;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct StreamObject {
     #[allow(clippy::type_complexity)]
     entries: BTreeMap<StreamId, Vec<(Vec<u8>, Vec<u8>)>>,
-    groups: BTreeMap<Vec<u8>, StreamId>,
+    node_sizes: VecDeque<usize>,
+    groups: BTreeMap<Vec<u8>, StreamGroupState>,
+    last_generated_id: StreamId,
+    max_deleted_entry_id: StreamId,
+    entries_added: u64,
+    idmp_duration_seconds: u64,
+    idmp_maxsize: u64,
+    idmp_producers: BTreeMap<Vec<u8>, StreamIdmpProducerState>,
+    iids_added: u64,
+    iids_duplicates: u64,
+}
+
+impl StreamObject {
+    fn with_idmp_config(idmp_duration_seconds: u64, idmp_maxsize: u64) -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            node_sizes: VecDeque::new(),
+            groups: BTreeMap::new(),
+            last_generated_id: StreamId::zero(),
+            max_deleted_entry_id: StreamId::zero(),
+            entries_added: 0,
+            idmp_duration_seconds,
+            idmp_maxsize,
+            idmp_producers: BTreeMap::new(),
+            iids_added: 0,
+            iids_duplicates: 0,
+        }
+    }
+
+    fn normalized_node_max_entries(configured_max_entries: usize) -> usize {
+        configured_max_entries.max(1)
+    }
+
+    fn rebuild_node_sizes(&mut self, configured_max_entries: usize) {
+        self.node_sizes.clear();
+        let node_max_entries = Self::normalized_node_max_entries(configured_max_entries);
+        let mut remaining = self.entries.len();
+        while remaining > 0 {
+            let node_len = remaining.min(node_max_entries);
+            self.node_sizes.push_back(node_len);
+            remaining -= node_len;
+        }
+    }
+
+    fn ensure_node_sizes(&mut self, configured_max_entries: usize) {
+        let total_entries: usize = self.node_sizes.iter().sum();
+        if total_entries == self.entries.len() {
+            return;
+        }
+        self.rebuild_node_sizes(configured_max_entries);
+    }
+
+    fn note_appended_entry(&mut self, configured_max_entries: usize) {
+        let node_max_entries = Self::normalized_node_max_entries(configured_max_entries);
+        if let Some(tail_size) = self.node_sizes.back_mut()
+            && *tail_size < node_max_entries
+        {
+            *tail_size += 1;
+            return;
+        }
+        self.node_sizes.push_back(1);
+    }
+
+    fn remove_entry_at_rank(&mut self, entry_rank: usize) {
+        let mut consumed = 0usize;
+        let mut node_index = 0usize;
+        while node_index < self.node_sizes.len() {
+            let node_size = self.node_sizes[node_index];
+            if entry_rank < consumed + node_size {
+                if node_size == 1 {
+                    let _ = self.node_sizes.remove(node_index);
+                } else {
+                    self.node_sizes[node_index] = node_size - 1;
+                }
+                return;
+            }
+            consumed += node_size;
+            node_index += 1;
+        }
+    }
+
+    fn idmp_tracked_count(&self) -> usize {
+        self.idmp_producers
+            .values()
+            .map(|producer| producer.entries.len())
+            .sum()
+    }
+
+    fn expire_idmp_entries(&mut self, now_millis: u64) {
+        if self.idmp_duration_seconds == 0 || self.idmp_producers.is_empty() {
+            return;
+        }
+        let expire_before =
+            now_millis.saturating_sub(self.idmp_duration_seconds.saturating_mul(1000));
+        let producer_ids = self.idmp_producers.keys().cloned().collect::<Vec<_>>();
+        for producer_id in producer_ids {
+            let mut remove_producer = false;
+            if let Some(producer) = self.idmp_producers.get_mut(&producer_id) {
+                while let Some(oldest_iid) = producer.insertion_order.front().cloned() {
+                    let Some(oldest_id) = producer.entries.get(&oldest_iid).copied() else {
+                        let _ = producer.insertion_order.pop_front();
+                        continue;
+                    };
+                    if oldest_id.timestamp_millis() > expire_before {
+                        break;
+                    }
+                    let _ = producer.insertion_order.pop_front();
+                    producer.entries.remove(&oldest_iid);
+                }
+                remove_producer = producer.entries.is_empty();
+            }
+            if remove_producer {
+                self.idmp_producers.remove(&producer_id);
+            }
+        }
+    }
+
+    fn idmp_lookup(&mut self, producer_id: &[u8], iid: &[u8], now_millis: u64) -> Option<StreamId> {
+        self.expire_idmp_entries(now_millis);
+        self.idmp_producers
+            .get(producer_id)
+            .and_then(|producer| producer.entries.get(iid).copied())
+    }
+
+    fn remember_idmp_entry(&mut self, producer_id: Vec<u8>, iid: Vec<u8>, stream_id: StreamId) {
+        let remove_producer = {
+            let producer = self.idmp_producers.entry(producer_id).or_default();
+            producer.insertion_order.push_back(iid.clone());
+            producer.entries.insert(iid, stream_id);
+            self.iids_added = self.iids_added.saturating_add(1);
+
+            while u64::try_from(producer.entries.len()).unwrap_or(u64::MAX) > self.idmp_maxsize {
+                let Some(oldest_iid) = producer.insertion_order.pop_front() else {
+                    break;
+                };
+                producer.entries.remove(&oldest_iid);
+            }
+            producer.entries.is_empty()
+        };
+        if remove_producer {
+            self.idmp_producers
+                .retain(|_, producer| !producer.entries.is_empty());
+        }
+    }
+
+    fn clear_idmp_history(&mut self) {
+        self.idmp_producers.clear();
+    }
+}
+
+impl Default for StreamObject {
+    fn default() -> Self {
+        Self::with_idmp_config(
+            DEFAULT_STREAM_IDMP_DURATION_SECONDS,
+            DEFAULT_STREAM_IDMP_MAXSIZE,
+        )
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StreamIdmpProducerState {
+    entries: BTreeMap<Vec<u8>, StreamId>,
+    insertion_order: VecDeque<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StreamGroupState {
+    last_delivered_id: StreamId,
+    entries_read: Option<u64>,
+    consumers: BTreeMap<Vec<u8>, StreamConsumerState>,
+    pending: BTreeMap<StreamId, StreamPendingEntry>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct StreamConsumerState {
+    pending: BTreeSet<StreamId>,
+    seen_time_millis: u64,
+    active_time_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StreamPendingEntry {
+    consumer: Vec<u8>,
+    last_delivery_time_millis: u64,
+    delivery_count: u64,
+}
+
+fn stream_has_entry_after_id(stream: &StreamObject, pivot: StreamId) -> bool {
+    stream
+        .entries
+        .range((std::ops::Bound::Excluded(pivot), std::ops::Bound::Unbounded))
+        .next()
+        .is_some()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -924,6 +1215,61 @@ struct PubSubState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ClientTrackingModeSetting {
+    Off,
+    On,
+    OptIn,
+    OptOut,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct ClientTrackingConfig {
+    pub(crate) mode: ClientTrackingModeSetting,
+    pub(crate) redirect_id: Option<ClientId>,
+    pub(crate) bcast: bool,
+    pub(crate) noloop: bool,
+    pub(crate) prefixes: Vec<Vec<u8>>,
+    pub(crate) caching: Option<bool>,
+}
+
+impl Default for ClientTrackingConfig {
+    fn default() -> Self {
+        Self {
+            mode: ClientTrackingModeSetting::Off,
+            redirect_id: None,
+            bcast: false,
+            noloop: false,
+            prefixes: Vec::new(),
+            caching: None,
+        }
+    }
+}
+
+impl ClientTrackingConfig {
+    fn should_track_reads(&self) -> bool {
+        match self.mode {
+            ClientTrackingModeSetting::Off => false,
+            ClientTrackingModeSetting::On => true,
+            ClientTrackingModeSetting::OptIn => self.caching == Some(true),
+            ClientTrackingModeSetting::OptOut => self.caching != Some(false),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+struct TrackingClientState {
+    config: ClientTrackingConfig,
+    tracked_keys: HashSet<RedisKey>,
+    broken_redirect: bool,
+    broken_redirect_notified: bool,
+}
+
+#[derive(Debug, Default)]
+struct TrackingState {
+    clients: HashMap<ClientId, TrackingClientState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PubSubTargetKind {
     Channel,
     Pattern,
@@ -933,6 +1279,284 @@ enum PubSubTargetKind {
 pub(crate) enum ClientUnblockMode {
     Timeout,
     Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(super) enum SetEncodingFloor {
+    Listpack,
+    Hashtable,
+}
+
+#[derive(Debug, Clone)]
+struct SetObjectHotEntry {
+    payload: DecodedSetObjectPayload,
+    ordered_members: Option<Vec<Vec<u8>>>,
+    dirty: bool,
+}
+
+impl SetObjectHotEntry {
+    fn new(payload: DecodedSetObjectPayload, dirty: bool) -> Self {
+        Self {
+            payload,
+            ordered_members: None,
+            dirty,
+        }
+    }
+
+    fn ordered_members(&mut self) -> &[Vec<u8>] {
+        self.ordered_members
+            .get_or_insert_with(|| self.payload.ordered_members())
+            .as_slice()
+    }
+
+    fn invalidate_ordered_members(&mut self) {
+        self.ordered_members = None;
+    }
+}
+
+#[derive(Debug, Default)]
+struct SetObjectHotState {
+    entries: HashMap<RedisKey, SetObjectHotEntry>,
+    lru: VecDeque<RedisKey>,
+}
+
+impl SetObjectHotState {
+    fn touch(&mut self, key: &[u8]) {
+        if let Some(index) = self
+            .lru
+            .iter()
+            .position(|existing| existing.as_slice() == key)
+        {
+            let _ = self.lru.remove(index);
+        }
+        self.lru.push_back(RedisKey::from(key));
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SetDebugHtState {
+    main_table_size: usize,
+    rehash_target_size: Option<usize>,
+    rehash_steps_remaining: usize,
+    pending_shrink_target_size: Option<usize>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SetDebugHtStatsSnapshot {
+    main_table_size: usize,
+    rehash_target_size: Option<usize>,
+}
+
+impl SetDebugHtState {
+    fn new(member_count: usize) -> Self {
+        Self {
+            main_table_size: Self::stable_table_size(member_count),
+            rehash_target_size: None,
+            rehash_steps_remaining: 0,
+            pending_shrink_target_size: None,
+        }
+    }
+
+    fn stable_table_size(member_count: usize) -> usize {
+        member_count
+            .saturating_mul(2)
+            .max(SET_DEBUG_HT_MIN_TABLE_SIZE)
+            .next_power_of_two()
+    }
+
+    fn initial_rehash_steps(main_table_size: usize, target_size: usize) -> usize {
+        let shrink_ratio = (main_table_size / target_size.max(1)).max(1);
+        (shrink_ratio.ilog2() as usize + 1).clamp(2, 8)
+    }
+
+    fn start_rehash(&mut self, target_size: usize) {
+        if target_size >= self.main_table_size {
+            self.main_table_size = target_size;
+            self.rehash_target_size = None;
+            self.rehash_steps_remaining = 0;
+            self.pending_shrink_target_size = None;
+            return;
+        }
+        self.rehash_target_size = Some(target_size);
+        self.rehash_steps_remaining = Self::initial_rehash_steps(self.main_table_size, target_size);
+        self.pending_shrink_target_size = None;
+    }
+
+    fn finish_rehash(&mut self, target_size: usize) {
+        self.main_table_size = target_size;
+        self.rehash_target_size = None;
+        self.rehash_steps_remaining = 0;
+        self.pending_shrink_target_size = None;
+    }
+
+    fn update_for_member_count(&mut self, member_count: usize, bgsave_in_progress: bool) {
+        let desired_size = Self::stable_table_size(member_count);
+
+        if let Some(current_target_size) = self.rehash_target_size {
+            if desired_size >= self.main_table_size {
+                self.finish_rehash(desired_size);
+                return;
+            }
+
+            if desired_size < current_target_size {
+                self.rehash_target_size = Some(desired_size);
+                let next_steps = Self::initial_rehash_steps(self.main_table_size, desired_size);
+                self.rehash_steps_remaining = if self.rehash_steps_remaining == 0 {
+                    next_steps
+                } else {
+                    self.rehash_steps_remaining.min(next_steps)
+                };
+            }
+            self.pending_shrink_target_size = None;
+            return;
+        }
+
+        if desired_size > self.main_table_size {
+            self.main_table_size = desired_size;
+            self.pending_shrink_target_size = None;
+            return;
+        }
+
+        if desired_size == self.main_table_size {
+            self.pending_shrink_target_size = None;
+            return;
+        }
+
+        if bgsave_in_progress {
+            self.pending_shrink_target_size = Some(desired_size);
+            return;
+        }
+
+        self.start_rehash(desired_size);
+    }
+
+    fn advance_rehash(&mut self, _member_count: usize, bgsave_in_progress: bool) {
+        if self.rehash_target_size.is_none()
+            && let Some(target_size) = self.pending_shrink_target_size
+            && !bgsave_in_progress
+        {
+            self.start_rehash(target_size);
+        }
+
+        let Some(target_size) = self.rehash_target_size else {
+            return;
+        };
+
+        if self.rehash_steps_remaining > 0 {
+            self.rehash_steps_remaining -= 1;
+        }
+        if self.rehash_steps_remaining == 0 {
+            self.finish_rehash(target_size);
+        }
+    }
+
+    fn snapshot(self) -> SetDebugHtStatsSnapshot {
+        SetDebugHtStatsSnapshot {
+            main_table_size: self.main_table_size,
+            rehash_target_size: self.rehash_target_size,
+        }
+    }
+}
+
+impl DecodedSetObjectPayload {
+    fn member_count(&self) -> usize {
+        match self {
+            Self::Members(set) => set.len(),
+            Self::ContiguousI64Range(range) => {
+                let span = i128::from(range.end()) - i128::from(range.start()) + 1;
+                usize::try_from(span).unwrap_or(usize::MAX)
+            }
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.member_count() == 0
+    }
+
+    fn ordered_members(&self) -> Vec<Vec<u8>> {
+        match self {
+            Self::Members(set) => set.iter().cloned().collect(),
+            Self::ContiguousI64Range(range) => materialize_contiguous_i64_range_set(*range)
+                .into_iter()
+                .collect(),
+        }
+    }
+
+    fn contains_member(&self, member: &[u8]) -> bool {
+        match self {
+            Self::Members(set) => set.contains(member),
+            Self::ContiguousI64Range(range) => {
+                parse_canonical_i64_set_member(member).is_some_and(|value| range.contains(value))
+            }
+        }
+    }
+
+    fn insert_member(&mut self, member: &[u8]) -> bool {
+        match self {
+            Self::Members(set) => set.insert(member.to_vec()),
+            Self::ContiguousI64Range(range) => {
+                let Some(value) = parse_canonical_i64_set_member(member) else {
+                    let mut set = materialize_contiguous_i64_range_set(*range);
+                    let inserted = set.insert(member.to_vec());
+                    *self = Self::Members(set);
+                    return inserted;
+                };
+                if range.contains(value) {
+                    return false;
+                }
+                if range.can_extend_left_with(value) {
+                    range.extend_left();
+                    return true;
+                }
+                if range.can_extend_right_with(value) {
+                    range.extend_right();
+                    return true;
+                }
+                let mut set = materialize_contiguous_i64_range_set(*range);
+                let inserted = set.insert(member.to_vec());
+                *self = Self::Members(set);
+                inserted
+            }
+        }
+    }
+
+    fn remove_member(&mut self, member: &[u8]) -> bool {
+        match self {
+            Self::Members(set) => set.remove(member),
+            Self::ContiguousI64Range(range) => {
+                let Some(value) = parse_canonical_i64_set_member(member) else {
+                    return false;
+                };
+                if !range.contains(value) {
+                    return false;
+                }
+                if range.start() == range.end() {
+                    *self = Self::Members(BTreeSet::new());
+                    return true;
+                }
+                if value == range.start() {
+                    *range = ContiguousI64RangeSet::new(range.start() + 1, range.end()).unwrap();
+                    return true;
+                }
+                if value == range.end() {
+                    *range = ContiguousI64RangeSet::new(range.start(), range.end() - 1).unwrap();
+                    return true;
+                }
+                let mut set = materialize_contiguous_i64_range_set(*range);
+                let removed = set.remove(member);
+                *self = Self::Members(set);
+                removed
+            }
+        }
+    }
+}
+
+fn parse_canonical_i64_set_member(member: &[u8]) -> Option<i64> {
+    let value = parse_i64_ascii(member)?;
+    if value.to_string().as_bytes() != member {
+        return None;
+    }
+    Some(value)
 }
 
 pub struct RequestProcessor {
@@ -945,14 +1569,23 @@ pub struct RequestProcessor {
     string_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
     object_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
     watch_versions: Vec<AtomicU64>,
-    blocking_wait_queues: Mutex<HashMap<RedisKey, VecDeque<ClientId>>>,
+    blocking_wait_queues: Mutex<HashMap<BlockingWaitKey, VecDeque<ClientId>>>,
+    blocked_stream_wait_states: Mutex<HashMap<ClientId, BlockingStreamWaitState>>,
+    blocked_xread_tail_ids: Mutex<HashMap<ClientId, Vec<Option<StreamId>>>>,
     pending_client_unblocks: Mutex<HashMap<ClientId, ClientUnblockMode>>,
+    pause_blocked_blocking_clients: Mutex<HashSet<ClientId>>,
     forced_list_quicklist_keys: Mutex<HashSet<RedisKey>>,
+    forced_raw_string_keys: Mutex<HashSet<RedisKey>>,
+    forced_set_encoding_floors: Mutex<HashMap<RedisKey, SetEncodingFloor>>,
+    set_object_hot_state: Mutex<SetObjectHotState>,
+    set_debug_ht_state: Mutex<HashMap<RedisKey, SetDebugHtState>>,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
     debug_pause_cron: AtomicBool,
+    debug_disable_deny_scripts: AtomicBool,
     expired_keys: AtomicU64,
     expired_keys_active: AtomicU64,
+    total_error_replies: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
     rdb_changes_since_last_save: AtomicU64,
     resp_protocol_version: AtomicU8,
@@ -963,11 +1596,16 @@ pub struct RequestProcessor {
     executed_command_count: AtomicU64,
     rdb_key_save_delay_micros: AtomicU64,
     rdb_bgsave_deadline_unix_millis: AtomicU64,
+    rdb_bgsave_child: Mutex<Option<Child>>,
     command_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    command_rejected_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
+    error_reply_counts: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     pubsub_state: Mutex<PubSubState>,
-    moved_keysizes_by_db: Mutex<HashMap<usize, HashMap<RedisKey, MovedKeysizesEntry>>>,
+    tracking_state: Mutex<TrackingState>,
+    tracking_table_max_keys: AtomicU64,
+    moved_keysizes_by_db: Mutex<HashMap<DbName, HashMap<RedisKey, MovedKeysizesEntry>>>,
     key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
     key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
@@ -994,8 +1632,13 @@ pub struct RequestProcessor {
     notify_keyspace_events_flags: AtomicU32,
     zset_max_listpack_entries: AtomicUsize,
     list_max_listpack_size: AtomicI64,
+    /// DEBUG QUICKLIST-PACKED-THRESHOLD value.  When non-zero, any individual
+    /// list element whose byte length meets or exceeds this threshold forces
+    /// quicklist encoding instead of listpack.
+    quicklist_packed_threshold: AtomicUsize,
     hash_max_listpack_entries: AtomicUsize,
     set_max_listpack_entries: AtomicUsize,
+    set_max_listpack_value: AtomicUsize,
     set_max_intset_entries: AtomicUsize,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
@@ -1011,6 +1654,57 @@ pub struct RequestProcessor {
     client_lib_name: Mutex<Vec<u8>>,
     /// CLIENT SETINFO LIB-VER value (empty = not set).
     client_lib_ver: Mutex<Vec<u8>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum BlockingWaitClass {
+    List,
+    Zset,
+    Stream,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct BlockingWaitKey {
+    key: RedisKey,
+    class: BlockingWaitClass,
+}
+
+impl BlockingWaitKey {
+    pub(crate) fn new(key: RedisKey, class: BlockingWaitClass) -> Self {
+        Self { key, class }
+    }
+
+    pub(crate) fn key(&self) -> &RedisKey {
+        &self.key
+    }
+
+    pub(crate) fn class(&self) -> BlockingWaitClass {
+        self.class
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum BlockingStreamWaitState {
+    Xread(Vec<BlockingXreadStreamWait>),
+    Xreadgroup(BlockingXreadgroupWait),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BlockingXreadStreamWait {
+    pub(crate) key: RedisKey,
+    pub(crate) selection: BlockingXreadWaitSelection,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BlockingXreadWaitSelection {
+    After(StreamId),
+    LastEntry,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct BlockingXreadgroupWait {
+    pub(crate) stream_keys: Vec<RedisKey>,
+    pub(crate) group: Vec<u8>,
 }
 
 const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
@@ -1151,13 +1845,22 @@ impl RequestProcessor {
                 .map(|_| AtomicU64::new(0))
                 .collect(),
             blocking_wait_queues: Mutex::new(HashMap::new()),
+            blocked_stream_wait_states: Mutex::new(HashMap::new()),
+            blocked_xread_tail_ids: Mutex::new(HashMap::new()),
             pending_client_unblocks: Mutex::new(HashMap::new()),
+            pause_blocked_blocking_clients: Mutex::new(HashSet::new()),
             forced_list_quicklist_keys: Mutex::new(HashSet::new()),
+            forced_raw_string_keys: Mutex::new(HashSet::new()),
+            forced_set_encoding_floors: Mutex::new(HashMap::new()),
+            set_object_hot_state: Mutex::new(SetObjectHotState::default()),
+            set_debug_ht_state: Mutex::new(HashMap::new()),
             random_state: AtomicU64::new(current_unix_time_millis().unwrap_or(0x9e3779b97f4a7c15)),
             active_expire_enabled: AtomicBool::new(true),
             debug_pause_cron: AtomicBool::new(false),
+            debug_disable_deny_scripts: AtomicBool::new(false),
             expired_keys: AtomicU64::new(0),
             expired_keys_active: AtomicU64::new(0),
+            total_error_replies: AtomicU64::new(0),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
             rdb_changes_since_last_save: AtomicU64::new(0),
             resp_protocol_version: AtomicU8::new(RespProtocolVersion::Resp2.as_u8()),
@@ -1168,10 +1871,15 @@ impl RequestProcessor {
             executed_command_count: AtomicU64::new(0),
             rdb_key_save_delay_micros: AtomicU64::new(0),
             rdb_bgsave_deadline_unix_millis: AtomicU64::new(0),
+            rdb_bgsave_child: Mutex::new(None),
             command_calls: Mutex::new(HashMap::new()),
+            command_rejected_calls: Mutex::new(HashMap::new()),
             command_failed_calls: Mutex::new(HashMap::new()),
+            error_reply_counts: Mutex::new(HashMap::new()),
             latency_events: Mutex::new(HashMap::new()),
             pubsub_state: Mutex::new(PubSubState::default()),
+            tracking_state: Mutex::new(TrackingState::default()),
+            tracking_table_max_keys: AtomicU64::new(1_000_000),
             moved_keysizes_by_db: Mutex::new(HashMap::new()),
             key_lru_access_millis: Mutex::new(HashMap::new()),
             key_lfu_frequency: Mutex::new(HashMap::new()),
@@ -1199,8 +1907,10 @@ impl RequestProcessor {
             notify_keyspace_events_flags: AtomicU32::new(0),
             zset_max_listpack_entries: AtomicUsize::new(DEFAULT_ZSET_MAX_LISTPACK_ENTRIES),
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
+            quicklist_packed_threshold: AtomicUsize::new(DEFAULT_QUICKLIST_PACKED_THRESHOLD),
             hash_max_listpack_entries: AtomicUsize::new(DEFAULT_HASH_MAX_LISTPACK_ENTRIES),
             set_max_listpack_entries: AtomicUsize::new(DEFAULT_SET_MAX_LISTPACK_ENTRIES),
+            set_max_listpack_value: AtomicUsize::new(DEFAULT_SET_MAX_LISTPACK_VALUE),
             set_max_intset_entries: AtomicUsize::new(DEFAULT_SET_MAX_INTSET_ENTRIES),
             functions: KvSessionFunctions,
             object_functions: ObjectSessionFunctions,
@@ -1285,6 +1995,24 @@ impl RequestProcessor {
         self.blocked_clients.load(Ordering::Acquire)
     }
 
+    pub(crate) fn blocking_key_counts(&self) -> (u64, u64) {
+        let Ok(queues) = self.blocking_wait_queues.lock() else {
+            return (0, 0);
+        };
+        let mut blocking_keys = HashSet::new();
+        let mut blocking_keys_on_nokey = HashSet::new();
+        for wait_key in queues.keys() {
+            blocking_keys.insert(wait_key.key().clone());
+            if wait_key.class() == BlockingWaitClass::Stream {
+                blocking_keys_on_nokey.insert(wait_key.key().clone());
+            }
+        }
+        (
+            blocking_keys.len() as u64,
+            blocking_keys_on_nokey.len() as u64,
+        )
+    }
+
     pub(crate) fn set_connected_clients(&self, count: u64) {
         self.connected_clients.store(count, Ordering::Release);
     }
@@ -1294,6 +2022,10 @@ impl RequestProcessor {
             return;
         };
         state.pending_messages.entry(client_id).or_default();
+        state
+            .client_resp_versions
+            .entry(client_id)
+            .or_insert(RespProtocolVersion::Resp2);
     }
 
     pub(crate) fn update_pubsub_client_resp_version(
@@ -1308,13 +2040,285 @@ impl RequestProcessor {
     }
 
     pub(crate) fn unregister_pubsub_client(&self, client_id: ClientId) {
+        let source_resp_versions = {
+            let Ok(mut state) = self.pubsub_state.lock() else {
+                return;
+            };
+            remove_all_pubsub_client_subscriptions(
+                &mut state,
+                client_id,
+                PubSubTargetKind::Channel,
+            );
+            remove_all_pubsub_client_subscriptions(
+                &mut state,
+                client_id,
+                PubSubTargetKind::Pattern,
+            );
+            let _ = state.pending_messages.remove(&client_id);
+            let _ = state.client_resp_versions.remove(&client_id);
+            state.client_resp_versions.clone()
+        };
+        self.mark_tracking_redirect_target_broken(client_id, &source_resp_versions);
+        self.clear_client_tracking(client_id);
+    }
+
+    fn mark_tracking_redirect_target_broken(
+        &self,
+        disconnected_client_id: ClientId,
+        source_resp_versions: &HashMap<ClientId, RespProtocolVersion>,
+    ) {
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        for (source_client_id, client_state) in &mut state.clients {
+            if client_state.config.redirect_id != Some(disconnected_client_id) {
+                continue;
+            }
+            client_state.broken_redirect = true;
+            if !source_resp_versions
+                .get(source_client_id)
+                .copied()
+                .unwrap_or(RespProtocolVersion::Resp2)
+                .is_resp3()
+            {
+                client_state.broken_redirect_notified = true;
+            }
+        }
+    }
+
+    pub(crate) fn configure_client_tracking(
+        &self,
+        client_id: ClientId,
+        config: ClientTrackingConfig,
+    ) {
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        if config.mode == ClientTrackingModeSetting::Off {
+            let _ = state.clients.remove(&client_id);
+            return;
+        }
+
+        let client_state = state.clients.entry(client_id).or_default();
+        if config.bcast {
+            client_state.tracked_keys.clear();
+        }
+        client_state.config = config;
+        client_state.broken_redirect = false;
+        client_state.broken_redirect_notified = false;
+    }
+
+    pub(crate) fn set_client_tracking_caching(&self, client_id: ClientId, caching: Option<bool>) {
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let Some(client_state) = state.clients.get_mut(&client_id) else {
+            return;
+        };
+        client_state.config.caching = caching;
+    }
+
+    fn clear_client_tracking_caching_override_for_current_client(&self) {
+        let Some(client_id) = current_request_client_id() else {
+            return;
+        };
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let Some(client_state) = state.clients.get_mut(&client_id) else {
+            return;
+        };
+        if !matches!(
+            client_state.config.mode,
+            ClientTrackingModeSetting::OptIn | ClientTrackingModeSetting::OptOut
+        ) {
+            return;
+        }
+        client_state.config.caching = None;
+    }
+
+    pub(crate) fn clear_client_tracking(&self, client_id: ClientId) {
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let _ = state.clients.remove(&client_id);
+    }
+
+    pub(crate) fn client_tracking_redirect_broken(&self, client_id: ClientId) -> bool {
+        let Ok(state) = self.tracking_state.lock() else {
+            return false;
+        };
+        state
+            .clients
+            .get(&client_id)
+            .is_some_and(|client_state| client_state.broken_redirect)
+    }
+
+    pub(crate) fn tracking_info_snapshot(&self) -> (usize, usize, usize, usize) {
+        let Ok(state) = self.tracking_state.lock() else {
+            return (0, 0, 0, 0);
+        };
+        let mut total_items = 0usize;
+        let mut unique_keys = HashSet::<RedisKey>::new();
+        let mut total_prefixes = 0usize;
+        for client_state in state.clients.values() {
+            total_items = total_items.saturating_add(client_state.tracked_keys.len());
+            for key in &client_state.tracked_keys {
+                unique_keys.insert(key.clone());
+            }
+            if client_state.config.bcast {
+                total_prefixes = total_prefixes.saturating_add(client_state.config.prefixes.len());
+            }
+        }
+        (
+            total_items,
+            unique_keys.len(),
+            total_prefixes,
+            state.clients.len(),
+        )
+    }
+
+    pub(crate) fn set_tracking_table_max_keys(&self, value: u64) {
+        self.tracking_table_max_keys.store(value, Ordering::Release);
+    }
+
+    pub(crate) fn invalidate_all_tracking_entries(&self) {
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let mut targets = Vec::new();
+        for (client_id, client_state) in &mut state.clients {
+            // Valkey semantics: FLUSHDB/FLUSHALL broadcast a global invalidation
+            // (empty payload) to every tracking-enabled client.
+            client_state.tracked_keys.clear();
+            targets.push(client_state.config.redirect_id.unwrap_or(*client_id));
+        }
+        drop(state);
+        for target in targets {
+            self.enqueue_tracking_invalidation_message(target, &[]);
+        }
+    }
+
+    pub(crate) fn enforce_tracking_table_max_keys(&self) {
+        let max_keys = usize::try_from(self.tracking_table_max_keys.load(Ordering::Acquire))
+            .unwrap_or(usize::MAX);
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let mut total_items = state
+            .clients
+            .values()
+            .map(|client_state| client_state.tracked_keys.len())
+            .sum::<usize>();
+        if total_items <= max_keys {
+            return;
+        }
+
+        let mut evicted = Vec::new();
+        for (client_id, client_state) in &mut state.clients {
+            while total_items > max_keys {
+                let Some(key) = client_state.tracked_keys.iter().next().cloned() else {
+                    break;
+                };
+                client_state.tracked_keys.remove(key.as_slice());
+                let target = client_state.config.redirect_id.unwrap_or(*client_id);
+                evicted.push((target, key));
+                total_items = total_items.saturating_sub(1);
+            }
+            if total_items <= max_keys {
+                break;
+            }
+        }
+        drop(state);
+
+        for (target, key) in evicted {
+            let single_key = [key];
+            self.enqueue_tracking_invalidation_message(target, &single_key);
+        }
+    }
+
+    pub(crate) fn track_read_key_for_current_client(&self, key: &[u8]) {
+        if !current_request_tracking_reads_enabled() {
+            return;
+        }
+        if current_request_in_transaction() && collect_tracking_read_key(key) {
+            return;
+        }
+        let Some(client_id) = current_request_client_id() else {
+            return;
+        };
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let Some(client_state) = state.clients.get_mut(&client_id) else {
+            return;
+        };
+        if !client_state.config.should_track_reads() || client_state.config.bcast {
+            return;
+        }
+        client_state.tracked_keys.insert(RedisKey::from(key));
+        drop(state);
+        self.enforce_tracking_table_max_keys();
+    }
+
+    fn apply_deferred_tracking_reads_for_current_client(&self, keys: &[RedisKey]) {
+        let Some(client_id) = current_request_client_id() else {
+            return;
+        };
+        self.apply_deferred_tracking_reads_for_client(client_id, keys);
+    }
+
+    fn apply_deferred_tracking_reads_for_client(&self, client_id: ClientId, keys: &[RedisKey]) {
+        if keys.is_empty() {
+            return;
+        }
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        let Some(client_state) = state.clients.get_mut(&client_id) else {
+            return;
+        };
+        if client_state.config.bcast {
+            return;
+        }
+        let mut inserted_any = false;
+        for key in keys {
+            inserted_any |= client_state.tracked_keys.insert(key.clone());
+        }
+        drop(state);
+        if inserted_any {
+            self.enforce_tracking_table_max_keys();
+        }
+    }
+
+    pub(crate) fn begin_tracking_invalidation_batch(&self) {
+        begin_tracking_invalidation_collection();
+        begin_tracking_read_collection();
+    }
+
+    pub(crate) fn finish_tracking_invalidation_batch(&self, origin_client_id: Option<ClientId>) {
+        let invalidated_keys = finish_tracking_invalidation_collection();
+        let deferred_reads = finish_tracking_read_collection();
+        if !invalidated_keys.is_empty() {
+            self.emit_tracking_invalidations_for_keys_with_origin(
+                &invalidated_keys,
+                origin_client_id,
+            );
+        }
+        if let Some(client_id) = origin_client_id {
+            self.apply_deferred_tracking_reads_for_client(client_id, &deferred_reads);
+        }
+    }
+
+    pub(crate) fn enqueue_pending_client_message(&self, client_id: ClientId, frame: Vec<u8>) {
         let Ok(mut state) = self.pubsub_state.lock() else {
             return;
         };
-        remove_all_pubsub_client_subscriptions(&mut state, client_id, PubSubTargetKind::Channel);
-        remove_all_pubsub_client_subscriptions(&mut state, client_id, PubSubTargetKind::Pattern);
-        let _ = state.pending_messages.remove(&client_id);
-        let _ = state.client_resp_versions.remove(&client_id);
+        state
+            .pending_messages
+            .entry(client_id)
+            .or_default()
+            .push_back(frame);
     }
 
     pub(crate) fn pubsub_subscription_count(&self, client_id: ClientId) -> usize {
@@ -1584,6 +2588,160 @@ impl RequestProcessor {
         drained
     }
 
+    pub(crate) fn clear_pending_tracking_messages_for_client(&self, client_id: ClientId) {
+        let Ok(mut state) = self.pubsub_state.lock() else {
+            return;
+        };
+        let Some(messages) = state.pending_messages.get_mut(&client_id) else {
+            return;
+        };
+        let mut retained = VecDeque::with_capacity(messages.len());
+        while let Some(message) = messages.pop_front() {
+            if pending_message_is_tracking_message(&message) {
+                continue;
+            }
+            retained.push_back(message);
+        }
+        *messages = retained;
+    }
+
+    pub(crate) fn emit_tracking_invalidations_for_keys(&self, keys: &[RedisKey]) {
+        self.emit_tracking_invalidations_for_keys_with_origin(keys, current_request_client_id());
+    }
+
+    fn emit_tracking_invalidations_for_keys_with_origin(
+        &self,
+        keys: &[RedisKey],
+        origin_client_id: Option<ClientId>,
+    ) {
+        if keys.is_empty() {
+            return;
+        }
+        let (connected_clients, source_resp_versions) = {
+            let Ok(pubsub_state) = self.pubsub_state.lock() else {
+                return;
+            };
+            (
+                pubsub_state
+                    .pending_messages
+                    .keys()
+                    .copied()
+                    .collect::<HashSet<_>>(),
+                pubsub_state.client_resp_versions.clone(),
+            )
+        };
+        let Ok(mut state) = self.tracking_state.lock() else {
+            return;
+        };
+        // Group keys by redirection target and prefix group to mirror BCAST behavior:
+        // one invalidation message per matching prefix group.
+        let mut grouped: HashMap<(ClientId, Vec<u8>), Vec<RedisKey>> = HashMap::new();
+        let mut broken_redirect_clients = HashSet::new();
+        for (tracked_client_id, tracked_state) in &mut state.clients {
+            if tracked_state.config.noloop && origin_client_id == Some(*tracked_client_id) {
+                continue;
+            }
+            for key in keys {
+                let groups = tracking_groups_for_key(&tracked_state.config, key);
+                if groups.is_empty() {
+                    continue;
+                }
+                if !tracked_state.config.bcast && !tracked_state.tracked_keys.remove(key.as_slice())
+                {
+                    continue;
+                }
+                let target = tracked_state
+                    .config
+                    .redirect_id
+                    .unwrap_or(*tracked_client_id);
+                if tracked_state.config.redirect_id.is_some()
+                    && !connected_clients.contains(&target)
+                {
+                    tracked_state.broken_redirect = true;
+                    if !tracked_state.broken_redirect_notified
+                        && source_resp_versions
+                            .get(tracked_client_id)
+                            .copied()
+                            .unwrap_or(RespProtocolVersion::Resp2)
+                            .is_resp3()
+                    {
+                        tracked_state.broken_redirect_notified = true;
+                        broken_redirect_clients.insert(*tracked_client_id);
+                    }
+                    continue;
+                }
+                for group in groups {
+                    grouped
+                        .entry((target, group))
+                        .or_default()
+                        .push(key.clone());
+                }
+            }
+        }
+        drop(state);
+
+        for ((target_client_id, _group), grouped_keys) in grouped {
+            self.enqueue_tracking_invalidation_message(target_client_id, &grouped_keys);
+        }
+        for client_id in broken_redirect_clients {
+            self.enqueue_pending_client_message(
+                client_id,
+                encode_tracking_redir_broken_push_frame(),
+            );
+        }
+    }
+
+    pub(crate) fn enqueue_tracking_invalidation_for_key(&self, key: &[u8]) {
+        self.enqueue_tracking_invalidation_for_key_with_origin(key, current_request_client_id());
+    }
+
+    pub(crate) fn enqueue_tracking_invalidation_for_key_as_server(&self, key: &[u8]) {
+        self.enqueue_tracking_invalidation_for_key_with_origin(key, None);
+    }
+
+    fn enqueue_tracking_invalidation_for_key_with_origin(
+        &self,
+        key: &[u8],
+        origin_client_id: Option<ClientId>,
+    ) {
+        if origin_client_id.is_some() && collect_tracking_invalidation_key(key) {
+            return;
+        }
+        self.emit_tracking_invalidations_for_keys_with_origin(
+            &[RedisKey::from(key)],
+            origin_client_id,
+        );
+    }
+
+    fn enqueue_tracking_invalidation_message(&self, target_client_id: ClientId, keys: &[RedisKey]) {
+        let (resp3, payload) = {
+            let Ok(state) = self.pubsub_state.lock() else {
+                return;
+            };
+            let resp3 = state
+                .client_resp_versions
+                .get(&target_client_id)
+                .copied()
+                .unwrap_or(RespProtocolVersion::Resp2)
+                .is_resp3();
+            let payload = encode_tracking_invalidation_payload(keys);
+            (resp3, payload)
+        };
+
+        let frame = if resp3 {
+            encode_tracking_push_frame(&payload)
+        } else {
+            encode_pubsub_message_frame(
+                b"message",
+                None,
+                TRACKING_INVALIDATE_CHANNEL,
+                &payload,
+                false,
+            )
+        };
+        self.enqueue_pending_client_message(target_client_id, frame);
+    }
+
     /// Emit keyspace/keyevent notifications through pubsub.
     ///
     /// `event_type` is the notification class (NOTIFY_STRING, NOTIFY_GENERIC, etc.).
@@ -1599,20 +2757,59 @@ impl RequestProcessor {
             return;
         }
 
-        // __keyspace@0__:<key> notifications (event name as message)
+        let selected_db = usize::from(current_request_selected_db());
+        let selected_db_text = selected_db.to_string();
+
+        // __keyspace@<db>__:<key> notifications (event name as message)
         if flags & NOTIFY_KEYSPACE != 0 {
-            let mut channel = Vec::with_capacity(15 + key.len());
-            channel.extend_from_slice(b"__keyspace@0__:");
+            let mut channel = Vec::with_capacity(14 + selected_db_text.len() + key.len());
+            channel.extend_from_slice(b"__keyspace@");
+            channel.extend_from_slice(selected_db_text.as_bytes());
+            channel.extend_from_slice(b"__:");
             channel.extend_from_slice(key);
             self.pubsub_publish(&channel, event);
         }
 
-        // __keyevent@0__:<event> notifications (key name as message)
+        // __keyevent@<db>__:<event> notifications (key name as message)
         if flags & NOTIFY_KEYEVENT != 0 {
-            let mut channel = Vec::with_capacity(15 + event.len());
-            channel.extend_from_slice(b"__keyevent@0__:");
+            let mut channel = Vec::with_capacity(14 + selected_db_text.len() + event.len());
+            channel.extend_from_slice(b"__keyevent@");
+            channel.extend_from_slice(selected_db_text.as_bytes());
+            channel.extend_from_slice(b"__:");
             channel.extend_from_slice(event);
             self.pubsub_publish(&channel, key);
+        }
+    }
+
+    pub(crate) fn key_type_snapshot_for_setkey_overwrite(
+        &self,
+        key: &[u8],
+    ) -> Result<(bool, Option<ObjectTypeTag>), RequestExecutionError> {
+        let string_exists = self.key_exists(key)?;
+        let object_type = self.object_read(key)?.map(|object| object.object_type);
+        Ok((string_exists, object_type))
+    }
+
+    pub(crate) fn notify_setkey_overwrite_events(
+        &self,
+        key: &[u8],
+        previous_string_exists: bool,
+        previous_object_type: Option<ObjectTypeTag>,
+        new_type: Option<ObjectTypeTag>,
+    ) {
+        if !previous_string_exists && previous_object_type.is_none() {
+            return;
+        }
+
+        self.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", key);
+
+        let type_changed = if previous_string_exists {
+            new_type.is_some()
+        } else {
+            previous_object_type != new_type
+        };
+        if type_changed {
+            self.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", key);
         }
     }
 
@@ -1650,19 +2847,27 @@ impl RequestProcessor {
         } else {
             (delay_micros / 1_000).max(1)
         };
+        self.ensure_bgsave_child_running();
         self.rdb_bgsave_deadline_unix_millis
             .store(now.saturating_add(delay_millis), Ordering::Release);
     }
 
     pub(super) fn rdb_bgsave_in_progress(&self) -> bool {
+        if self.reap_bgsave_child_if_finished() {
+            self.rdb_bgsave_deadline_unix_millis
+                .store(0, Ordering::Release);
+            return false;
+        }
         let deadline = self.rdb_bgsave_deadline_unix_millis.load(Ordering::Acquire);
         if deadline == 0 {
+            self.stop_bgsave_child();
             return false;
         }
         let now = current_unix_time_millis().unwrap_or(0);
         if now < deadline {
             return true;
         }
+        self.stop_bgsave_child();
         let _ = self.rdb_bgsave_deadline_unix_millis.compare_exchange(
             deadline,
             0,
@@ -1670,6 +2875,65 @@ impl RequestProcessor {
             Ordering::Acquire,
         );
         false
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_finish_bgsave_for_tests(&self) {
+        self.stop_bgsave_child();
+        self.rdb_bgsave_deadline_unix_millis
+            .store(0, Ordering::Release);
+    }
+
+    fn ensure_bgsave_child_running(&self) {
+        let Ok(mut child_guard) = self.rdb_bgsave_child.lock() else {
+            return;
+        };
+        if let Some(child) = child_guard.as_mut() {
+            match child.try_wait() {
+                Ok(None) => return,
+                Ok(Some(_)) | Err(_) => {
+                    *child_guard = None;
+                }
+            }
+        }
+
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg("sleep 3600")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn();
+        if let Ok(child) = child {
+            *child_guard = Some(child);
+        }
+    }
+
+    fn stop_bgsave_child(&self) {
+        let Ok(mut child_guard) = self.rdb_bgsave_child.lock() else {
+            return;
+        };
+        let Some(mut child) = child_guard.take() else {
+            return;
+        };
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+
+    fn reap_bgsave_child_if_finished(&self) -> bool {
+        let Ok(mut child_guard) = self.rdb_bgsave_child.lock() else {
+            return false;
+        };
+        let Some(child) = child_guard.as_mut() else {
+            return false;
+        };
+        match child.try_wait() {
+            Ok(None) => false,
+            Ok(Some(_)) | Err(_) => {
+                *child_guard = None;
+                true
+            }
+        }
     }
 
     pub(super) fn set_config_value(&self, key: &[u8], value: Vec<u8>) {
@@ -1737,12 +3001,55 @@ impl RequestProcessor {
         }
     }
 
+    pub(crate) fn record_command_rejection(&self, command_name: &[u8]) {
+        if command_name.is_empty() {
+            return;
+        }
+        let normalized = normalize_ascii_lower(command_name);
+        if let Ok(mut rejected_calls) = self.command_rejected_calls.lock() {
+            *rejected_calls.entry(normalized).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn record_error_reply(&self, error_name: &[u8]) {
+        if error_name.is_empty() {
+            return;
+        }
+        let normalized = normalize_ascii_upper(error_name);
+        self.total_error_replies.fetch_add(1, Ordering::Relaxed);
+        if let Ok(mut error_reply_counts) = self.error_reply_counts.lock() {
+            *error_reply_counts.entry(normalized).or_insert(0) += 1;
+        }
+    }
+
+    pub(crate) fn error_reply_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
+        let Ok(error_reply_counts) = self.error_reply_counts.lock() else {
+            return Vec::new();
+        };
+        let mut ordered = BTreeMap::new();
+        for (error_name, count) in error_reply_counts.iter() {
+            ordered.insert(error_name.clone(), *count);
+        }
+        ordered.into_iter().collect()
+    }
+
     pub(crate) fn command_failed_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
         let Ok(failed_calls) = self.command_failed_calls.lock() else {
             return Vec::new();
         };
         let mut ordered = BTreeMap::new();
         for (command, count) in failed_calls.iter() {
+            ordered.insert(command.clone(), *count);
+        }
+        ordered.into_iter().collect()
+    }
+
+    pub(crate) fn command_rejected_call_counts_snapshot(&self) -> Vec<(Vec<u8>, u64)> {
+        let Ok(rejected_calls) = self.command_rejected_calls.lock() else {
+            return Vec::new();
+        };
+        let mut ordered = BTreeMap::new();
+        for (command, count) in rejected_calls.iter() {
             ordered.insert(command.clone(), *count);
         }
         ordered.into_iter().collect()
@@ -1856,8 +3163,18 @@ impl RequestProcessor {
         if let Ok(mut calls) = self.command_calls.lock() {
             calls.clear();
         }
+        if let Ok(mut rejected_calls) = self.command_rejected_calls.lock() {
+            rejected_calls.clear();
+        }
         if let Ok(mut failed_calls) = self.command_failed_calls.lock() {
             failed_calls.clear();
+        }
+    }
+
+    pub(crate) fn reset_error_reply_stats(&self) {
+        self.total_error_replies.store(0, Ordering::Relaxed);
+        if let Ok(mut error_reply_counts) = self.error_reply_counts.lock() {
+            error_reply_counts.clear();
         }
     }
 
@@ -1867,21 +3184,46 @@ impl RequestProcessor {
         for (command, count) in self.command_call_counts_snapshot() {
             ordered.insert(command, count);
         }
+        let rejected_calls_by_command = self
+            .command_rejected_call_counts_snapshot()
+            .into_iter()
+            .collect::<HashMap<Vec<u8>, u64>>();
         let failed_calls_by_command = self
             .command_failed_call_counts_snapshot()
             .into_iter()
             .collect::<HashMap<Vec<u8>, u64>>();
+        for command in rejected_calls_by_command.keys() {
+            ordered.entry(command.clone()).or_insert(0);
+        }
         for command in failed_calls_by_command.keys() {
             ordered.entry(command.clone()).or_insert(0);
         }
         for (command, count) in ordered {
+            let rejected_calls = rejected_calls_by_command
+                .get(&command)
+                .copied()
+                .unwrap_or(0);
             let failed_calls = failed_calls_by_command.get(&command).copied().unwrap_or(0);
             payload.push_str("cmdstat_");
             payload.push_str(&String::from_utf8_lossy(&command));
             payload.push_str(":calls=");
             payload.push_str(&count.to_string());
-            payload.push_str(",usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=");
+            payload.push_str(",usec=0,usec_per_call=0.00,rejected_calls=");
+            payload.push_str(&rejected_calls.to_string());
+            payload.push_str(",failed_calls=");
             payload.push_str(&failed_calls.to_string());
+            payload.push_str("\r\n");
+        }
+        payload
+    }
+
+    pub(crate) fn render_errorstats_info_payload(&self) -> String {
+        let mut payload = String::from("# Errorstats\r\n");
+        for (error_name, count) in self.error_reply_counts_snapshot() {
+            payload.push_str("errorstat_");
+            payload.push_str(&String::from_utf8_lossy(&error_name));
+            payload.push_str(":count=");
+            payload.push_str(&count.to_string());
             payload.push_str("\r\n");
         }
         payload
@@ -2093,14 +3435,19 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn register_blocking_wait(&self, client_id: ClientId, keys: &[RedisKey]) {
-        if keys.is_empty() {
+    pub(crate) fn register_blocking_wait(
+        &self,
+        client_id: ClientId,
+        wait_keys: &[BlockingWaitKey],
+    ) {
+        if wait_keys.is_empty() {
             return;
         }
         // TLA+ (`BlockingDisconnectLeak`) `Block(c,k)` queue-enqueue critical section.
+        // TLA+ (`BlockingWaitClassIsolation`) `Block(c,k,cl)` queue-enqueue critical section.
         if let Ok(mut queues) = self.blocking_wait_queues.lock() {
-            for key in keys {
-                let queue = queues.entry(key.clone()).or_insert_with(VecDeque::new);
+            for wait_key in wait_keys {
+                let queue = queues.entry(wait_key.clone()).or_insert_with(VecDeque::new);
                 if !queue.contains(&client_id) {
                     queue.push_back(client_id);
                 }
@@ -2108,35 +3455,46 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn unregister_blocking_wait(&self, client_id: ClientId, keys: &[RedisKey]) {
-        if keys.is_empty() {
+    pub(crate) fn unregister_blocking_wait(
+        &self,
+        client_id: ClientId,
+        wait_keys: &[BlockingWaitKey],
+    ) {
+        if wait_keys.is_empty() {
             return;
         }
         // TLA+ cleanup side for both wake completion and `Disconnect(c)` handling.
         if let Ok(mut queues) = self.blocking_wait_queues.lock() {
-            for key in keys {
+            for wait_key in wait_keys {
                 let mut should_remove = false;
-                if let Some(queue) = queues.get_mut(key) {
+                if let Some(queue) = queues.get_mut(wait_key) {
                     queue.retain(|entry| *entry != client_id);
                     should_remove = queue.is_empty();
                 }
                 if should_remove {
-                    let _ = queues.remove(key);
+                    let _ = queues.remove(wait_key);
                 }
             }
         }
     }
 
-    pub(crate) fn is_blocking_wait_turn(&self, client_id: ClientId, keys: &[RedisKey]) -> bool {
-        if keys.is_empty() {
+    pub(crate) fn is_blocking_wait_turn(
+        &self,
+        client_id: ClientId,
+        wait_keys: &[BlockingWaitKey],
+    ) -> bool {
+        if wait_keys.is_empty() {
             return true;
         }
         // TLA+ `WakeHead(k)` guard: caller may proceed only when it is at queue front.
+        // TLA+ (`BlockingWaitClassIsolation`) `ServeReadyHead(c,k,cl)` queue-front guard.
         let Ok(queues) = self.blocking_wait_queues.lock() else {
             return true;
         };
-        for key in keys {
-            let front = queues.get(key).and_then(|queue| queue.front().copied());
+        for wait_key in wait_keys {
+            let front = queues
+                .get(wait_key)
+                .and_then(|queue| queue.front().copied());
             match front {
                 Some(front_client) => return front_client == client_id,
                 None => continue,
@@ -2145,17 +3503,74 @@ impl RequestProcessor {
         true
     }
 
+    pub(crate) fn blocked_xread_tail_id(
+        &self,
+        client_id: ClientId,
+        stream_index: usize,
+        stream_count: usize,
+        current_tail: StreamId,
+    ) -> StreamId {
+        let Ok(mut blocked_xread_tail_ids) = self.blocked_xread_tail_ids.lock() else {
+            return current_tail;
+        };
+        let entry = blocked_xread_tail_ids
+            .entry(client_id)
+            .or_insert_with(|| vec![None; stream_count]);
+        if entry.len() < stream_count {
+            entry.resize(stream_count, None);
+        }
+        if let Some(saved_tail) = entry[stream_index] {
+            return saved_tail;
+        }
+        entry[stream_index] = Some(current_tail);
+        current_tail
+    }
+
+    pub(crate) fn clear_blocked_xread_tail_ids(&self, client_id: ClientId) {
+        if let Ok(mut blocked_xread_tail_ids) = self.blocked_xread_tail_ids.lock() {
+            let _ = blocked_xread_tail_ids.remove(&client_id);
+        }
+    }
+
+    pub(crate) fn set_blocked_stream_wait_state(
+        &self,
+        client_id: ClientId,
+        state: BlockingStreamWaitState,
+    ) {
+        // TLA+ : TrackWaitPredicate
+        if let Ok(mut blocked_stream_wait_states) = self.blocked_stream_wait_states.lock() {
+            blocked_stream_wait_states.insert(client_id, state);
+        }
+    }
+
+    pub(crate) fn clear_blocked_stream_wait_state(&self, client_id: ClientId) {
+        if let Ok(mut blocked_stream_wait_states) = self.blocked_stream_wait_states.lock() {
+            let _ = blocked_stream_wait_states.remove(&client_id);
+        }
+    }
+
     pub(crate) fn request_client_unblock(
         &self,
         client_id: ClientId,
         mode: ClientUnblockMode,
     ) -> bool {
-        let is_blocked = self
+        // TLA+ : ClientUnblockRequest
+        let blocked_in_wait_queue = self
             .blocking_wait_queues
             .lock()
             .map(|queues| queues.values().any(|queue| queue.contains(&client_id)))
             .unwrap_or(false);
-        if !is_blocked {
+        let blocked_by_pause_while_running_blocking_command = self
+            .pause_blocked_blocking_clients
+            .lock()
+            .map(|clients| clients.contains(&client_id))
+            .unwrap_or(false);
+        if blocked_by_pause_while_running_blocking_command
+            && (self.is_client_paused(true) || self.is_client_paused(false))
+        {
+            return false;
+        }
+        if !blocked_in_wait_queue && !blocked_by_pause_while_running_blocking_command {
             return false;
         }
         if let Ok(mut pending) = self.pending_client_unblocks.lock() {
@@ -2179,6 +3594,26 @@ impl RequestProcessor {
         if let Ok(mut pending) = self.pending_client_unblocks.lock() {
             let _ = pending.remove(&client_id);
         }
+    }
+
+    pub(crate) fn register_pause_blocked_blocking_client(&self, client_id: ClientId) {
+        // TLA+ : PauseGateRegisterBlockingClient
+        if let Ok(mut clients) = self.pause_blocked_blocking_clients.lock() {
+            clients.insert(client_id);
+        }
+    }
+
+    pub(crate) fn unregister_pause_blocked_blocking_client(&self, client_id: ClientId) {
+        if let Ok(mut clients) = self.pause_blocked_blocking_clients.lock() {
+            clients.remove(&client_id);
+        }
+    }
+
+    pub(crate) fn is_pause_blocked_blocking_client(&self, client_id: ClientId) -> bool {
+        self.pause_blocked_blocking_clients
+            .lock()
+            .map(|clients| clients.contains(&client_id))
+            .unwrap_or(false)
     }
 
     /// Apply CLIENT PAUSE with the given timeout (in millis) and mode.
@@ -2217,6 +3652,7 @@ impl RequestProcessor {
 
     /// Remove CLIENT PAUSE state.
     pub(crate) fn client_unpause(&self) {
+        // TLA+ : ClientUnpause
         self.client_pause_type
             .store(CLIENT_PAUSE_TYPE_NONE, Ordering::Release);
         self.client_pause_end_millis.store(0, Ordering::Release);
@@ -2234,7 +3670,9 @@ impl RequestProcessor {
             return false;
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
-        if now_millis >= end_millis {
+        // Keep pause active through the exact end-millisecond to avoid
+        // undercutting timeout-based compatibility assertions on boundary ticks.
+        if now_millis > end_millis {
             self.client_pause_type
                 .store(CLIENT_PAUSE_TYPE_NONE, Ordering::Release);
             self.client_pause_end_millis.store(0, Ordering::Release);
@@ -2258,7 +3696,8 @@ impl RequestProcessor {
             return false;
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
-        now_millis < end_millis
+        // Keep expire suppression active through the exact end-millisecond.
+        now_millis <= end_millis
     }
 
     /// Returns the remaining pause duration, or None if not paused.
@@ -2287,25 +3726,98 @@ impl RequestProcessor {
             .unwrap_or(false)
     }
 
+    fn xread_waiter_is_ready(
+        &self,
+        wait_key: &BlockingWaitKey,
+        object: Option<&DecodedObjectValue>,
+        waits: &[BlockingXreadStreamWait],
+    ) -> bool {
+        let Some(wait) = waits
+            .iter()
+            .find(|wait| wait.key.as_slice() == wait_key.key().as_slice())
+        else {
+            return false;
+        };
+        let Some(object) = object else {
+            return false;
+        };
+        if object.object_type != STREAM_OBJECT_TYPE_TAG {
+            return false;
+        }
+        let Some(stream) = deserialize_stream_object_payload(&object.payload) else {
+            return false;
+        };
+        match wait.selection {
+            BlockingXreadWaitSelection::After(pivot) => stream_has_entry_after_id(&stream, pivot),
+            BlockingXreadWaitSelection::LastEntry => !stream.entries.is_empty(),
+        }
+    }
+
+    fn xreadgroup_waiter_is_ready(
+        &self,
+        wait_key: &BlockingWaitKey,
+        object: Option<&DecodedObjectValue>,
+        wait: &BlockingXreadgroupWait,
+    ) -> bool {
+        if !wait
+            .stream_keys
+            .iter()
+            .any(|key| key.as_slice() == wait_key.key().as_slice())
+        {
+            return false;
+        }
+        let Some(object) = object else {
+            return true;
+        };
+        if object.object_type != STREAM_OBJECT_TYPE_TAG {
+            return true;
+        }
+        let Some(stream) = deserialize_stream_object_payload(&object.payload) else {
+            return true;
+        };
+        let Some(group_state) = stream.groups.get(wait.group.as_slice()) else {
+            return true;
+        };
+        stream_has_entry_after_id(&stream, group_state.last_delivered_id)
+    }
+
     pub(crate) fn has_ready_blocking_waiters(&self) -> bool {
-        let keys = match self.blocking_wait_queues.lock() {
-            Ok(queues) => queues.keys().cloned().collect::<Vec<_>>(),
+        let queue_fronts = match self.blocking_wait_queues.lock() {
+            Ok(queues) => queues
+                .iter()
+                .filter_map(|(wait_key, queue)| {
+                    queue
+                        .front()
+                        .copied()
+                        .map(|client_id| (wait_key.clone(), client_id))
+                })
+                .collect::<Vec<_>>(),
             Err(_) => return false,
         };
-        for key in keys {
-            if self.expire_key_if_needed(key.as_slice()).is_err() {
+        let blocked_stream_wait_states = match self.blocked_stream_wait_states.lock() {
+            Ok(states) => states.clone(),
+            Err(_) => return false,
+        };
+        for (wait_key, front_client_id) in queue_fronts {
+            if self
+                .expire_key_if_needed(wait_key.key().as_slice())
+                .is_err()
+            {
                 // Treat storage contention as pending wake work so producer ACK
                 // does not race ahead of a partially observed blocking chain.
                 return true;
             }
-            let Ok(object) = self.object_read(key.as_slice()) else {
+            let Ok(object) = self.object_read(wait_key.key().as_slice()) else {
                 return true;
             };
-            let Some(object) = object else {
-                continue;
-            };
-            match object.object_type {
-                LIST_OBJECT_TYPE_TAG => {
+            match wait_key.class() {
+                BlockingWaitClass::List => {
+                    let Some(object) = object.as_ref() else {
+                        continue;
+                    };
+                    if object.object_type != LIST_OBJECT_TYPE_TAG {
+                        continue;
+                    }
                     if let Some(list) = deserialize_list_object_payload(&object.payload) {
                         if !list.is_empty() {
                             return true;
@@ -2314,7 +3826,13 @@ impl RequestProcessor {
                         return true;
                     }
                 }
-                ZSET_OBJECT_TYPE_TAG => {
+                BlockingWaitClass::Zset => {
+                    let Some(object) = object.as_ref() else {
+                        continue;
+                    };
+                    if object.object_type != ZSET_OBJECT_TYPE_TAG {
+                        continue;
+                    }
                     if let Some(zset) = deserialize_zset_object_payload(&object.payload) {
                         if !zset.is_empty() {
                             return true;
@@ -2323,7 +3841,24 @@ impl RequestProcessor {
                         return true;
                     }
                 }
-                _ => {}
+                BlockingWaitClass::Stream => {
+                    let Some(stream_wait_state) = blocked_stream_wait_states.get(&front_client_id)
+                    else {
+                        continue;
+                    };
+                    // TLA+ : ProducerAckWaitReady
+                    let ready = match stream_wait_state {
+                        BlockingStreamWaitState::Xread(waits) => {
+                            self.xread_waiter_is_ready(&wait_key, object.as_ref(), waits)
+                        }
+                        BlockingStreamWaitState::Xreadgroup(wait) => {
+                            self.xreadgroup_waiter_is_ready(&wait_key, object.as_ref(), wait)
+                        }
+                    };
+                    if ready {
+                        return true;
+                    }
+                }
             }
         }
         false
@@ -2354,6 +3889,164 @@ impl RequestProcessor {
             .unwrap_or(false)
     }
 
+    pub(super) fn string_encoding_is_forced_raw(&self, key: &[u8]) -> bool {
+        self.forced_raw_string_keys
+            .lock()
+            .map(|forced| forced.contains(key))
+            .unwrap_or(false)
+    }
+
+    pub(super) fn force_raw_string_encoding(&self, key: &[u8]) {
+        if let Ok(mut forced) = self.forced_raw_string_keys.lock() {
+            forced.insert(RedisKey::from(key));
+        }
+    }
+
+    pub(super) fn clear_forced_raw_string_encoding(&self, key: &[u8]) {
+        if let Ok(mut forced) = self.forced_raw_string_keys.lock() {
+            let _ = forced.remove(key);
+        }
+    }
+
+    pub(super) fn set_encoding_floor(&self, key: &[u8]) -> Option<SetEncodingFloor> {
+        self.forced_set_encoding_floors
+            .lock()
+            .ok()
+            .and_then(|floors| floors.get(key).copied())
+    }
+
+    pub(super) fn clear_forced_set_encoding_floor(&self, key: &[u8]) {
+        if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
+            let _ = floors.remove(key);
+        }
+    }
+
+    pub(super) fn proto_max_bulk_len(&self) -> usize {
+        let Ok(values) = self.config_overrides.lock() else {
+            return DEFAULT_PROTO_MAX_BULK_LEN;
+        };
+        values
+            .get(b"proto-max-bulk-len".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(DEFAULT_PROTO_MAX_BULK_LEN)
+    }
+
+    pub(super) fn stream_idmp_duration_seconds(&self) -> u64 {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 100;
+        };
+        values
+            .get(b"stream-idmp-duration".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(100)
+    }
+
+    pub(super) fn stream_idmp_maxsize(&self) -> u64 {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 100;
+        };
+        values
+            .get(b"stream-idmp-maxsize".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<u64>().ok())
+            .unwrap_or(100)
+    }
+
+    pub(super) fn stream_node_max_entries(&self) -> usize {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 100;
+        };
+        values
+            .get(b"stream-node-max-entries".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(100)
+    }
+
+    pub(super) fn ensure_string_length_within_limit(
+        &self,
+        string_len: usize,
+        error: RequestExecutionError,
+    ) -> Result<(), RequestExecutionError> {
+        if string_len > self.proto_max_bulk_len() {
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn clear_set_debug_ht_state(&self, key: &[u8]) {
+        if let Ok(mut states) = self.set_debug_ht_state.lock() {
+            let _ = states.remove(key);
+        }
+    }
+
+    fn record_set_debug_ht_activity(&self, key: &[u8], member_count: usize) {
+        if member_count == 0 {
+            self.clear_set_debug_ht_state(key);
+            return;
+        }
+
+        let bgsave_in_progress = self.rdb_bgsave_in_progress();
+        if let Ok(mut states) = self.set_debug_ht_state.lock() {
+            let state = states
+                .entry(RedisKey::from(key))
+                .or_insert_with(|| SetDebugHtState::new(member_count));
+            state.update_for_member_count(member_count, bgsave_in_progress);
+            state.advance_rehash(member_count, bgsave_in_progress);
+        }
+    }
+
+    fn set_debug_ht_stats_snapshot(
+        &self,
+        key: &[u8],
+        member_count: usize,
+    ) -> SetDebugHtStatsSnapshot {
+        self.set_debug_ht_state
+            .lock()
+            .ok()
+            .and_then(|states| states.get(key).copied())
+            .unwrap_or_else(|| SetDebugHtState::new(member_count))
+            .snapshot()
+    }
+
+    pub(super) fn update_set_encoding_floor_for_members(
+        &self,
+        key: &[u8],
+        set: &BTreeSet<Vec<u8>>,
+        replace_existing: bool,
+    ) {
+        let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
+        let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
+        let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
+        let candidate = classify_set_encoding_floor(
+            set,
+            set_max_intset_entries,
+            set_max_listpack_entries,
+            set_max_listpack_value,
+        );
+
+        if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
+            let previous = if replace_existing {
+                None
+            } else {
+                floors.get(key).copied()
+            };
+            let next = match (previous, candidate) {
+                (Some(current), Some(candidate)) => Some(current.max(candidate)),
+                (Some(current), None) => Some(current),
+                (None, Some(candidate)) => Some(candidate),
+                (None, None) => None,
+            };
+            if let Some(next) = next {
+                floors.insert(RedisKey::from(key), next);
+            } else {
+                let _ = floors.remove(key);
+            }
+        }
+    }
+
     pub(super) fn lastsave_unix_seconds(&self) -> u64 {
         self.lastsave_unix_seconds.load(Ordering::Acquire)
     }
@@ -2374,6 +4067,10 @@ impl RequestProcessor {
         self.rdb_changes_since_last_save.store(0, Ordering::Relaxed);
     }
 
+    pub(super) fn total_error_replies(&self) -> u64 {
+        self.total_error_replies.load(Ordering::Relaxed)
+    }
+
     pub(super) fn active_expire_enabled(&self) -> bool {
         self.active_expire_enabled.load(Ordering::Acquire)
     }
@@ -2388,6 +4085,15 @@ impl RequestProcessor {
 
     pub(super) fn set_debug_pause_cron(&self, paused: bool) {
         self.debug_pause_cron.store(paused, Ordering::Release);
+    }
+
+    pub(super) fn debug_disable_deny_scripts(&self) -> bool {
+        self.debug_disable_deny_scripts.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_debug_disable_deny_scripts(&self, disabled: bool) {
+        self.debug_disable_deny_scripts
+            .store(disabled, Ordering::Release);
     }
 
     pub(super) fn expired_keys(&self) -> u64 {
@@ -2470,7 +4176,14 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
         client_no_touch: bool,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_internal(args, response_out, client_no_touch, None, false)
+        self.execute_with_client_context_in_db(
+            args,
+            response_out,
+            client_no_touch,
+            None,
+            false,
+            DbName::default(),
+        )
     }
 
     pub(crate) fn execute_with_client_no_touch_in_transaction(
@@ -2480,12 +4193,13 @@ impl RequestProcessor {
         client_no_touch: bool,
         client_id: Option<ClientId>,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_internal(
+        self.execute_with_client_context_in_db(
             args,
             response_out,
             client_no_touch,
             client_id,
             true,
+            DbName::default(),
         )
     }
 
@@ -2496,29 +4210,67 @@ impl RequestProcessor {
         client_no_touch: bool,
         client_id: Option<ClientId>,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_internal(
+        self.execute_with_client_context_in_db(
             args,
             response_out,
             client_no_touch,
             client_id,
             false,
+            DbName::default(),
         )
     }
 
-    fn execute_with_client_context_internal(
+    pub(crate) fn execute_with_client_context_in_db(
         &self,
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
         client_no_touch: bool,
         client_id: Option<ClientId>,
         in_transaction: bool,
+        selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
         let _scope = RequestExecutionContextScope::enter(RequestExecutionContext {
             client_no_touch,
             client_id,
             in_transaction,
+            selected_db,
+            tracking_reads_enabled: false,
         });
         self.execute(args, response_out)
+    }
+
+    pub(crate) fn execute_with_client_no_touch_in_transaction_in_db(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+        selected_db: DbName,
+    ) -> Result<(), RequestExecutionError> {
+        self.execute_with_client_context_in_db(
+            args,
+            response_out,
+            client_no_touch,
+            client_id,
+            true,
+            selected_db,
+        )
+    }
+
+    pub(crate) fn configured_databases(&self) -> usize {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 1;
+        };
+        let Some(raw) = values.get(b"databases".as_slice()) else {
+            return 1;
+        };
+        let Ok(text) = std::str::from_utf8(raw) else {
+            return 1;
+        };
+        text.parse::<usize>()
+            .ok()
+            .filter(|value| *value > 0)
+            .unwrap_or(1)
     }
 
     pub(crate) fn command_rejected_while_script_busy(
@@ -2555,10 +4307,32 @@ impl RequestProcessor {
 
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();
+        let command_mutating = command_is_effectively_mutating(command, subcommand);
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
         }
-        match command {
+        let previous_tracking_reads_enabled = REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            let previous = context.tracking_reads_enabled;
+            context.tracking_reads_enabled = !command_mutating;
+            state.set(context);
+            previous
+        });
+        begin_tracking_invalidation_collection();
+        begin_tracking_read_collection();
+        let maxmemory_limit_bytes = self.maxmemory_limit_bytes();
+        if maxmemory_limit_bytes > 0 {
+            let evicted_any = self
+                .evict_keys_to_fit_maxmemory(maxmemory_limit_bytes)
+                .unwrap_or(false);
+            if evicted_any && let Some(client_id) = current_request_client_id() {
+                for pending in self.take_pending_pubsub_messages(client_id) {
+                    response_out.extend_from_slice(&pending);
+                }
+            }
+        }
+
+        let execution_result = match command {
             CommandId::Get => self.handle_get(args, response_out),
             CommandId::Set => self.handle_set(args, response_out),
             CommandId::Setex => self.handle_setex(args, response_out),
@@ -2590,8 +4364,11 @@ impl RequestProcessor {
             CommandId::Unlink => self.handle_unlink(args, response_out),
             CommandId::Move => self.handle_move(args, response_out),
             CommandId::Psetex => self.handle_psetex(args, response_out),
+            CommandId::Digest => self.handle_digest(args, response_out),
+            CommandId::Delex => self.handle_delex(args, response_out),
             CommandId::Getset => self.handle_getset(args, response_out),
             CommandId::Getdel => self.handle_getdel(args, response_out),
+            CommandId::Msetex => self.handle_msetex(args, response_out),
             CommandId::Del => self.handle_del(args, response_out),
             CommandId::Rename => self.handle_rename(args, response_out),
             CommandId::Renamenx => self.handle_renamenx(args, response_out),
@@ -2714,10 +4491,12 @@ impl RequestProcessor {
             CommandId::Zunionstore => self.handle_zunionstore(args, response_out),
             CommandId::Xadd => self.handle_xadd(args, response_out),
             CommandId::Xdel => self.handle_xdel(args, response_out),
+            CommandId::Xdelex => self.handle_xdelex(args, response_out),
             CommandId::Xgroup => self.handle_xgroup(args, response_out),
             CommandId::Xreadgroup => self.handle_xreadgroup(args, response_out),
             CommandId::Xread => self.handle_xread(args, response_out),
             CommandId::Xack => self.handle_xack(args, response_out),
+            CommandId::Xackdel => self.handle_xackdel(args, response_out),
             CommandId::Xpending => self.handle_xpending(args, response_out),
             CommandId::Xclaim => self.handle_xclaim(args, response_out),
             CommandId::Xautoclaim => self.handle_xautoclaim(args, response_out),
@@ -2727,6 +4506,7 @@ impl RequestProcessor {
             CommandId::Xrange => self.handle_xrange(args, response_out),
             CommandId::Xrevrange => self.handle_xrevrange(args, response_out),
             CommandId::Xtrim => self.handle_xtrim(args, response_out),
+            CommandId::Xcfgset => self.handle_xcfgset(args, response_out),
             CommandId::Ping => self.handle_ping(args, response_out),
             CommandId::Echo => self.handle_echo(args, response_out),
             CommandId::Info => self.handle_info(args, response_out),
@@ -2808,7 +4588,21 @@ impl RequestProcessor {
             | CommandId::Unwatch
             | CommandId::Asking
             | CommandId::Unknown => Err(RequestExecutionError::UnknownCommand),
+        };
+
+        let invalidated_keys = finish_tracking_invalidation_collection_into_parent();
+        let deferred_read_keys = finish_tracking_read_collection_into_parent();
+        REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            context.tracking_reads_enabled = previous_tracking_reads_enabled;
+            state.set(context);
+        });
+        self.apply_deferred_tracking_reads_for_current_client(&deferred_read_keys);
+        self.clear_client_tracking_caching_override_for_current_client();
+        if execution_result.is_ok() && !invalidated_keys.is_empty() {
+            self.emit_tracking_invalidations_for_keys(&invalidated_keys);
         }
+        execution_result
     }
 }
 
@@ -2822,6 +4616,19 @@ fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientI
         .get(&client_id)
         .map_or(0, HashSet::len);
     channels.saturating_add(patterns)
+}
+
+fn tracking_groups_for_key(config: &ClientTrackingConfig, key: &[u8]) -> Vec<Vec<u8>> {
+    if !config.bcast {
+        return vec![Vec::new()];
+    }
+    let mut groups = Vec::new();
+    for prefix in &config.prefixes {
+        if key.starts_with(prefix.as_slice()) {
+            groups.push(prefix.clone());
+        }
+    }
+    groups
 }
 
 fn remove_all_pubsub_client_subscriptions(
@@ -2962,6 +4769,47 @@ fn encode_pubsub_message_frame(
     frame
 }
 
+fn encode_tracking_invalidation_payload(keys: &[RedisKey]) -> Vec<u8> {
+    let mut payload_len = 0usize;
+    for key in keys {
+        payload_len = payload_len.saturating_add(key.len());
+    }
+    payload_len = payload_len.saturating_add(keys.len().saturating_sub(1));
+    let mut payload = Vec::with_capacity(payload_len);
+    for (index, key) in keys.iter().enumerate() {
+        if index > 0 {
+            payload.push(b' ');
+        }
+        payload.extend_from_slice(key);
+    }
+    payload
+}
+
+fn encode_tracking_push_frame(payload: &[u8]) -> Vec<u8> {
+    let mut frame = Vec::new();
+    append_push_length(&mut frame, 2);
+    append_bulk_string(&mut frame, b"invalidate");
+    append_bulk_string(&mut frame, payload);
+    frame
+}
+
+fn encode_tracking_redir_broken_push_frame() -> Vec<u8> {
+    let mut frame = Vec::new();
+    append_push_length(&mut frame, 1);
+    append_bulk_string(&mut frame, b"tracking-redir-broken");
+    frame
+}
+
+fn pending_message_is_tracking_message(message: &[u8]) -> bool {
+    const RESP2_TRACKING_PREFIX: &[u8] = b"*3\r\n$7\r\nmessage\r\n$20\r\n__redis__:invalidate\r\n";
+    const RESP3_INVALIDATE_PREFIX: &[u8] = b">2\r\n$10\r\ninvalidate\r\n";
+    const RESP3_BROKEN_REDIRECT_PREFIX: &[u8] = b">1\r\n$21\r\ntracking-redir-broken\r\n";
+
+    message.starts_with(RESP2_TRACKING_PREFIX)
+        || message.starts_with(RESP3_INVALIDATE_PREFIX)
+        || message.starts_with(RESP3_BROKEN_REDIRECT_PREFIX)
+}
+
 /// Parse a notify-keyspace-events flag string (e.g. "KEA", "Kx$") into a bitmask.
 /// Returns `None` if the string contains an invalid character.
 fn keyspace_events_string_to_flags(classes: &[u8]) -> Option<u32> {
@@ -2983,12 +4831,10 @@ fn keyspace_events_string_to_flags(classes: &[u8]) -> Option<u32> {
             b'm' => flags |= NOTIFY_KEY_MISS,
             b'd' => flags |= NOTIFY_MODULE,
             b'n' => flags |= NOTIFY_NEW,
+            b'o' => flags |= NOTIFY_OVERWRITTEN,
+            b'c' => flags |= NOTIFY_TYPE_CHANGED,
             _ => return None,
         }
-    }
-    // If neither K nor E is set, clear all event type flags (no delivery targets).
-    if flags & (NOTIFY_KEYSPACE | NOTIFY_KEYEVENT) == 0 {
-        flags = 0;
     }
     Some(flags)
 }
@@ -3032,6 +4878,12 @@ fn keyspace_events_flags_to_string(flags: u32) -> Vec<u8> {
         if flags & NOTIFY_NEW != 0 {
             res.push(b'n');
         }
+        if flags & NOTIFY_OVERWRITTEN != 0 {
+            res.push(b'o');
+        }
+        if flags & NOTIFY_TYPE_CHANGED != 0 {
+            res.push(b'c');
+        }
     }
     if flags & NOTIFY_KEYSPACE != 0 {
         res.push(b'K');
@@ -3070,41 +4922,128 @@ fn watch_version_slot(key: &[u8]) -> usize {
     (fnv1a_hash64(key) as usize) & WATCH_VERSION_MAP_MASK
 }
 
-#[derive(Debug, Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StringWriteConditionKind {
+    Nx,
+    Xx,
+    IfEq,
+    IfNe,
+    IfDigestEq,
+    IfDigestNe,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct StringWriteCondition {
+    kind: StringWriteConditionKind,
+    match_value: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Default)]
 struct SetOptions {
-    only_if_absent: bool,
-    only_if_present: bool,
+    condition: Option<StringWriteCondition>,
     expiration: Option<ExpirationMetadata>,
     keep_ttl: bool,
     return_old_value: bool,
 }
 
 fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError> {
+    parse_string_write_options(args, 3, true, true)
+}
+
+#[derive(Debug, Clone, Default)]
+struct MsetexOptions {
+    only_if_absent: bool,
+    only_if_present: bool,
+    expiration: Option<ExpirationMetadata>,
+    keep_ttl: bool,
+}
+
+fn parse_msetex_options(
+    args: &[&[u8]],
+    start_index: usize,
+) -> Result<MsetexOptions, RequestExecutionError> {
+    let parsed = parse_string_write_options(args, start_index, false, false)?;
+    let mut options = MsetexOptions {
+        expiration: parsed.expiration,
+        keep_ttl: parsed.keep_ttl,
+        ..Default::default()
+    };
+    match parsed.condition {
+        None => {}
+        Some(StringWriteCondition {
+            kind: StringWriteConditionKind::Nx,
+            ..
+        }) => {
+            options.only_if_absent = true;
+        }
+        Some(StringWriteCondition {
+            kind: StringWriteConditionKind::Xx,
+            ..
+        }) => {
+            options.only_if_present = true;
+        }
+        Some(StringWriteCondition {
+            kind: StringWriteConditionKind::IfEq,
+            ..
+        }) => {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        Some(StringWriteCondition {
+            kind: StringWriteConditionKind::IfNe,
+            ..
+        }) => {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        Some(StringWriteCondition {
+            kind: StringWriteConditionKind::IfDigestEq | StringWriteConditionKind::IfDigestNe,
+            ..
+        }) => {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+    }
+    Ok(options)
+}
+
+fn parse_string_write_options(
+    args: &[&[u8]],
+    start_index: usize,
+    allow_get: bool,
+    allow_compare_conditions: bool,
+) -> Result<SetOptions, RequestExecutionError> {
     let mut options = SetOptions::default();
-    let mut index = 3usize;
+    let mut index = start_index;
 
     while index < args.len() {
         let option = args[index];
 
         if ascii_eq_ignore_case(option, b"NX") {
-            if options.only_if_absent || options.only_if_present {
+            if options.condition.is_some() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            options.only_if_absent = true;
+            options.condition = Some(StringWriteCondition {
+                kind: StringWriteConditionKind::Nx,
+                match_value: Vec::new(),
+            });
             index += 1;
             continue;
         }
 
         if ascii_eq_ignore_case(option, b"XX") {
-            if options.only_if_absent || options.only_if_present {
+            if options.condition.is_some() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            options.only_if_present = true;
+            options.condition = Some(StringWriteCondition {
+                kind: StringWriteConditionKind::Xx,
+                match_value: Vec::new(),
+            });
             index += 1;
             continue;
         }
 
         if ascii_eq_ignore_case(option, b"GET") {
+            if !allow_get {
+                return Err(RequestExecutionError::SyntaxError);
+            }
             if options.return_old_value {
                 return Err(RequestExecutionError::SyntaxError);
             }
@@ -3177,10 +5116,59 @@ fn parse_set_options(args: &[&[u8]]) -> Result<SetOptions, RequestExecutionError
             continue;
         }
 
+        if allow_compare_conditions
+            && (ascii_eq_ignore_case(option, b"IFEQ")
+                || ascii_eq_ignore_case(option, b"IFNE")
+                || ascii_eq_ignore_case(option, b"IFDEQ")
+                || ascii_eq_ignore_case(option, b"IFDNE"))
+        {
+            if options.condition.is_some() || index + 1 >= args.len() {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            let kind = if ascii_eq_ignore_case(option, b"IFEQ") {
+                StringWriteConditionKind::IfEq
+            } else if ascii_eq_ignore_case(option, b"IFNE") {
+                StringWriteConditionKind::IfNe
+            } else if ascii_eq_ignore_case(option, b"IFDEQ") {
+                StringWriteConditionKind::IfDigestEq
+            } else {
+                StringWriteConditionKind::IfDigestNe
+            };
+            options.condition = Some(StringWriteCondition {
+                kind,
+                match_value: args[index + 1].to_vec(),
+            });
+            index += 2;
+            continue;
+        }
+
         return Err(RequestExecutionError::SyntaxError);
     }
 
     Ok(options)
+}
+
+fn classify_set_encoding_floor(
+    set: &BTreeSet<Vec<u8>>,
+    set_max_intset_entries: usize,
+    set_max_listpack_entries: usize,
+    set_max_listpack_value: usize,
+) -> Option<SetEncodingFloor> {
+    let intset_compatible = set.iter().all(|member| parse_i64_ascii(member).is_some())
+        && set.len() <= set_max_intset_entries;
+    if intset_compatible {
+        return None;
+    }
+
+    let listpack_compatible = set.len() <= set_max_listpack_entries
+        && set
+            .iter()
+            .all(|member| member.len() <= set_max_listpack_value);
+    if listpack_compatible {
+        Some(SetEncodingFloor::Listpack)
+    } else {
+        Some(SetEncodingFloor::Hashtable)
+    }
 }
 
 fn current_unix_time_millis() -> Option<u64> {
@@ -3192,6 +5180,13 @@ fn normalize_ascii_lower(value: &[u8]) -> Vec<u8> {
     value
         .iter()
         .map(|byte| byte.to_ascii_lowercase())
+        .collect::<Vec<u8>>()
+}
+
+fn normalize_ascii_upper(value: &[u8]) -> Vec<u8> {
+    value
+        .iter()
+        .map(|byte| byte.to_ascii_uppercase())
         .collect::<Vec<u8>>()
 }
 

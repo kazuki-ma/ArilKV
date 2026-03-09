@@ -92,6 +92,8 @@ use std::sync::atomic::Ordering;
 use std::time::Instant;
 use tokio::sync::broadcast;
 
+use crate::request_lifecycle::DbName;
+
 #[cfg(test)]
 use garnet_common::ArgSlice;
 #[cfg(test)]
@@ -185,6 +187,7 @@ struct ClientRuntimeInfo {
     query_buffer_free: usize,
     /// Allocated size of the client's read buffer.
     read_buffer_size: usize,
+    selected_db: DbName,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -247,6 +250,7 @@ impl ClientRuntimeInfo {
             query_buffer_used: 0,
             query_buffer_free: 0,
             read_buffer_size: 0,
+            selected_db: DbName::default(),
         }
     }
 }
@@ -449,6 +453,15 @@ impl ServerMetrics {
         }
     }
 
+    pub(crate) fn set_client_selected_db(&self, client_id: ClientId, selected_db: DbName) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.selected_db = selected_db;
+            client.last_activity = Instant::now();
+        }
+    }
+
     pub fn connected_client_count(&self) -> u64 {
         let Ok(clients) = self.clients.lock() else {
             return 0;
@@ -551,7 +564,12 @@ impl ServerMetrics {
         if client.killed {
             return None;
         }
-        Some(render_client_line(client_id, client, now))
+        Some(render_client_line(
+            client_id,
+            client,
+            now,
+            client.selected_db,
+        ))
     }
 
     pub fn render_client_list_payload(&self, filter_id: Option<ClientId>) -> Vec<u8> {
@@ -572,13 +590,18 @@ impl ServerMetrics {
             if !out.is_empty() {
                 out.extend_from_slice(b"\r\n");
             }
-            out.extend_from_slice(&render_client_line(*id, client, now));
+            out.extend_from_slice(&render_client_line(*id, client, now, client.selected_db));
         }
         out
     }
 }
 
-fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Instant) -> Vec<u8> {
+fn render_client_line(
+    client_id: ClientId,
+    client: &ClientRuntimeInfo,
+    now: Instant,
+    selected_db: DbName,
+) -> Vec<u8> {
     let age_seconds = now.duration_since(client.connect_time).as_secs();
     let idle_seconds = now.duration_since(client.last_activity).as_secs();
     let flags = if client.blocked { "b" } else { "N" };
@@ -610,7 +633,7 @@ fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Inst
     let query_buffer_alloc = qbuf + qbuf_free;
     let tot_mem = query_buffer_alloc + rbs + 20480;
     format!(
-        "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db=0 sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf={} qbuf-free={} argv-mem=0 multi-mem=0 rbs={} rbp=0 obl=0 oll=0 omem=0 tot-mem={} events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
+        "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db={} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf={} qbuf-free={} argv-mem=0 multi-mem=0 rbs={} rbp=0 obl=0 oll=0 omem=0 tot-mem={} events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
         u64::from(client_id),
         String::from_utf8_lossy(&client.addr),
         String::from_utf8_lossy(&client.laddr),
@@ -618,6 +641,7 @@ fn render_client_line(client_id: ClientId, client: &ClientRuntimeInfo, now: Inst
         age_seconds,
         idle_seconds,
         flags,
+        usize::from(selected_db),
         qbuf,
         qbuf_free,
         rbs,

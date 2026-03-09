@@ -1,0 +1,5 @@
+runs=7
+median_lmpop_ops=27253.30000
+median_lmpop_p99_ms=0.16700
+median_lpush_ops=27253.30000
+median_lpush_p99_ms=0.16700

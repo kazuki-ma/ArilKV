@@ -211,6 +211,27 @@ Reproduction config (expected to fail with counterexample):
 ./tools/tla/run_tlc.sh formal/tla/specs/PipelineStresserTimeout.tla formal/tla/specs/PipelineStresserTimeout_repro.cfg
 ```
 
+## Reproduce `CLIENT PAUSE`/`CLIENT UNBLOCK` resume race
+
+This model captures the pause boundary race for blocking commands:
+
+- a blocking command is pause-gated (`CLIENT PAUSE`)
+- `CLIENT UNPAUSE` happens
+- `CLIENT UNBLOCK` is requested before the blocking loop fully resumes
+- bug variant clears pending unblock on resume and can lose the request
+
+Bug config (expected to fail with counterexample):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/ClientPauseUnblockRace.tla formal/tla/specs/ClientPauseUnblockRace_bug.cfg
+```
+
+Fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/ClientPauseUnblockRace.tla formal/tla/specs/ClientPauseUnblockRace_fixed.cfg
+```
+
 ## Add new model
 
 1. Add `<Name>.tla` and `<Name>.cfg` under `formal/tla/specs/`.

@@ -154,10 +154,12 @@ pub enum CommandId {
     Zunionstore,
     Xadd,
     Xdel,
+    Xdelex,
     Xgroup,
     Xreadgroup,
     Xread,
     Xack,
+    Xackdel,
     Xpending,
     Xclaim,
     Xautoclaim,
@@ -167,6 +169,7 @@ pub enum CommandId {
     Xrange,
     Xrevrange,
     Xtrim,
+    Xcfgset,
     Multi,
     Exec,
     Discard,
@@ -254,6 +257,9 @@ pub enum CommandId {
     Httl,
     Hpexpiretime,
     Hexpiretime,
+    Digest,
+    Delex,
+    Msetex,
     Unknown,
 }
 
@@ -332,7 +338,7 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         owner_routing_policy: OwnerRoutingPolicy::FirstKey,
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
-        arity_policy: None,
+        arity_policy: Some(ArityPolicy::Min(3)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -1796,6 +1802,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Xdelex,
+        name_upper: b"XDELEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(5)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Xgroup,
         name_upper: b"XGROUP",
         key_access_pattern: KeyAccessPattern::None,
@@ -1833,6 +1849,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xackdel,
+        name_upper: b"XACKDEL",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(6)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -1923,6 +1949,16 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         is_mutating: true,
         transaction_control: TransactionControlCommand::None,
         arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Xcfgset,
+        name_upper: b"XCFGSET",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(2)),
         include_in_command_response: true,
     },
     CommandSpecEntry {
@@ -2796,6 +2832,36 @@ const COMMAND_SPECS: [CommandSpecEntry; COMMAND_ID_COUNT] = [
         include_in_command_response: true,
     },
     CommandSpecEntry {
+        id: CommandId::Digest,
+        name_upper: b"DIGEST",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: false,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Exact(2)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Delex,
+        name_upper: b"DELEX",
+        key_access_pattern: KeyAccessPattern::FirstKey,
+        owner_routing_policy: OwnerRoutingPolicy::FirstKey,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: None,
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
+        id: CommandId::Msetex,
+        name_upper: b"MSETEX",
+        key_access_pattern: KeyAccessPattern::AllKeysFromArg1,
+        owner_routing_policy: OwnerRoutingPolicy::Never,
+        is_mutating: true,
+        transaction_control: TransactionControlCommand::None,
+        arity_policy: Some(ArityPolicy::Min(4)),
+        include_in_command_response: true,
+    },
+    CommandSpecEntry {
         id: CommandId::Unknown,
         name_upper: b"UNKNOWN",
         key_access_pattern: KeyAccessPattern::None,
@@ -2931,6 +2997,14 @@ pub fn command_is_write_pause_affected_with_script(
         }
         return true;
     }
+    if command == CommandId::Script && subcommand_matches(subcommand, b"LOAD") {
+        if let Some(body) = script_body
+            && eval_script_has_no_writes_flag(body)
+        {
+            return false;
+        }
+        return true;
+    }
     if command == CommandId::Fcall {
         return true;
     }
@@ -2950,11 +3024,99 @@ pub fn command_is_write_pause_affected(command: CommandId, subcommand: Option<&[
     command_is_write_pause_affected_with_script(command, subcommand, None)
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct EvalScriptShebangFlags {
+    pub(crate) has_shebang: bool,
+    pub(crate) shebang_body_offset: usize,
+    pub(crate) no_writes: bool,
+    pub(crate) allow_oom: bool,
+    pub(crate) allow_stale: bool,
+    pub(crate) allow_cross_slot_keys: bool,
+    pub(crate) no_cluster: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum EvalScriptShebangError {
+    InvalidScriptShebang,
+    UnexpectedEngine(String),
+    UnknownOption(String),
+    UnexpectedFlag(String),
+}
+
+impl EvalScriptShebangError {
+    pub(crate) fn client_message(&self) -> String {
+        match self {
+            Self::InvalidScriptShebang => "Invalid script shebang".to_string(),
+            Self::UnexpectedEngine(engine) => {
+                format!("Unexpected engine in script shebang: {engine}")
+            }
+            Self::UnknownOption(option) => format!("Unknown lua shebang option: {option}"),
+            Self::UnexpectedFlag(flag) => format!("Unexpected flag in script shebang: {flag}"),
+        }
+    }
+}
+
+pub(crate) fn eval_script_shebang_flags(
+    body: &[u8],
+) -> Result<EvalScriptShebangFlags, EvalScriptShebangError> {
+    if !body.starts_with(b"#!") {
+        return Ok(EvalScriptShebangFlags::default());
+    }
+
+    let Some(shebang_end) = body.iter().position(|byte| *byte == b'\n') else {
+        return Err(EvalScriptShebangError::InvalidScriptShebang);
+    };
+    let shebang = std::str::from_utf8(&body[..shebang_end])
+        .map_err(|_| EvalScriptShebangError::InvalidScriptShebang)?;
+    let parts = shebang.split_ascii_whitespace().collect::<Vec<_>>();
+    let Some(engine) = parts.first().copied() else {
+        return Err(EvalScriptShebangError::InvalidScriptShebang);
+    };
+    if !engine.eq_ignore_ascii_case("#!lua") {
+        return Err(EvalScriptShebangError::UnexpectedEngine(engine.to_string()));
+    }
+
+    let mut flags = EvalScriptShebangFlags {
+        has_shebang: true,
+        shebang_body_offset: shebang_end + 1,
+        ..EvalScriptShebangFlags::default()
+    };
+    for part in &parts[1..] {
+        let Some((option, value)) = part.split_once('=') else {
+            return Err(EvalScriptShebangError::UnknownOption((*part).to_string()));
+        };
+        if !option.eq_ignore_ascii_case("flags") {
+            return Err(EvalScriptShebangError::UnknownOption((*part).to_string()));
+        }
+        if value.is_empty() {
+            continue;
+        }
+        for flag in value.split(',') {
+            if flag.is_empty() {
+                continue;
+            }
+            if flag.eq_ignore_ascii_case("no-writes") {
+                flags.no_writes = true;
+            } else if flag.eq_ignore_ascii_case("allow-oom") {
+                flags.allow_oom = true;
+            } else if flag.eq_ignore_ascii_case("allow-stale") {
+                flags.allow_stale = true;
+            } else if flag.eq_ignore_ascii_case("allow-cross-slot-keys") {
+                flags.allow_cross_slot_keys = true;
+            } else if flag.eq_ignore_ascii_case("no-cluster") {
+                flags.no_cluster = true;
+            } else {
+                return Err(EvalScriptShebangError::UnexpectedFlag(flag.to_string()));
+            }
+        }
+    }
+    Ok(flags)
+}
+
 /// Check if a Lua script body declares `flags=no-writes` in its shebang line.
 /// Returns true if the script has a shebang header with the no-writes flag.
 pub(crate) fn eval_script_has_no_writes_flag(body: &[u8]) -> bool {
     if !body.starts_with(b"#!") {
-        // No shebang = eval-compat-mode = treated as may-replicate.
         return false;
     }
     let shebang_end = match body.iter().position(|byte| *byte == b'\n') {
@@ -2962,30 +3124,27 @@ pub(crate) fn eval_script_has_no_writes_flag(body: &[u8]) -> bool {
         None => body.len(),
     };
     let shebang = &body[..shebang_end];
-    // Look for "flags=...no-writes..." in the shebang line.
     let flags_prefix = b"flags=";
     let mut search_start = 0;
     while search_start + flags_prefix.len() <= shebang.len() {
-        if let Some(pos) = shebang[search_start..]
+        let Some(pos) = shebang[search_start..]
             .windows(flags_prefix.len())
-            .position(|w| w == flags_prefix.as_slice())
-        {
-            let flags_start = search_start + pos + flags_prefix.len();
-            let flags_end = shebang[flags_start..]
-                .iter()
-                .position(|byte| byte.is_ascii_whitespace())
-                .map(|pos| flags_start + pos)
-                .unwrap_or(shebang.len());
-            let flags_str = &shebang[flags_start..flags_end];
-            for flag in flags_str.split(|byte| *byte == b',') {
-                if flag.eq_ignore_ascii_case(b"no-writes") {
-                    return true;
-                }
-            }
-            search_start = flags_end;
-        } else {
+            .position(|window| window == flags_prefix.as_slice())
+        else {
             break;
+        };
+        let flags_start = search_start + pos + flags_prefix.len();
+        let flags_end = shebang[flags_start..]
+            .iter()
+            .position(|byte| byte.is_ascii_whitespace())
+            .map(|pos| flags_start + pos)
+            .unwrap_or(shebang.len());
+        for flag in shebang[flags_start..flags_end].split(|byte| *byte == b',') {
+            if flag.eq_ignore_ascii_case(b"no-writes") {
+                return true;
+            }
         }
+        search_start = flags_end;
     }
     false
 }
@@ -3146,6 +3305,49 @@ mod tests {
     }
 
     #[test]
+    fn eval_script_shebang_parser_validates_engine_options_and_flags() {
+        let no_shebang = eval_script_shebang_flags(b"return 1").expect("plain script parses");
+        assert!(!no_shebang.has_shebang);
+        assert_eq!(no_shebang.shebang_body_offset, 0);
+
+        let parsed = eval_script_shebang_flags(
+            b"#!lua flags=allow-oom,no-writes,allow-stale,allow-cross-slot-keys,no-cluster\nreturn 1",
+        )
+        .expect("valid shebang parses");
+        assert!(parsed.has_shebang);
+        assert!(parsed.allow_oom);
+        assert!(parsed.no_writes);
+        assert!(parsed.allow_stale);
+        assert!(parsed.allow_cross_slot_keys);
+        assert!(parsed.no_cluster);
+        assert_eq!(
+            parsed.shebang_body_offset,
+            b"#!lua flags=allow-oom,no-writes,allow-stale,allow-cross-slot-keys,no-cluster\n".len()
+        );
+
+        assert_eq!(
+            eval_script_shebang_flags(b"#!not-lua\nreturn 1"),
+            Err(EvalScriptShebangError::UnexpectedEngine(
+                "#!not-lua".to_string()
+            ))
+        );
+        assert_eq!(
+            eval_script_shebang_flags(b"#!lua badger=data\nreturn 1"),
+            Err(EvalScriptShebangError::UnknownOption(
+                "badger=data".to_string()
+            ))
+        );
+        assert_eq!(
+            eval_script_shebang_flags(b"#!lua flags=allow-oom,what?\nreturn 1"),
+            Err(EvalScriptShebangError::UnexpectedFlag("what?".to_string()))
+        );
+        assert_eq!(
+            eval_script_shebang_flags(b"#!lua"),
+            Err(EvalScriptShebangError::InvalidScriptShebang)
+        );
+    }
+
+    #[test]
     fn write_pause_classification_for_script_commands() {
         // Regular EVAL without shebang → write-pause-affected
         assert!(command_is_write_pause_affected_with_script(
@@ -3200,6 +3402,18 @@ mod tests {
             CommandId::Publish,
             None,
             None,
+        ));
+        // SCRIPT LOAD with no-writes shebang should not be write-pause-affected.
+        assert!(!command_is_write_pause_affected_with_script(
+            CommandId::Script,
+            Some(b"LOAD"),
+            Some(b"#!lua flags=no-writes\nreturn 1"),
+        ));
+        // SCRIPT LOAD without no-writes shebang remains write-pause-affected.
+        assert!(command_is_write_pause_affected_with_script(
+            CommandId::Script,
+            Some(b"LOAD"),
+            Some(b"return 1"),
         ));
     }
 
@@ -3459,6 +3673,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Flushdb, 2));
         assert!(command_has_valid_arity(CommandId::Flushall, 1));
         assert!(command_has_valid_arity(CommandId::Flushall, 2));
+        assert!(!command_has_valid_arity(CommandId::Set, 2));
+        assert!(command_has_valid_arity(CommandId::Set, 3));
+        assert!(command_has_valid_arity(CommandId::Set, 6));
         assert!(command_has_valid_arity(CommandId::Function, 2));
         assert!(command_has_valid_arity(CommandId::Function, 3));
         assert!(!command_has_valid_arity(CommandId::Function, 1));
@@ -3506,7 +3723,8 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Debug, 2));
         assert!(command_has_valid_arity(CommandId::Debug, 3));
         assert!(!command_has_valid_arity(CommandId::Debug, 1));
-        assert!(command_has_valid_arity(CommandId::Set, 2));
+        assert!(!command_has_valid_arity(CommandId::Set, 2));
+        assert!(command_has_valid_arity(CommandId::Set, 3));
         assert!(command_has_valid_arity(CommandId::Dump, 2));
         assert!(!command_has_valid_arity(CommandId::Dump, 3));
         assert!(command_has_valid_arity(CommandId::Restore, 4));
@@ -3517,6 +3735,8 @@ mod tests {
         assert!(!command_has_valid_arity(CommandId::RestoreAsking, 3));
         assert!(command_has_valid_arity(CommandId::Getdel, 2));
         assert!(!command_has_valid_arity(CommandId::Getdel, 3));
+        assert!(command_has_valid_arity(CommandId::Digest, 2));
+        assert!(!command_has_valid_arity(CommandId::Digest, 3));
         assert!(command_has_valid_arity(CommandId::Getset, 3));
         assert!(!command_has_valid_arity(CommandId::Getset, 2));
         assert!(command_has_valid_arity(CommandId::Psetex, 4));
@@ -3528,9 +3748,13 @@ mod tests {
         assert!(!command_has_valid_arity(CommandId::Getex, 1));
         assert!(command_has_valid_arity(CommandId::Incrbyfloat, 3));
         assert!(!command_has_valid_arity(CommandId::Incrbyfloat, 2));
+        assert!(command_has_valid_arity(CommandId::Delex, 2));
+        assert!(command_has_valid_arity(CommandId::Delex, 4));
         assert!(command_has_valid_arity(CommandId::Msetnx, 3));
         assert!(command_has_valid_arity(CommandId::Msetnx, 5));
         assert!(!command_has_valid_arity(CommandId::Msetnx, 2));
+        assert!(command_has_valid_arity(CommandId::Msetex, 4));
+        assert!(!command_has_valid_arity(CommandId::Msetex, 3));
         assert!(command_has_valid_arity(CommandId::Pfadd, 2));
         assert!(command_has_valid_arity(CommandId::Pfadd, 3));
         assert!(command_has_valid_arity(CommandId::Pfadd, 6));
@@ -3720,6 +3944,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Xack, 4));
         assert!(command_has_valid_arity(CommandId::Xack, 6));
         assert!(!command_has_valid_arity(CommandId::Xack, 3));
+        assert!(command_has_valid_arity(CommandId::Xackdel, 6));
+        assert!(command_has_valid_arity(CommandId::Xackdel, 8));
+        assert!(!command_has_valid_arity(CommandId::Xackdel, 5));
         assert!(command_has_valid_arity(CommandId::Xpending, 3));
         assert!(command_has_valid_arity(CommandId::Xpending, 7));
         assert!(!command_has_valid_arity(CommandId::Xpending, 2));
@@ -3732,6 +3959,9 @@ mod tests {
         assert!(command_has_valid_arity(CommandId::Xsetid, 3));
         assert!(command_has_valid_arity(CommandId::Xsetid, 8));
         assert!(!command_has_valid_arity(CommandId::Xsetid, 2));
+        assert!(command_has_valid_arity(CommandId::Xdelex, 5));
+        assert!(command_has_valid_arity(CommandId::Xdelex, 7));
+        assert!(!command_has_valid_arity(CommandId::Xdelex, 4));
         assert!(command_has_valid_arity(CommandId::Quit, 1));
         assert!(!command_has_valid_arity(CommandId::Quit, 2));
         assert!(command_has_valid_arity(CommandId::Time, 1));
@@ -3842,12 +4072,15 @@ mod tests {
             b"RESTORE-ASKING"
         );
         assert_eq!(command_name_upper(CommandId::Getdel), b"GETDEL");
+        assert_eq!(command_name_upper(CommandId::Digest), b"DIGEST");
+        assert_eq!(command_name_upper(CommandId::Delex), b"DELEX");
         assert_eq!(command_name_upper(CommandId::Getset), b"GETSET");
         assert_eq!(command_name_upper(CommandId::Psetex), b"PSETEX");
         assert_eq!(command_name_upper(CommandId::Append), b"APPEND");
         assert_eq!(command_name_upper(CommandId::Getex), b"GETEX");
         assert_eq!(command_name_upper(CommandId::Incrbyfloat), b"INCRBYFLOAT");
         assert_eq!(command_name_upper(CommandId::Msetnx), b"MSETNX");
+        assert_eq!(command_name_upper(CommandId::Msetex), b"MSETEX");
         assert_eq!(command_name_upper(CommandId::Pfadd), b"PFADD");
         assert_eq!(command_name_upper(CommandId::Pfcount), b"PFCOUNT");
         assert_eq!(command_name_upper(CommandId::Pfmerge), b"PFMERGE");
@@ -3936,10 +4169,12 @@ mod tests {
         assert_eq!(command_name_upper(CommandId::Xtrim), b"XTRIM");
         assert_eq!(command_name_upper(CommandId::Xread), b"XREAD");
         assert_eq!(command_name_upper(CommandId::Xack), b"XACK");
+        assert_eq!(command_name_upper(CommandId::Xackdel), b"XACKDEL");
         assert_eq!(command_name_upper(CommandId::Xpending), b"XPENDING");
         assert_eq!(command_name_upper(CommandId::Xclaim), b"XCLAIM");
         assert_eq!(command_name_upper(CommandId::Xautoclaim), b"XAUTOCLAIM");
         assert_eq!(command_name_upper(CommandId::Xsetid), b"XSETID");
+        assert_eq!(command_name_upper(CommandId::Xdelex), b"XDELEX");
         assert_eq!(command_name_upper(CommandId::Quit), b"QUIT");
         assert_eq!(command_name_upper(CommandId::Time), b"TIME");
         assert_eq!(command_name_upper(CommandId::Touch), b"TOUCH");

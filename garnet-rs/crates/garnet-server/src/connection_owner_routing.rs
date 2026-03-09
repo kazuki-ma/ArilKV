@@ -9,6 +9,7 @@ use crate::RequestExecutionError;
 use crate::RequestProcessor;
 use crate::ShardOwnerThreadPool;
 use crate::connection_routing::owner_shard_for_command;
+use crate::request_lifecycle::DbName;
 #[cfg(test)]
 const TEST_MAX_ROUTED_ARGUMENTS: usize = 1_048_576;
 
@@ -110,12 +111,20 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     owned_args: &OwnedFrameArgs,
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    selected_db: DbName,
 ) -> Result<Vec<u8>, RoutedExecutionError> {
     let args = parse_owned_frame_args(owned_args)?;
 
     let mut response = Vec::new();
     processor
-        .execute_with_client_context(&args, &mut response, client_no_touch, client_id)
+        .execute_with_client_context_in_db(
+            &args,
+            &mut response,
+            client_no_touch,
+            client_id,
+            false,
+            selected_db,
+        )
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -128,11 +137,19 @@ pub(crate) fn execute_frame_on_owner_thread(
     frame: &[u8],
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    selected_db: DbName,
 ) -> Result<Vec<u8>, OwnerThreadExecutionError> {
     if owner_thread_pool.is_inline_execution() {
         let mut response = Vec::new();
         processor
-            .execute_with_client_context(args, &mut response, client_no_touch, client_id)
+            .execute_with_client_context_in_db(
+                args,
+                &mut response,
+                client_no_touch,
+                client_id,
+                false,
+                selected_db,
+            )
             .map_err(OwnerThreadExecutionError::Request)?;
         return Ok(response);
     }
@@ -147,6 +164,7 @@ pub(crate) fn execute_frame_on_owner_thread(
                 &owned_args,
                 client_no_touch,
                 client_id,
+                selected_db,
             )
         })
         .map_err(|_| OwnerThreadExecutionError::OwnerThreadUnavailable)?

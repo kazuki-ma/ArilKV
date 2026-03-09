@@ -1,0 +1,17 @@
+runs=3
+median_hash_hdel_ops=2759.93000
+median_hash_hdel_p99_ms=2.68700
+median_hash_hset_ops=2759.93000
+median_hash_hset_p99_ms=2.57500
+median_list_lpop_ops=2186.56000
+median_list_lpop_p99_ms=0.94300
+median_list_lpush_ops=2186.56000
+median_list_lpush_p99_ms=0.95100
+median_set_sadd_ops=4363.88000
+median_set_sadd_p99_ms=1.59900
+median_set_srem_ops=4363.88000
+median_set_srem_p99_ms=1.59100
+median_zset_zadd_ops=4294.65000
+median_zset_zadd_p99_ms=1.59100
+median_zset_zrem_ops=4294.65000
+median_zset_zrem_p99_ms=1.66300

@@ -10,6 +10,7 @@ REDIS_IMAGE="${REDIS_IMAGE:-redis:7.2-alpine}"
 DRAGONFLY_IMAGE="${DRAGONFLY_IMAGE:-docker.dragonflydb.io/dragonflydb/dragonfly:v1.36.0}"
 REDIS_CLI_IMAGE="${REDIS_CLI_IMAGE:-redis:7.2-alpine}"
 GARNET_SERVER_CMD="${GARNET_SERVER_CMD:-cargo run -p garnet-server --release}"
+RUST_BACKTRACE="${RUST_BACKTRACE:-1}"
 GARNET_BASE_PORT="${GARNET_BASE_PORT:-7420}"
 
 mkdir -p "${RESULT_DIR}"
@@ -195,6 +196,7 @@ test_garnet_multiport_cluster_surface() {
     (
         cd "${GARNET_RS_ROOT}"
         GARNET_BIND_ADDR="127.0.0.1:${base_port}" \
+        RUST_BACKTRACE="${RUST_BACKTRACE}" \
         GARNET_OWNER_NODE_COUNT=3 \
         GARNET_MULTI_PORT_CLUSTER_MODE=1 \
         bash -lc "${GARNET_SERVER_CMD}"

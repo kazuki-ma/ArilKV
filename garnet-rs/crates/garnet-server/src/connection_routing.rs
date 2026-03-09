@@ -58,7 +58,9 @@ pub(crate) fn cluster_error_for_command(
     args: &[ArgSlice],
     command: CommandId,
     asking_allowed: bool,
+    read_only_mode: bool,
 ) -> io::Result<(Option<String>, bool)> {
+    let _ = read_only_mode;
     if args.len() < 2 {
         return Ok((None, asking_allowed));
     }

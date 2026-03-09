@@ -4,6 +4,7 @@ use super::*;
 use tsavorite::RmwInfo;
 use tsavorite::RmwOperationError;
 use tsavorite::UpsertOperationError;
+use xxhash_rust::xxh3::xxh3_64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum BitopOperation {
@@ -176,11 +177,13 @@ impl RequestProcessor {
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
+                self.track_read_key_for_current_client(&key);
                 self.record_key_access(&key, false);
                 append_bulk_string(response_out, &output);
                 Ok(())
             }
             ReadOperationStatus::NotFound => {
+                self.track_read_key_for_current_client(&key);
                 if self.object_key_exists(&key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
@@ -368,6 +371,10 @@ impl RequestProcessor {
         let required_len = byte_index
             .checked_add(1)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
+        self.ensure_string_length_within_limit(
+            required_len,
+            RequestExecutionError::ValueOutOfRange,
+        )?;
         let old_len = value.len();
         let changed = old_bit != i64::from(bit_value) || old_len < required_len;
         if changed {
@@ -384,6 +391,7 @@ impl RequestProcessor {
                 &value,
                 expiration_unix_millis,
             )?;
+            self.force_raw_string_encoding(&key);
             self.track_string_key(&key);
             self.bump_watch_version(&key);
         }
@@ -423,13 +431,18 @@ impl RequestProcessor {
 
         let new_len = offset
             .checked_add(new_segment.len())
-            .ok_or(RequestExecutionError::ValueOutOfRange)?;
+            .ok_or(RequestExecutionError::StringExceedsMaximumAllowedSize)?;
+        self.ensure_string_length_within_limit(
+            new_len,
+            RequestExecutionError::StringExceedsMaximumAllowedSize,
+        )?;
         if value.len() < new_len {
             value.resize(new_len, 0);
         }
         value[offset..offset + new_segment.len()].copy_from_slice(new_segment);
 
         self.upsert_string_value_with_expiration_unix_millis(&key, &value, expiration_unix_millis)?;
+        self.force_raw_string_encoding(&key);
         self.track_string_key(&key);
         self.bump_watch_version(&key);
         self.notify_keyspace_event(NOTIFY_STRING, b"setrange", &key);
@@ -672,6 +685,9 @@ impl RequestProcessor {
 
         let destination = RedisKey::from(args[2]);
         let source_keys = args[3..].iter().map(|key| key.to_vec()).collect::<Vec<_>>();
+        self.expire_key_if_needed(&destination)?;
+        let (destination_had_string, destination_object_type) =
+            self.key_type_snapshot_for_setkey_overwrite(&destination)?;
 
         let mut source_values = Vec::with_capacity(source_keys.len());
         for key in &source_keys {
@@ -695,6 +711,12 @@ impl RequestProcessor {
         } else {
             let _ = self.object_delete(&destination)?;
             self.upsert_string_value_for_migration(&destination, &result, None)?;
+            self.notify_setkey_overwrite_events(
+                &destination,
+                destination_had_string,
+                destination_object_type,
+                None,
+            );
         }
         append_integer(response_out, result.len() as i64);
         Ok(())
@@ -835,6 +857,10 @@ impl RequestProcessor {
                     .checked_add(7)
                     .ok_or(RequestExecutionError::ValueOutOfRange)?
                     / 8;
+                self.ensure_string_length_within_limit(
+                    required_bytes,
+                    RequestExecutionError::ValueOutOfRange,
+                )?;
                 let length_changed = required_bytes > value.len();
                 let previous = decode_bitfield_raw(raw, encoding);
                 match apply_bitfield_set(set_value, encoding, overflow_mode) {
@@ -886,6 +912,17 @@ impl RequestProcessor {
                 let increment = parse_i64_ascii(increment_token)
                     .ok_or(RequestExecutionError::ValueNotInteger)?;
                 let raw = read_unsigned_bits(&value, offset, usize::from(encoding.bits))?;
+                let required_bits = offset
+                    .checked_add(usize::from(encoding.bits))
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                let required_bytes = required_bits
+                    .checked_add(7)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?
+                    / 8;
+                self.ensure_string_length_within_limit(
+                    required_bytes,
+                    RequestExecutionError::ValueOutOfRange,
+                )?;
 
                 match apply_bitfield_incrby(raw, encoding, increment, overflow_mode)? {
                     BitfieldIncrOutcome::Value { raw, value: result } => {
@@ -918,6 +955,7 @@ impl RequestProcessor {
                 &value,
                 expiration_unix_millis,
             )?;
+            self.force_raw_string_encoding(&key);
             self.track_string_key(&key);
             self.bump_watch_version(&key);
         }
@@ -1101,7 +1139,7 @@ impl RequestProcessor {
                 if sortable.iter().any(|(_, weight)| {
                     !weight.is_empty() && parse_f64_ascii(weight.as_slice()).is_none()
                 }) {
-                    return Err(RequestExecutionError::ValueNotFloat);
+                    return Err(RequestExecutionError::SortScoreNotDouble);
                 }
             }
 
@@ -1111,9 +1149,18 @@ impl RequestProcessor {
                 .collect();
         }
 
+        // When BY nosort is used, sorting is skipped but DESC still reverses the
+        // natural element order (matching Redis behavior).
+        if !should_sort && options.desc {
+            elements.reverse();
+        }
+
         let selected = apply_sort_limit(&elements, options.limit_offset, options.limit_count);
 
         if let Some(store_key) = options.store_key.as_deref() {
+            self.expire_key_if_needed(store_key)?;
+            let (destination_had_string, destination_object_type) =
+                self.key_type_snapshot_for_setkey_overwrite(store_key)?;
             let mut stored = Vec::new();
             if options.get_patterns.is_empty() {
                 stored.extend(selected.iter().cloned());
@@ -1130,6 +1177,12 @@ impl RequestProcessor {
             let _ = self.object_delete(store_key)?;
             if !stored.is_empty() {
                 self.save_list_object(store_key, &stored)?;
+                self.notify_setkey_overwrite_events(
+                    store_key,
+                    destination_had_string,
+                    destination_object_type,
+                    Some(ObjectTypeTag::List),
+                );
             }
             append_integer(response_out, stored.len() as i64);
             return Ok(());
@@ -1233,6 +1286,14 @@ impl RequestProcessor {
         if !string_exists {
             current_value.clear();
         }
+        let new_len = current_value
+            .len()
+            .checked_add(append_value.len())
+            .ok_or(RequestExecutionError::StringExceedsMaximumAllowedSize)?;
+        self.ensure_string_length_within_limit(
+            new_len,
+            RequestExecutionError::StringExceedsMaximumAllowedSize,
+        )?;
         current_value.extend_from_slice(append_value);
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
 
@@ -1257,6 +1318,9 @@ impl RequestProcessor {
         }
 
         self.track_string_key_in_shard(&key, shard_index);
+        if !append_value.is_empty() {
+            self.force_raw_string_encoding(&key);
+        }
         self.bump_watch_version(&key);
         self.notify_keyspace_event(NOTIFY_STRING, b"append", &key);
         append_integer(response_out, current_value.len() as i64);
@@ -1347,7 +1411,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "INCRBYFLOAT", "INCRBYFLOAT key increment")?;
 
-        let increment = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let increment = parse_f64_ascii_allow_non_finite(args[2])
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        if !increment.is_finite() {
+            return Err(RequestExecutionError::IncrementWouldProduceNanOrInfinity);
+        }
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
@@ -1366,7 +1434,7 @@ impl RequestProcessor {
 
         let updated = current + increment;
         if !updated.is_finite() {
-            return Err(RequestExecutionError::ValueNotFloat);
+            return Err(RequestExecutionError::IncrementWouldProduceNanOrInfinity);
         }
         let updated_text = updated.to_string().into_bytes();
 
@@ -1383,6 +1451,7 @@ impl RequestProcessor {
         session
             .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
             .map_err(map_upsert_error)?;
+        self.clear_forced_raw_string_encoding(&key);
         self.track_string_key(&key);
         self.bump_watch_version(&key);
         self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
@@ -1408,8 +1477,6 @@ impl RequestProcessor {
         let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
         let mut session = store.session(&self.functions);
-        let mut object_store = self.lock_object_store_for_shard(shard_index);
-        let mut object_session = object_store.session(&self.object_functions);
 
         let mut old_string_value = Vec::new();
         let string_exists = match session
@@ -1426,26 +1493,31 @@ impl RequestProcessor {
             ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
         };
 
-        let mut object_output = Vec::new();
-        let object_exists = match object_session
-            .read(&key, &Vec::new(), &mut object_output, &ReadInfo::default())
-            .map_err(map_read_error)?
-        {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
-            ReadOperationStatus::NotFound => false,
-            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
-        };
+        let object_exists = self.object_read(&key)?.is_some();
 
         // SET GET on a non-string key returns WRONGTYPE and aborts.
         if options.return_old_value && object_exists {
             return Err(RequestExecutionError::WrongType);
         }
 
-        if options.only_if_absent || options.only_if_present {
-            let exists_any = string_exists || object_exists;
-            let abort =
-                (options.only_if_absent && exists_any) || (options.only_if_present && !exists_any);
-            if abort {
+        if let Some(condition) = &options.condition {
+            let write_allowed = match condition.kind {
+                StringWriteConditionKind::Nx => !string_exists && !object_exists,
+                StringWriteConditionKind::Xx => string_exists || object_exists,
+                StringWriteConditionKind::IfEq
+                | StringWriteConditionKind::IfNe
+                | StringWriteConditionKind::IfDigestEq
+                | StringWriteConditionKind::IfDigestNe => {
+                    if object_exists {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    string_write_condition_matches(
+                        string_exists.then_some(old_string_value.as_slice()),
+                        condition,
+                    )?
+                }
+            };
+            if !write_allowed {
                 if options.return_old_value && string_exists {
                     append_bulk_string(response_out, &old_string_value);
                 } else if self.resp_protocol_version().is_resp3() {
@@ -1475,6 +1547,10 @@ impl RequestProcessor {
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         let normalized_value = canonicalize_oversized_hyll_value(value);
+        self.ensure_string_length_within_limit(
+            normalized_value.len(),
+            RequestExecutionError::StringExceedsMaximumAllowedSize,
+        )?;
         let stored_value = encode_stored_value(
             normalized_value,
             effective_expiration.map(|e| e.unix_millis.as_u64()),
@@ -1499,19 +1575,11 @@ impl RequestProcessor {
             }
         }
         if object_exists {
-            let mut delete_info = DeleteInfo::default();
-            let status = object_session
-                .delete(&key, &mut delete_info)
-                .map_err(map_delete_error)?;
-            if matches!(status, DeleteOperationStatus::RetryLater) {
-                return Err(RequestExecutionError::StorageBusy);
-            }
+            let _ = self.object_delete(&key)?;
         }
         // Explicit drops to end borrows before subsequent metadata locks.
         #[allow(clippy::drop_non_drop)]
         {
-            drop(object_session);
-            drop(object_store);
             drop(session);
             drop(store);
         }
@@ -1520,12 +1588,22 @@ impl RequestProcessor {
         if object_exists {
             self.untrack_object_key_in_shard(&key, shard_index);
         }
+        self.clear_forced_raw_string_encoding(&key);
         self.set_string_expiration_metadata_in_shard(&key, shard_index, effective_expiration);
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
         self.record_key_access(&key, true);
 
-        self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+        if !string_exists && !object_exists {
+            self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+            self.notify_keyspace_event(NOTIFY_NEW, b"new", &key);
+        } else {
+            self.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+            if object_exists {
+                self.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+            }
+            self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+        }
         if effective_expiration.is_some() {
             self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
         }
@@ -1623,6 +1701,131 @@ impl RequestProcessor {
         let del_args: [&[u8]; 2] = [b"DEL", args[1]];
         self.handle_del(&del_args, &mut del_response)?;
         response_out.extend_from_slice(&previous_value_response);
+        Ok(())
+    }
+
+    pub(super) fn handle_digest(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        require_exact_arity(args, 2, "DIGEST", "DIGEST key")?;
+
+        let key = RedisKey::from(args[1]);
+        let shard_index = self.string_store_shard_index_for_key(&key);
+        let logically_expired = self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        if logically_expired {
+            if self.resp_protocol_version().is_resp3() {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
+            return Ok(());
+        }
+
+        if let Some(value) = self.read_string_value(&key)? {
+            append_bulk_string(response_out, &string_digest_hex_bytes(&value));
+            return Ok(());
+        }
+        if self.object_key_exists(&key)? {
+            return Err(RequestExecutionError::WrongType);
+        }
+
+        if self.resp_protocol_version().is_resp3() {
+            append_null(response_out);
+        } else {
+            append_null_bulk_string(response_out);
+        }
+        Ok(())
+    }
+
+    pub(super) fn handle_delex(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        if args.len() == 2 {
+            let translated = [b"DEL".as_slice(), args[1]];
+            return self.handle_del(&translated, response_out);
+        }
+        if args.len() != 4 {
+            return Err(RequestExecutionError::WrongArity {
+                command: "DELEX",
+                expected: "DELEX key [IFEQ match-value|IFNE match-value|IFDEQ match-digest|IFDNE match-digest]",
+            });
+        }
+
+        let key = RedisKey::from(args[1]);
+        let shard_index = self.string_store_shard_index_for_key(&key);
+        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+
+        if let Some(value) = self.read_string_value(&key)? {
+            let condition = parse_delex_condition(args[2], args[3])?;
+            if !string_write_condition_matches(Some(value.as_slice()), &condition)? {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+            let translated = [b"DEL".as_slice(), args[1]];
+            self.handle_del(&translated, response_out)?;
+            return Ok(());
+        }
+        if self.object_key_exists(&key)? {
+            return Err(RequestExecutionError::KeyShouldBeStringForConditionalDelete);
+        }
+
+        append_integer(response_out, 0);
+        Ok(())
+    }
+
+    pub(super) fn handle_msetex(
+        &self,
+        args: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        ensure_min_arity(
+            args,
+            2,
+            "MSETEX",
+            "MSETEX numkeys key value [key value ...] [option ...]",
+        )?;
+
+        let key_count = parse_msetex_numkeys(args[1])?;
+        let kv_arg_count = key_count
+            .checked_mul(2)
+            .ok_or(RequestExecutionError::InvalidMsetexNumkeysValue)?;
+        let option_start = 2usize
+            .checked_add(kv_arg_count)
+            .ok_or(RequestExecutionError::WrongNumberOfKeyValuePairs)?;
+        if option_start > args.len() {
+            return Err(RequestExecutionError::WrongNumberOfKeyValuePairs);
+        }
+
+        let options = parse_msetex_options(args, option_start)?;
+        let key_value_pairs: Vec<(Vec<u8>, Vec<u8>)> = args[2..option_start]
+            .chunks_exact(2)
+            .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
+            .collect();
+
+        for (key, _) in &key_value_pairs {
+            self.expire_key_if_needed(key)?;
+            let exists_any = self.key_exists_any(key)?;
+            if (options.only_if_absent && exists_any) || (options.only_if_present && !exists_any) {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        }
+
+        for (key, value) in &key_value_pairs {
+            let effective_expiration = if options.keep_ttl {
+                self.expiration_unix_millis_for_key(key)
+                    .and_then(expiration_metadata_from_unix_millis)
+            } else {
+                options.expiration
+            };
+            self.write_multi_set_pair(key, value, effective_expiration)?;
+        }
+
+        append_integer(response_out, 1);
         Ok(())
     }
 
@@ -1826,11 +2029,23 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        let (destination_had_string, destination_object_type) =
+            self.key_type_snapshot_for_setkey_overwrite(&destination)?;
+        let source_type = match &source_entry.value {
+            MigrationValue::String(_) => None,
+            MigrationValue::Object { object_type, .. } => Some(*object_type),
+        };
         source_entry.key = destination.clone().into();
         self.import_migration_entry(&source_entry)?;
         self.delete_string_key_for_migration(&source)?;
         let _ = self.object_delete(&source)?;
 
+        self.notify_setkey_overwrite_events(
+            &destination,
+            destination_had_string,
+            destination_object_type,
+            source_type,
+        );
         self.notify_keyspace_event(NOTIFY_GENERIC, b"rename_from", &source);
         self.notify_keyspace_event(NOTIFY_GENERIC, b"rename_to", &destination);
 
@@ -1901,8 +2116,20 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        let (destination_had_string, destination_object_type) =
+            self.key_type_snapshot_for_setkey_overwrite(&destination)?;
+        let source_type = match &source_entry.value {
+            MigrationValue::String(_) => None,
+            MigrationValue::Object { object_type, .. } => Some(*object_type),
+        };
         source_entry.key = destination.clone().into();
         self.import_migration_entry(&source_entry)?;
+        self.notify_setkey_overwrite_events(
+            &destination,
+            destination_had_string,
+            destination_object_type,
+            source_type,
+        );
         self.notify_keyspace_event(NOTIFY_GENERIC, b"copy_to", &destination);
         append_integer(response_out, 1);
         Ok(())
@@ -1940,9 +2167,12 @@ impl RequestProcessor {
 
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let delta = if decrement {
+            if amount == i64::MIN {
+                return Err(RequestExecutionError::IncrementOverflow);
+            }
             amount
                 .checked_neg()
-                .ok_or(RequestExecutionError::ValueNotInteger)?
+                .ok_or(RequestExecutionError::IncrementOverflow)?
         } else {
             amount
         };
@@ -1973,6 +2203,7 @@ impl RequestProcessor {
             | Ok(RmwOperationStatus::Inserted) => {
                 let parsed =
                     parse_i64_ascii(&output).ok_or(RequestExecutionError::ValueNotInteger)?;
+                self.clear_forced_raw_string_encoding(key);
                 self.track_string_key(key);
                 self.bump_watch_version(key);
                 self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
@@ -1995,6 +2226,7 @@ impl RequestProcessor {
                         &mut upsert_info,
                     )
                     .map_err(map_upsert_error)?;
+                self.clear_forced_raw_string_encoding(key);
                 self.track_string_key(key);
                 self.bump_watch_version(key);
                 self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
@@ -2287,40 +2519,46 @@ impl RequestProcessor {
     }
 
     fn mset_single_pair(&self, key: &[u8], value: &[u8]) -> Result<(), RequestExecutionError> {
+        self.write_multi_set_pair(key, value, None)
+    }
+
+    fn write_multi_set_pair(
+        &self,
+        key: &[u8],
+        value: &[u8],
+        expiration: Option<ExpirationMetadata>,
+    ) -> Result<(), RequestExecutionError> {
         let shard_index = self.string_store_shard_index_for_key(key);
         self.expire_key_if_needed_in_shard(key, shard_index)?;
 
         let key_vec = key.to_vec();
         let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
-        let mut object_store = self.lock_object_store_for_shard(shard_index);
-        let mut object_session = object_store.session(&self.object_functions);
-
-        let mut existence_output = Vec::new();
-        let object_exists = match object_session
-            .read(
-                &key_vec,
-                &Vec::new(),
-                &mut existence_output,
-                &ReadInfo::default(),
-            )
-            .map_err(map_read_error)?
-        {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
-            ReadOperationStatus::NotFound => false,
-            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
-        };
+        let object_exists = self.object_read(&key_vec)?.is_some();
 
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
         let normalized_value = canonicalize_oversized_hyll_value(value);
-        let stored_value = encode_stored_value(normalized_value, None);
+        self.ensure_string_length_within_limit(
+            normalized_value.len(),
+            RequestExecutionError::StringExceedsMaximumAllowedSize,
+        )?;
+        let stored_value = encode_stored_value(
+            normalized_value,
+            expiration.map(|metadata| metadata.unix_millis.as_u64()),
+        );
+        if expiration.is_some() {
+            info.user_data.insert(UPSERT_USER_DATA_HAS_EXPIRATION);
+        }
         if let Err(error) = session.upsert(&key_vec, &stored_value, &mut output, &mut info) {
             if let Some(fallback_user_value) =
                 hll_record_too_large_fallback_value(normalized_value, &error)
             {
                 output.clear();
-                let fallback_stored_value = encode_stored_value(fallback_user_value, None);
+                let fallback_stored_value = encode_stored_value(
+                    fallback_user_value,
+                    expiration.map(|metadata| metadata.unix_millis.as_u64()),
+                );
                 session
                     .upsert(&key_vec, &fallback_stored_value, &mut output, &mut info)
                     .map_err(map_upsert_error)?;
@@ -2329,19 +2567,11 @@ impl RequestProcessor {
             }
         }
         if object_exists {
-            let mut delete_info = DeleteInfo::default();
-            let status = object_session
-                .delete(&key_vec, &mut delete_info)
-                .map_err(map_delete_error)?;
-            if matches!(status, DeleteOperationStatus::RetryLater) {
-                return Err(RequestExecutionError::StorageBusy);
-            }
+            let _ = self.object_delete(&key_vec)?;
         }
         // Explicit drops to end borrows before subsequent metadata locks.
         #[allow(clippy::drop_non_drop)]
         {
-            drop(object_session);
-            drop(object_store);
             drop(session);
             drop(store);
         }
@@ -2349,10 +2579,13 @@ impl RequestProcessor {
         if object_exists {
             self.untrack_object_key_in_shard(&key_vec, shard_index);
         }
-        self.set_string_expiration_deadline_in_shard(&key_vec, shard_index, None);
+        self.set_string_expiration_metadata_in_shard(&key_vec, shard_index, expiration);
         self.track_string_key_in_shard(&key_vec, shard_index);
         self.bump_watch_version(&key_vec);
         self.notify_keyspace_event(NOTIFY_STRING, b"set", &key_vec);
+        if expiration.is_some() {
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key_vec);
+        }
         Ok(())
     }
 
@@ -3401,7 +3634,7 @@ fn append_lcs_idx_response(
     append_array_length(response_out, 4);
     append_bulk_string(response_out, b"matches");
     append_array_length(response_out, matches.len());
-    for entry in matches {
+    for entry in matches.iter().rev() {
         append_lcs_match_entry(response_out, entry, with_match_len);
     }
     append_bulk_string(response_out, b"len");
@@ -3450,9 +3683,8 @@ fn parse_sort_options(
                 parse_i64_ascii(offset_token).ok_or(RequestExecutionError::ValueNotInteger)?;
             let count =
                 parse_i64_ascii(count_token).ok_or(RequestExecutionError::ValueNotInteger)?;
-            if offset < 0 {
-                return Err(RequestExecutionError::ValueOutOfRange);
-            }
+            // Redis clamps negative offsets to 0 rather than rejecting them.
+            let offset = offset.max(0);
             limit_offset =
                 usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
             if count < 0 {
@@ -3554,7 +3786,18 @@ fn load_sort_elements(
             let zset = deserialize_zset_object_payload(&object.payload).ok_or_else(|| {
                 storage_failure("sort", "failed to deserialize source zset payload")
             })?;
-            Ok(zset.into_keys().collect())
+            // Redis SORT on a sorted set preserves score-based ordering (not
+            // lexicographic member order).  Collect entries, sort by (score,
+            // member) so that `BY nosort` yields the score-ordered sequence,
+            // and then extract the member keys.
+            let mut entries: Vec<(Vec<u8>, f64)> = zset.into_iter().collect();
+            entries.sort_by(|(member_a, score_a), (member_b, score_b)| {
+                score_a
+                    .partial_cmp(score_b)
+                    .unwrap_or(core::cmp::Ordering::Equal)
+                    .then_with(|| member_a.cmp(member_b))
+            });
+            Ok(entries.into_iter().map(|(member, _)| member).collect())
         }
         _ => Err(RequestExecutionError::WrongType),
     }
@@ -3597,10 +3840,17 @@ fn split_sort_pattern(pattern: &[u8]) -> SortPatternSplit<'_> {
     let mut index = 0usize;
     while index + 1 < pattern.len() {
         if pattern[index] == b'-' && pattern[index + 1] == b'>' {
-            return SortPatternSplit {
-                key_pattern: &pattern[..index],
-                hash_field_pattern: Some(&pattern[index + 2..]),
-            };
+            let field_part = &pattern[index + 2..];
+            // When the field part after `->` is empty (e.g. pattern "x:*->"),
+            // Redis treats the whole pattern as a plain string key rather than
+            // a hash-field dereference.  Only split when there is a non-empty
+            // field component.
+            if !field_part.is_empty() {
+                return SortPatternSplit {
+                    key_pattern: &pattern[..index],
+                    hash_field_pattern: Some(field_part),
+                };
+            }
         }
         index += 1;
     }
@@ -3873,8 +4123,98 @@ fn canonicalize_oversized_hyll_value(user_value: &[u8]) -> &[u8] {
     user_value
 }
 
+fn string_write_condition_matches(
+    current_value: Option<&[u8]>,
+    condition: &StringWriteCondition,
+) -> Result<bool, RequestExecutionError> {
+    match condition.kind {
+        StringWriteConditionKind::Nx => Ok(current_value.is_none()),
+        StringWriteConditionKind::Xx => Ok(current_value.is_some()),
+        StringWriteConditionKind::IfEq => {
+            Ok(current_value == Some(condition.match_value.as_slice()))
+        }
+        StringWriteConditionKind::IfNe => {
+            Ok(current_value != Some(condition.match_value.as_slice()))
+        }
+        StringWriteConditionKind::IfDigestEq | StringWriteConditionKind::IfDigestNe => {
+            let Some(current_value) = current_value else {
+                return Ok(matches!(
+                    condition.kind,
+                    StringWriteConditionKind::IfDigestNe
+                ));
+            };
+            validate_digest_length(condition.match_value.as_slice())?;
+            let current_digest = string_digest_hex_bytes(current_value);
+            let digest_matches =
+                current_digest.eq_ignore_ascii_case(condition.match_value.as_slice());
+            if matches!(condition.kind, StringWriteConditionKind::IfDigestEq) {
+                Ok(digest_matches)
+            } else {
+                Ok(!digest_matches)
+            }
+        }
+    }
+}
+
+fn parse_delex_condition(
+    token: &[u8],
+    match_value: &[u8],
+) -> Result<StringWriteCondition, RequestExecutionError> {
+    let kind = if ascii_eq_ignore_case(token, b"IFEQ") {
+        StringWriteConditionKind::IfEq
+    } else if ascii_eq_ignore_case(token, b"IFNE") {
+        StringWriteConditionKind::IfNe
+    } else if ascii_eq_ignore_case(token, b"IFDEQ") {
+        StringWriteConditionKind::IfDigestEq
+    } else if ascii_eq_ignore_case(token, b"IFDNE") {
+        StringWriteConditionKind::IfDigestNe
+    } else {
+        return Err(RequestExecutionError::InvalidConditionalDeleteCondition);
+    };
+    Ok(StringWriteCondition {
+        kind,
+        match_value: match_value.to_vec(),
+    })
+}
+
+fn parse_msetex_numkeys(arg: &[u8]) -> Result<usize, RequestExecutionError> {
+    let Some(numkeys) = parse_i64_ascii(arg) else {
+        return Err(RequestExecutionError::InvalidMsetexNumkeysValue);
+    };
+    if !(1..=i64::from(i32::MAX)).contains(&numkeys) {
+        return Err(RequestExecutionError::InvalidMsetexNumkeysValue);
+    }
+    usize::try_from(numkeys).map_err(|_| RequestExecutionError::InvalidMsetexNumkeysValue)
+}
+
+fn validate_digest_length(digest: &[u8]) -> Result<(), RequestExecutionError> {
+    if digest.len() != 16 {
+        return Err(RequestExecutionError::DigestMustBeExactly16HexCharacters);
+    }
+    Ok(())
+}
+
+fn string_digest_hex_bytes(value: &[u8]) -> Vec<u8> {
+    format!("{:016x}", xxh3_64(value)).into_bytes()
+}
+
+fn expiration_metadata_from_unix_millis(unix_millis: u64) -> Option<ExpirationMetadata> {
+    let deadline = instant_from_unix_millis(unix_millis)?;
+    Some(ExpirationMetadata {
+        deadline,
+        unix_millis: TimestampMillis::new(unix_millis),
+    })
+}
+
 fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<NormalizedRange> {
     if len == 0 {
+        return None;
+    }
+
+    // Redis early-out: when both indices are negative and start > end in their
+    // original form, the range is definitionally empty regardless of string
+    // length (e.g. GETRANGE key -1 -2).
+    if start < 0 && end < 0 && start > end {
         return None;
     }
 
@@ -3893,7 +4233,7 @@ fn normalize_string_range(len: usize, start: i64, end: i64) -> Option<Normalized
         start_i = 0;
     }
     if end_i < 0 {
-        return None;
+        end_i = 0;
     }
 
     if start_i >= len_i {

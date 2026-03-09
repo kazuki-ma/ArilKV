@@ -1,8 +1,7 @@
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
-use garnet_common::ArgSlice;
 use garnet_common::RespParseError;
-use garnet_common::parse_resp_command_arg_slices;
+use garnet_common::parse_resp_command_arg_slices_dynamic;
 
 #[derive(Debug)]
 pub(crate) enum CommandLineParseError {
@@ -136,8 +135,8 @@ pub(crate) fn execute_resp_frame(
     processor: &RequestProcessor,
     frame: &[u8],
 ) -> Result<Vec<u8>, CommandHarnessError> {
-    let mut args = [ArgSlice::EMPTY; 64];
-    let meta = parse_resp_command_arg_slices(frame, &mut args)?;
+    let mut args = Vec::new();
+    let meta = parse_resp_command_arg_slices_dynamic(frame, &mut args, usize::MAX)?;
     if meta.bytes_consumed != frame.len() {
         return Err(CommandHarnessError::TrailingBytes);
     }

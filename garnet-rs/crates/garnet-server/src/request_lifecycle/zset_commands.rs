@@ -6,32 +6,103 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_paired_arity_after(
+        ensure_min_arity(
             args,
             4,
-            2,
             "ZADD",
-            "ZADD key score member [score member ...]",
+            "ZADD key [NX|XX] [GT|LT] [CH] [INCR] score member [score member ...]",
         )?;
+        let options = parse_zadd_options(args)?;
 
         let key = RedisKey::from(args[1]);
-        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
-        let mut inserted = 0i64;
-
-        let mut index = 2usize;
+        let mut score_member_pairs =
+            Vec::with_capacity((args.len() - options.score_start_index) / 2);
+        let mut index = options.score_start_index;
         while index < args.len() {
             let score =
                 parse_zset_score_value(args[index]).ok_or(RequestExecutionError::ValueNotFloat)?;
-            let member = args[index + 1].to_vec();
-            if zset.insert(member, score).is_none() {
-                inserted += 1;
-            }
+            score_member_pairs.push((score, args[index + 1].to_vec()));
             index += 2;
         }
 
-        self.save_zset_object(&key, &zset)?;
-        self.notify_keyspace_event(NOTIFY_ZSET, b"zadd", &key);
-        append_integer(response_out, inserted);
+        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
+        let mut added = 0i64;
+        let mut updated = 0i64;
+        let mut processed = 0i64;
+        let mut increment_result = None;
+
+        for (score_input, member) in score_member_pairs {
+            let existing_score = zset.get(&member).copied();
+            if options.nx && existing_score.is_some() {
+                continue;
+            }
+            if options.xx && existing_score.is_none() {
+                continue;
+            }
+
+            let current_score = existing_score.unwrap_or(0.0);
+            let next_score = if options.incr {
+                current_score + score_input
+            } else {
+                score_input
+            };
+            if next_score.is_nan() {
+                return Err(RequestExecutionError::ResultingScoreNotANumber);
+            }
+
+            if let Some(current_score) = existing_score {
+                if options.gt && next_score <= current_score {
+                    continue;
+                }
+                if options.lt && next_score >= current_score {
+                    continue;
+                }
+                processed += 1;
+                increment_result = Some(next_score);
+                if next_score != current_score {
+                    zset.insert(member, next_score);
+                    updated += 1;
+                }
+                continue;
+            }
+
+            processed += 1;
+            increment_result = Some(next_score);
+            zset.insert(member, next_score);
+            added += 1;
+        }
+
+        let changed = added + updated;
+        if changed > 0 {
+            self.save_zset_object(&key, &zset)?;
+            self.notify_keyspace_event(
+                NOTIFY_ZSET,
+                if options.incr { b"zincr" } else { b"zadd" },
+                &key,
+            );
+        }
+
+        if options.incr {
+            if processed == 0 {
+                if self.resp_protocol_version().is_resp3() {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
+                return Ok(());
+            }
+            let Some(score) = increment_result else {
+                return Err(RequestExecutionError::StorageFailure);
+            };
+            if self.resp_protocol_version().is_resp3() {
+                append_double(response_out, score);
+            } else {
+                append_bulk_string(response_out, score.to_string().as_bytes());
+            }
+            return Ok(());
+        }
+
+        append_integer(response_out, if options.ch { changed } else { added });
         Ok(())
     }
 
@@ -572,7 +643,7 @@ impl RequestProcessor {
             "ZMPOP",
             "ZMPOP numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 1)?;
+        let parsed_keys = parse_zmpop_numkeys_and_keys(args, 1)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
         self.handle_zmpop_like(
             &parsed_keys.keys,
@@ -594,7 +665,7 @@ impl RequestProcessor {
             "BZMPOP timeout numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
         parse_blocking_timeout_seconds(args, 1)?;
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 2)?;
+        let parsed_keys = parse_zmpop_numkeys_and_keys(args, 2)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
         self.handle_zmpop_like(
             &parsed_keys.keys,
@@ -695,14 +766,15 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
         let key = RedisKey::from(args[1]);
-        let increment = parse_f64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let increment =
+            parse_zset_score_value(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let member = args[3].to_vec();
 
         let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
         let current = zset.get(&member).copied().unwrap_or(0.0);
         let updated = current + increment;
-        if !updated.is_finite() {
-            return Err(RequestExecutionError::ValueNotFloat);
+        if updated.is_nan() {
+            return Err(RequestExecutionError::ResultingScoreNotANumber);
         }
         zset.insert(member, updated);
         self.save_zset_object(&key, &zset)?;
@@ -1105,16 +1177,25 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
         reverse: bool,
     ) -> Result<(), RequestExecutionError> {
-        require_exact_arity(
+        ensure_ranged_arity(
             args,
             3,
+            4,
             if reverse { "ZREVRANK" } else { "ZRANK" },
             if reverse {
-                "ZREVRANK key member"
+                "ZREVRANK key member [WITHSCORE]"
             } else {
-                "ZRANK key member"
+                "ZRANK key member [WITHSCORE]"
             },
         )?;
+        let with_score = if args.len() == 4 {
+            if !ascii_eq_ignore_case(args[3], b"WITHSCORE") {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            true
+        } else {
+            false
+        };
 
         let key = RedisKey::from(args[1]);
         let member = args[2];
@@ -1124,6 +1205,8 @@ impl RequestProcessor {
             None => {
                 if resp3 {
                     append_null(response_out);
+                } else if with_score {
+                    append_null_array(response_out);
                 } else {
                     append_null_bulk_string(response_out);
                 }
@@ -1137,6 +1220,8 @@ impl RequestProcessor {
         else {
             if resp3 {
                 append_null(response_out);
+            } else if with_score {
+                append_null_array(response_out);
             } else {
                 append_null_bulk_string(response_out);
             }
@@ -1147,6 +1232,17 @@ impl RequestProcessor {
         } else {
             index
         };
+        if with_score {
+            append_array_length(response_out, 2);
+            append_integer(response_out, rank as i64);
+            let score = entries[index].1;
+            if resp3 {
+                append_double(response_out, score);
+            } else {
+                append_bulk_string(response_out, score.to_string().as_bytes());
+            }
+            return Ok(());
+        }
         append_integer(response_out, rank as i64);
         Ok(())
     }
@@ -1169,12 +1265,18 @@ impl RequestProcessor {
             },
         )?;
         let key = RedisKey::from(args[1]);
-        let count = if args.len() == 3 {
-            parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?
+        let count: i64 = if args.len() == 3 {
+            parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?
         } else {
             1
         };
+        if count < 0 {
+            return Err(RequestExecutionError::ValueOutOfRangePositive);
+        }
+        // Type-check the key even when count is 0 (Redis returns WRONGTYPE
+        // for wrong-typed keys regardless of count).
         if count == 0 {
+            let _ = self.load_zset_object(&key)?;
             append_array_length(response_out, 0);
             return Ok(());
         }
@@ -1445,12 +1547,16 @@ fn parse_zrange_by_score_options(
             if options.limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset =
-                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let raw_offset =
+                parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             let count =
                 parse_u64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             options.limit = Some(ZsetLimit {
-                offset: usize::try_from(offset).unwrap_or(usize::MAX),
+                offset: if raw_offset < 0 {
+                    usize::MAX
+                } else {
+                    usize::try_from(raw_offset).unwrap_or(usize::MAX)
+                },
                 count: usize::try_from(count).unwrap_or(usize::MAX),
             });
             index += 3;
@@ -1533,9 +1639,67 @@ fn parse_zscore_bound(input: &[u8]) -> Option<ZscoreBound> {
         return Some(ZscoreBound::PosInf);
     }
     if let Some(exclusive) = input.strip_prefix(b"(") {
+        if ascii_eq_ignore_case(exclusive, b"-INF") {
+            return Some(ZscoreBound::Exclusive(f64::NEG_INFINITY));
+        }
+        if ascii_eq_ignore_case(exclusive, b"+INF") || ascii_eq_ignore_case(exclusive, b"INF") {
+            return Some(ZscoreBound::Exclusive(f64::INFINITY));
+        }
         return parse_f64_ascii(exclusive).map(ZscoreBound::Exclusive);
     }
     parse_f64_ascii(input).map(ZscoreBound::Inclusive)
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ZaddOptions {
+    nx: bool,
+    xx: bool,
+    gt: bool,
+    lt: bool,
+    ch: bool,
+    incr: bool,
+    score_start_index: usize,
+}
+
+fn parse_zadd_options(args: &[&[u8]]) -> Result<ZaddOptions, RequestExecutionError> {
+    let mut options = ZaddOptions::default();
+    let mut index = 2usize;
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"NX") {
+            options.nx = true;
+        } else if ascii_eq_ignore_case(token, b"XX") {
+            options.xx = true;
+        } else if ascii_eq_ignore_case(token, b"GT") {
+            options.gt = true;
+        } else if ascii_eq_ignore_case(token, b"LT") {
+            options.lt = true;
+        } else if ascii_eq_ignore_case(token, b"CH") {
+            options.ch = true;
+        } else if ascii_eq_ignore_case(token, b"INCR") {
+            options.incr = true;
+        } else {
+            break;
+        }
+        index += 1;
+    }
+
+    let score_arguments = args.len() - index;
+    if score_arguments == 0 || score_arguments % 2 != 0 {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    if options.nx && options.xx {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    if (options.gt && options.nx) || (options.lt && options.nx) || (options.gt && options.lt) {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    if options.incr && score_arguments != 2 {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+
+    options.score_start_index = index;
+    Ok(options)
 }
 
 fn parse_zset_score_value(input: &[u8]) -> Option<f64> {
@@ -1596,12 +1760,16 @@ fn parse_zrangebylex_limit(
     if !ascii_eq_ignore_case(option, b"LIMIT") {
         return Err(RequestExecutionError::SyntaxError);
     }
-    let offset =
-        parse_u64_ascii(args[start_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+    let raw_offset =
+        parse_i64_ascii(args[start_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
     let count =
         parse_u64_ascii(args[start_index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
     Ok(Some(ZsetLimit {
-        offset: usize::try_from(offset).unwrap_or(usize::MAX),
+        offset: if raw_offset < 0 {
+            usize::MAX
+        } else {
+            usize::try_from(raw_offset).unwrap_or(usize::MAX)
+        },
         count: usize::try_from(count).unwrap_or(usize::MAX),
     }))
 }
@@ -1619,6 +1787,36 @@ fn parse_zset_numkeys_and_keys(
         return Err(RequestExecutionError::SyntaxError);
     }
     let numkeys = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    let key_start = numkeys_index + 1;
+    let key_end = key_start
+        .checked_add(numkeys)
+        .ok_or(RequestExecutionError::ValueOutOfRange)?;
+    if key_end > args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let keys = args[key_start..key_end]
+        .iter()
+        .map(|key| key.to_vec())
+        .collect();
+    Ok(ParsedZsetKeys {
+        keys,
+        option_start: key_end,
+    })
+}
+
+fn parse_zmpop_numkeys_and_keys(
+    args: &[&[u8]],
+    numkeys_index: usize,
+) -> Result<ParsedZsetKeys, RequestExecutionError> {
+    if numkeys_index >= args.len() {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    let parsed = parse_i64_ascii(args[numkeys_index])
+        .ok_or(RequestExecutionError::NumkeysMustBeGreaterThanZero)?;
+    if parsed <= 0 {
+        return Err(RequestExecutionError::NumkeysMustBeGreaterThanZero);
+    }
+    let numkeys = usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
     let key_start = numkeys_index + 1;
     let key_end = key_start
         .checked_add(numkeys)
@@ -1682,8 +1880,8 @@ fn parse_zset_combine_options(
             for (weight_index, weight_arg) in
                 args[index + 1..index + 1 + num_keys].iter().enumerate()
             {
-                let parsed =
-                    parse_f64_ascii(weight_arg).ok_or(RequestExecutionError::ValueNotFloat)?;
+                let parsed = parse_zset_score_value(weight_arg)
+                    .ok_or(RequestExecutionError::ValueNotFloat)?;
                 weights[weight_index] = parsed;
             }
             seen_weights = true;
@@ -1725,12 +1923,22 @@ fn parse_zset_combine_options(
     })
 }
 
+/// Aggregate two zset scores.  Redis treats NaN results (e.g. inf + -inf)
+/// as 0.0, so we sanitize NaN to 0.0 here to match that behavior.
 fn aggregate_zset_scores(current: f64, incoming: f64, mode: ZsetAggregateMode) -> f64 {
-    match mode {
+    let result = match mode {
         ZsetAggregateMode::Sum => current + incoming,
         ZsetAggregateMode::Min => current.min(incoming),
         ZsetAggregateMode::Max => current.max(incoming),
-    }
+    };
+    if result.is_nan() { 0.0 } else { result }
+}
+
+/// Apply a weight to a score, sanitizing NaN (e.g. 0.0 * inf) to 0.0 to
+/// match Redis behavior.
+fn apply_weight(score: f64, weight: f64) -> f64 {
+    let result = score * weight;
+    if result.is_nan() { 0.0 } else { result }
 }
 
 fn compute_zdiff(
@@ -1770,7 +1978,7 @@ fn compute_zinter(
     };
     let mut inter: BTreeMap<Vec<u8>, f64> = first_set
         .into_iter()
-        .map(|(member, score)| (member, score * weights[0]))
+        .map(|(member, score)| (member, apply_weight(score, weights[0])))
         .collect();
 
     for (index, key) in remaining_keys.iter().enumerate() {
@@ -1782,7 +1990,7 @@ fn compute_zinter(
             let Some(other_score) = other.get(member) else {
                 return false;
             };
-            let weighted_other = *other_score * weight;
+            let weighted_other = apply_weight(*other_score, weight);
             *score = aggregate_zset_scores(*score, weighted_other, aggregate_mode);
             true
         });
@@ -1806,7 +2014,7 @@ fn compute_zunion(
         };
         let weight = weights[index];
         for (member, score) in zset {
-            let weighted = score * weight;
+            let weighted = apply_weight(score, weight);
             match union.get_mut(&member) {
                 Some(existing) => {
                     *existing = aggregate_zset_scores(*existing, weighted, aggregate_mode);
@@ -1957,12 +2165,12 @@ fn parse_zmpop_direction_and_count(
         if !ascii_eq_ignore_case(count_token, b"COUNT") {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let parsed = parse_u64_ascii(args[option_start + 2])
-            .ok_or(RequestExecutionError::ValueNotInteger)?;
-        if parsed == 0 {
-            return Err(RequestExecutionError::ValueOutOfRange);
+        let parsed = parse_i64_ascii(args[option_start + 2])
+            .ok_or(RequestExecutionError::CountMustBeGreaterThanZero)?;
+        if parsed <= 0 {
+            return Err(RequestExecutionError::CountMustBeGreaterThanZero);
         }
-        usize::try_from(parsed).unwrap_or(usize::MAX)
+        usize::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRange)?
     };
     Ok(ParsedZmpopOptions { pop_max, count })
 }
@@ -2166,7 +2374,8 @@ fn store_zset_result(
     result_zset: &BTreeMap<Vec<u8>, f64>,
 ) -> Result<(), RequestExecutionError> {
     processor.expire_key_if_needed(destination)?;
-    let destination_had_string = processor.key_exists(destination)?;
+    let (destination_had_string, destination_object_type) =
+        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_object_overwrite(processor, destination)?
     } else {
@@ -2181,7 +2390,14 @@ fn store_zset_result(
         return Ok(());
     }
 
-    processor.save_zset_object(destination, result_zset)
+    processor.save_zset_object(destination, result_zset)?;
+    processor.notify_setkey_overwrite_events(
+        destination,
+        destination_had_string,
+        destination_object_type,
+        Some(ObjectTypeTag::Zset),
+    );
+    Ok(())
 }
 
 fn delete_string_value_for_object_overwrite(

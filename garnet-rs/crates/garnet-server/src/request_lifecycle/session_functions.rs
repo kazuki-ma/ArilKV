@@ -39,7 +39,7 @@ impl ISessionFunctions for KvSessionFunctions {
         let decoded = decode_stored_value(value);
         if let Some(expiration) = decoded.expiration_unix_millis
             && let Some(now) = current_unix_time_millis()
-            && now >= expiration
+            && now > expiration
         {
             return false;
         }
@@ -59,7 +59,7 @@ impl ISessionFunctions for KvSessionFunctions {
         let decoded = decode_stored_value(value);
         if let Some(expiration) = decoded.expiration_unix_millis
             && let Some(now) = current_unix_time_millis()
-            && now >= expiration
+            && now > expiration
         {
             return false;
         }

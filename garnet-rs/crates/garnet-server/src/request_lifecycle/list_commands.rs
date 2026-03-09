@@ -1,3 +1,6 @@
+use super::object_store::list_listpack_compatible;
+use super::object_store::listpack_growth_would_force_quicklist;
+use super::object_store::listpack_shrink_should_keep_quicklist;
 use super::*;
 
 impl RequestProcessor {
@@ -78,6 +81,7 @@ impl RequestProcessor {
             None
         };
         let resp3 = self.resp_protocol_version().is_resp3();
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
 
         let mut list = match self.load_list_object(&key)? {
             Some(list) => list,
@@ -92,6 +96,8 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
+        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+            || !list_listpack_compatible(&list, configured_size);
         if list.is_empty() {
             let _ = self.object_delete(&key)?;
             if resp3 {
@@ -128,6 +134,12 @@ impl RequestProcessor {
                 }
             } else {
                 self.save_list_object(&key, &list)?;
+                self.maybe_preserve_quicklist_after_shrink(
+                    &key,
+                    previous_was_quicklist,
+                    configured_size,
+                    &list,
+                );
             }
             append_array_length(response_out, popped.len());
             for value in &popped {
@@ -151,6 +163,12 @@ impl RequestProcessor {
             self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
         } else {
             self.save_list_object(&key, &list)?;
+            self.maybe_preserve_quicklist_after_shrink(
+                &key,
+                previous_was_quicklist,
+                configured_size,
+                &list,
+            );
         }
         append_bulk_string(response_out, &value);
         Ok(())
@@ -354,11 +372,13 @@ impl RequestProcessor {
         let Some(index) = normalize_list_index(list.len(), index) else {
             return Err(RequestExecutionError::IndexOutOfRange);
         };
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        let force_quicklist_after_replace =
+            listpack_growth_would_force_quicklist(&list, configured_size, &[value.as_slice()]);
         list[index] = value;
         self.save_list_object(&key, &list)?;
         self.notify_keyspace_event(NOTIFY_LIST, b"lset", &key);
-        let max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        if max_listpack_size > 0 && list.len() >= max_listpack_size as usize {
+        if force_quicklist_after_replace {
             self.force_list_quicklist_encoding(&key);
         }
         append_simple_string(response_out, b"OK");
@@ -403,12 +423,21 @@ impl RequestProcessor {
         }
 
         let trimmed = list[normalized_start as usize..=normalized_stop as usize].to_vec();
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+            || !list_listpack_compatible(&list, configured_size);
         self.notify_keyspace_event(NOTIFY_LIST, b"ltrim", &key);
         if trimmed.is_empty() {
             let _ = self.object_delete(&key)?;
             self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
         } else {
             self.save_list_object(&key, &trimmed)?;
+            self.maybe_preserve_quicklist_after_shrink(
+                &key,
+                previous_was_quicklist,
+                configured_size,
+                &trimmed,
+            );
         }
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -467,6 +496,9 @@ impl RequestProcessor {
             append_integer(response_out, 0);
             return Ok(());
         };
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+            || !list_listpack_compatible(&list, configured_size);
 
         let mut removed = 0i64;
         let limit = if count == 0 {
@@ -503,6 +535,12 @@ impl RequestProcessor {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             } else {
                 self.save_list_object(&key, &list)?;
+                self.maybe_preserve_quicklist_after_shrink(
+                    &key,
+                    previous_was_quicklist,
+                    configured_size,
+                    &list,
+                );
             }
         }
         append_integer(response_out, removed);
@@ -727,6 +765,9 @@ impl RequestProcessor {
             }
             return Ok(());
         };
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        let source_was_quicklist = self.list_quicklist_encoding_is_forced(source)
+            || !list_listpack_compatible(&source_list, configured_size);
         if source_list.is_empty() {
             let _ = self.object_delete(source)?;
             if resp3 {
@@ -755,6 +796,12 @@ impl RequestProcessor {
             let _ = self.object_delete(source)?;
         } else {
             self.save_list_object(source, &source_list)?;
+            self.maybe_preserve_quicklist_after_shrink(
+                source,
+                source_was_quicklist,
+                configured_size,
+                &source_list,
+            );
         }
         self.save_list_object(destination, &destination_list)?;
         append_bulk_string(response_out, &value);
@@ -813,6 +860,9 @@ impl RequestProcessor {
         let Some(mut list) = self.load_list_object(key)? else {
             return Ok(None);
         };
+        let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
+        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(key)
+            || !list_listpack_compatible(&list, configured_size);
         if list.is_empty() {
             let _ = self.object_delete(key)?;
             return Ok(None);
@@ -835,8 +885,32 @@ impl RequestProcessor {
             let _ = self.object_delete(key)?;
         } else {
             self.save_list_object(key, &list)?;
+            self.maybe_preserve_quicklist_after_shrink(
+                key,
+                previous_was_quicklist,
+                configured_size,
+                &list,
+            );
         }
         Ok(Some(popped))
+    }
+
+    fn maybe_preserve_quicklist_after_shrink(
+        &self,
+        key: &[u8],
+        previous_was_quicklist: bool,
+        configured_size: i64,
+        list: &[Vec<u8>],
+    ) {
+        if !previous_was_quicklist {
+            return;
+        }
+        if !list_listpack_compatible(list, configured_size) {
+            return;
+        }
+        if listpack_shrink_should_keep_quicklist(list, configured_size) {
+            self.force_list_quicklist_encoding(key);
+        }
     }
 }
 

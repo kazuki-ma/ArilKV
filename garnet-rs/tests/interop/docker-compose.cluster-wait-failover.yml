@@ -1,0 +1,108 @@
+services:
+  redis-primary:
+    image: redis:7.2-alpine
+    profiles: ["repl"]
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - ""
+    ports:
+      - "7391:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "PING"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  redis-replica:
+    image: redis:7.2-alpine
+    profiles: ["repl"]
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+      - --save
+      - ""
+    ports:
+      - "7392:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "-p", "6379", "PING"]
+      interval: 1s
+      timeout: 1s
+      retries: 30
+
+  redis-cluster-1:
+    image: redis:7.2-alpine
+    profiles: ["cluster"]
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - redis-cluster-1
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+    ports:
+      - "7393:6379"
+
+  redis-cluster-2:
+    image: redis:7.2-alpine
+    profiles: ["cluster"]
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - redis-cluster-2
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+    ports:
+      - "7394:6379"
+
+  redis-cluster-3:
+    image: redis:7.2-alpine
+    profiles: ["cluster"]
+    command:
+      - redis-server
+      - --port
+      - "6379"
+      - --cluster-enabled
+      - "yes"
+      - --cluster-config-file
+      - nodes.conf
+      - --cluster-node-timeout
+      - "5000"
+      - --cluster-announce-ip
+      - redis-cluster-3
+      - --appendonly
+      - "no"
+      - --save
+      - ""
+    ports:
+      - "7395:6379"

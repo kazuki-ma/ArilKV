@@ -1,5 +1,5 @@
 command,declaration_status,redis_present,garnet_present,implementation_status,comment
-ACL,SUPPORTED_DECLARED,1,1,FULL,Full subcommand coverage: HELP WHOAMI USERS LIST SETUSER CAT DELUSER GENPASS LOG SAVE LOAD DRYRUN GETUSER with 21-category catalog.
+ACL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal ACL subcommand surface only.
 APPEND,SUPPORTED_DECLARED,1,1,FULL,
 ASKING,SUPPORTED_DECLARED,1,1,FULL,
 AUTH,SUPPORTED_DECLARED,1,1,FULL,
@@ -19,7 +19,7 @@ BZMPOP,SUPPORTED_DECLARED,1,1,FULL,
 BZPOPMAX,SUPPORTED_DECLARED,1,1,FULL,
 BZPOPMIN,SUPPORTED_DECLARED,1,1,FULL,
 CLIENT,SUPPORTED_DECLARED,1,1,FULL,Full subcommand coverage: GETNAME/SETNAME/ID/NO-EVICT/NO-TOUCH/SETINFO/INFO/LIST/KILL/HELP with per-connection state.
-CLUSTER,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Core subcommands implemented (HELP INFO KEYSLOT MYID NODES SLOTS SHARDS RESET SAVECONFIG COUNTKEYSINSLOT GETKEYSINSLOT); cluster-management subcommands (SETSLOT ADDSLOTS etc.) disabled.
+CLUSTER,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled.
 COMMAND,SUPPORTED_DECLARED,1,1,FULL,
 CONFIG,SUPPORTED_DECLARED,1,1,FULL,
 COPY,SUPPORTED_DECLARED,1,1,FULL,
@@ -28,8 +28,8 @@ DEBUG,SUPPORTED_DECLARED,1,1,FULL,
 DECR,SUPPORTED_DECLARED,1,1,FULL,
 DECRBY,SUPPORTED_DECLARED,1,1,FULL,
 DEL,SUPPORTED_DECLARED,1,1,FULL,
-DELEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
-DIGEST,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Compatibility digest surface is limited to DEBUG DIGEST-VALUE.
+DELEX,SUPPORTED_DECLARED,1,1,DISABLED,Declared extension surface; runtime behavior is not implemented.
+DIGEST,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Compatibility digest surface is limited to DEBUG DIGEST-VALUE.
 DISCARD,SUPPORTED_DECLARED,1,1,FULL,
 DUMP,SUPPORTED_DECLARED,1,1,FULL,
 ECHO,SUPPORTED_DECLARED,1,1,FULL,
@@ -67,13 +67,13 @@ GETSET,SUPPORTED_DECLARED,1,1,FULL,
 HDEL,SUPPORTED_DECLARED,1,1,FULL,
 HELLO,SUPPORTED_DECLARED,1,1,FULL,
 HEXISTS,SUPPORTED_DECLARED,1,1,FULL,
-HEXPIRE,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
-HEXPIREAT,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
-HEXPIRETIME,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HEXPIRE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
+HEXPIREAT,SUPPORTED_DECLARED,1,1,DISABLED,Declared for compatibility matrix only.
+HEXPIRETIME,SUPPORTED_DECLARED,1,1,DISABLED,Declared for compatibility matrix only.
 HGET,SUPPORTED_DECLARED,1,1,FULL,
 HGETALL,SUPPORTED_DECLARED,1,1,FULL,
-HGETDEL,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
-HGETEX,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
+HGETDEL,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
+HGETEX,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
 HINCRBY,SUPPORTED_DECLARED,1,1,FULL,
 HINCRBYFLOAT,SUPPORTED_DECLARED,1,1,FULL,
 HKEYS,SUPPORTED_DECLARED,1,1,FULL,
@@ -81,18 +81,18 @@ HLEN,SUPPORTED_DECLARED,1,1,FULL,
 HMGET,SUPPORTED_DECLARED,1,1,FULL,
 HMSET,SUPPORTED_DECLARED,1,1,FULL,
 HOTKEYS,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
-HPERSIST,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
-HPEXPIRE,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
-HPEXPIREAT,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
-HPEXPIRETIME,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
-HPTTL,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HPERSIST,SUPPORTED_DECLARED,1,1,DISABLED,Declared for compatibility matrix only.
+HPEXPIRE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
+HPEXPIREAT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Hash-field expiration subset implemented; full command-family parity is not complete.
+HPEXPIRETIME,SUPPORTED_DECLARED,1,1,DISABLED,Declared for compatibility matrix only.
+HPTTL,SUPPORTED_DECLARED,1,1,DISABLED,Declared for compatibility matrix only.
 HRANDFIELD,SUPPORTED_DECLARED,1,1,FULL,
 HSCAN,SUPPORTED_DECLARED,1,1,FULL,
 HSET,SUPPORTED_DECLARED,1,1,FULL,
-HSETEX,NOT_IMPLEMENTED,1,0,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
+HSETEX,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Hash-field expiration extension surface implemented with partial parity.
 HSETNX,SUPPORTED_DECLARED,1,1,FULL,
 HSTRLEN,SUPPORTED_DECLARED,1,1,FULL,
-HTTL,NOT_IMPLEMENTED,1,0,DISABLED,Declared for compatibility matrix only.
+HTTL,SUPPORTED_DECLARED,1,1,DISABLED,Declared for compatibility matrix only.
 HVALS,SUPPORTED_DECLARED,1,1,FULL,
 INCR,SUPPORTED_DECLARED,1,1,FULL,
 INCRBY,SUPPORTED_DECLARED,1,1,FULL,
@@ -119,11 +119,11 @@ LTRIM,SUPPORTED_DECLARED,1,1,FULL,
 MEMORY,SUPPORTED_DECLARED,1,1,FULL,
 MGET,SUPPORTED_DECLARED,1,1,FULL,
 MIGRATE,SUPPORTED_DECLARED,1,1,DISABLED,
-MODULE,SUPPORTED_DECLARED,1,1,FULL,All subcommands handled: LIST LOAD LOADEX UNLOAD HELP. LOAD/LOADEX return proper error (not supported).
+MODULE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal admin and introspection compatibility surface.
 MONITOR,SUPPORTED_DECLARED,1,1,FULL,Real command monitoring with broadcast streaming; connection-level subscribe/unsubscribe lifecycle with RESET integration and sensitive-token redaction.
 MOVE,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,single-db mode only; MOVE to non-zero DB is unsupported.
 MSET,SUPPORTED_DECLARED,1,1,FULL,
-MSETEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
+MSETEX,SUPPORTED_DECLARED,1,1,DISABLED,Declared extension surface; runtime behavior is not implemented.
 MSETNX,SUPPORTED_DECLARED,1,1,FULL,
 MULTI,SUPPORTED_DECLARED,1,1,FULL,
 OBJECT,SUPPORTED_DECLARED,1,1,FULL,
@@ -213,13 +213,13 @@ WAIT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full
 WAITAOF,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full replication and durability semantics are not implemented.
 WATCH,SUPPORTED_DECLARED,1,1,FULL,
 XACK,SUPPORTED_DECLARED,1,1,FULL,
-XACKDEL,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
+XACKDEL,SUPPORTED_DECLARED,1,1,FULL,
 XADD,SUPPORTED_DECLARED,1,1,FULL,
 XAUTOCLAIM,SUPPORTED_DECLARED,1,1,FULL,
-XCFGSET,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
+XCFGSET,SUPPORTED_DECLARED,1,1,DISABLED,Declared extension surface; runtime behavior is not implemented.
 XCLAIM,SUPPORTED_DECLARED,1,1,FULL,
 XDEL,SUPPORTED_DECLARED,1,1,FULL,
-XDELEX,NOT_IMPLEMENTED,1,0,DISABLED,Declared extension surface; runtime behavior is not implemented.
+XDELEX,SUPPORTED_DECLARED,1,1,FULL,
 XGROUP,SUPPORTED_DECLARED,1,1,FULL,
 XINFO,SUPPORTED_DECLARED,1,1,FULL,
 XLEN,SUPPORTED_DECLARED,1,1,FULL,

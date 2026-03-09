@@ -1,7 +1,8 @@
 use super::*;
 use crate::CommandId;
 use crate::command_spec::command_is_mutating;
-use crate::command_spec::eval_script_has_no_writes_flag;
+use crate::command_spec::command_is_write_pause_affected;
+use crate::command_spec::eval_script_shebang_flags;
 use crate::dispatch_command_name;
 use mlua::Error as LuaError;
 use mlua::Function as LuaFunction;
@@ -38,6 +39,7 @@ const SCRIPT_DEBUG_USAGE: &str = "SCRIPT DEBUG YES|SYNC|NO";
 const SCRIPT_TIMEOUT_ERROR_TEXT: &str = "ERR script execution timed out";
 const SCRIPT_FUNCTION_LOAD_TIMEOUT_ERROR_TEXT: &str = "ERR FUNCTION LOAD timeout";
 const SCRIPT_KILLED_ERROR_TEXT: &str = "ERR script killed by user";
+const SCRIPT_INTERNAL_TRACKED_ERROR_KEY: &[u8] = b"\0garnet_tracked_error";
 const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
 /// Maximum number of results that `unpack()` is allowed to push onto the Lua
 /// stack. Matches the C-level `LUAI_MAXCSTACK` constant (8 000) used by the
@@ -112,6 +114,12 @@ const FUNCTION_DUMP_MAGIC: &[u8; 4] = b"GFD1";
 enum ScriptMutability {
     ReadWrite,
     ReadOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StrictLuaEnvironmentMode {
+    ScriptRuntime,
+    FunctionLoad,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -536,6 +544,7 @@ impl RequestProcessor {
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadWrite,
+            "eval",
             response_out,
         );
         Ok(())
@@ -561,6 +570,7 @@ impl RequestProcessor {
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadOnly,
+            "eval_ro",
             response_out,
         );
         Ok(())
@@ -586,6 +596,7 @@ impl RequestProcessor {
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadWrite,
+            "evalsha",
             response_out,
         );
         Ok(())
@@ -611,6 +622,7 @@ impl RequestProcessor {
             &args[key_start..key_end],
             &args[key_end..],
             ScriptMutability::ReadOnly,
+            "evalsha_ro",
             response_out,
         );
         Ok(())
@@ -1184,7 +1196,11 @@ impl RequestProcessor {
             redis_table.set("REDIS_VERSION", SCRIPT_REDIS_VERSION_TEXT)?;
             redis_table.set("REDIS_VERSION_NUM", SCRIPT_REDIS_VERSION_NUM)?;
             install_readonly_redis_table_metatable(&lua, &redis_table)?;
-            let load_env = build_strict_lua_environment(&lua, &redis_table)?;
+            let load_env = build_strict_lua_environment(
+                &lua,
+                &redis_table,
+                StrictLuaEnvironmentMode::FunctionLoad,
+            )?;
             lua.load(strip_lua_shebang(library_source))
                 .set_name("@user_script")
                 .set_environment(load_env)
@@ -1334,25 +1350,49 @@ impl RequestProcessor {
         keys: &[&[u8]],
         argv: &[&[u8]],
         mutability: ScriptMutability,
+        command_name: &str,
         response_out: &mut Vec<u8>,
     ) {
         // Compute the SHA1 for this script up front, used both for caching
         // and for the `script: SHA` suffix in error messages.
         let script_sha = script_sha1_hex(script);
 
+        let script_flags = match eval_script_shebang_flags(script) {
+            Ok(flags) => flags,
+            Err(error) => {
+                let message = format!("ERR {}", error.client_message());
+                append_recorded_command_failure(
+                    self,
+                    response_out,
+                    command_name.as_bytes(),
+                    message.as_bytes(),
+                );
+                return;
+            }
+        };
+
         // Strip the shebang header before loading into Lua.  The shebang
         // carries metadata (engine, flags) but is not valid Lua syntax.
-        let lua_source = strip_lua_shebang(script);
+        let lua_source = &script[script_flags.shebang_body_offset..];
 
         // Scripts declaring `flags=no-writes` in their shebang are read-only
         // even when invoked via EVAL (not only EVAL_RO).
-        let mutability = if mutability == ScriptMutability::ReadWrite
-            && eval_script_has_no_writes_flag(script)
-        {
+        let mutability = if mutability == ScriptMutability::ReadWrite && script_flags.no_writes {
             ScriptMutability::ReadOnly
         } else {
             mutability
         };
+        let script_allow_oom = script_flags.allow_oom || script_flags.no_writes;
+
+        if script_flags.has_shebang && !script_allow_oom && self.maxmemory_limit_bytes() > 0 {
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                b"OOM command not allowed when used memory > 'maxmemory'.",
+            );
+            return;
+        }
 
         let _running_script_guard =
             match self.enter_running_script(RunningScriptKind::Script, "", "eval".to_string()) {
@@ -1371,7 +1411,12 @@ impl RequestProcessor {
                 "ERR Error running script: {}",
                 sanitize_error_text(&error.to_string())
             );
-            append_error(response_out, message.as_bytes());
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                message.as_bytes(),
+            );
             return;
         }
         if let Err(error) = self.configure_lua_runtime_limits(&lua, Some(RunningScriptKind::Script))
@@ -1380,7 +1425,12 @@ impl RequestProcessor {
                 "ERR Error running script: {}",
                 sanitize_error_text(&error.to_string())
             );
-            append_error(response_out, message.as_bytes());
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                message.as_bytes(),
+            );
             return;
         }
         if let Err(error) = install_basic_type_metatable_protection(&lua) {
@@ -1388,16 +1438,33 @@ impl RequestProcessor {
                 "ERR Error running script: {}",
                 sanitize_error_text(&error.to_string())
             );
-            append_error(response_out, message.as_bytes());
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                message.as_bytes(),
+            );
             return;
         }
         let run_result = lua.scope(|scope| {
             let redis_table = lua.create_table()?;
             let call_fn = scope.create_function(move |lua, values: MultiValue| {
-                self.execute_lua_redis_call(lua, values, mutability, false, LuaCallMode::Call)
+                self.execute_lua_redis_call(
+                    lua,
+                    values,
+                    mutability,
+                    script_allow_oom,
+                    LuaCallMode::Call,
+                )
             })?;
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
-                self.execute_lua_redis_call(lua, values, mutability, false, LuaCallMode::PCall)
+                self.execute_lua_redis_call(
+                    lua,
+                    values,
+                    mutability,
+                    script_allow_oom,
+                    LuaCallMode::PCall,
+                )
             })?;
             let sha1hex_fn = scope.create_function(|_, args: MultiValue| {
                 if args.len() != 1 {
@@ -1405,7 +1472,12 @@ impl RequestProcessor {
                         "wrong number of arguments".to_string(),
                     ));
                 }
-                let value = match args.into_iter().next().unwrap() {
+                let Some(value) = args.into_iter().next() else {
+                    return Err(LuaError::RuntimeError(
+                        "wrong number of arguments".to_string(),
+                    ));
+                };
+                let value = match value {
                     LuaValue::String(s) => s,
                     other => {
                         let s = match other {
@@ -1447,7 +1519,11 @@ impl RequestProcessor {
             redis_table.set("LOG_NOTICE", 2)?;
             redis_table.set("LOG_WARNING", 3)?;
             install_readonly_redis_table_metatable(&lua, &redis_table)?;
-            let env = build_strict_lua_environment(&lua, &redis_table)?;
+            let env = build_strict_lua_environment(
+                &lua,
+                &redis_table,
+                StrictLuaEnvironmentMode::ScriptRuntime,
+            )?;
 
             let keys_table = lua.create_table_with_capacity(keys.len(), 0)?;
             for (index, key) in keys.iter().enumerate() {
@@ -1468,22 +1544,61 @@ impl RequestProcessor {
         match run_result {
             Ok(value) => {
                 let resp3 = self.resp_protocol_version().is_resp3();
+                match returned_lua_error_reply_details(&lua, &value) {
+                    Ok(Some(error_reply)) => {
+                        self.record_command_failure(command_name.as_bytes());
+                        if !error_reply.already_accounted {
+                            self.record_error_reply(error_reply_name(
+                                error_reply.payload.as_slice(),
+                            ));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error_message) => {
+                        let message = format!("ERR Error running script: {error_message}");
+                        append_recorded_command_failure(
+                            self,
+                            response_out,
+                            command_name.as_bytes(),
+                            message.as_bytes(),
+                        );
+                        return;
+                    }
+                }
                 if let Err(error_message) = append_lua_value_as_resp(value, response_out, resp3) {
                     let message = format!(
                         "ERR Error running script: {}",
                         sanitize_error_text(&error_message)
                     );
-                    append_error(response_out, message.as_bytes());
+                    append_recorded_command_failure(
+                        self,
+                        response_out,
+                        command_name.as_bytes(),
+                        message.as_bytes(),
+                    );
                 }
             }
             Err(error) => {
                 if lua_error_is_timeout(&error) {
                     self.record_script_runtime_timeout();
-                    append_error(response_out, SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes());
+                    append_recorded_command_failure(
+                        self,
+                        response_out,
+                        command_name.as_bytes(),
+                        SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes(),
+                    );
                     return;
                 }
                 let normalized = normalize_lua_runtime_error_text(&error);
+                self.record_command_failure(command_name.as_bytes());
+                if normalized.starts_with("OOM ") {
+                    append_error(response_out, normalized.as_bytes());
+                    return;
+                }
                 let message = format_script_error_for_client(&normalized, "script", &script_sha);
+                if script_runtime_error_needs_top_level_errorstat(&normalized) {
+                    self.record_error_reply(error_reply_name(message.as_bytes()));
+                }
                 append_error(response_out, message.as_bytes());
             }
         }
@@ -1533,7 +1648,12 @@ impl RequestProcessor {
                 "ERR Error running function: {}",
                 sanitize_error_text(&error.to_string())
             );
-            append_error(response_out, message.as_bytes());
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                message.as_bytes(),
+            );
             return;
         }
         if let Err(error) = install_basic_type_metatable_protection(&lua) {
@@ -1541,7 +1661,12 @@ impl RequestProcessor {
                 "ERR Error running function: {}",
                 sanitize_error_text(&error.to_string())
             );
-            append_error(response_out, message.as_bytes());
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                message.as_bytes(),
+            );
             return;
         }
         if let Err(error) =
@@ -1551,7 +1676,12 @@ impl RequestProcessor {
                 "ERR Error running function: {}",
                 sanitize_error_text(&error.to_string())
             );
-            append_error(response_out, message.as_bytes());
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                message.as_bytes(),
+            );
             return;
         }
         let run_result = lua.scope(|scope| {
@@ -1570,7 +1700,12 @@ impl RequestProcessor {
                         "wrong number of arguments".to_string(),
                     ));
                 }
-                let value = match args.into_iter().next().unwrap() {
+                let Some(value) = args.into_iter().next() else {
+                    return Err(LuaError::RuntimeError(
+                        "wrong number of arguments".to_string(),
+                    ));
+                };
+                let value = match value {
                     LuaValue::String(s) => s,
                     other => {
                         let s = match other {
@@ -1629,13 +1764,21 @@ impl RequestProcessor {
             load_redis_table.set("REDIS_VERSION", SCRIPT_REDIS_VERSION_TEXT)?;
             load_redis_table.set("REDIS_VERSION_NUM", SCRIPT_REDIS_VERSION_NUM)?;
             install_readonly_redis_table_metatable(&lua, &load_redis_table)?;
-            let load_env = build_strict_lua_environment(&lua, &load_redis_table)?;
+            let load_env = build_strict_lua_environment(
+                &lua,
+                &load_redis_table,
+                StrictLuaEnvironmentMode::FunctionLoad,
+            )?;
 
             lua.load(strip_lua_shebang(library_source))
                 .set_name("@user_script")
                 .set_environment(load_env.clone())
                 .exec()?;
-            load_redis_table.set("register_function", runtime_only_register_fn)?;
+            set_readonly_table_backing_value(
+                &load_redis_table,
+                "register_function",
+                LuaValue::Function(runtime_only_register_fn),
+            )?;
 
             let runtime_redis_table = lua.create_table()?;
             let runtime_call_fn = scope.create_function(move |lua, values: MultiValue| {
@@ -1723,21 +1866,53 @@ impl RequestProcessor {
         match run_result {
             Ok(value) => {
                 let resp3 = self.resp_protocol_version().is_resp3();
+                match returned_lua_error_reply_details(&lua, &value) {
+                    Ok(Some(error_reply)) => {
+                        self.record_command_failure(command_name.as_bytes());
+                        if !error_reply.already_accounted {
+                            self.record_error_reply(error_reply_name(
+                                error_reply.payload.as_slice(),
+                            ));
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error_message) => {
+                        let message = format!("ERR Error running function: {error_message}");
+                        append_recorded_command_failure(
+                            self,
+                            response_out,
+                            command_name.as_bytes(),
+                            message.as_bytes(),
+                        );
+                        return;
+                    }
+                }
                 if let Err(error_message) = append_lua_value_as_resp(value, response_out, resp3) {
                     let message = format!(
                         "ERR Error running function: {}",
                         sanitize_error_text(&error_message)
                     );
-                    append_error(response_out, message.as_bytes());
+                    append_recorded_command_failure(
+                        self,
+                        response_out,
+                        command_name.as_bytes(),
+                        message.as_bytes(),
+                    );
                 }
             }
             Err(error) => {
                 if lua_error_is_timeout(&error) {
                     self.record_script_runtime_timeout();
-                    append_error(response_out, SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes());
+                    append_recorded_command_failure(
+                        self,
+                        response_out,
+                        command_name.as_bytes(),
+                        SCRIPT_TIMEOUT_ERROR_TEXT.as_bytes(),
+                    );
                     return;
                 }
                 let normalized_error = normalize_lua_runtime_error_text(&error);
+                self.record_command_failure(command_name.as_bytes());
                 if normalized_error.starts_with("OOM ") {
                     append_error(response_out, normalized_error.as_bytes());
                     return;
@@ -1747,6 +1922,9 @@ impl RequestProcessor {
                     "function",
                     &function_name_text,
                 );
+                if script_runtime_error_needs_top_level_errorstat(&normalized_error) {
+                    self.record_error_reply(error_reply_name(message.as_bytes()));
+                }
                 append_error(response_out, message.as_bytes());
             }
         }
@@ -1776,28 +1954,38 @@ impl RequestProcessor {
             .collect::<Vec<&[u8]>>();
 
         let command = dispatch_command_name(arg_refs[0]);
+        let subcommand = arg_refs.get(1).copied();
         if command == CommandId::Unknown {
+            self.record_error_reply(b"ERR");
             return lua_call_error_or_pcall_error(
                 lua,
                 call_mode,
                 "ERR Unknown Redis command called from script",
             );
         }
-        if !command_allowed_from_script(command) {
+        if !self.debug_disable_deny_scripts() && !command_allowed_from_script(command) {
+            self.record_command_rejection(arg_refs[0]);
+            self.record_error_reply(b"ERR");
             return lua_call_error_or_pcall_error(
                 lua,
                 call_mode,
                 "ERR This Redis command is not allowed from script",
             );
         }
-        if mutability == ScriptMutability::ReadOnly && command_is_mutating(command) {
+        if mutability == ScriptMutability::ReadOnly
+            && command_is_write_pause_affected(command, subcommand)
+        {
+            self.record_command_rejection(arg_refs[0]);
+            self.record_error_reply(b"ERR");
             return lua_call_error_or_pcall_error(
                 lua,
                 call_mode,
-                "ERR Write commands are not allowed from read-only scripts",
+                "ERR Write commands are not allowed from read-only scripts.",
             );
         }
         if !allow_oom && command_is_mutating(command) && self.maxmemory_limit_bytes() > 0 {
+            self.record_command_rejection(arg_refs[0]);
+            self.record_error_reply(b"OOM");
             return lua_call_error_or_pcall_error(
                 lua,
                 call_mode,
@@ -1811,6 +1999,7 @@ impl RequestProcessor {
             Ok(()) => {}
             Err(error) => {
                 self.record_command_failure(arg_refs[0]);
+                self.record_error_reply(error.info_error_name());
                 let message = request_error_message(error);
                 let rewritten = rewrite_script_error_message(&message);
                 return lua_call_error_or_pcall_error(lua, call_mode, &rewritten);
@@ -1826,6 +2015,7 @@ impl RequestProcessor {
         match frame {
             RespFrame::Error(message) => {
                 self.record_command_failure(arg_refs[0]);
+                self.record_error_reply(error_reply_name(message.as_bytes()));
                 let rewritten = rewrite_script_error_message(&message);
                 lua_call_error_or_pcall_error(lua, call_mode, &rewritten)
             }
@@ -2089,7 +2279,7 @@ fn call_function_with_table_error_handler(
 /// `"ERR Error running <kind>: ..."` to match Redis convention.
 ///
 /// When `funcname` is provided (the script SHA or function name), the error
-/// includes a `script: <funcname>, on <source>:<line>.` suffix matching the
+/// includes a `script: <funcname>, on <source>:<line>` suffix matching the
 /// format produced by Redis's `luaCallFunction`.
 fn format_script_error_for_client(normalized_error: &str, kind: &str, funcname: &str) -> String {
     // Error messages produced by redis.call / the command layer already
@@ -2126,7 +2316,7 @@ fn format_script_error_for_client(normalized_error: &str, kind: &str, funcname: 
     // from the error message if available, otherwise just add `script: SHA`.
     if !funcname.is_empty() {
         if let Some(location) = extract_script_error_location(&message) {
-            write!(message, " script: {funcname}, on {location}.").unwrap();
+            write!(message, " script: {funcname}, on {location}").unwrap();
         } else {
             write!(message, " script: {funcname}").unwrap();
         }
@@ -2210,7 +2400,11 @@ fn install_readonly_redis_table_metatable(lua: &Lua, redis_table: &LuaTable) -> 
     Ok(())
 }
 
-fn build_strict_lua_environment(lua: &Lua, redis_table: &LuaTable) -> mlua::Result<LuaTable> {
+fn build_strict_lua_environment(
+    lua: &Lua,
+    redis_table: &LuaTable,
+    mode: StrictLuaEnvironmentMode,
+) -> mlua::Result<LuaTable> {
     // The environment table (`env`) is intentionally left EMPTY: all globals
     // live in the `__index` backing table so that ANY write (even to keys that
     // "exist") goes through `__newindex` and is rejected.  This matches
@@ -2237,15 +2431,24 @@ fn build_strict_lua_environment(lua: &Lua, redis_table: &LuaTable) -> mlua::Resu
     // proxy.  This prevents `redis.call = ...` from succeeding.
     // We clone the redis table reference before making it readonly so the
     // original caller doesn't lose access to the raw keys.
-    let readonly_redis = lua.create_table()?;
-    let redis_keys: Vec<(LuaValue, LuaValue)> = redis_table
-        .pairs::<LuaValue, LuaValue>()
-        .filter_map(|entry| entry.ok())
-        .collect();
-    for (key, value) in &redis_keys {
-        readonly_redis.raw_set(key.clone(), value.clone())?;
-    }
-    make_table_readonly(lua, &readonly_redis)?;
+    let readonly_redis = if mode == StrictLuaEnvironmentMode::FunctionLoad {
+        // Keep the same table object so function callbacks that capture
+        // `local lib = redis` see runtime register_function policy updates.
+        let readonly = redis_table.clone();
+        make_redis_table_readonly(lua, &readonly)?;
+        readonly
+    } else {
+        let readonly = lua.create_table()?;
+        let redis_keys: Vec<(LuaValue, LuaValue)> = redis_table
+            .pairs::<LuaValue, LuaValue>()
+            .filter_map(|entry| entry.ok())
+            .collect();
+        for (key, value) in &redis_keys {
+            readonly.raw_set(key.clone(), value.clone())?;
+        }
+        make_table_readonly(lua, &readonly)?;
+        readonly
+    };
 
     // The backing table contains all visible globals.  Reads fall through
     // from `env` -> `__index` -> `backing`; writes hit `__newindex` and
@@ -2260,6 +2463,11 @@ fn build_strict_lua_environment(lua: &Lua, redis_table: &LuaTable) -> mlua::Resu
 
     let base_globals = lua.globals();
     for global_name in LUA_ALLOWED_GLOBALS {
+        if mode == StrictLuaEnvironmentMode::FunctionLoad
+            && (global_name == "math" || global_name == "getmetatable")
+        {
+            continue;
+        }
         if global_name == "setmetatable" {
             continue; // replaced with safe wrapper below
         }
@@ -3011,7 +3219,11 @@ fn build_lua_cmsgpack_table(lua: &Lua) -> mlua::Result<LuaTable> {
                 new_offset as i64
             };
             if values.len() == 1 {
-                Ok((return_offset, values.into_iter().next().unwrap()))
+                if let Some(value) = values.into_iter().next() {
+                    Ok((return_offset, value))
+                } else {
+                    Ok((return_offset, LuaValue::Nil))
+                }
             } else {
                 let table = lua.create_table_with_capacity(values.len(), 0)?;
                 for (i, v) in values.into_iter().enumerate() {
@@ -3069,6 +3281,50 @@ fn install_readonly_table_metatable(lua: &Lua, table: &LuaTable) -> mlua::Result
     Ok(())
 }
 
+/// Make a readonly redis API table that errors on missing fields.
+///
+/// `redis.call` during FUNCTION LOAD should fail with:
+/// "Script attempted to access nonexistent global variable 'call'"
+/// instead of returning nil.
+fn make_redis_table_readonly(lua: &Lua, content: &LuaTable) -> mlua::Result<()> {
+    let backing = lua.create_table()?;
+    let keys_to_move: Vec<(LuaValue, LuaValue)> = content
+        .pairs::<LuaValue, LuaValue>()
+        .filter_map(|entry| entry.ok())
+        .collect();
+    for (key, value) in &keys_to_move {
+        backing.raw_set(key.clone(), value.clone())?;
+    }
+    for (key, _) in &keys_to_move {
+        content.raw_set(key.clone(), LuaValue::Nil)?;
+    }
+
+    let metatable = lua.create_table()?;
+    metatable.raw_set(READONLY_BACKING_KEY, backing.clone())?;
+    let index_fn = lua.create_function(move |_, (_table, key): (LuaValue, LuaValue)| {
+        let value = backing.raw_get::<LuaValue>(key.clone())?;
+        if !matches!(value, LuaValue::Nil) {
+            return Ok(value);
+        }
+        let key_name = script_global_name(key);
+        Err(LuaError::RuntimeError(format!(
+            "Script attempted to access nonexistent global variable '{key_name}'"
+        )))
+    })?;
+    let newindex_fn = lua.create_function(
+        |_, (_table, _key, _value): (LuaValue, LuaValue, LuaValue)| -> mlua::Result<()> {
+            Err(LuaError::RuntimeError(
+                "Attempt to modify a readonly table".to_string(),
+            ))
+        },
+    )?;
+    metatable.raw_set("__index", index_fn)?;
+    metatable.raw_set("__newindex", newindex_fn)?;
+    content.set_metatable(Some(metatable))?;
+    mark_table_readonly(lua, content)?;
+    Ok(())
+}
+
 /// Create a readonly proxy: move all raw keys from `content` into a new
 /// backing table and set `content` up as an empty proxy whose `__index`
 /// points to the backing, `__newindex` rejects all writes, and
@@ -3119,6 +3375,20 @@ fn get_readonly_backing(table: &LuaTable) -> Option<LuaTable> {
         Ok(LuaValue::Table(backing)) => Some(backing),
         _ => None,
     }
+}
+
+fn set_readonly_table_backing_value(
+    table: &LuaTable,
+    key: &str,
+    value: LuaValue,
+) -> mlua::Result<()> {
+    let Some(backing) = get_readonly_backing(table) else {
+        return Err(LuaError::RuntimeError(
+            "table has no readonly backing".to_string(),
+        ));
+    };
+    backing.raw_set(key, value)?;
+    Ok(())
 }
 
 /// Set a value in the backing table of an environment built by
@@ -3465,6 +3735,7 @@ fn lua_call_error_or_pcall_error(
         LuaCallMode::PCall => {
             let table = lua.create_table()?;
             table.set("err", message)?;
+            table.raw_set(lua.create_string(SCRIPT_INTERNAL_TRACKED_ERROR_KEY)?, true)?;
             Ok(LuaValue::Table(table))
         }
     }
@@ -3519,6 +3790,74 @@ fn request_error_message(error: RequestExecutionError) -> String {
         return String::from_utf8_lossy(&encoded[1..encoded.len() - 2]).into_owned();
     }
     "ERR internal script command failure".to_string()
+}
+
+fn error_reply_name(message: &[u8]) -> &[u8] {
+    let end = message
+        .iter()
+        .position(|byte| matches!(byte, b' ' | b':'))
+        .unwrap_or(message.len());
+    &message[..end]
+}
+
+fn append_recorded_command_failure(
+    processor: &RequestProcessor,
+    response_out: &mut Vec<u8>,
+    command_name: &[u8],
+    message: &[u8],
+) {
+    processor.record_command_failure(command_name);
+    processor.record_error_reply(error_reply_name(message));
+    append_error(response_out, message);
+}
+
+fn script_runtime_error_needs_top_level_errorstat(normalized_error: &str) -> bool {
+    ![
+        "ERR ",
+        "WRONGTYPE",
+        "OOM ",
+        "NOPERM",
+        "READONLY",
+        "NOTBUSY",
+        "BUSY",
+        "NOGROUP",
+    ]
+    .iter()
+    .any(|prefix| normalized_error.starts_with(prefix))
+}
+
+struct ReturnedLuaErrorReply {
+    payload: Vec<u8>,
+    already_accounted: bool,
+}
+
+fn returned_lua_error_reply_details(
+    lua: &Lua,
+    value: &LuaValue,
+) -> Result<Option<ReturnedLuaErrorReply>, String> {
+    let LuaValue::Table(table) = value else {
+        return Ok(None);
+    };
+    let Some(payload) = lua_table_raw_string_field(table, "err")? else {
+        return Ok(None);
+    };
+    let tracked_key = lua
+        .create_string(SCRIPT_INTERNAL_TRACKED_ERROR_KEY)
+        .map_err(|error| sanitize_error_text(&error.to_string()))?;
+    let already_accounted = match table
+        .raw_get::<LuaValue>(tracked_key)
+        .map_err(|error| sanitize_error_text(&error.to_string()))?
+    {
+        LuaValue::Boolean(value) => value,
+        LuaValue::Nil => false,
+        _ => {
+            return Err("Lua table field '<internal tracked error>' must be a boolean".to_string());
+        }
+    };
+    Ok(Some(ReturnedLuaErrorReply {
+        payload,
+        already_accounted,
+    }))
 }
 
 fn append_lua_value_as_resp(
@@ -3775,7 +4114,13 @@ fn parse_register_function_binding(values: MultiValue) -> mlua::Result<RegisterF
     }
 
     if values.len() == 1 {
-        match values.into_iter().next().expect("single value must exist") {
+        let mut values = values.into_iter();
+        let Some(value) = values.next() else {
+            return Err(LuaError::RuntimeError(
+                "wrong number of arguments to redis.register_function".to_string(),
+            ));
+        };
+        match value {
             LuaValue::Table(descriptor) => parse_register_function_binding_from_table(descriptor),
             _ => Err(LuaError::RuntimeError(
                 "calling redis.register_function with a single argument is only applicable to Lua table"
@@ -3784,7 +4129,12 @@ fn parse_register_function_binding(values: MultiValue) -> mlua::Result<RegisterF
         }
     } else if values.len() == 2 {
         let mut values = values.into_iter();
-        let name = match values.next().expect("first value must exist") {
+        let Some(name_value) = values.next() else {
+            return Err(LuaError::RuntimeError(
+                "wrong number of arguments to redis.register_function".to_string(),
+            ));
+        };
+        let name = match name_value {
             LuaValue::String(name) => name.to_string_lossy(),
             _ => {
                 return Err(LuaError::RuntimeError(
@@ -3792,7 +4142,12 @@ fn parse_register_function_binding(values: MultiValue) -> mlua::Result<RegisterF
                 ));
             }
         };
-        let callback = match values.next().expect("second value must exist") {
+        let Some(callback_value) = values.next() else {
+            return Err(LuaError::RuntimeError(
+                "wrong number of arguments to redis.register_function".to_string(),
+            ));
+        };
+        let callback = match callback_value {
             LuaValue::Function(callback) => callback,
             _ => {
                 return Err(LuaError::RuntimeError(

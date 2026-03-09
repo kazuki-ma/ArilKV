@@ -1,4 +1,14 @@
+use super::value_codec::HashPayloadBatchDeleteResult;
+use super::value_codec::HashPayloadBatchGetDeleteResult;
+use super::value_codec::HashPayloadDeleteResult;
+use super::value_codec::delete_hash_fields_payload_batch;
+use super::value_codec::delete_single_hash_field_payload;
+use super::value_codec::get_and_delete_hash_fields_payload_batch;
+use super::value_codec::get_hash_fields_payload_batch;
+use super::value_codec::upsert_hash_fields_payload_batch;
+use super::value_codec::upsert_single_hash_field_payload;
 use super::*;
+use std::collections::BTreeSet;
 
 impl RequestProcessor {
     pub(super) fn handle_hset(
@@ -9,6 +19,14 @@ impl RequestProcessor {
         ensure_paired_arity_after(args, 4, 2, "HSET", "HSET key field value [field value ...]")?;
 
         let key = RedisKey::from(args[1]);
+        if !self.has_hash_field_expirations_for_key(key.as_slice()) {
+            if args.len() == 4 {
+                self.handle_hset_single_field_fast_path(&key, args[2], args[3], response_out)?;
+            } else {
+                self.handle_hset_batch_fast_path(&key, &args[2..], response_out)?;
+            }
+            return Ok(());
+        }
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let access_fields = args[2..]
             .chunks_exact(2)
@@ -89,6 +107,14 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "HDEL", "HDEL key field [field ...]")?;
 
         let key = RedisKey::from(args[1]);
+        if !self.has_hash_field_expirations_for_key(key.as_slice()) {
+            if args.len() == 3 {
+                self.handle_hdel_single_field_fast_path(&key, args[2], response_out)?;
+            } else {
+                self.handle_hdel_batch_fast_path(&key, &args[2..], response_out)?;
+            }
+            return Ok(());
+        }
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {
@@ -217,6 +243,10 @@ impl RequestProcessor {
         )?;
 
         let key = RedisKey::from(args[1]);
+        if !self.has_hash_field_expirations_for_key(key.as_slice()) {
+            self.handle_hmset_batch_fast_path(&key, &args[2..], response_out)?;
+            return Ok(());
+        }
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
         let access_fields = args[2..]
             .chunks_exact(2)
@@ -467,7 +497,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HINCRBYFLOAT", "HINCRBYFLOAT key field increment")?;
 
-        let increment = parse_f64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let increment = parse_f64_ascii_allow_non_finite(args[3])
+            .ok_or(RequestExecutionError::ValueNotFloat)?;
+        if !increment.is_finite() {
+            return Err(RequestExecutionError::ValueIsNanOrInfinity);
+        }
         let key = RedisKey::from(args[1]);
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
@@ -479,7 +513,7 @@ impl RequestProcessor {
         };
         let updated = current + increment;
         if !updated.is_finite() {
-            return Err(RequestExecutionError::ValueNotFloat);
+            return Err(RequestExecutionError::ValueIsNanOrInfinity);
         }
         let updated_text = updated.to_string().into_bytes();
         hash.insert(field, updated_text.clone());
@@ -634,18 +668,17 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
-            5,
+            6,
             "HSETEX",
-            "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+            "HSETEX key [FNX|FXX] [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|KEEPTTL] FIELDS num field value [field value ...]",
         )?;
 
         let key = RedisKey::from(args[1]);
         let expire_options = parse_hsetex_options(args)?;
-        let field_values = parse_hash_fields_with_values(
+        let field_values = collect_hash_field_values(
             args,
-            expire_options.fields_index,
-            "HSETEX",
-            "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+            expire_options.first_field_index,
+            expire_options.field_count,
         )?;
 
         let access_fields = field_values
@@ -653,34 +686,72 @@ impl RequestProcessor {
             .map(|(field, _)| *field)
             .collect::<Vec<_>>();
         let mut hash = self.load_hash_object(&key)?.unwrap_or_default();
-        self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
+        let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
 
-        let mut inserted = 0i64;
-        for (field, value) in &field_values {
-            if hash.insert((*field).to_vec(), (*value).to_vec()).is_none() {
-                inserted += 1;
+        let condition_matches = match expire_options.field_set_condition {
+            HashFieldSetCondition::Any => true,
+            HashFieldSetCondition::Fxx => field_values
+                .iter()
+                .all(|(field, _)| hash.contains_key(*field)),
+            HashFieldSetCondition::Fnx => field_values
+                .iter()
+                .all(|(field, _)| !hash.contains_key(*field)),
+        };
+        if !condition_matches {
+            if lazy_expired {
+                self.persist_hash_after_field_expiration(&key, &hash)?;
             }
-            self.set_hash_field_expiration_unix_millis(
-                &key,
-                field,
-                expire_options.expiration_unix_millis,
-            );
+            append_integer(response_out, 0);
+            return Ok(());
         }
 
-        if expire_options.expire_if_past_immediately
-            && let Some(expiration) = expire_options.expiration_unix_millis
-            && expiration
-                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
-        {
-            self.apply_hash_field_lazy_expiration(&key, &mut hash, &access_fields);
+        let mut applied_fields = BTreeSet::new();
+        for (field, value) in &field_values {
+            hash.insert((*field).to_vec(), (*value).to_vec());
+            applied_fields.insert((*field).to_vec());
+            if let Some(expiration_unix_millis) = expire_options.expiration_unix_millis {
+                self.set_hash_field_expiration_unix_millis(
+                    &key,
+                    field,
+                    Some(expiration_unix_millis),
+                );
+            } else if !expire_options.keep_ttl {
+                self.set_hash_field_expiration_unix_millis(&key, field, None);
+            }
+        }
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
+
+        let immediate_expire = expire_options.expire_if_past_immediately
+            && expire_options
+                .expiration_unix_millis
+                .is_some_and(|expiration| {
+                    current_unix_time_millis().is_some_and(|now| expiration <= now)
+                });
+
+        if immediate_expire && !applied_fields.is_empty() {
+            let mut removed_any = false;
+            for field in &applied_fields {
+                if hash.remove(field.as_slice()).is_some() {
+                    removed_any = true;
+                    self.set_hash_field_expiration_unix_millis(&key, field, None);
+                }
+            }
+            if removed_any {
+                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+            }
+        } else if expire_options.expiration_unix_millis.is_some() && !applied_fields.is_empty() {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hexpire", &key);
         }
 
         if hash.is_empty() {
             let _ = self.object_delete(&key)?;
+            if !applied_fields.is_empty() {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+            }
         } else {
             self.save_hash_object(&key, &hash)?;
         }
-        append_integer(response_out, inserted);
+        append_integer(response_out, 1);
         Ok(())
     }
 
@@ -691,19 +762,17 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
-            4,
+            5,
             "HGETEX",
-            "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+            "HGETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|PERSIST] FIELDS num field [field ...]",
         )?;
         let key = RedisKey::from(args[1]);
         let expire_options = parse_hgetex_options(args)?;
-        let fields = parse_hash_fields(
+        let fields = collect_hash_fields(
             args,
-            expire_options.fields_index,
-            "HGETEX",
-            "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+            expire_options.first_field_index,
+            expire_options.field_count,
         )?;
-
         let resp3 = self.resp_protocol_version().is_resp3();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -735,27 +804,55 @@ impl RequestProcessor {
             }
         }
 
+        let mut updated_expiration_count = 0usize;
+        let mut persisted_expiration_count = 0usize;
         for field in &fields {
             if hash.contains_key(*field) {
-                self.set_hash_field_expiration_unix_millis(
-                    &key,
-                    field,
-                    expire_options.expiration_unix_millis,
-                );
+                if expire_options.persist {
+                    if self
+                        .hash_field_expiration_unix_millis(&key, field)
+                        .is_some()
+                    {
+                        persisted_expiration_count += 1;
+                    }
+                    self.set_hash_field_expiration_unix_millis(&key, field, None);
+                } else {
+                    self.set_hash_field_expiration_unix_millis(
+                        &key,
+                        field,
+                        expire_options.expiration_unix_millis,
+                    );
+                    if expire_options.expiration_unix_millis.is_some() {
+                        updated_expiration_count += 1;
+                    }
+                }
             } else {
                 self.set_hash_field_expiration_unix_millis(&key, field, None);
             }
         }
 
+        let mut removed_any = false;
         if expire_options.expire_if_past_immediately
             && let Some(expiration) = expire_options.expiration_unix_millis
             && expiration
                 <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
         {
-            self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+            for field in &fields {
+                if hash.remove(*field).is_some() {
+                    removed_any = true;
+                    self.set_hash_field_expiration_unix_millis(&key, field, None);
+                }
+            }
+            if removed_any {
+                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+            }
+        } else if updated_expiration_count > 0 {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hexpire", &key);
+        } else if persisted_expiration_count > 0 {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hpersist", &key);
         }
 
-        if lazy_expired || expire_options.expiration_unix_millis.is_some() {
+        if lazy_expired || removed_any {
             self.persist_hash_after_field_expiration(&key, &hash)?;
         }
         Ok(())
@@ -768,18 +865,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
-            4,
+            5,
             "HGETDEL",
             "HGETDEL key FIELDS num field [field ...]",
         )?;
         let key = RedisKey::from(args[1]);
-        let fields = parse_hash_fields(
-            args,
-            2,
-            "HGETDEL",
-            "HGETDEL key FIELDS num field [field ...]",
-        )?;
-
+        let fields = parse_hgetdel_fields(args)?;
         let resp3 = self.resp_protocol_version().is_resp3();
         let mut hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
@@ -797,11 +888,13 @@ impl RequestProcessor {
         };
 
         self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+        let mut removed = 0usize;
         append_array_length(response_out, fields.len());
         for field in &fields {
             match hash.remove(*field) {
                 Some(value) => {
                     self.set_hash_field_expiration_unix_millis(&key, field, None);
+                    removed += 1;
                     append_bulk_string(response_out, &value);
                 }
                 None => {
@@ -813,9 +906,15 @@ impl RequestProcessor {
                 }
             }
         }
+        if removed > 0 {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+        }
 
         if hash.is_empty() {
             let _ = self.object_delete(&key)?;
+            if removed > 0 {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+            }
         } else {
             self.save_hash_object(&key, &hash)?;
         }
@@ -845,11 +944,18 @@ impl RequestProcessor {
         let expiration_unix_millis = now
             .checked_add(delta)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
-        self.handle_hash_field_expire_common(
+        let (condition, fields_index) = parse_hash_field_expire_condition(
             args,
             3,
+            "HEXPIRE",
+            "HEXPIRE key seconds [NX|XX|GT|LT] FIELDS num field [field ...]",
+        )?;
+        self.handle_hash_field_expire_common(
+            args,
+            fields_index,
             expiration_unix_millis,
-            false,
+            true,
+            condition,
             "HEXPIRE",
             "HEXPIRE key seconds FIELDS num field [field ...]",
             response_out,
@@ -876,11 +982,18 @@ impl RequestProcessor {
         let expiration_unix_millis = now
             .checked_add(delta)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
-        self.handle_hash_field_expire_common(
+        let (condition, fields_index) = parse_hash_field_expire_condition(
             args,
             3,
+            "HPEXPIRE",
+            "HPEXPIRE key milliseconds [NX|XX|GT|LT] FIELDS num field [field ...]",
+        )?;
+        self.handle_hash_field_expire_common(
+            args,
+            fields_index,
             expiration_unix_millis,
-            false,
+            true,
+            condition,
             "HPEXPIRE",
             "HPEXPIRE key milliseconds FIELDS num field [field ...]",
             response_out,
@@ -900,11 +1013,18 @@ impl RequestProcessor {
         )?;
         let expiration_unix_millis =
             parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        self.handle_hash_field_expire_common(
+        let (condition, fields_index) = parse_hash_field_expire_condition(
             args,
             3,
+            "HPEXPIREAT",
+            "HPEXPIREAT key milliseconds-unix-time [NX|XX|GT|LT] FIELDS num field [field ...]",
+        )?;
+        self.handle_hash_field_expire_common(
+            args,
+            fields_index,
             expiration_unix_millis,
             true,
+            condition,
             "HPEXPIREAT",
             "HPEXPIREAT key milliseconds-unix-time FIELDS num field [field ...]",
             response_out,
@@ -930,11 +1050,18 @@ impl RequestProcessor {
         let expiration_unix_millis = seconds
             .checked_mul(1000)
             .ok_or(RequestExecutionError::ValueOutOfRange)?;
-        self.handle_hash_field_expire_common(
+        let (condition, fields_index) = parse_hash_field_expire_condition(
             args,
             3,
+            "HEXPIREAT",
+            "HEXPIREAT key unix-time-seconds [NX|XX|GT|LT] FIELDS num field [field ...]",
+        )?;
+        self.handle_hash_field_expire_common(
+            args,
+            fields_index,
             expiration_unix_millis,
             true,
+            condition,
             "HEXPIREAT",
             "HEXPIREAT key unix-time-seconds FIELDS num field [field ...]",
             response_out,
@@ -969,6 +1096,7 @@ impl RequestProcessor {
         let lazy_expired = self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
 
         let mut statuses = Vec::with_capacity(fields.len());
+        let mut persisted_count = 0usize;
         for field in &fields {
             if !hash.contains_key(*field) {
                 self.set_hash_field_expiration_unix_millis(&key, field, None);
@@ -981,11 +1109,15 @@ impl RequestProcessor {
             {
                 self.set_hash_field_expiration_unix_millis(&key, field, None);
                 statuses.push(1);
+                persisted_count += 1;
             } else {
                 statuses.push(-1);
             }
         }
 
+        if persisted_count > 0 {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hpersist", &key);
+        }
         if lazy_expired {
             self.persist_hash_after_field_expiration(&key, &hash)?;
         }
@@ -1193,7 +1325,29 @@ impl RequestProcessor {
         for field in &expired_fields {
             hash.remove(field.as_ref());
         }
+        self.notify_keyspace_event(NOTIFY_HASH, b"hexpired", key);
         self.persist_hash_after_field_expiration(key, &hash)
+    }
+
+    pub(crate) fn active_expire_hash_fields_in_shard(
+        &self,
+        shard_index: ShardIndex,
+        max_keys: usize,
+    ) -> Result<(), RequestExecutionError> {
+        if max_keys == 0 || !self.active_expire_enabled() {
+            return Ok(());
+        }
+        let keys = {
+            self.lock_hash_field_expirations_for_shard(shard_index)
+                .keys()
+                .take(max_keys)
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        for key in keys {
+            self.active_expire_hash_fields_for_key(key.as_slice())?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1203,6 +1357,7 @@ impl RequestProcessor {
         fields_index: usize,
         expiration_unix_millis: u64,
         expire_if_past_immediately: bool,
+        condition: HashFieldExpireCondition,
         command_name: &'static str,
         command_usage: &'static str,
         response_out: &mut Vec<u8>,
@@ -1219,13 +1374,33 @@ impl RequestProcessor {
         self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
 
         let mut statuses = Vec::with_capacity(fields.len());
+        let mut applied_count = 0usize;
+        let immediate_expire = expire_if_past_immediately
+            && expiration_unix_millis
+                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
         for field in &fields {
             if hash.contains_key(*field) {
+                let current_expiration = self.hash_field_expiration_unix_millis(&key, field);
+                let apply =
+                    match condition {
+                        HashFieldExpireCondition::None => true,
+                        HashFieldExpireCondition::Nx => current_expiration.is_none(),
+                        HashFieldExpireCondition::Xx => current_expiration.is_some(),
+                        HashFieldExpireCondition::Gt => current_expiration
+                            .is_some_and(|current| expiration_unix_millis > current),
+                        HashFieldExpireCondition::Lt => current_expiration
+                            .is_some_and(|current| expiration_unix_millis < current),
+                    };
+                if !apply {
+                    statuses.push(0);
+                    continue;
+                }
                 self.set_hash_field_expiration_unix_millis(
                     &key,
                     field,
                     Some(expiration_unix_millis),
                 );
+                applied_count += 1;
                 statuses.push(1);
             } else {
                 self.set_hash_field_expiration_unix_millis(&key, field, None);
@@ -1233,14 +1408,519 @@ impl RequestProcessor {
             }
         }
 
-        if expire_if_past_immediately
-            && expiration_unix_millis
-                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
-        {
-            self.apply_hash_field_lazy_expiration(&key, &mut hash, &fields);
+        let mut immediate_removed = 0usize;
+        if immediate_expire {
+            for field in &fields {
+                if hash.remove(*field).is_some() {
+                    self.set_hash_field_expiration_unix_millis(&key, field, None);
+                    immediate_removed += 1;
+                }
+            }
+            if immediate_removed > 0 {
+                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+            }
+        } else if applied_count > 0 {
+            self.notify_keyspace_event(NOTIFY_HASH, b"hexpire", &key);
         }
+
         self.persist_hash_after_field_expiration(&key, &hash)?;
         append_integer_array(response_out, &statuses);
+        Ok(())
+    }
+
+    fn handle_hset_batch_fast_path(
+        &self,
+        key: &RedisKey,
+        field_values: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                0u32.to_le_bytes().to_vec()
+            }
+        };
+
+        let field_updates = field_values
+            .chunks_exact(2)
+            .map(|entry| (entry[0], entry[1]))
+            .collect::<Vec<_>>();
+        let result = upsert_hash_fields_payload_batch(&current_payload, &field_updates)
+            .ok_or_else(|| {
+                storage_failure(
+                    "handle_hset_batch_fast_path",
+                    "failed to update serialized hash payload",
+                )
+            })?;
+
+        self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &result.payload)?;
+        for field in field_values.chunks_exact(2).map(|entry| entry[0]) {
+            self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+        }
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
+        append_integer(response_out, result.inserted);
+        Ok(())
+    }
+
+    fn handle_hmset_batch_fast_path(
+        &self,
+        key: &RedisKey,
+        field_values: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                0u32.to_le_bytes().to_vec()
+            }
+        };
+
+        let field_updates = field_values
+            .chunks_exact(2)
+            .map(|entry| (entry[0], entry[1]))
+            .collect::<Vec<_>>();
+        let result = upsert_hash_fields_payload_batch(&current_payload, &field_updates)
+            .ok_or_else(|| {
+                storage_failure(
+                    "handle_hmset_batch_fast_path",
+                    "failed to update serialized hash payload",
+                )
+            })?;
+
+        self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &result.payload)?;
+        for field in field_values.chunks_exact(2).map(|entry| entry[0]) {
+            self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+        }
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
+        append_simple_string(response_out, b"OK");
+        Ok(())
+    }
+
+    fn handle_hset_single_field_fast_path(
+        &self,
+        key: &RedisKey,
+        field: &[u8],
+        value: &[u8],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                0u32.to_le_bytes().to_vec()
+            }
+        };
+
+        let result =
+            upsert_single_hash_field_payload(&current_payload, field, value).ok_or_else(|| {
+                storage_failure(
+                    "handle_hset_single_field_fast_path",
+                    "failed to update serialized hash payload",
+                )
+            })?;
+
+        self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &result.payload)?;
+        self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+        self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
+        append_integer(response_out, if result.inserted { 1 } else { 0 });
+        Ok(())
+    }
+
+    fn handle_hsetex_batch_fast_path(
+        &self,
+        key: &RedisKey,
+        field_values: &[(&[u8], &[u8])],
+        expire_options: &ParsedHashExpireOptions,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                0u32.to_le_bytes().to_vec()
+            }
+        };
+
+        let result =
+            upsert_hash_fields_payload_batch(&current_payload, field_values).ok_or_else(|| {
+                storage_failure(
+                    "handle_hsetex_batch_fast_path",
+                    "failed to update serialized hash payload",
+                )
+            })?;
+        for (field, _) in field_values {
+            self.set_hash_field_expiration_unix_millis(
+                key.as_slice(),
+                field,
+                expire_options.expiration_unix_millis,
+            );
+        }
+
+        let mut payload = result.payload;
+        let mut delete_key = false;
+        if expire_options.expire_if_past_immediately
+            && let Some(expiration) = expire_options.expiration_unix_millis
+            && expiration
+                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+        {
+            let fields = field_values
+                .iter()
+                .map(|(field, _)| *field)
+                .collect::<Vec<_>>();
+            let delete_result =
+                delete_hash_fields_payload_batch(&payload, &fields).ok_or_else(|| {
+                    storage_failure(
+                        "handle_hsetex_batch_fast_path",
+                        "failed to remove immediately expired fields from serialized hash payload",
+                    )
+                })?;
+            if let HashPayloadBatchDeleteResult::Removed {
+                payload: next_payload,
+                is_empty,
+                ..
+            } = delete_result
+            {
+                payload = next_payload;
+                delete_key = is_empty;
+                for field in &fields {
+                    self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+                }
+            }
+        }
+
+        if delete_key {
+            let _ = self.object_delete(key.as_slice())?;
+        } else {
+            self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+        }
+        append_integer(response_out, result.inserted);
+        Ok(())
+    }
+
+    fn handle_hgetex_batch_fast_path(
+        &self,
+        key: &RedisKey,
+        fields: &[&[u8]],
+        expire_options: &ParsedHashExpireOptions,
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let resp3 = self.resp_protocol_version().is_resp3();
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                append_array_length(response_out, fields.len());
+                for _ in 0..fields.len() {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
+                return Ok(());
+            }
+        };
+
+        let get_result =
+            get_hash_fields_payload_batch(&current_payload, fields).ok_or_else(|| {
+                storage_failure(
+                    "handle_hgetex_batch_fast_path",
+                    "failed to read fields from serialized hash payload",
+                )
+            })?;
+        append_array_length(response_out, fields.len());
+        for value in &get_result.values {
+            match value {
+                Some(value) => append_bulk_string(response_out, value),
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
+            }
+        }
+
+        for (index, field) in fields.iter().enumerate() {
+            if get_result.values[index].is_some() {
+                self.set_hash_field_expiration_unix_millis(
+                    key.as_slice(),
+                    field,
+                    expire_options.expiration_unix_millis,
+                );
+            } else {
+                self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+            }
+        }
+
+        let mut payload = current_payload;
+        let mut delete_key = false;
+        if expire_options.expire_if_past_immediately
+            && let Some(expiration) = expire_options.expiration_unix_millis
+            && expiration
+                <= current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?
+        {
+            let delete_result =
+                delete_hash_fields_payload_batch(&payload, fields).ok_or_else(|| {
+                    storage_failure(
+                        "handle_hgetex_batch_fast_path",
+                        "failed to remove immediately expired fields from serialized hash payload",
+                    )
+                })?;
+            if let HashPayloadBatchDeleteResult::Removed {
+                payload: next_payload,
+                is_empty,
+                ..
+            } = delete_result
+            {
+                payload = next_payload;
+                delete_key = is_empty;
+                for (index, field) in fields.iter().enumerate() {
+                    if get_result.values[index].is_some() {
+                        self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+                    }
+                }
+            }
+        }
+
+        if expire_options.expiration_unix_millis.is_some() {
+            if delete_key {
+                let _ = self.object_delete(key.as_slice())?;
+            } else {
+                self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_hdel_batch_fast_path(
+        &self,
+        key: &RedisKey,
+        fields: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let delete_result =
+            delete_hash_fields_payload_batch(&current_payload, fields).ok_or_else(|| {
+                storage_failure(
+                    "handle_hdel_batch_fast_path",
+                    "failed to remove fields from serialized hash payload",
+                )
+            })?;
+        match delete_result {
+            HashPayloadBatchDeleteResult::NotFound => {
+                append_integer(response_out, 0);
+            }
+            HashPayloadBatchDeleteResult::Removed {
+                payload,
+                removed,
+                is_empty,
+            } => {
+                for field in fields {
+                    self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+                }
+                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
+                if is_empty {
+                    let _ = self.object_delete(key.as_slice())?;
+                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key.as_slice());
+                } else {
+                    self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                }
+                append_integer(response_out, removed);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_hdel_single_field_fast_path(
+        &self,
+        key: &RedisKey,
+        field: &[u8],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+
+        let delete_result =
+            delete_single_hash_field_payload(&current_payload, field).ok_or_else(|| {
+                storage_failure(
+                    "handle_hdel_single_field_fast_path",
+                    "failed to remove field from serialized hash payload",
+                )
+            })?;
+        match delete_result {
+            HashPayloadDeleteResult::NotFound => {
+                append_integer(response_out, 0);
+            }
+            HashPayloadDeleteResult::Removed { payload, is_empty } => {
+                self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
+                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
+                if is_empty {
+                    let _ = self.object_delete(key.as_slice())?;
+                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key.as_slice());
+                } else {
+                    self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                }
+                append_integer(response_out, 1);
+            }
+        }
+        Ok(())
+    }
+
+    fn handle_hgetdel_batch_fast_path(
+        &self,
+        key: &RedisKey,
+        fields: &[&[u8]],
+        response_out: &mut Vec<u8>,
+    ) -> Result<(), RequestExecutionError> {
+        let resp3 = self.resp_protocol_version().is_resp3();
+        let current_payload = match self.object_read(key.as_slice())? {
+            Some(object) => {
+                if object.object_type != HASH_OBJECT_TYPE_TAG {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                object.payload
+            }
+            None => {
+                if self.key_exists(key.as_slice())? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                append_array_length(response_out, fields.len());
+                for _ in 0..fields.len() {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                }
+                return Ok(());
+            }
+        };
+
+        let delete_result = get_and_delete_hash_fields_payload_batch(&current_payload, fields)
+            .ok_or_else(|| {
+                storage_failure(
+                    "handle_hgetdel_batch_fast_path",
+                    "failed to get and remove fields from serialized hash payload",
+                )
+            })?;
+
+        match delete_result {
+            HashPayloadBatchGetDeleteResult::NotFound { values } => {
+                append_array_length(response_out, values.len());
+                for value in values {
+                    match value {
+                        Some(value) => append_bulk_string(response_out, &value),
+                        None => {
+                            if resp3 {
+                                append_null(response_out);
+                            } else {
+                                append_null_bulk_string(response_out);
+                            }
+                        }
+                    }
+                }
+            }
+            HashPayloadBatchGetDeleteResult::Removed {
+                values,
+                payload,
+                is_empty,
+                ..
+            } => {
+                append_array_length(response_out, values.len());
+                for (index, value) in values.into_iter().enumerate() {
+                    match value {
+                        Some(value) => {
+                            self.set_hash_field_expiration_unix_millis(
+                                key.as_slice(),
+                                fields[index],
+                                None,
+                            );
+                            append_bulk_string(response_out, &value);
+                        }
+                        None => {
+                            if resp3 {
+                                append_null(response_out);
+                            } else {
+                                append_null_bulk_string(response_out);
+                            }
+                        }
+                    }
+                }
+
+                if is_empty {
+                    let _ = self.object_delete(key.as_slice())?;
+                } else {
+                    self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                }
+            }
+        }
         Ok(())
     }
 
@@ -1254,6 +1934,7 @@ impl RequestProcessor {
         if expired_fields.is_empty() {
             return false;
         }
+        self.notify_keyspace_event(NOTIFY_HASH, b"hexpired", key);
         for field in expired_fields {
             hash.remove(field.as_ref());
         }
@@ -1267,6 +1948,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         if hash.is_empty() {
             let _ = self.object_delete(key)?;
+            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key);
         } else {
             self.save_hash_object(key, hash)?;
         }
@@ -1325,109 +2007,343 @@ fn looks_like_signed_integer(input: &[u8]) -> bool {
 }
 
 fn parse_hsetex_options(args: &[&[u8]]) -> Result<ParsedHashExpireOptions, RequestExecutionError> {
-    if args.len() < 5 {
+    const EXPECTED: &str = "HSETEX key [FNX|FXX] [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|KEEPTTL] FIELDS num field value [field value ...]";
+    if args.len() < 6 {
         return Err(RequestExecutionError::WrongArity {
             command: "HSETEX",
-            expected: "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
+            expected: EXPECTED,
         });
     }
-    if ascii_eq_ignore_case(args[2], b"FIELDS") {
-        return Ok(ParsedHashExpireOptions {
-            expiration_unix_millis: None,
-            fields_index: 2,
-            expire_if_past_immediately: false,
-        });
-    }
-    if args.len() < 7 {
-        return Err(RequestExecutionError::WrongArity {
-            command: "HSETEX",
-            expected: "HSETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field value [field value ...]",
-        });
-    }
-    let option = args[2];
-    let value = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-    let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let mut index = 2usize;
+    let mut field_set_condition = HashFieldSetCondition::Any;
+    let mut expiration_unix_millis = None;
     let mut expire_if_past_immediately = false;
-    let expiration_unix_millis = if ascii_eq_ignore_case(option, b"PX") {
-        if value < 0 {
-            return Err(RequestExecutionError::ValueOutOfRange);
+    let mut first_field_index = None;
+    let mut field_count = None;
+    let mut keep_ttl = false;
+
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"FIELDS") {
+            if first_field_index.is_some() {
+                return Err(RequestExecutionError::HashFieldsKeywordSpecifiedMultipleTimes);
+            }
+            let fields = parse_hash_fields_block(
+                args,
+                index,
+                2,
+                RequestExecutionError::HashInvalidNumberOfFields,
+                "HSETEX",
+                EXPECTED,
+            )?;
+            first_field_index = Some(fields.first_field_index);
+            field_count = Some(fields.field_count);
+            index = fields.next_index;
+            continue;
         }
-        let delta = u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        now.checked_add(delta)
-            .ok_or(RequestExecutionError::ValueOutOfRange)?
-    } else if ascii_eq_ignore_case(option, b"PXAT") {
-        if value < 0 {
-            return Err(RequestExecutionError::ValueOutOfRange);
+        if ascii_eq_ignore_case(token, b"FXX") {
+            if field_set_condition != HashFieldSetCondition::Any {
+                return Err(RequestExecutionError::HashOnlyOneOfFxxFnxArgumentsCanBeSpecified);
+            }
+            field_set_condition = HashFieldSetCondition::Fxx;
+            index += 1;
+            continue;
         }
-        expire_if_past_immediately = true;
-        u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?
-    } else {
-        return Err(RequestExecutionError::SyntaxError);
-    };
-    if !ascii_eq_ignore_case(args[4], b"FIELDS") {
-        return Err(RequestExecutionError::SyntaxError);
+        if ascii_eq_ignore_case(token, b"FNX") {
+            if field_set_condition != HashFieldSetCondition::Any {
+                return Err(RequestExecutionError::HashOnlyOneOfFxxFnxArgumentsCanBeSpecified);
+            }
+            field_set_condition = HashFieldSetCondition::Fnx;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"KEEPTTL") {
+            if keep_ttl || expiration_unix_millis.is_some() {
+                return Err(
+                    RequestExecutionError::HashOnlyOneOfHsetexExpireArgumentsCanBeSpecified,
+                );
+            }
+            keep_ttl = true;
+            index += 1;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"PERSIST") {
+            return Err(RequestExecutionError::HashUnknownArgument);
+        }
+        if ascii_eq_ignore_case(token, b"PX")
+            || ascii_eq_ignore_case(token, b"EX")
+            || ascii_eq_ignore_case(token, b"PXAT")
+            || ascii_eq_ignore_case(token, b"EXAT")
+        {
+            if expiration_unix_millis.is_some() || keep_ttl {
+                return Err(
+                    RequestExecutionError::HashOnlyOneOfHsetexExpireArgumentsCanBeSpecified,
+                );
+            }
+            if index + 1 >= args.len() {
+                return Err(RequestExecutionError::HashMissingExpireTime);
+            }
+            let value =
+                parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+            let expiration = if ascii_eq_ignore_case(token, b"PX") {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                expire_if_past_immediately = value == 0;
+                let delta =
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                now.checked_add(delta)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?
+            } else if ascii_eq_ignore_case(token, b"EX") {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                expire_if_past_immediately = value == 0;
+                let delta_secs =
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                let delta_millis = delta_secs
+                    .checked_mul(1000)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                now.checked_add(delta_millis)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?
+            } else if ascii_eq_ignore_case(token, b"PXAT") {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                expire_if_past_immediately = true;
+                u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?
+            } else {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                expire_if_past_immediately = true;
+                let at_secs =
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                at_secs
+                    .checked_mul(1000)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?
+            };
+            expiration_unix_millis = Some(expiration);
+            index += 2;
+            continue;
+        }
+        return Err(RequestExecutionError::HashUnknownArgument);
     }
+
+    let first_field_index =
+        first_field_index.ok_or(RequestExecutionError::HashMandatoryFieldsArgumentMissing)?;
+    let field_count =
+        field_count.ok_or(RequestExecutionError::HashMandatoryFieldsArgumentMissing)?;
+
     Ok(ParsedHashExpireOptions {
-        expiration_unix_millis: Some(expiration_unix_millis),
-        fields_index: 4,
+        expiration_unix_millis,
+        keep_ttl,
+        first_field_index,
+        field_count,
         expire_if_past_immediately,
+        field_set_condition,
+        persist: false,
     })
 }
 
 fn parse_hgetex_options(args: &[&[u8]]) -> Result<ParsedHashExpireOptions, RequestExecutionError> {
-    if args.len() < 4 {
+    const EXPECTED: &str = "HGETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|PERSIST] FIELDS num field [field ...]";
+    if args.len() < 5 {
         return Err(RequestExecutionError::WrongArity {
             command: "HGETEX",
-            expected: "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
+            expected: EXPECTED,
         });
     }
-    if ascii_eq_ignore_case(args[2], b"FIELDS") {
-        return Ok(ParsedHashExpireOptions {
-            expiration_unix_millis: None,
-            fields_index: 2,
-            expire_if_past_immediately: false,
-        });
-    }
-    if args.len() < 6 {
-        return Err(RequestExecutionError::WrongArity {
-            command: "HGETEX",
-            expected: "HGETEX key [PX milliseconds|PXAT milliseconds-unix-time] FIELDS num field [field ...]",
-        });
-    }
-    let option = args[2];
-    let value = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-    let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+    let mut index = 2usize;
+    let mut expiration_unix_millis = None;
     let mut expire_if_past_immediately = false;
-    let expiration_unix_millis = if ascii_eq_ignore_case(option, b"PX") {
-        if value < 0 {
-            return Err(RequestExecutionError::ValueOutOfRange);
+    let mut first_field_index = None;
+    let mut field_count = None;
+    let mut persist = false;
+
+    while index < args.len() {
+        let token = args[index];
+        if ascii_eq_ignore_case(token, b"FIELDS") {
+            if first_field_index.is_some() {
+                return Err(RequestExecutionError::HashFieldsKeywordSpecifiedMultipleTimes);
+            }
+            let fields = parse_hash_fields_block(
+                args,
+                index,
+                1,
+                RequestExecutionError::HashInvalidNumberOfFields,
+                "HGETEX",
+                EXPECTED,
+            )?;
+            first_field_index = Some(fields.first_field_index);
+            field_count = Some(fields.field_count);
+            index = fields.next_index;
+            continue;
         }
-        let delta = u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        now.checked_add(delta)
-            .ok_or(RequestExecutionError::ValueOutOfRange)?
-    } else if ascii_eq_ignore_case(option, b"PXAT") {
-        if value < 0 {
-            return Err(RequestExecutionError::ValueOutOfRange);
+        if ascii_eq_ignore_case(token, b"PERSIST") {
+            if persist || expiration_unix_millis.is_some() {
+                return Err(
+                    RequestExecutionError::HashOnlyOneOfHgetexExpireArgumentsCanBeSpecified,
+                );
+            }
+            persist = true;
+            index += 1;
+            continue;
         }
-        expire_if_past_immediately = true;
-        u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?
-    } else {
-        return Err(RequestExecutionError::SyntaxError);
-    };
-    if !ascii_eq_ignore_case(args[4], b"FIELDS") {
-        return Err(RequestExecutionError::SyntaxError);
+        if ascii_eq_ignore_case(token, b"FXX")
+            || ascii_eq_ignore_case(token, b"FNX")
+            || ascii_eq_ignore_case(token, b"KEEPTTL")
+        {
+            return Err(RequestExecutionError::HashUnknownArgument);
+        }
+        if ascii_eq_ignore_case(token, b"EX")
+            || ascii_eq_ignore_case(token, b"PX")
+            || ascii_eq_ignore_case(token, b"EXAT")
+            || ascii_eq_ignore_case(token, b"PXAT")
+        {
+            if persist || expiration_unix_millis.is_some() {
+                return Err(
+                    RequestExecutionError::HashOnlyOneOfHgetexExpireArgumentsCanBeSpecified,
+                );
+            }
+            if index + 1 >= args.len() {
+                return Err(RequestExecutionError::HashMissingExpireTime);
+            }
+            let value =
+                parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let now = current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+            let (expiration, immediate) = if ascii_eq_ignore_case(token, b"EX") {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                let delta_secs =
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                let delta_millis = delta_secs
+                    .checked_mul(1000)
+                    .ok_or(RequestExecutionError::ValueOutOfRange)?;
+                (
+                    now.checked_add(delta_millis)
+                        .ok_or(RequestExecutionError::ValueOutOfRange)?,
+                    value == 0,
+                )
+            } else if ascii_eq_ignore_case(token, b"PX") {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                let delta =
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                (
+                    now.checked_add(delta)
+                        .ok_or(RequestExecutionError::ValueOutOfRange)?,
+                    value == 0,
+                )
+            } else if ascii_eq_ignore_case(token, b"EXAT") {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                let at_secs =
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                (
+                    at_secs
+                        .checked_mul(1000)
+                        .ok_or(RequestExecutionError::ValueOutOfRange)?,
+                    true,
+                )
+            } else {
+                if value < 0 {
+                    return Err(RequestExecutionError::ValueOutOfRange);
+                }
+                (
+                    u64::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)?,
+                    true,
+                )
+            };
+            expiration_unix_millis = Some(expiration);
+            expire_if_past_immediately = immediate;
+            index += 2;
+            continue;
+        }
+        return Err(RequestExecutionError::HashUnknownArgument);
     }
+
+    let first_field_index =
+        first_field_index.ok_or(RequestExecutionError::HashMandatoryFieldsArgumentMissing)?;
+    let field_count =
+        field_count.ok_or(RequestExecutionError::HashMandatoryFieldsArgumentMissing)?;
     Ok(ParsedHashExpireOptions {
-        expiration_unix_millis: Some(expiration_unix_millis),
-        fields_index: 4,
+        expiration_unix_millis,
+        keep_ttl: false,
+        first_field_index,
+        field_count,
         expire_if_past_immediately,
+        field_set_condition: HashFieldSetCondition::Any,
+        persist,
     })
 }
 
 struct ParsedHashExpireOptions {
     expiration_unix_millis: Option<u64>,
-    fields_index: usize,
+    keep_ttl: bool,
+    first_field_index: usize,
+    field_count: usize,
     expire_if_past_immediately: bool,
+    field_set_condition: HashFieldSetCondition,
+    persist: bool,
+}
+
+struct ParsedHashFieldsBlock {
+    first_field_index: usize,
+    field_count: usize,
+    next_index: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashFieldSetCondition {
+    Any,
+    Fxx,
+    Fnx,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HashFieldExpireCondition {
+    None,
+    Nx,
+    Xx,
+    Gt,
+    Lt,
+}
+
+fn parse_hash_field_expire_condition(
+    args: &[&[u8]],
+    default_fields_index: usize,
+    command: &'static str,
+    expected: &'static str,
+) -> Result<(HashFieldExpireCondition, usize), RequestExecutionError> {
+    if args.len() <= default_fields_index {
+        return Err(RequestExecutionError::WrongArity { command, expected });
+    }
+    if ascii_eq_ignore_case(args[default_fields_index], b"FIELDS") {
+        return Ok((HashFieldExpireCondition::None, default_fields_index));
+    }
+    if args.len() <= default_fields_index + 1 {
+        return Err(RequestExecutionError::WrongArity { command, expected });
+    }
+    let condition = if ascii_eq_ignore_case(args[default_fields_index], b"NX") {
+        HashFieldExpireCondition::Nx
+    } else if ascii_eq_ignore_case(args[default_fields_index], b"XX") {
+        HashFieldExpireCondition::Xx
+    } else if ascii_eq_ignore_case(args[default_fields_index], b"GT") {
+        HashFieldExpireCondition::Gt
+    } else if ascii_eq_ignore_case(args[default_fields_index], b"LT") {
+        HashFieldExpireCondition::Lt
+    } else {
+        return Err(RequestExecutionError::SyntaxError);
+    };
+    if !ascii_eq_ignore_case(args[default_fields_index + 1], b"FIELDS") {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok((condition, default_fields_index + 1))
 }
 
 fn parse_hash_fields<'a>(
@@ -1459,40 +2375,82 @@ fn parse_hash_fields<'a>(
     Ok(args[first_field_index..last_field_index].to_vec())
 }
 
-#[allow(clippy::type_complexity)]
-fn parse_hash_fields_with_values<'a>(
-    args: &'a [&'a [u8]],
+fn parse_hgetdel_fields<'a>(args: &'a [&'a [u8]]) -> Result<Vec<&'a [u8]>, RequestExecutionError> {
+    if !ascii_eq_ignore_case(args[2], b"FIELDS") {
+        return Err(RequestExecutionError::HashMandatoryFieldsArgumentMissing);
+    }
+    let field_count = parse_i64_ascii(args[3])
+        .ok_or(RequestExecutionError::HashNumberOfFieldsMustBePositiveInteger)?;
+    if field_count <= 0 {
+        return Err(RequestExecutionError::HashNumberOfFieldsMustBePositiveInteger);
+    }
+    let field_count = usize::try_from(field_count)
+        .map_err(|_| RequestExecutionError::HashNumberOfFieldsMustBePositiveInteger)?;
+    if field_count != args.len().saturating_sub(4) {
+        return Err(RequestExecutionError::HashNumfieldsParameterMustMatchArguments);
+    }
+    Ok(args[4..].to_vec())
+}
+
+fn parse_hash_fields_block(
+    args: &[&[u8]],
     fields_index: usize,
+    args_per_field: usize,
+    invalid_count_error: RequestExecutionError,
     command: &'static str,
     expected: &'static str,
-) -> Result<Vec<(&'a [u8], &'a [u8])>, RequestExecutionError> {
-    if args.len() <= fields_index + 3 {
+) -> Result<ParsedHashFieldsBlock, RequestExecutionError> {
+    if fields_index + 1 >= args.len() {
         return Err(RequestExecutionError::WrongArity { command, expected });
     }
-    if !ascii_eq_ignore_case(args[fields_index], b"FIELDS") {
-        return Err(RequestExecutionError::SyntaxError);
+    let field_count = parse_i64_ascii(args[fields_index + 1]).ok_or(invalid_count_error)?;
+    if field_count <= 0 {
+        return Err(invalid_count_error);
     }
-    let field_count =
-        parse_u64_ascii(args[fields_index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-    if field_count == 0 {
-        return Err(RequestExecutionError::ValueOutOfRange);
+    let field_count = usize::try_from(field_count).map_err(|_| invalid_count_error)?;
+    let first_field_index = fields_index + 2;
+    let values_len = field_count
+        .checked_mul(args_per_field)
+        .ok_or(invalid_count_error)?;
+    let next_index = first_field_index
+        .checked_add(values_len)
+        .ok_or(invalid_count_error)?;
+    if next_index > args.len() {
+        return Err(RequestExecutionError::WrongArity { command, expected });
     }
-    let field_count =
-        usize::try_from(field_count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+    Ok(ParsedHashFieldsBlock {
+        first_field_index,
+        field_count,
+        next_index,
+    })
+}
+
+fn collect_hash_fields<'a>(
+    args: &'a [&'a [u8]],
+    first_field_index: usize,
+    field_count: usize,
+) -> Result<Vec<&'a [u8]>, RequestExecutionError> {
+    let end_index = first_field_index
+        .checked_add(field_count)
+        .ok_or(RequestExecutionError::HashInvalidNumberOfFields)?;
+    Ok(args[first_field_index..end_index].to_vec())
+}
+
+#[allow(clippy::type_complexity)]
+fn collect_hash_field_values<'a>(
+    args: &'a [&'a [u8]],
+    first_field_index: usize,
+    field_count: usize,
+) -> Result<Vec<(&'a [u8], &'a [u8])>, RequestExecutionError> {
     let values_len = field_count
         .checked_mul(2)
-        .ok_or(RequestExecutionError::ValueOutOfRange)?;
-    let first_value_index = fields_index + 2;
-    let last_value_index = first_value_index
+        .ok_or(RequestExecutionError::HashInvalidNumberOfFields)?;
+    let end_index = first_field_index
         .checked_add(values_len)
-        .ok_or(RequestExecutionError::ValueOutOfRange)?;
-    if args.len() != last_value_index {
-        return Err(RequestExecutionError::WrongArity { command, expected });
-    }
-
+        .ok_or(RequestExecutionError::HashInvalidNumberOfFields)?;
     let mut out = Vec::with_capacity(field_count);
-    let mut index = first_value_index;
-    while index < last_value_index {
+    let mut index = first_field_index;
+    while index < end_index {
         out.push((args[index], args[index + 1]));
         index += 2;
     }

@@ -2,11 +2,11 @@
 
 - Redis baseline source: `local-json:/Users/kazuki-matsuda/dev/src/github.com/redis/redis/src/commands`
 - Redis command count: `263`
-- Garnet declared command count: `241`
-- Supported (declared): `241`
-- Not implemented: `22`
+- Garnet declared command count: `259`
+- Supported (declared): `259`
+- Not implemented: `4`
 - Garnet extensions: `0`
-- Coverage vs Redis baseline: `91.63%`
+- Coverage vs Redis baseline: `98.48%`
 
 ## Files
 

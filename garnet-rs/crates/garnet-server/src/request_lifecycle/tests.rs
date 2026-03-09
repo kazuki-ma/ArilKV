@@ -56,6 +56,24 @@ fn parse_integer_array_response(response: &[u8]) -> Vec<i64> {
     out
 }
 
+fn parse_resp_integer(response: &[u8], index: &mut usize) -> i64 {
+    assert_eq!(response[*index], b':');
+    *index += 1;
+    let start = *index;
+    while *index + 1 < response.len() {
+        if response[*index] == b'\r' && response[*index + 1] == b'\n' {
+            break;
+        }
+        *index += 1;
+    }
+    let value = core::str::from_utf8(&response[start..*index])
+        .unwrap()
+        .parse::<i64>()
+        .unwrap();
+    *index += 2;
+    value
+}
+
 fn parse_bulk_payload(response: &[u8]) -> Option<Vec<u8>> {
     if response == b"$-1\r\n" {
         return None;
@@ -172,6 +190,282 @@ fn parse_command_getkeysandflags_response(response: &[u8]) -> Vec<(Vec<u8>, Vec<
     }
     assert_eq!(index, response.len());
     out
+}
+
+fn parse_nullable_resp_bulk_bytes(response: &[u8], index: &mut usize) -> Option<Vec<u8>> {
+    assert_eq!(response[*index], b'$');
+    if response.get(*index + 1) == Some(&b'-') {
+        *index += 1;
+        while *index + 1 < response.len() {
+            if response[*index] == b'\r' && response[*index + 1] == b'\n' {
+                break;
+            }
+            *index += 1;
+        }
+        *index += 2;
+        return None;
+    }
+    Some(parse_resp_bulk_bytes(response, index))
+}
+
+fn parse_stream_field_pairs(response: &[u8], index: &mut usize) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let field_count = parse_resp_array_len(response, index);
+    let mut fields = Vec::with_capacity(field_count / 2);
+    for _ in 0..(field_count / 2) {
+        let field = parse_resp_bulk_bytes(response, index);
+        let value = parse_resp_bulk_bytes(response, index);
+        fields.push((field, value));
+    }
+    fields
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RespTestValue {
+    Integer(i64),
+    Bulk(Vec<u8>),
+    Array(Vec<RespTestValue>),
+    Null,
+}
+
+fn parse_resp_test_value(response: &[u8]) -> RespTestValue {
+    let mut index = 0usize;
+    let value = parse_resp_test_value_at(response, &mut index);
+    assert_eq!(index, response.len());
+    value
+}
+
+fn parse_resp_test_value_at(response: &[u8], index: &mut usize) -> RespTestValue {
+    match response[*index] {
+        b':' => RespTestValue::Integer(parse_resp_integer(response, index)),
+        b'$' => match parse_nullable_resp_bulk_bytes(response, index) {
+            Some(payload) => RespTestValue::Bulk(payload),
+            None => RespTestValue::Null,
+        },
+        b'*' => {
+            let array_len = parse_resp_array_len(response, index);
+            let mut items = Vec::with_capacity(array_len);
+            for _ in 0..array_len {
+                items.push(parse_resp_test_value_at(response, index));
+            }
+            RespTestValue::Array(items)
+        }
+        other => panic!("unsupported RESP test token: {}", other as char),
+    }
+}
+
+fn resp_test_array(value: &RespTestValue) -> &[RespTestValue] {
+    match value {
+        RespTestValue::Array(items) => items,
+        other => panic!("expected RESP array, got {other:?}"),
+    }
+}
+
+fn resp_test_bulk(value: &RespTestValue) -> &[u8] {
+    match value {
+        RespTestValue::Bulk(payload) => payload,
+        other => panic!("expected RESP bulk string, got {other:?}"),
+    }
+}
+
+fn resp_test_integer(value: &RespTestValue) -> i64 {
+    match value {
+        RespTestValue::Integer(number) => *number,
+        other => panic!("expected RESP integer, got {other:?}"),
+    }
+}
+
+fn resp_test_is_null(value: &RespTestValue) -> bool {
+    matches!(value, RespTestValue::Null)
+}
+
+fn resp_test_flat_map<'a>(
+    value: &'a RespTestValue,
+) -> std::collections::BTreeMap<Vec<u8>, &'a RespTestValue> {
+    let items = resp_test_array(value);
+    assert_eq!(items.len() % 2, 0);
+    let mut map = std::collections::BTreeMap::new();
+    let mut index = 0usize;
+    while index < items.len() {
+        let key = resp_test_bulk(&items[index]).to_vec();
+        map.insert(key, &items[index + 1]);
+        index += 2;
+    }
+    map
+}
+
+fn xinfo_full_group_by_name<'a>(
+    full_map: &'a std::collections::BTreeMap<Vec<u8>, &'a RespTestValue>,
+    group_name: &[u8],
+) -> std::collections::BTreeMap<Vec<u8>, &'a RespTestValue> {
+    let groups = resp_test_array(full_map[&b"groups".to_vec()]);
+    groups
+        .iter()
+        .map(resp_test_flat_map)
+        .find(|group| resp_test_bulk(group[&b"name".to_vec()]) == group_name)
+        .unwrap_or_else(|| panic!("missing group {}", String::from_utf8_lossy(group_name)))
+}
+
+fn parse_stream_entry_list_at(
+    response: &[u8],
+    index: &mut usize,
+) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
+    let entry_count = parse_resp_array_len(response, index);
+    let mut entries = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        assert_eq!(parse_resp_array_len(response, index), 2);
+        let entry_id = parse_resp_bulk_bytes(response, index);
+        let fields = parse_stream_field_pairs(response, index);
+        entries.push((entry_id, fields));
+    }
+    entries
+}
+
+fn parse_stream_entry_list_response(response: &[u8]) -> Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)> {
+    let mut index = 0usize;
+    let entries = parse_stream_entry_list_at(response, &mut index);
+    assert_eq!(index, response.len());
+    entries
+}
+
+fn parse_bulk_byte_array_at(response: &[u8], index: &mut usize) -> Vec<Vec<u8>> {
+    let item_count = parse_resp_array_len(response, index);
+    let mut items = Vec::with_capacity(item_count);
+    for _ in 0..item_count {
+        items.push(parse_resp_bulk_bytes(response, index));
+    }
+    items
+}
+
+fn parse_xread_single_stream_response(
+    response: &[u8],
+) -> Option<(Vec<u8>, Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)>)> {
+    if response == b"*-1\r\n" || response == b"_\r\n" {
+        return None;
+    }
+
+    let mut index = 0usize;
+    let stream_count = parse_resp_array_len(response, &mut index);
+    assert_eq!(stream_count, 1);
+    assert_eq!(parse_resp_array_len(response, &mut index), 2);
+    let stream_name = parse_resp_bulk_bytes(response, &mut index);
+    let entries = parse_stream_entry_list_at(response, &mut index);
+    assert_eq!(index, response.len());
+    Some((stream_name, entries))
+}
+
+fn resp_test_field_pairs(value: &RespTestValue) -> Vec<(Vec<u8>, Vec<u8>)> {
+    let items = resp_test_array(value);
+    assert!(items.len().is_multiple_of(2));
+    let mut pairs = Vec::with_capacity(items.len() / 2);
+    let mut index = 0usize;
+    while index < items.len() {
+        pairs.push((
+            resp_test_bulk(&items[index]).to_vec(),
+            resp_test_bulk(&items[index + 1]).to_vec(),
+        ));
+        index += 2;
+    }
+    pairs
+}
+
+fn parse_xreadgroup_maybe_claim_single_stream_response(
+    response: &[u8],
+) -> Option<(
+    Vec<u8>,
+    Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>, Option<i64>, Option<i64>)>,
+)> {
+    if response == b"*-1\r\n" || response == b"_\r\n" {
+        return None;
+    }
+
+    let root = parse_resp_test_value(response);
+    let streams = resp_test_array(&root);
+    assert_eq!(streams.len(), 1);
+    let stream = resp_test_array(&streams[0]);
+    assert_eq!(stream.len(), 2);
+    let stream_name = resp_test_bulk(&stream[0]).to_vec();
+    let messages = resp_test_array(&stream[1]);
+    let mut entries = Vec::with_capacity(messages.len());
+    for message in messages {
+        let parts = resp_test_array(message);
+        match parts.len() {
+            2 => entries.push((
+                resp_test_bulk(&parts[0]).to_vec(),
+                resp_test_field_pairs(&parts[1]),
+                None,
+                None,
+            )),
+            4 => entries.push((
+                resp_test_bulk(&parts[0]).to_vec(),
+                resp_test_field_pairs(&parts[1]),
+                Some(resp_test_integer(&parts[2])),
+                Some(resp_test_integer(&parts[3])),
+            )),
+            _ => panic!("unexpected XREADGROUP entry shape: {parts:?}"),
+        }
+    }
+    Some((stream_name, entries))
+}
+
+fn parse_xautoclaim_entry_response(
+    response: &[u8],
+) -> (
+    Vec<u8>,
+    Vec<(Vec<u8>, Vec<(Vec<u8>, Vec<u8>)>)>,
+    Vec<Vec<u8>>,
+) {
+    let mut index = 0usize;
+    assert_eq!(parse_resp_array_len(response, &mut index), 3);
+    let cursor = parse_resp_bulk_bytes(response, &mut index);
+    let claimed_entries = parse_stream_entry_list_at(response, &mut index);
+    let deleted_ids = parse_bulk_byte_array_at(response, &mut index);
+    assert_eq!(index, response.len());
+    (cursor, claimed_entries, deleted_ids)
+}
+
+fn parse_xautoclaim_justid_response(response: &[u8]) -> (Vec<u8>, Vec<Vec<u8>>, Vec<Vec<u8>>) {
+    let mut index = 0usize;
+    assert_eq!(parse_resp_array_len(response, &mut index), 3);
+    let cursor = parse_resp_bulk_bytes(response, &mut index);
+    let claimed_ids = parse_bulk_byte_array_at(response, &mut index);
+    let deleted_ids = parse_bulk_byte_array_at(response, &mut index);
+    assert_eq!(index, response.len());
+    (cursor, claimed_ids, deleted_ids)
+}
+
+fn parse_xpending_detail_response(response: &[u8]) -> Vec<(Vec<u8>, Vec<u8>, i64, i64)> {
+    let mut index = 0usize;
+    let pending_count = parse_resp_array_len(response, &mut index);
+    let mut pending = Vec::with_capacity(pending_count);
+    for _ in 0..pending_count {
+        assert_eq!(parse_resp_array_len(response, &mut index), 4);
+        let entry_id = parse_resp_bulk_bytes(response, &mut index);
+        let consumer = parse_resp_bulk_bytes(response, &mut index);
+        let idle = parse_resp_integer(response, &mut index);
+        let deliveries = parse_resp_integer(response, &mut index);
+        pending.push((entry_id, consumer, idle, deliveries));
+    }
+    pending
+}
+
+fn parse_xpending_summary_response(
+    response: &[u8],
+) -> (i64, Option<Vec<u8>>, Option<Vec<u8>>, Vec<(Vec<u8>, i64)>) {
+    let mut index = 0usize;
+    assert_eq!(parse_resp_array_len(response, &mut index), 4);
+    let total = parse_resp_integer(response, &mut index);
+    let smallest = parse_nullable_resp_bulk_bytes(response, &mut index);
+    let greatest = parse_nullable_resp_bulk_bytes(response, &mut index);
+    let consumer_count = parse_resp_array_len(response, &mut index);
+    let mut consumers = Vec::with_capacity(consumer_count);
+    for _ in 0..consumer_count {
+        assert_eq!(parse_resp_array_len(response, &mut index), 2);
+        let name = parse_resp_bulk_bytes(response, &mut index);
+        let count = parse_resp_integer(response, &mut index);
+        consumers.push((name, count));
+    }
+    assert_eq!(index, response.len());
+    (total, smallest, greatest, consumers)
 }
 
 fn encode_resp(parts: &[&[u8]]) -> Vec<u8> {
@@ -936,6 +1230,265 @@ fn hash_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn hash_batch_mutations_with_duplicate_fields_keep_redis_counts() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Two distinct fields are inserted; duplicate f1 in one command only counts once.
+    assert_command_integer(&processor, "HSET hdup f1 v1 f1 v2 f2 v3", 2);
+    assert_command_response(&processor, "HGET hdup f1", b"$2\r\nv2\r\n");
+    assert_command_response(
+        &processor,
+        "HGETALL hdup",
+        b"*4\r\n$2\r\nf1\r\n$2\r\nv2\r\n$2\r\nf2\r\n$2\r\nv3\r\n",
+    );
+
+    // Duplicate deletes in one command also count at most once per existing field.
+    assert_command_integer(&processor, "HDEL hdup f1 f1 missing", 1);
+    assert_command_response(
+        &processor,
+        "HGETALL hdup",
+        b"*2\r\n$2\r\nf2\r\n$2\r\nv3\r\n",
+    );
+
+    // Deleting the final field removes the key.
+    assert_command_integer(&processor, "HDEL hdup f2 f2", 1);
+    assert_command_response(&processor, "HGETALL hdup", b"*0\r\n");
+}
+
+#[test]
+fn hmset_and_hgetdel_multi_field_paths_preserve_duplicate_and_order_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "HMSET hmdup f1 v1 f1 v2 f2 v3", b"+OK\r\n");
+    assert_command_response(&processor, "HGET hmdup f1", b"$2\r\nv2\r\n");
+
+    assert_command_response(
+        &processor,
+        "HGETDEL hmdup FIELDS 4 f1 missing f1 f2",
+        b"*4\r\n$2\r\nv2\r\n$-1\r\n$-1\r\n$2\r\nv3\r\n",
+    );
+    assert_command_response(&processor, "HGETALL hmdup", b"*0\r\n");
+}
+
+#[test]
+fn hsetex_hgetex_fast_paths_preserve_duplicate_and_immediate_expire_semantics() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(
+        &processor,
+        "HSETEX hsx PX 60000 FIELDS 3 f1 v1 f1 v2 f2 v3",
+        1,
+    );
+    assert_command_response(&processor, "HGET hsx f1", b"$2\r\nv2\r\n");
+    assert_command_response(
+        &processor,
+        "HGETEX hsx FIELDS 4 f1 missing f1 f2",
+        b"*4\r\n$2\r\nv2\r\n$-1\r\n$2\r\nv2\r\n$2\r\nv3\r\n",
+    );
+
+    // PXAT in the past still returns current values first, then removes matching fields.
+    assert_command_integer(&processor, "HSET hsx_past f1 v1 f2 v2", 2);
+    assert_command_response(
+        &processor,
+        "HGETEX hsx_past PXAT 1 FIELDS 3 f1 missing f1",
+        b"*3\r\n$2\r\nv1\r\n$-1\r\n$2\r\nv1\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "HGETALL hsx_past",
+        b"*2\r\n$2\r\nf2\r\n$2\r\nv2\r\n",
+    );
+
+    assert_command_integer(&processor, "HSETEX hsx_drop PXAT 1 FIELDS 2 a 1 b 2", 1);
+    assert_command_response(&processor, "HGETALL hsx_drop", b"*0\r\n");
+}
+
+#[test]
+fn hgetdel_input_validation_matches_external_hash_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "HGETDEL",
+        b"-ERR wrong number of arguments for 'hgetdel' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1",
+        b"-ERR wrong number of arguments for 'hgetdel' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS",
+        b"-ERR wrong number of arguments for 'hgetdel' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS 0",
+        b"-ERR wrong number of arguments for 'hgetdel' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDX",
+        b"-ERR wrong number of arguments for 'hgetdel' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 XFIELDX 1 a",
+        b"-ERR Mandatory argument FIELDS is missing or not at the right position\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS 2 a",
+        b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS 2 a b c",
+        b"-ERR The `numfields` parameter must match the number of arguments\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS 0 a",
+        b"-ERR Number of fields must be a positive integer\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS -1 a",
+        b"-ERR Number of fields must be a positive integer\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS b a",
+        b"-ERR Number of fields must be a positive integer\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETDEL key1 FIELDS 9223372036854775808 a",
+        b"-ERR Number of fields must be a positive integer\r\n",
+    );
+}
+
+#[test]
+fn hsetex_hgetex_flexible_argument_parsing_matches_external_hash_field_expire_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "HSETEX myhash EX 60 FIELDS 2 f1 v1 f2 v2", 1);
+    let ttl = parse_integer_array_response(
+        &execute_command_line(&processor, "HTTL myhash FIELDS 2 f1 f2").unwrap(),
+    );
+    assert!((0..=60).contains(&ttl[0]));
+    assert!((0..=60).contains(&ttl[1]));
+
+    assert_command_response(&processor, "DEL myhash", b":1\r\n");
+    assert_command_integer(&processor, "HSETEX myhash FIELDS 2 f1 v1 f2 v2 EX 60", 1);
+    let ttl = parse_integer_array_response(
+        &execute_command_line(&processor, "HTTL myhash FIELDS 2 f1 f2").unwrap(),
+    );
+    assert!((0..=60).contains(&ttl[0]));
+    assert!((0..=60).contains(&ttl[1]));
+
+    assert_command_integer(&processor, "HSETEX myhash KEEPTTL FIELDS 1 f2 v22", 1);
+    assert_command_response(&processor, "HGET myhash f2", b"$3\r\nv22\r\n");
+    assert_ne!(
+        parse_integer_array_response(
+            &execute_command_line(&processor, "HTTL myhash FIELDS 1 f2").unwrap()
+        )[0],
+        -1
+    );
+
+    assert_command_response(&processor, "DEL myhash", b":1\r\n");
+    assert_command_response(&processor, "HSET myhash f1 v1 f2 v2 f3 v3", b":3\r\n");
+    assert_command_response(
+        &processor,
+        "HGETEX myhash EX 60 FIELDS 2 f1 f2",
+        b"*2\r\n$2\r\nv1\r\n$2\r\nv2\r\n",
+    );
+    let ttl = parse_integer_array_response(
+        &execute_command_line(&processor, "HTTL myhash FIELDS 2 f1 f2").unwrap(),
+    );
+    assert!((0..=60).contains(&ttl[0]));
+    assert!((0..=60).contains(&ttl[1]));
+
+    assert_command_response(&processor, "DEL myhash", b":1\r\n");
+    assert_command_response(&processor, "HSET myhash f1 v1 f2 v2 f3 v3", b":3\r\n");
+    assert_command_response(
+        &processor,
+        "HGETEX myhash FIELDS 2 f1 f2 EX 60",
+        b"*2\r\n$2\r\nv1\r\n$2\r\nv2\r\n",
+    );
+    let ttl = parse_integer_array_response(
+        &execute_command_line(&processor, "HTTL myhash FIELDS 2 f1 f2").unwrap(),
+    );
+    assert!((0..=60).contains(&ttl[0]));
+    assert!((0..=60).contains(&ttl[1]));
+
+    assert_command_response(
+        &processor,
+        "HGETEX myhash FIELDS 1 f3 PERSIST",
+        b"*1\r\n$2\r\nv3\r\n",
+    );
+    assert_eq!(
+        parse_integer_array_response(
+            &execute_command_line(&processor, "HTTL myhash FIELDS 1 f3").unwrap()
+        )[0],
+        -1
+    );
+}
+
+#[test]
+fn hsetex_hgetex_field_count_and_condition_semantics_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "HSETEX myhash FIELDS 2 f1 v1",
+        b"-ERR wrong number of arguments for 'hsetex' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HSETEX myhash FIELDS 1 f1 v1 f2 v2",
+        b"-ERR unknown argument\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HSETEX myhash FIELDS 0 f1 v1 EX 60",
+        b"-ERR invalid number of fields\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETEX myhash FIELDS 2 f1",
+        b"-ERR wrong number of arguments for 'hgetex' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETEX myhash FIELDS 1 f1 f2 f3",
+        b"-ERR unknown argument\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "HGETEX myhash FIELDS 0 f1 EX 60",
+        b"-ERR invalid number of fields\r\n",
+    );
+
+    assert_command_response(&processor, "HSET myhash f1 v1", b":1\r\n");
+    assert_command_integer(&processor, "HSETEX myhash FXX FIELDS 2 f1 x f2 y", 0);
+    assert_command_response(
+        &processor,
+        "HGETALL myhash",
+        b"*2\r\n$2\r\nf1\r\n$2\r\nv1\r\n",
+    );
+
+    assert_command_integer(&processor, "HSETEX myhash FNX FIELDS 2 f2 v2 f3 v3", 1);
+    assert_command_integer(&processor, "HSETEX myhash FNX FIELDS 2 f1 x f4 y", 0);
+    assert_command_response(
+        &processor,
+        "HGETALL myhash",
+        b"*6\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n$2\r\nf3\r\n$2\r\nv3\r\n",
+    );
+}
+
+#[test]
 fn hgetall_returns_map_in_resp3_and_flat_array_in_resp2() {
     let processor = RequestProcessor::new().unwrap();
     assert_command_response(&processor, "HSET mh f1 v1 f2 v2", b":2\r\n");
@@ -1092,6 +1645,13 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$1\r\n6\r\n");
+
+    assert_command_error(
+        &processor,
+        "HINCRBYFLOAT hfoo field +inf",
+        b"-ERR value is NaN or Infinity\r\n",
+    );
+    assert_command_response(&processor, "EXISTS hfoo", b":0\r\n");
 }
 
 #[test]
@@ -1174,7 +1734,7 @@ fn hsetex_hgetex_hgetdel_hexpire_hpexpire_cover_basic_operations() {
     let now_millis = current_unix_time_millis().unwrap();
     let future_millis = now_millis + 60_000;
     let cmd = format!("HSETEX hsx PXAT {future_millis} FIELDS 2 f1 v1 f2 v2");
-    assert_command_integer(&processor, &cmd, 2);
+    assert_command_integer(&processor, &cmd, 1);
     // Fields exist and have expiration.
     let hpttl = execute_command_line(&processor, "HPTTL hsx FIELDS 2 f1 f2").unwrap();
     let ttls = parse_integer_array_response(&hpttl);
@@ -1372,6 +1932,37 @@ fn hash_commands_return_wrongtype_for_string_keys() {
     assert_eq!(
         response,
         b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    assert_command_error(
+        &processor,
+        "SINTERCARD 0 myset",
+        b"-ERR numkeys should be greater than 0\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SINTERCARD a myset",
+        b"-ERR numkeys should be greater than 0\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SINTERCARD 2 myset",
+        b"-ERR Number of keys can't be greater than number of args\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SINTERCARD 3 myset myset2",
+        b"-ERR Number of keys can't be greater than number of args\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SINTERCARD 1 myset LIMIT -1",
+        b"-ERR LIMIT can't be negative\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SINTERCARD 1 myset LIMIT a",
+        b"-ERR LIMIT can't be negative\r\n",
     );
 }
 
@@ -2162,6 +2753,106 @@ fn sadd_falls_back_from_contiguous_range_encoding_for_non_canonical_members() {
 }
 
 #[test]
+fn set_object_encoding_does_not_downgrade_after_intset_to_listpack_upgrade() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SADD", b"myset", b"1", b"2", b"3"])
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"OBJECT", b"ENCODING", b"myset"])
+        ),
+        b"$6\r\nintset\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SADD", b"myset", b"a"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"OBJECT", b"ENCODING", b"myset"])
+        ),
+        b"$8\r\nlistpack\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(&processor, &encode_resp(&[b"SREM", b"myset", b"a"])),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"OBJECT", b"ENCODING", b"myset"])
+        ),
+        b"$8\r\nlistpack\r\n"
+    );
+}
+
+#[test]
+fn set_object_encoding_respects_set_max_listpack_value_and_hashtable_floor() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"CONFIG", b"SET", b"set-max-listpack-value", b"32"]),
+        ),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"CONFIG", b"GET", b"set-max-listpack-value"]),
+        ),
+        b"*2\r\n$22\r\nset-max-listpack-value\r\n$2\r\n32\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[
+                b"SADD",
+                b"myset",
+                b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
+                b"a",
+                b"b",
+            ]),
+        ),
+        b":3\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"OBJECT", b"ENCODING", b"myset"])
+        ),
+        b"$9\r\nhashtable\r\n"
+    );
+
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"SREM", b"myset", b"ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"]),
+        ),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"OBJECT", b"ENCODING", b"myset"])
+        ),
+        b"$9\r\nhashtable\r\n"
+    );
+}
+
+#[test]
 fn additional_set_commands_cover_common_redis_semantics() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 20];
@@ -2408,6 +3099,63 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     response.clear();
     let sinter_wrongtype = encode_resp(&[b"SINTER", b"plain", b"s1"]);
     let meta = parse_resp_command_arg_slices(&sinter_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    // Redis still validates all key types even when intermediate set algebra
+    // result becomes empty or first key is missing.
+    response.clear();
+    let sinter_missing_then_wrongtype = encode_resp(&[b"SINTER", b"missing", b"plain"]);
+    let meta = parse_resp_command_arg_slices(&sinter_missing_then_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    response.clear();
+    let sdiff_empty_then_wrongtype = encode_resp(&[b"SDIFF", b"s1", b"s2", b"plain"]);
+    let meta = parse_resp_command_arg_slices(&sdiff_empty_then_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    response.clear();
+    let sinterstore_missing_then_wrongtype =
+        encode_resp(&[b"SINTERSTORE", b"dst_bad", b"missing", b"plain"]);
+    let meta =
+        parse_resp_command_arg_slices(&sinterstore_missing_then_wrongtype, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .err()
+        .unwrap();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+
+    response.clear();
+    let sdiffstore_empty_then_wrongtype =
+        encode_resp(&[b"SDIFFSTORE", b"dst_bad", b"s1", b"s2", b"plain"]);
+    let meta = parse_resp_command_arg_slices(&sdiffstore_empty_then_wrongtype, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .err()
@@ -3159,6 +3907,46 @@ fn zset_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn zadd_supports_option_flags_and_incr_mode() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "ZADD z 1 one 2 two", b":2\r\n");
+    assert_command_response(&processor, "ZADD z NX 3 one 4 three", b":1\r\n");
+    assert_command_response(&processor, "ZSCORE z one", b"$1\r\n1\r\n");
+    assert_command_response(&processor, "ZSCORE z three", b"$1\r\n4\r\n");
+
+    assert_command_response(&processor, "ZADD z XX 5 four 6 one", b":0\r\n");
+    assert_command_response(&processor, "ZSCORE z one", b"$1\r\n6\r\n");
+    assert_command_response(&processor, "ZSCORE z four", b"$-1\r\n");
+
+    assert_command_response(&processor, "ZADD z GT CH 5 one 10 two", b":1\r\n");
+    assert_command_response(&processor, "ZSCORE z one", b"$1\r\n6\r\n");
+    assert_command_response(&processor, "ZSCORE z two", b"$2\r\n10\r\n");
+    assert_command_response(&processor, "ZADD z GT 7 four", b":1\r\n");
+    assert_command_response(&processor, "ZSCORE z four", b"$1\r\n7\r\n");
+
+    assert_command_response(&processor, "ZADD z LT CH 9 two 1 three", b":2\r\n");
+    assert_command_response(&processor, "ZSCORE z two", b"$1\r\n9\r\n");
+    assert_command_response(&processor, "ZSCORE z three", b"$1\r\n1\r\n");
+
+    let incr_resp = execute_command_line(&processor, "ZADD z INCR 2 one").unwrap();
+    let incr = parse_bulk_payload(&incr_resp).expect("ZADD INCR should return a score");
+    assert_eq!(incr, b"8");
+
+    assert_command_error(&processor, "ZADD z NX XX 1 bad", b"-ERR syntax error\r\n");
+    assert_command_error(&processor, "ZADD z GT NX 1 bad", b"-ERR syntax error\r\n");
+    assert_command_error(&processor, "ZADD z LT GT 1 bad", b"-ERR syntax error\r\n");
+    assert_command_error(&processor, "ZADD z INCR 1 a 2 b", b"-ERR syntax error\r\n");
+
+    assert_command_response(&processor, "ZADD z LT INCR 1 one", b"$-1\r\n");
+
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+    assert_command_response(&processor, "ZADD z INCR 2 one", b",10\r\n");
+    assert_command_response(&processor, "ZADD z LT INCR 1 one", b"_\r\n");
+    processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
+}
+
+#[test]
 fn zset_commands_return_wrongtype_for_string_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -3252,6 +4040,12 @@ fn executes_incrby_and_decrby_commands() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":3\r\n");
+
+    assert_command_error(
+        &processor,
+        "DECRBY counter -9223372036854775808",
+        b"-ERR increment or decrement would overflow\r\n",
+    );
 }
 
 #[test]
@@ -3402,6 +4196,26 @@ fn executes_del_command() {
         .execute(&args[..del_meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b":1\r\n");
+}
+
+#[test]
+fn smove_wrong_dst_key_type_matches_redis_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "DEL myset3{t} myset4{t}", b":0\r\n");
+    assert_command_response(&processor, "SADD myset1{t} 1 a b", b":3\r\n");
+    assert_command_response(&processor, "SADD myset2{t} 2 3 4", b":3\r\n");
+    assert_command_response(&processor, "SET x{t} 10", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "SMOVE myset2{t} x{t} foo",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SMEMBERS myset2{t}",
+        b"*3\r\n$1\r\n2\r\n$1\r\n3\r\n$1\r\n4\r\n",
+    );
 }
 
 #[test]
@@ -4594,6 +5408,53 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
 }
 
 #[test]
+fn restore_legacy_stream_cgroups_rdb_ver_lt_10_matches_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    let payload = b"\x0F\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\xC3\x40\x4A\x40\x57\x16\x57\x00\x00\x00\x23\x00\x02\x01\x04\x01\x01\x01\x84\x64\x61\x74\x61\x05\x00\x01\x03\x01\x00\x20\x01\x03\x81\x61\x02\x04\x20\x0A\x00\x01\x40\x0A\x00\x62\x60\x0A\x00\x02\x40\x0A\x00\x63\x60\x0A\x40\x22\x01\x81\x64\x20\x0A\x40\x39\x20\x0A\x00\x65\x60\x0A\x00\x05\x40\x0A\x00\x66\x20\x0A\x00\xFF\x02\x06\x00\x02\x02\x67\x31\x05\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x01\x03\x63\x31\x31\x3E\xF7\x83\x43\x7A\x01\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x02\x67\x32\x00\x00\x00\x00\x09\x00\x3D\x52\xEF\x68\x67\x52\x1D\xFA";
+
+    let restore = encode_resp(&[b"RESTORE", b"x", b"0", payload]);
+    assert_eq!(execute_frame(&processor, &restore), b"+OK\r\n");
+
+    let response = execute_command_line(&processor, "XINFO STREAM x FULL").unwrap();
+    let root = parse_resp_test_value(&response);
+    let full = resp_test_flat_map(&root);
+    assert_eq!(
+        resp_test_bulk(full[&b"max-deleted-entry-id".to_vec()]),
+        b"0-0"
+    );
+    assert_eq!(resp_test_integer(full[&b"entries-added".to_vec()]), 2);
+
+    let group_g1 = xinfo_full_group_by_name(&full, b"g1");
+    assert_eq!(resp_test_integer(group_g1[&b"entries-read".to_vec()]), 1);
+    assert_eq!(resp_test_integer(group_g1[&b"lag".to_vec()]), 1);
+
+    let group_g2 = xinfo_full_group_by_name(&full, b"g2");
+    assert_eq!(resp_test_integer(group_g2[&b"entries-read".to_vec()]), 0);
+    assert_eq!(resp_test_integer(group_g2[&b"lag".to_vec()]), 2);
+}
+
+#[test]
+fn restore_legacy_stream_cgroups_rdb_ver_lt_11_matches_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    let payload = b"\x13\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x1D\x1D\x00\x00\x00\x0A\x00\x01\x01\x00\x01\x01\x01\x81\x66\x02\x00\x01\x02\x01\x00\x01\x00\x01\x81\x76\x02\x04\x01\xFF\x01\x01\x01\x01\x01\x00\x00\x01\x01\x01\x67\x01\x01\x01\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\xF5\x5A\x71\xC7\x84\x01\x00\x00\x01\x01\x05\x41\x6C\x69\x63\x65\xF5\x5A\x71\xC7\x84\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x01\x0B\x00\xA7\xA9\x14\xA5\x27\xFF\x9B\x9B";
+
+    let restore = encode_resp(&[b"RESTORE", b"x", b"0", payload]);
+    assert_eq!(execute_frame(&processor, &restore), b"+OK\r\n");
+
+    let response = execute_command_line(&processor, "XINFO STREAM x FULL").unwrap();
+    let root = parse_resp_test_value(&response);
+    let full = resp_test_flat_map(&root);
+    let group = xinfo_full_group_by_name(&full, b"g");
+    let consumers = resp_test_array(group[&b"consumers".to_vec()]);
+    assert_eq!(consumers.len(), 1);
+    let consumer = resp_test_flat_map(&consumers[0]);
+    assert_eq!(
+        resp_test_integer(consumer[&b"seen-time".to_vec()]),
+        resp_test_integer(consumer[&b"active-time".to_vec()])
+    );
+}
+
+#[test]
 fn dbsize_counts_string_and_object_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -4864,6 +5725,7 @@ fn info_supports_section_filters_and_multi_section_arguments() {
     let info_default_text = String::from_utf8_lossy(&info_default);
     assert!(info_default_text.contains("redis_version:garnet-rs"));
     assert!(info_default_text.contains("redis_git_sha1:"));
+    assert!(info_default_text.contains("process_id:"));
     assert!(info_default_text.contains("used_cpu_user:"));
     assert!(info_default_text.contains("used_memory:"));
     assert!(info_default_text.contains("master_repl_offset:"));
@@ -5121,6 +5983,79 @@ fn zadd_accepts_infinite_scores() {
             &encode_resp(&[b"ZRANGE", b"z", b"0", b"-1", b"WITHSCORES"]),
         ),
         b"*4\r\n$2\r\nlo\r\n$4\r\n-inf\r\n$2\r\nhi\r\n$3\r\ninf\r\n"
+    );
+}
+
+#[test]
+fn zset_nan_inf_and_zpop_count_edge_cases_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZADD INCR LT/GT with inf - listpack"
+    // - "ZADD INCR LT/GT with inf - skiplist"
+    assert_command_response(&processor, "DEL ztmp", b":0\r\n");
+    assert_command_response(&processor, "ZADD ztmp +inf x -inf y", b":2\r\n");
+    assert_command_response(&processor, "ZADD ztmp LT INCR 1 x", b"$-1\r\n");
+    assert_command_response(&processor, "ZSCORE ztmp x", b"$3\r\ninf\r\n");
+    assert_command_response(&processor, "ZADD ztmp GT INCR -1 x", b"$-1\r\n");
+    assert_command_response(&processor, "ZSCORE ztmp x", b"$3\r\ninf\r\n");
+    assert_command_response(&processor, "ZADD ztmp LT INCR 1 y", b"$-1\r\n");
+    assert_command_response(&processor, "ZSCORE ztmp y", b"$4\r\n-inf\r\n");
+    assert_command_response(&processor, "ZADD ztmp GT INCR -1 y", b"$-1\r\n");
+    assert_command_response(&processor, "ZSCORE ztmp y", b"$4\r\n-inf\r\n");
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZINCRBY calls leading to NaN result in error - listpack"
+    // - "ZINCRBY calls leading to NaN result in error - skiplist"
+    assert_command_response(&processor, "DEL myzset", b":0\r\n");
+    assert_command_response(&processor, "ZINCRBY myzset +inf abc", b"$3\r\ninf\r\n");
+    assert_command_error(
+        &processor,
+        "ZINCRBY myzset -inf abc",
+        b"-ERR resulting score is not a number (NaN)\r\n",
+    );
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZUNIONSTORE regression, should not create NaN in scores"
+    assert_command_response(&processor, "DEL z{t} out{t}", b":0\r\n");
+    assert_command_response(&processor, "ZADD z{t} -inf neginf", b":1\r\n");
+    assert_command_response(&processor, "ZUNIONSTORE out{t} 1 z{t} WEIGHTS 0", b":1\r\n");
+    assert_command_response(
+        &processor,
+        "ZRANGE out{t} 0 -1 WITHSCORES",
+        b"*2\r\n$6\r\nneginf\r\n$1\r\n0\r\n",
+    );
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZPOPMIN with the count 0 returns an empty array"
+    // - "ZPOPMAX with the count 0 returns an empty array"
+    // - "ZPOPMIN with negative count"
+    // - "ZPOPMAX with negative count"
+    assert_command_response(&processor, "DEL zset", b":0\r\n");
+    assert_command_response(&processor, "ZADD zset 1 a 2 b 3 c", b":3\r\n");
+    assert_command_response(&processor, "ZPOPMIN zset 0", b"*0\r\n");
+    assert_command_response(&processor, "ZPOPMAX zset 0", b"*0\r\n");
+    assert_command_response(&processor, "ZCARD zset", b":3\r\n");
+    assert_command_response(&processor, "SET zset foo", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "ZPOPMIN zset -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZPOPMAX zset -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZPOPMIN zset 0",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZPOPMAX zset 0",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
     );
 }
 
@@ -6028,7 +6963,7 @@ fn lcs_supports_sequence_len_idx_and_validation_paths() {
     assert_command_response(
         &processor,
         "LCS lcs1 lcs2 IDX",
-        b"*4\r\n$7\r\nmatches\r\n*2\r\n*2\r\n*2\r\n:2\r\n:3\r\n*2\r\n:0\r\n:1\r\n*2\r\n*2\r\n:4\r\n:7\r\n*2\r\n:5\r\n:8\r\n$3\r\nlen\r\n:6\r\n",
+        b"*4\r\n$7\r\nmatches\r\n*2\r\n*2\r\n*2\r\n:4\r\n:7\r\n*2\r\n:5\r\n:8\r\n*2\r\n*2\r\n:2\r\n:3\r\n*2\r\n:0\r\n:1\r\n$3\r\nlen\r\n:6\r\n",
     );
     assert_command_response(
         &processor,
@@ -6144,7 +7079,90 @@ fn sort_and_sort_ro_support_options_store_and_validation_paths() {
     assert_command_error(
         &processor,
         "SORT sortbad BY weight:*",
-        b"-ERR value is not a valid float\r\n",
+        b"-ERR One or more scores can't be converted into double\r\n",
+    );
+}
+
+#[test]
+fn sort_exact_external_scenarios_match_redis_sort_tcl() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS SORT abc STORE def").unwrap()
+        ),
+        vec![b"abc".to_vec(), b"def".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(&processor, "COMMAND GETKEYS SORT_RO abc").unwrap()
+        ),
+        vec![b"abc".to_vec()]
+    );
+    assert_eq!(
+        parse_bulk_array_payloads(
+            &execute_command_line(
+                &processor,
+                "COMMAND GETKEYS SORT abc STORE invalid STORE stillbad STORE def",
+            )
+            .unwrap()
+        ),
+        vec![b"abc".to_vec(), b"def".to_vec()]
+    );
+
+    assert_command_integer(&processor, "ZADD zset 1 a 5 b 2 c 10 d 3 e", 5);
+    assert_command_response(
+        &processor,
+        "SORT zset BY nosort ASC",
+        b"*5\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\ne\r\n$1\r\nb\r\n$1\r\nd\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SORT zset BY nosort DESC",
+        b"*5\r\n$1\r\nd\r\n$1\r\nb\r\n$1\r\ne\r\n$1\r\nc\r\n$1\r\na\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "SORT zset BY nosort LIMIT -10 100",
+        b"*5\r\n$1\r\na\r\n$1\r\nc\r\n$1\r\ne\r\n$1\r\nb\r\n$1\r\nd\r\n",
+    );
+
+    assert_command_integer(&processor, "SADD myset 1 2 3 4 not-a-double", 5);
+    assert_command_error(
+        &processor,
+        "SORT myset",
+        b"-ERR One or more scores can't be converted into double\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL myset", 1);
+    assert_command_integer(&processor, "SADD myset 1 2 3 4", 4);
+    assert_command_response(
+        &processor,
+        "MSET score:1 10 score:2 20 score:3 30 score:4 not-a-double",
+        b"+OK\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SORT myset BY score:*",
+        b"-ERR One or more scores can't be converted into double\r\n",
+    );
+
+    assert_command_integer(&processor, "LPUSH mylist a", 1);
+    assert_command_response(&processor, "SET x:a-> 100", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "SORT mylist BY num GET x:*->",
+        b"*1\r\n$3\r\n100\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL mylist", 1);
+    assert_command_integer(&processor, "LPUSH mylist a", 1);
+    assert_command_response(&processor, "SET x:a 100", b"+OK\r\n");
+    // Redis' SORT_RO scenario relies on the previous test leaving x:a-> behind.
+    assert_command_response(
+        &processor,
+        "SORT_RO mylist BY nosort GET x:*->",
+        b"*1\r\n$3\r\n100\r\n",
     );
 }
 
@@ -6282,6 +7300,12 @@ fn append_and_incrbyfloat_update_string_values() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$1\r\n2\r\n");
+
+    assert_command_error(
+        &processor,
+        "INCRBYFLOAT num +inf",
+        b"-ERR increment would produce NaN or Infinity\r\n",
+    );
 }
 
 #[test]
@@ -6389,6 +7413,255 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
+}
+
+#[test]
+fn digest_and_delex_match_external_string_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    let digest = parse_bulk_payload(&execute_command_line(&processor, "DIGEST mykey").unwrap())
+        .expect("digest should return a hex string");
+    assert_eq!(digest.len(), 16);
+
+    assert_command_response(
+        &processor,
+        "SET foo v8lf0c11xh8ymlqztfd3eeq16kfn4sspw7fqmnuuq3k3t75em5wdizgcdw7uc26nnf961u2jkfzkjytls2kwlj7626sd",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "DIGEST foo", b"$16\r\n00006c38adf31777\r\n");
+    assert_command_response(&processor, "DIGEST missing", b"$-1\r\n");
+
+    assert_command_integer(&processor, "DELEX mykey IFEQ hello", 1);
+    assert_command_integer(&processor, "EXISTS mykey", 0);
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_integer(&processor, "DELEX mykey IFEQ world", 0);
+    assert_command_response(&processor, "GET mykey", b"$5\r\nhello\r\n");
+
+    let uppercase_digest =
+        parse_bulk_payload(&execute_command_line(&processor, "DIGEST mykey").unwrap())
+            .unwrap()
+            .iter()
+            .map(|byte| byte.to_ascii_uppercase())
+            .collect::<Vec<_>>();
+    let uppercase_digest = String::from_utf8(uppercase_digest).unwrap();
+    assert_command_integer(
+        &processor,
+        &format!("DELEX mykey IFDEQ {uppercase_digest}"),
+        1,
+    );
+    assert_command_integer(&processor, "EXISTS mykey", 0);
+
+    assert_command_integer(&processor, "DELEX nonexistent IFDEQ 1234567890", 0);
+
+    assert_command_response(&processor, "HSET myhash field value", b":1\r\n");
+    assert_command_integer(&processor, "DELEX myhash", 1);
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "DELEX mykey INVALID hello",
+        b"-ERR Invalid condition. Use IFEQ, IFNE, IFDEQ, or IFDNE\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "DELEX mykey IFDEQ short",
+        b"-ERR must be exactly 16 hexadecimal characters\r\n",
+    );
+
+    assert_command_response(&processor, "LPUSH mylist element", b":1\r\n");
+    assert_command_error(
+        &processor,
+        "DELEX mylist IFEQ element",
+        b"-ERR Key should be of string type if conditions are specified\r\n",
+    );
+}
+
+#[test]
+fn extended_set_conditions_match_external_string_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_response(&processor, "SET mykey world IFEQ hello", b"+OK\r\n");
+    assert_command_response(&processor, "GET mykey", b"$5\r\nworld\r\n");
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_response(&processor, "SET mykey world IFEQ different", b"$-1\r\n");
+    assert_command_response(&processor, "GET mykey", b"$5\r\nhello\r\n");
+
+    assert_command_integer(&processor, "DEL mykey", 1);
+    assert_command_response(&processor, "SET mykey world IFNE hello", b"+OK\r\n");
+    assert_command_response(&processor, "GET mykey", b"$5\r\nworld\r\n");
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "SET mykey world IFNE hello GET",
+        b"$5\r\nhello\r\n",
+    );
+    assert_command_response(&processor, "GET mykey", b"$5\r\nhello\r\n");
+
+    assert_command_integer(&processor, "DEL mykey", 1);
+    assert_command_response(&processor, "SET mykey world IFNE hello GET", b"$-1\r\n");
+    assert_command_response(&processor, "GET mykey", b"$5\r\nworld\r\n");
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    let digest = String::from_utf8(
+        parse_bulk_payload(&execute_command_line(&processor, "DIGEST mykey").unwrap()).unwrap(),
+    )
+    .unwrap();
+    assert_command_response(
+        &processor,
+        &format!("SET mykey world IFDEQ {digest}"),
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "GET mykey", b"$5\r\nworld\r\n");
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    let digest = String::from_utf8(
+        parse_bulk_payload(&execute_command_line(&processor, "DIGEST mykey").unwrap()).unwrap(),
+    )
+    .unwrap();
+    let uppercase_digest = digest.to_ascii_uppercase();
+    assert_command_response(
+        &processor,
+        &format!("SET mykey world IFDNE {uppercase_digest}"),
+        b"$-1\r\n",
+    );
+    assert_command_response(&processor, "GET mykey", b"$5\r\nhello\r\n");
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        &format!("SET mykey world IFDEQ {digest} EX 10"),
+        b"+OK\r\n",
+    );
+    let ttl_response = execute_command_line(&processor, "TTL mykey").unwrap();
+    let ttl = parse_integer_response(&ttl_response);
+    assert!((0..=10).contains(&ttl));
+
+    assert_command_response(&processor, "SET mykey 12345", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING mykey", b"$3\r\nint\r\n");
+    assert_command_response(&processor, "SET mykey world ifeq 12345", b"+OK\r\n");
+    assert_command_response(&processor, "GET mykey", b"$5\r\nworld\r\n");
+
+    assert_command_response(&processor, "LPUSH mylist element", b":1\r\n");
+    assert_command_error(
+        &processor,
+        "SET mylist value IFEQ element",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_response(&processor, "SADD myset member", b":1\r\n");
+    assert_command_error(
+        &processor,
+        "SET myset value IFDEQ 1234567890",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+
+    assert_command_response(&processor, "SET mykey hello", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "SET mykey world IFDEQ short",
+        b"-ERR must be exactly 16 hexadecimal characters\r\n",
+    );
+}
+
+#[test]
+fn msetex_options_match_external_string_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "MSETEX",
+        b"-ERR wrong number of arguments for 'msetex' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MSETEX key1 val1 EX 10",
+        b"-ERR invalid numkeys value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MSETEX 2 key1 val1 key2",
+        b"-ERR wrong number of key-value pairs\r\n",
+    );
+
+    assert_command_integer(&processor, "MSETEX 2 ex:key1 val1 ex:key2 val2 EX 5", 1);
+    assert_command_response(&processor, "GET ex:key1", b"$4\r\nval1\r\n");
+    let ttl = parse_integer_response(&execute_command_line(&processor, "TTL ex:key1").unwrap());
+    assert!((0..=5).contains(&ttl));
+
+    let future_sec = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 10;
+    let future_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis()
+        + 10_000;
+    assert_command_integer(
+        &processor,
+        &format!("MSETEX 2 exat:key1 val3 exat:key2 val4 EXAT {future_sec}"),
+        1,
+    );
+    assert_command_integer(
+        &processor,
+        &format!("MSETEX 2 pxat:key1 val3 pxat:key2 val4 PXAT {future_ms}"),
+        1,
+    );
+    assert!(
+        parse_integer_response(&execute_command_line(&processor, "TTL exat:key1").unwrap()) > 0
+    );
+    assert!(
+        parse_integer_response(&execute_command_line(&processor, "PTTL pxat:key1").unwrap()) > 0
+    );
+
+    assert_command_response(&processor, "SETEX keepttl:key 100 oldval", b"+OK\r\n");
+    let old_ttl =
+        parse_integer_response(&execute_command_line(&processor, "TTL keepttl:key").unwrap());
+    assert_command_integer(&processor, "MSETEX 1 keepttl:key newval KEEPTTL", 1);
+    assert_command_response(&processor, "GET keepttl:key", b"$6\r\nnewval\r\n");
+    let new_ttl =
+        parse_integer_response(&execute_command_line(&processor, "TTL keepttl:key").unwrap());
+    assert!(new_ttl >= old_ttl - 5);
+
+    assert_command_integer(&processor, "DEL nx:new nx:new2 xx:existing xx:nonexist", 0);
+    assert_command_response(&processor, "SET xx:existing oldval", b"+OK\r\n");
+    assert_command_integer(&processor, "MSETEX 2 nx:new val1 nx:new2 val2 NX EX 10", 1);
+    assert_command_integer(&processor, "MSETEX 1 xx:existing newval NX EX 10", 0);
+    assert_command_integer(&processor, "MSETEX 1 xx:nonexist newval XX EX 10", 0);
+    assert_command_integer(&processor, "MSETEX 1 xx:existing newval XX EX 10", 1);
+    assert_command_response(&processor, "GET nx:new", b"$4\r\nval1\r\n");
+    assert_command_response(&processor, "GET xx:existing", b"$6\r\nnewval\r\n");
+
+    assert_command_integer(&processor, "MSETEX 2 flex:1 val1 flex:2 val2 EX 3 NX", 1);
+    assert_command_integer(&processor, "MSETEX 2 flex:3 val3 flex:4 val4 PX 3000 XX", 0);
+    assert_command_response(&processor, "GET flex:1", b"$4\r\nval1\r\n");
+    assert_command_integer(&processor, "EXISTS flex:3", 0);
+
+    assert_command_error(
+        &processor,
+        "MSETEX 2 key1 val1 key2 val2 NX XX EX 10",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MSETEX 2 key1 val1 key2 val2 EX 10 PX 5000",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MSETEX 2147483648 key1 val1 EX 10",
+        b"-ERR invalid numkeys value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "MSETEX 2147483647 key1 val1 EX 10",
+        b"-ERR wrong number of key-value pairs\r\n",
+    );
 }
 
 #[test]
@@ -6609,6 +7882,16 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
     );
     assert_eq!(
         parse_command_getkeysandflags_response(
+            &execute_command_line(
+                &processor,
+                "COMMAND GETKEYSANDFLAGS SET k1 v1 IFDEQ deadbeefdeadbeef"
+            )
+            .unwrap()
+        ),
+        vec![(b"k1".to_vec(), vec![b"RW".to_vec(), b"update".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
             &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS SET k1 v1 GET").unwrap()
         ),
         vec![(
@@ -6625,6 +7908,16 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
     assert_eq!(
         parse_command_getkeysandflags_response(
             &execute_command_line(&processor, "COMMAND GETKEYSANDFLAGS DELEX k1 IFEQ v1").unwrap()
+        ),
+        vec![(b"k1".to_vec(), vec![b"RW".to_vec(), b"delete".to_vec()])]
+    );
+    assert_eq!(
+        parse_command_getkeysandflags_response(
+            &execute_command_line(
+                &processor,
+                "COMMAND GETKEYSANDFLAGS DELEX k1 IFDNE deadbeefdeadbeef"
+            )
+            .unwrap()
         ),
         vec![(b"k1".to_vec(), vec![b"RW".to_vec(), b"delete".to_vec()])]
     );
@@ -7402,6 +8695,55 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
 }
 
 #[test]
+fn select_respects_configured_database_limit_and_move_uses_selected_db_context() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "CONFIG SET databases 4", b"+OK\r\n");
+    assert_command_response(&processor, "SELECT 3", b"+OK\r\n");
+    assert_command_error(&processor, "SELECT 4", b"-ERR DB index is out of range\r\n");
+    assert_command_response(&processor, "SWAPDB 1 1", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "SWAPDB 1 2",
+        b"-ERR DB index is out of range\r\n",
+    );
+
+    let frame = encode_resp(&[b"MOVE", b"ctx-key", b"2"]);
+    let mut args = [ArgSlice::EMPTY; 8];
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let mut response = Vec::new();
+    let err = processor
+        .execute_with_client_context_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+            false,
+            DbName::new(2),
+        )
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR source and destination objects are the same\r\n"
+    );
+
+    let frame = encode_resp(&[b"MOVE", b"ctx-key", b"1"]);
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    response.clear();
+    processor
+        .execute_with_client_context_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+            false,
+            DbName::new(2),
+        )
+        .unwrap();
+    assert_eq!(response, b":0\r\n");
+}
+
+#[test]
 fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
@@ -7433,6 +8775,18 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     assert!(response.starts_with(b"*15\r\n"));
     let latency_help_text = std::str::from_utf8(&response).unwrap();
     assert!(latency_help_text.contains("\r\nLATEST\r\n"));
+
+    response.clear();
+    let latency_help_extra = b"*3\r\n$7\r\nLATENCY\r\n$4\r\nHELP\r\n$3\r\nxxx\r\n";
+    let meta = parse_resp_command_arg_slices(latency_help_extra, &mut args).unwrap();
+    let err = processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap_err();
+    err.append_resp_error(&mut response);
+    assert_eq!(
+        response,
+        b"-ERR wrong number of arguments for 'latency|help' command\r\n"
+    );
 
     response.clear();
     let latency_latest = b"*2\r\n$7\r\nLATENCY\r\n$6\r\nLATEST\r\n";
@@ -7540,6 +8894,33 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
 }
 
 #[test]
+fn slowlog_surface_validation_matches_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET slowlog-log-slower-than -1",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG GET slowlog-log-slower-than",
+        b"*2\r\n$23\r\nslowlog-log-slower-than\r\n$2\r\n-1\r\n",
+    );
+
+    assert_command_error(
+        &processor,
+        "SLOWLOG GET -2",
+        b"-ERR count should be greater than or equal to -1\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SLOWLOG GET -222",
+        b"-ERR count should be greater than or equal to -1\r\n",
+    );
+}
+
+#[test]
 fn latency_histogram_and_event_queries_cover_compatibility_shapes() {
     let processor = RequestProcessor::new().unwrap();
     processor.record_command_call(b"config|resetstat");
@@ -7613,7 +8994,7 @@ fn latency_histogram_and_event_queries_cover_compatibility_shapes() {
     assert_command_error(
         &processor,
         "LATENCY HELP extra",
-        b"-ERR wrong number of arguments for 'latency' command\r\n",
+        b"-ERR wrong number of arguments for 'latency|help' command\r\n",
     );
 }
 
@@ -7806,6 +9187,383 @@ fn pubsub_subscribe_publish_and_pattern_delivery_use_stateful_client_context() {
     assert_eq!(
         processor.take_pending_pubsub_messages(client1),
         vec![b"*4\r\n$8\r\npmessage\r\n$6\r\nchan.*\r\n$8\r\nchan.foo\r\n$5\r\nhello\r\n".to_vec()]
+    );
+}
+
+#[test]
+fn flush_commands_emit_global_tracking_invalidation_even_without_tracked_keys() {
+    let processor = RequestProcessor::new().unwrap();
+    let source_client = ClientId::new(101);
+    let redirect_client = ClientId::new(202);
+    let expected_invalidation =
+        b"*3\r\n$7\r\nmessage\r\n$20\r\n__redis__:invalidate\r\n$0\r\n\r\n".to_vec();
+
+    processor.register_pubsub_client(source_client);
+    processor.register_pubsub_client(redirect_client);
+    processor.configure_client_tracking(
+        source_client,
+        ClientTrackingConfig {
+            mode: ClientTrackingModeSetting::On,
+            redirect_id: Some(redirect_client),
+            ..ClientTrackingConfig::default()
+        },
+    );
+
+    assert_client_command_response(&processor, "FLUSHDB", source_client, b"+OK\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(redirect_client),
+        vec![expected_invalidation.clone()]
+    );
+
+    assert_client_command_response(&processor, "FLUSHALL", source_client, b"+OK\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(redirect_client),
+        vec![expected_invalidation]
+    );
+}
+
+#[test]
+fn keyspace_notifications_use_selected_db_index() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(7);
+    processor.register_pubsub_client(client);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events KEA",
+        b"+OK\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE __keyevent@1__:set",
+        client,
+        b"*3\r\n$9\r\nsubscribe\r\n$18\r\n__keyevent@1__:set\r\n:1\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "SUBSCRIBE __keyspace@1__:notify:key",
+        client,
+        b"*3\r\n$9\r\nsubscribe\r\n$25\r\n__keyspace@1__:notify:key\r\n:2\r\n",
+    );
+
+    let frame = encode_resp(&[b"SET", b"notify:key", b"v"]);
+    let mut args = [ArgSlice::EMPTY; 16];
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let mut response = Vec::new();
+    processor
+        .execute_with_client_context_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            Some(client),
+            false,
+            DbName::new(1),
+        )
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client),
+        vec![
+            b"*3\r\n$7\r\nmessage\r\n$25\r\n__keyspace@1__:notify:key\r\n$3\r\nset\r\n".to_vec(),
+            b"*3\r\n$7\r\nmessage\r\n$18\r\n__keyevent@1__:set\r\n$10\r\nnotify:key\r\n".to_vec(),
+        ]
+    );
+}
+
+#[test]
+fn keyspace_notifications_set_overwrite_emits_overwritten_before_set() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(71);
+    processor.register_pubsub_client(client);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events EAo",
+        b"+OK\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE __keyevent@0__:*",
+        client,
+        b"*3\r\n$10\r\npsubscribe\r\n$16\r\n__keyevent@0__:*\r\n:1\r\n",
+    );
+
+    assert_command_response(&processor, "SET owkey v1", b"+OK\r\n");
+    let _ = processor.take_pending_pubsub_messages(client);
+
+    assert_command_response(&processor, "SET owkey v2", b"+OK\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client),
+        vec![
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$26\r\n__keyevent@0__:overwritten\r\n$5\r\nowkey\r\n".to_vec(),
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$18\r\n__keyevent@0__:set\r\n$5\r\nowkey\r\n".to_vec(),
+        ]
+    );
+}
+
+#[test]
+fn keyspace_notifications_setkey_commands_emit_overwritten_and_type_changed() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(72);
+    processor.register_pubsub_client(client);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events Eoc",
+        b"+OK\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE __keyevent@0__:*",
+        client,
+        b"*3\r\n$10\r\npsubscribe\r\n$16\r\n__keyevent@0__:*\r\n:1\r\n",
+    );
+
+    assert_command_response(&processor, "SET dst x", b"+OK\r\n");
+    assert_command_response(&processor, "SADD s1 a", b":1\r\n");
+    assert_command_response(&processor, "SADD s2 b", b":1\r\n");
+    assert_command_response(&processor, "SUNIONSTORE dst s1 s2", b":2\r\n");
+
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client),
+        vec![
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$26\r\n__keyevent@0__:overwritten\r\n$3\r\ndst\r\n".to_vec(),
+            b"*4\r\n$8\r\npmessage\r\n$16\r\n__keyevent@0__:*\r\n$27\r\n__keyevent@0__:type_changed\r\n$3\r\ndst\r\n".to_vec(),
+        ]
+    );
+}
+
+#[test]
+fn hsetex_px_one_emits_hexpire_not_immediate_hdel() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(73);
+    processor.register_pubsub_client(client);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events Kh",
+        b"+OK\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE __keyspace@0__:myhash",
+        client,
+        b"*3\r\n$10\r\npsubscribe\r\n$21\r\n__keyspace@0__:myhash\r\n:1\r\n",
+    );
+
+    assert_command_response(&processor, "HSETEX myhash PX 1 FIELDS 1 f1 v1", b":1\r\n");
+    let messages = processor.take_pending_pubsub_messages(client);
+    assert!(
+        messages.len() >= 2,
+        "expected at least 2 pubsub messages, got {}",
+        messages.len()
+    );
+    assert_eq!(
+        messages[0],
+        b"*4\r\n$8\r\npmessage\r\n$21\r\n__keyspace@0__:myhash\r\n$21\r\n__keyspace@0__:myhash\r\n$4\r\nhset\r\n".to_vec()
+    );
+    assert_eq!(
+        messages[1],
+        b"*4\r\n$8\r\npmessage\r\n$21\r\n__keyspace@0__:myhash\r\n$21\r\n__keyspace@0__:myhash\r\n$7\r\nhexpire\r\n".to_vec()
+    );
+}
+
+#[test]
+fn stream_keyspace_notifications_match_external_pubsub_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(74);
+    processor.register_pubsub_client(client);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events Kt",
+        b"+OK\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE *",
+        client,
+        b"*3\r\n$10\r\npsubscribe\r\n$1\r\n*\r\n:1\r\n",
+    );
+
+    assert_command_response(&processor, "DEL mystream", b":0\r\n");
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE mystream mygroup $ MKSTREAM",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XGROUP CREATECONSUMER mystream mygroup Bob",
+        b":1\r\n",
+    );
+    assert_command_response(&processor, "XADD mystream 1 field1 A", b"$3\r\n1-0\r\n");
+
+    let xreadgroup = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup Alice STREAMS mystream >",
+    )
+    .unwrap();
+    assert!(
+        xreadgroup.starts_with(b"*1\r\n"),
+        "unexpected XREADGROUP reply: {}",
+        String::from_utf8_lossy(&xreadgroup)
+    );
+
+    let xclaim =
+        execute_command_line(&processor, "XCLAIM mystream mygroup Mike 0 1-0 FORCE").unwrap();
+    assert!(
+        xclaim.starts_with(b"*1\r\n"),
+        "unexpected XCLAIM reply: {}",
+        String::from_utf8_lossy(&xclaim)
+    );
+
+    assert_command_response(
+        &processor,
+        "XGROUP DELCONSUMER mystream mygroup Lee",
+        b":0\r\n",
+    );
+
+    let xautoclaim =
+        execute_command_line(&processor, "XAUTOCLAIM mystream mygroup Bob 0 1-0").unwrap();
+    assert!(
+        xautoclaim.starts_with(b"*3\r\n"),
+        "unexpected XAUTOCLAIM reply: {}",
+        String::from_utf8_lossy(&xautoclaim)
+    );
+
+    assert_command_response(
+        &processor,
+        "XGROUP DELCONSUMER mystream mygroup Bob",
+        b":1\r\n",
+    );
+
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client),
+        vec![
+            encode_resp(&[
+                b"pmessage",
+                b"*",
+                b"__keyspace@0__:mystream",
+                b"xgroup-create",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"*",
+                b"__keyspace@0__:mystream",
+                b"xgroup-createconsumer",
+            ]),
+            encode_resp(&[b"pmessage", b"*", b"__keyspace@0__:mystream", b"xadd"]),
+            encode_resp(&[
+                b"pmessage",
+                b"*",
+                b"__keyspace@0__:mystream",
+                b"xgroup-createconsumer",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"*",
+                b"__keyspace@0__:mystream",
+                b"xgroup-createconsumer",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"*",
+                b"__keyspace@0__:mystream",
+                b"xgroup-delconsumer",
+            ]),
+        ]
+    );
+}
+
+#[test]
+fn stream_mutation_notifications_cover_xdel_xtrim_setid_destroy_and_zero_pending_delconsumer() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events Kt",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE mystream mygroup $ MKSTREAM",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XGROUP CREATECONSUMER mystream mygroup idle",
+        b":1\r\n",
+    );
+
+    let client = ClientId::new(75);
+    processor.register_pubsub_client(client);
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE __keyspace@0__:mystream",
+        client,
+        b"*3\r\n$10\r\npsubscribe\r\n$23\r\n__keyspace@0__:mystream\r\n:1\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "XGROUP DELCONSUMER mystream mygroup idle",
+        b":0\r\n",
+    );
+    assert_command_response(&processor, "XADD mystream 1 field value", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XDEL mystream 1-0", b":1\r\n");
+    assert_command_response(&processor, "XADD mystream 2 field value", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XTRIM mystream MAXLEN = 0", b":1\r\n");
+    assert_command_response(&processor, "XGROUP SETID mystream mygroup 0-0", b"+OK\r\n");
+    assert_command_response(&processor, "XGROUP DESTROY mystream mygroup", b":1\r\n");
+
+    assert_eq!(
+        processor.take_pending_pubsub_messages(client),
+        vec![
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xgroup-delconsumer",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xadd",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xdel",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xadd",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xtrim",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xgroup-setid",
+            ]),
+            encode_resp(&[
+                b"pmessage",
+                b"__keyspace@0__:mystream",
+                b"__keyspace@0__:mystream",
+                b"xgroup-destroy",
+            ]),
+        ]
     );
 }
 
@@ -8495,6 +10253,49 @@ fn debug_set_active_expire_returns_ok() {
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
     assert!(processor.active_expire_enabled());
+
+    assert_command_error(
+        &processor,
+        "DEBUG HELP extra",
+        b"-ERR wrong number of arguments for 'debug' command\r\n",
+    );
+}
+
+#[test]
+fn debug_set_disable_deny_scripts_toggles_script_command_gate() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    let denied_before = execute_command_line(
+        &processor,
+        "EVAL \"redis.call('client','id'); return 'ok'\" 0",
+    )
+    .unwrap();
+    assert!(
+        denied_before.starts_with(b"-ERR This Redis command is not allowed from script"),
+        "unexpected initial script deny error: {:?}",
+        String::from_utf8_lossy(&denied_before)
+    );
+
+    assert_command_response(&processor, "DEBUG SET-DISABLE-DENY-SCRIPTS 1", b"+OK\r\n");
+
+    assert_command_response(
+        &processor,
+        "EVAL \"redis.call('client','id'); return 'ok'\" 0",
+        b"$2\r\nok\r\n",
+    );
+
+    assert_command_response(&processor, "DEBUG SET-DISABLE-DENY-SCRIPTS 0", b"+OK\r\n");
+
+    let denied_after = execute_command_line(
+        &processor,
+        "EVAL \"redis.call('client','id'); return 'ok'\" 0",
+    )
+    .unwrap();
+    assert!(
+        denied_after.starts_with(b"-ERR This Redis command is not allowed from script"),
+        "unexpected script deny error after reset: {:?}",
+        String::from_utf8_lossy(&denied_after)
+    );
 }
 
 #[test]
@@ -8940,8 +10741,8 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     let source_info = response.clone();
-    // XINFO STREAM key FULL returns 9-field map = 18-element flat array in RESP2.
-    assert!(source_info.starts_with(b"*18\r\n"));
+    // Redis 8+ returns a 15-field map = 30-element flat array in RESP2.
+    assert!(source_info.starts_with(b"*30\r\n"));
 
     response.clear();
     let copy = b"*3\r\n$4\r\nCOPY\r\n$7\r\nstream1\r\n$7\r\nstream2\r\n";
@@ -8966,6 +10767,12 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let mut args = [ArgSlice::EMPTY; 24];
     let mut response = Vec::new();
 
+    assert_command_error(
+        &processor,
+        "XINFO HELP extra",
+        b"-ERR wrong number of arguments for 'xinfo|help' command\r\n",
+    );
+
     // Add two entries.
     let xadd1 = b"*5\r\n$4\r\nXADD\r\n$4\r\nxkey\r\n$3\r\n1-0\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(xadd1, &mut args).unwrap();
@@ -8989,14 +10796,14 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
-    // XINFO STREAM xkey (non-FULL): 10-field map = 20-element flat array in RESP2.
+    // Redis 8+ returns a 16-field map = 32-element flat array in RESP2.
     response.clear();
     let xinfo = b"*3\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$4\r\nxkey\r\n";
     let meta = parse_resp_command_arg_slices(xinfo, &mut args).unwrap();
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert!(response.starts_with(b"*20\r\n"));
+    assert!(response.starts_with(b"*32\r\n"));
     // Verify length=2 is present after "length" label.
     assert!(
         response
@@ -9028,8 +10835,8 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    // 9-field FULL map = 18-element array.
-    assert!(response.starts_with(b"*18\r\n"));
+    // Redis 8+ returns a 15-field FULL map = 30-element array.
+    assert!(response.starts_with(b"*30\r\n"));
     // Entries limited to 1: after "entries" label, array should be *1.
     let entries_idx = response
         .windows(b"$7\r\nentries\r\n".len())
@@ -9045,7 +10852,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
-    assert!(response.starts_with(b"%10\r\n"));
+    assert!(response.starts_with(b"%16\r\n"));
     processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
 
     // XINFO GROUPS: returns array with 1 group, each group is 12-element flat array (6 fields).
@@ -9209,6 +11016,122 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
 }
 
 #[test]
+fn xsetid_help_and_partial_id_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XSETID can set a specific ID"
+    // - "XSETID cannot SETID with smaller ID"
+    // - "XSETID cannot run with an offset but without a maximal tombstone"
+    // - "XSETID cannot run with a maximal tombstone but without an offset"
+    // - "XSETID errors on negstive offset"
+    // - "XSETID cannot set the maximal tombstone with larger ID"
+    // - "XSETID cannot set the offset to less than the length"
+    // - "XSETID cannot set smaller ID than current MAXDELETEDID"
+    // - "XADD with artial ID with maximal seq"
+    // - "XGROUP HELP should not have unexpected options"
+    // - "XINFO HELP should not have unexpected options"
+    let created_empty = execute_command_line(&processor, "XADD mystream MAXLEN 0 * a b").unwrap();
+    assert!(created_empty.starts_with(b"$"));
+
+    assert_command_response(&processor, "XSETID mystream 200-0", b"+OK\r\n");
+    let xinfo =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM mystream").unwrap());
+    let xinfo_map = resp_test_flat_map(&xinfo);
+    assert_eq!(
+        resp_test_bulk(xinfo_map[&b"last-generated-id".to_vec()]),
+        b"200-0"
+    );
+    assert_eq!(resp_test_integer(xinfo_map[&b"entries-added".to_vec()]), 1);
+
+    let appended = execute_command_line(&processor, "XADD mystream * a b").unwrap();
+    assert!(appended.starts_with(b"$"));
+    assert_command_error(
+        &processor,
+        "XSETID mystream 1-1",
+        b"-ERR The ID specified in XSETID is smaller than the target stream top item\r\n",
+    );
+    assert_command_error(&processor, "XSETID stream 1-1 0", b"-ERR syntax error\r\n");
+    assert_command_error(
+        &processor,
+        "XSETID stream 1-1 0-0",
+        b"-ERR syntax error\r\n",
+    );
+    // ENTRIESADDED without MAXDELETEDID is a syntax error.
+    assert_command_error(
+        &processor,
+        "XSETID mystream 200-0 ENTRIESADDED 5",
+        b"-ERR syntax error\r\n",
+    );
+    // MAXDELETEDID without ENTRIESADDED is a syntax error.
+    assert_command_error(
+        &processor,
+        "XSETID mystream 200-0 MAXDELETEDID 0-0",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XSETID stream 1-1 ENTRIESADDED -1 MAXDELETEDID 0-0",
+        b"-ERR entries_added must be positive\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL x", 0);
+    assert_command_response(&processor, "XADD x 1-0 a b", b"$3\r\n1-0\r\n");
+    assert_command_error(
+        &processor,
+        "XSETID x 1-0 ENTRIESADDED 1 MAXDELETEDID 2-0",
+        b"-ERR The ID specified in XSETID is smaller than the provided max_deleted_entry_id\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XSETID x 1-0 ENTRIESADDED 0 MAXDELETEDID 0-0",
+        b"-ERR The entries_added specified in XSETID is smaller than the target stream length\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL x", 1);
+    assert_command_response(&processor, "XADD x 1-1 a 1", b"$3\r\n1-1\r\n");
+    assert_command_response(&processor, "XADD x 1-2 b 2", b"$3\r\n1-2\r\n");
+    assert_command_response(&processor, "XADD x 1-3 c 3", b"$3\r\n1-3\r\n");
+    assert_command_integer(&processor, "XDEL x 1-2", 1);
+    assert_command_integer(&processor, "XDEL x 1-3", 1);
+    let deleted_info =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x").unwrap());
+    let deleted_info_map = resp_test_flat_map(&deleted_info);
+    assert_eq!(
+        resp_test_bulk(deleted_info_map[&b"max-deleted-entry-id".to_vec()]),
+        b"1-3"
+    );
+    assert_command_error(
+        &processor,
+        "XSETID x 1-2",
+        b"-ERR The ID specified in XSETID is smaller than current max_deleted_entry_id\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL x", 1);
+    assert_command_response(
+        &processor,
+        "XADD x 1-18446744073709551615 f1 v1",
+        b"$22\r\n1-18446744073709551615\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XADD x 1-* f2 v2",
+        b"-ERR The ID specified in XADD is equal or smaller than the target stream top item\r\n",
+    );
+
+    assert_command_error(
+        &processor,
+        "XGROUP HELP extra",
+        b"-ERR wrong number of arguments for 'xgroup|help' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XINFO HELP extra",
+        b"-ERR wrong number of arguments for 'xinfo|help' command\r\n",
+    );
+}
+
+#[test]
 fn xpending_accepts_idle_filter() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 16];
@@ -9332,13 +11255,13 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
     assert_eq!(
         execute_frame(
             &processor,
-            &encode_resp(&[b"XTRIM", b"streamx", b"MINID", b"4-0", b"LIMIT", b"1"])
+            &encode_resp(&[b"XTRIM", b"streamx", b"MINID", b"4-0"])
         ),
-        b":1\r\n"
+        b":2\r\n"
     );
     assert_eq!(
         execute_frame(&processor, &encode_resp(&[b"XLEN", b"streamx"])),
-        b":2\r\n"
+        b":1\r\n"
     );
 
     assert_eq!(
@@ -9346,7 +11269,7 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
             &processor,
             &encode_resp(&[b"XTRIM", b"streamx", b"MAXLEN", b"~", b"1", b"LIMIT", b"1"])
         ),
-        b":1\r\n"
+        b":0\r\n"
     );
 
     response.clear();
@@ -9376,28 +11299,28 @@ fn stream_range_orders_entries_by_numeric_stream_id() {
     assert_eq!(
         execute_frame(
             &processor,
-            &encode_resp(&[b"XADD", b"streamn", b"10-1", b"field", b"late"])
+            &encode_resp(&[b"XADD", b"streamn", b"2-10", b"field", b"early"])
         ),
-        b"$4\r\n10-1\r\n"
+        b"$4\r\n2-10\r\n"
     );
     assert_eq!(
         execute_frame(
             &processor,
-            &encode_resp(&[b"XADD", b"streamn", b"2-0", b"field", b"early"])
+            &encode_resp(&[b"XADD", b"streamn", b"10-1", b"field", b"late"])
         ),
-        b"$3\r\n2-0\r\n"
+        b"$4\r\n10-1\r\n"
     );
 
     let range = execute_frame(
         &processor,
         &encode_resp(&[b"XRANGE", b"streamn", b"-", b"+"]),
     );
-    let early_id = b"$3\r\n2-0\r\n";
+    let early_id = b"$4\r\n2-10\r\n";
     let late_id = b"$4\r\n10-1\r\n";
     let early_pos = range
         .windows(early_id.len())
         .position(|window| window == early_id)
-        .expect("2-0 entry should exist in XRANGE response");
+        .expect("2-10 entry should exist in XRANGE response");
     let late_pos = range
         .windows(late_id.len())
         .position(|window| window == late_id)
@@ -9561,6 +11484,22 @@ fn scripting_eval_ro_rejects_write_calls() {
         response_text.contains("Write commands are not allowed from read-only scripts"),
         "expected write-reject error, got: {}",
         response_text
+    );
+
+    let publish_response = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL_RO", b"return redis.call('PUBLISH','ch','msg')", b"0"]),
+    );
+    let publish_response_text = String::from_utf8_lossy(&publish_response);
+    assert!(
+        publish_response_text.contains("Write commands are not allowed from read-only scripts"),
+        "expected publish-reject error from EVAL_RO, got: {}",
+        publish_response_text
+    );
+    assert!(
+        publish_response_text.contains("script:"),
+        "expected Redis-style script suffix, got: {}",
+        publish_response_text
     );
 }
 
@@ -10118,6 +12057,396 @@ fn function_oom_behavior_respects_allow_oom_and_blocks_load_restore() {
 }
 
 #[test]
+fn script_flush_async_and_info_memory_fields_match_external_scripting_scenarios() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    for value in 0..100 {
+        let script = format!("return {value}");
+        let frame = encode_resp(&[b"SCRIPT", b"LOAD", script.as_bytes()]);
+        let sha = parse_bulk_payload(&execute_frame(&processor, &frame))
+            .expect("SCRIPT LOAD should return sha1");
+        assert_eq!(sha.len(), 40);
+    }
+
+    let info_before = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"MEMORY"]),
+    ))
+    .expect("INFO MEMORY should return bulk payload");
+    let info_before_text = String::from_utf8_lossy(&info_before);
+    assert!(info_before_text.contains("number_of_cached_scripts:100"));
+    assert!(info_before_text.contains("allocator_allocated:"));
+    assert!(info_before_text.contains("allocator_active:"));
+    assert!(info_before_text.contains("allocator_resident:"));
+
+    assert_command_response(&processor, "SCRIPT FLUSH ASYNC", b"+OK\r\n");
+
+    let info_after = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"MEMORY"]),
+    ))
+    .expect("INFO MEMORY should return bulk payload");
+    let info_after_text = String::from_utf8_lossy(&info_after);
+    assert!(info_after_text.contains("number_of_cached_scripts:0"));
+}
+
+#[test]
+fn eval_shebang_validation_and_allow_oom_match_external_scripting_scenarios() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    let unexpected_engine = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"#!not-lua\nreturn 1", b"0"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&unexpected_engine).contains("Unexpected engine in script shebang"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&unexpected_engine)
+    );
+
+    assert_command_response(&processor, "EVAL \"#!lua\nreturn 1\" 0", b":1\r\n");
+
+    let unknown_option = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"#!lua badger=data\nreturn 1", b"0"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&unknown_option).contains("Unknown lua shebang option"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&unknown_option)
+    );
+
+    let unknown_flag = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"#!lua flags=allow-oom,what?\nreturn 1", b"0"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&unknown_flag).contains("Unexpected flag in script shebang"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&unknown_flag)
+    );
+
+    assert_command_response(&processor, "SET x 123", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+
+    let compat_deny_oom = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", b"redis.call('set','x',1)\nreturn 1", b"1", b"x"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&compat_deny_oom)
+            .contains("OOM command not allowed when used memory > 'maxmemory'"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&compat_deny_oom)
+    );
+
+    assert_command_response(
+        &processor,
+        "EVAL \"return redis.call('get','x')\" 1 x",
+        b"$3\r\n123\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "EVAL \"#!lua flags=allow-oom\nredis.call('set','x',1)\nreturn 1\" 1 x",
+        b":1\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "EVAL \"#!lua flags=no-writes\nredis.call('get','x')\nreturn 1\" 0",
+        b":1\r\n",
+    );
+    assert_command_response(&processor, "GET x", b"$1\r\n1\r\n");
+    assert_command_response(&processor, "CONFIG SET maxmemory 0", b"+OK\r\n");
+}
+
+#[test]
+fn reject_script_does_not_cause_lua_stack_leak_external_scenario() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+    for _ in 0..50 {
+        let response = execute_frame(
+            &processor,
+            &encode_resp(&[b"EVAL", b"#!lua\nreturn 1", b"0"]),
+        );
+        assert!(
+            String::from_utf8_lossy(&response)
+                .contains("OOM command not allowed when used memory > 'maxmemory'"),
+            "unexpected response: {}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+    assert_command_response(&processor, "CONFIG SET maxmemory 0", b"+OK\r\n");
+    assert_command_response(&processor, "EVAL \"#!lua\nreturn 1\" 0", b":1\r\n");
+}
+
+#[test]
+fn consistent_eval_error_reporting_matches_external_scripting_scenario() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let execute_counted = |command_name: &[u8], frame: Vec<u8>| {
+        processor.record_command_call(command_name);
+        execute_frame(&processor, &frame)
+    };
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG SET maxmemory 1", b"+OK\r\n");
+    let oom_call = execute_counted(
+        b"eval",
+        encode_resp(&[b"EVAL", b"return redis.call('set','x','y')", b"1", b"x"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&oom_call)
+            .contains("OOM command not allowed when used memory > 'maxmemory'"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&oom_call)
+    );
+
+    let errorstats = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"ERRORSTATS"]),
+    ))
+    .expect("INFO ERRORSTATS should return bulk payload");
+    let errorstats_text = String::from_utf8_lossy(&errorstats);
+    assert!(errorstats_text.contains("errorstat_OOM:count=1"));
+
+    let stats = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"STATS"]),
+    ))
+    .expect("INFO STATS should return bulk payload");
+    assert!(String::from_utf8_lossy(&stats).contains("total_error_replies:1"));
+
+    let commandstats = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_text = String::from_utf8_lossy(&commandstats);
+    assert!(
+        commandstats_text.contains(
+            "cmdstat_set:calls=0,usec=0,usec_per_call=0.00,rejected_calls=1,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_text}"
+    );
+    assert!(
+        commandstats_text.contains(
+            "cmdstat_eval:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=1"
+        ),
+        "unexpected commandstats payload: {commandstats_text}"
+    );
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    let pcall_oom_eval = execute_counted(
+        b"eval",
+        encode_resp(&[
+            b"EVAL",
+            b"local t = redis.pcall('set','x','y') if t['err'] == \"OOM command not allowed when used memory > 'maxmemory'.\" then return 1 else return 0 end",
+            b"1",
+            b"x",
+        ]),
+    );
+    assert_eq!(pcall_oom_eval, b":1\r\n");
+    let errorstats_after_pcall = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"ERRORSTATS"]),
+    ))
+    .expect("INFO ERRORSTATS should return bulk payload");
+    let errorstats_after_pcall_text = String::from_utf8_lossy(&errorstats_after_pcall);
+    assert!(!errorstats_after_pcall_text.contains("errorstat_ERR:"));
+    assert!(errorstats_after_pcall_text.contains("errorstat_OOM:count=1"));
+    let stats_after_pcall = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"STATS"]),
+    ))
+    .expect("INFO STATS should return bulk payload");
+    assert!(String::from_utf8_lossy(&stats_after_pcall).contains("total_error_replies:1"));
+    let commandstats_after_pcall = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_after_pcall_text = String::from_utf8_lossy(&commandstats_after_pcall);
+    assert!(
+        commandstats_after_pcall_text.contains(
+            "cmdstat_set:calls=0,usec=0,usec_per_call=0.00,rejected_calls=1,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_pcall_text}"
+    );
+    assert!(
+        commandstats_after_pcall_text.contains(
+            "cmdstat_eval:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_pcall_text}"
+    );
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    let returned_pcall_error = execute_counted(
+        b"eval",
+        encode_resp(&[b"EVAL", b"return redis.pcall('set','x','y')", b"1", b"x"]),
+    );
+    assert_eq!(
+        returned_pcall_error,
+        b"-OOM command not allowed when used memory > 'maxmemory'.\r\n"
+    );
+    let errorstats_after_returned_error = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"ERRORSTATS"]),
+    ))
+    .expect("INFO ERRORSTATS should return bulk payload");
+    let errorstats_after_returned_error_text =
+        String::from_utf8_lossy(&errorstats_after_returned_error);
+    assert!(!errorstats_after_returned_error_text.contains("errorstat_ERR:"));
+    assert!(errorstats_after_returned_error_text.contains("errorstat_OOM:count=1"));
+    let commandstats_after_returned_error = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_after_returned_error_text =
+        String::from_utf8_lossy(&commandstats_after_returned_error);
+    assert!(
+        commandstats_after_returned_error_text.contains(
+            "cmdstat_set:calls=0,usec=0,usec_per_call=0.00,rejected_calls=1,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_returned_error_text}"
+    );
+    assert!(
+        commandstats_after_returned_error_text.contains(
+            "cmdstat_eval:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=1"
+        ),
+        "unexpected commandstats payload: {commandstats_after_returned_error_text}"
+    );
+
+    assert_command_response(&processor, "CONFIG SET maxmemory 0", b"+OK\r\n");
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    let select_error = execute_counted(
+        b"eval",
+        encode_resp(&[b"EVAL", b"return redis.call('select',99)", b"0"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&select_error).contains("ERR DB index is out of range"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&select_error)
+    );
+    let errorstats_after_select = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"ERRORSTATS"]),
+    ))
+    .expect("INFO ERRORSTATS should return bulk payload");
+    assert!(String::from_utf8_lossy(&errorstats_after_select).contains("errorstat_ERR:count=1"));
+    let commandstats_after_select = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_after_select_text = String::from_utf8_lossy(&commandstats_after_select);
+    assert!(
+        commandstats_after_select_text.contains(
+            "cmdstat_select:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=1"
+        ),
+        "unexpected commandstats payload: {commandstats_after_select_text}"
+    );
+    assert!(
+        commandstats_after_select_text.contains(
+            "cmdstat_eval:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=1"
+        ),
+        "unexpected commandstats payload: {commandstats_after_select_text}"
+    );
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    let pcall_select_eval = execute_counted(
+        b"eval",
+        encode_resp(&[
+            b"EVAL",
+            b"local t = redis.pcall('select',99) if t['err'] == \"ERR DB index is out of range\" then return 1 else return 0 end",
+            b"0",
+        ]),
+    );
+    assert_eq!(pcall_select_eval, b":1\r\n");
+    let commandstats_after_select_pcall = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_after_select_pcall_text =
+        String::from_utf8_lossy(&commandstats_after_select_pcall);
+    assert!(
+        commandstats_after_select_pcall_text.contains(
+            "cmdstat_select:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=1"
+        ),
+        "unexpected commandstats payload: {commandstats_after_select_pcall_text}"
+    );
+    assert!(
+        commandstats_after_select_pcall_text.contains(
+            "cmdstat_eval:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_select_pcall_text}"
+    );
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    let eval_ro_error = execute_counted(
+        b"eval_ro",
+        encode_resp(&[b"EVAL_RO", b"return redis.call('set','x','y')", b"1", b"x"]),
+    );
+    assert!(
+        String::from_utf8_lossy(&eval_ro_error)
+            .contains("ERR Write commands are not allowed from read-only scripts."),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&eval_ro_error)
+    );
+    let commandstats_after_eval_ro = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_after_eval_ro_text = String::from_utf8_lossy(&commandstats_after_eval_ro);
+    assert!(
+        commandstats_after_eval_ro_text.contains(
+            "cmdstat_set:calls=0,usec=0,usec_per_call=0.00,rejected_calls=1,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_eval_ro_text}"
+    );
+    assert!(
+        commandstats_after_eval_ro_text.contains(
+            "cmdstat_eval_ro:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=1"
+        ),
+        "unexpected commandstats payload: {commandstats_after_eval_ro_text}"
+    );
+
+    assert_command_response(&processor, "CONFIG RESETSTAT", b"+OK\r\n");
+    let eval_ro_pcall = execute_counted(
+        b"eval_ro",
+        encode_resp(&[
+            b"EVAL_RO",
+            b"local t = redis.pcall('set','x','y') if t['err'] == \"ERR Write commands are not allowed from read-only scripts.\" then return 1 else return 0 end",
+            b"1",
+            b"x",
+        ]),
+    );
+    assert_eq!(eval_ro_pcall, b":1\r\n");
+    let commandstats_after_eval_ro_pcall = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"INFO", b"COMMANDSTATS"]),
+    ))
+    .expect("INFO COMMANDSTATS should return bulk payload");
+    let commandstats_after_eval_ro_pcall_text =
+        String::from_utf8_lossy(&commandstats_after_eval_ro_pcall);
+    assert!(
+        commandstats_after_eval_ro_pcall_text.contains(
+            "cmdstat_set:calls=0,usec=0,usec_per_call=0.00,rejected_calls=1,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_eval_ro_pcall_text}"
+    );
+    assert!(
+        commandstats_after_eval_ro_pcall_text.contains(
+            "cmdstat_eval_ro:calls=1,usec=0,usec_per_call=0.00,rejected_calls=0,failed_calls=0"
+        ),
+        "unexpected commandstats payload: {commandstats_after_eval_ro_pcall_text}"
+    );
+}
+
+#[test]
 fn function_flush_async_updates_vm_memory_and_lazyfree_info_metrics() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
     let lib1 = b"#!lua name=lib_lf1\nredis.register_function{function_name='f1', callback=function(keys, args) return 1 end}";
@@ -10529,7 +12858,7 @@ fn config_set_notify_keyspace_events_rejects_invalid_flags() {
     assert_command_response(
         &processor,
         "CONFIG SET notify-keyspace-events QQ",
-        b"-ERR Invalid event class character. Use 'g$lszhxeKEtmdn'.\r\n",
+        b"-ERR Invalid event class character. Use 'g$lszhxeKEtmdnoc'.\r\n",
     );
 }
 
@@ -10722,6 +13051,53 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"$8\r\nlistpack\r\n");
+}
+
+#[test]
+fn list_object_encoding_ignores_quicklist_packed_threshold_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size -2",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "DEBUG QUICKLIST-PACKED-THRESHOLD 1b",
+        b"+OK\r\n",
+    );
+    assert_command_integer(&processor, "LPUSH lst 9", 1);
+    assert_command_integer(&processor, "LPUSH lst xxxxxxxxxx", 2);
+    assert_command_integer(&processor, "LPUSH lst xxxxxxxxxx", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_response(&processor, "FLUSHDB", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size 1",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "DEBUG QUICKLIST-PACKED-THRESHOLD 1b",
+        b"+OK\r\n",
+    );
+    assert_command_integer(&processor, "LPUSH lst 9", 1);
+    assert_command_integer(&processor, "LPUSH lst xxxxxxxxxx", 2);
+    assert_command_integer(&processor, "LPUSH lst xxxxxxxxxx", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+
+    assert_command_response(&processor, "FLUSHDB", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size 3",
+        b"+OK\r\n",
+    );
+    assert_command_integer(&processor, "RPUSH lst a b c", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+    assert_command_integer(&processor, "RPUSH lst hello", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
 }
 
 #[test]
@@ -10998,6 +13374,71 @@ fn debug_reload_returns_ok() {
 }
 
 #[test]
+fn list_encoding_conversion_and_debug_reload_match_external_list_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size 3",
+        b"+OK\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL lst", 0);
+    assert_command_integer(&processor, "RPUSH lst a b c", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+    assert_command_integer(&processor, "RPUSH lst hello", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    assert_command_integer(&processor, "RPUSH lst a b c", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+    assert_command_integer(&processor, "LINSERT lst AFTER b hello", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    assert_command_integer(&processor, "RPUSH lst a b c", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+    assert_command_response(&processor, "LSET lst 0 hello", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+
+    assert_command_integer(&processor, "DEL lsrc{t} ldes{t}", 0);
+    assert_command_integer(&processor, "RPUSH lsrc{t} a b c hello", 4);
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING lsrc{t}",
+        b"$9\r\nquicklist\r\n",
+    );
+    assert_command_integer(&processor, "RPUSH ldes{t} d e f", 3);
+    assert_command_response(&processor, "OBJECT ENCODING ldes{t}", b"$8\r\nlistpack\r\n");
+    assert_command_response(
+        &processor,
+        "LMOVE lsrc{t} ldes{t} RIGHT RIGHT",
+        b"$5\r\nhello\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING ldes{t}",
+        b"$9\r\nquicklist\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    assert_command_integer(&processor, "RPUSH lst a b c", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_integer(&processor, "RPUSH lst d", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+
+    assert_command_response(&processor, "RPOP lst", b"$1\r\nd\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+}
+
+#[test]
 fn debug_object_reports_metadata_for_existing_key() {
     let processor = RequestProcessor::new().unwrap();
 
@@ -11027,6 +13468,53 @@ fn debug_object_reports_metadata_for_existing_key() {
     assert!(
         response_str.contains("encoding:embstr"),
         "expected 'encoding:embstr' for short string in response: {response_str}"
+    );
+}
+
+#[test]
+fn debug_htstats_key_rejects_non_hashtable_values() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SADD myset a b c", b":3\r\n");
+    assert_command_response(
+        &processor,
+        "DEBUG HTSTATS-KEY myset",
+        b"-ERR The value stored at the specified key is not represented using an hash table\r\n",
+    );
+}
+
+#[test]
+fn debug_htstats_key_reports_synthetic_set_hash_table_stats() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(
+        &processor,
+        "CONFIG SET set-max-listpack-entries 0",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "SADD myset m:1 m:2 m:3", b":3\r\n");
+
+    let response = execute_command_line(&processor, "DEBUG HTSTATS-KEY myset full").unwrap();
+    let payload = parse_bulk_payload(&response).expect("DEBUG HTSTATS-KEY should return bulk");
+    let payload = String::from_utf8(payload).expect("payload must be valid UTF-8");
+
+    assert!(
+        payload.contains("Hash table 0 stats (main hash table):"),
+        "missing main hash table header: {payload}"
+    );
+    assert!(
+        payload.contains("table size: 8"),
+        "expected synthetic table size 8: {payload}"
+    );
+    assert!(
+        payload.contains("number of elements: 3"),
+        "expected 3 members: {payload}"
+    );
+    assert!(
+        payload.contains("different slots: 1"),
+        "expected synthetic slot summary: {payload}"
+    );
+    assert!(
+        payload.contains("max chain length: 3"),
+        "expected synthetic chain summary: {payload}"
     );
 }
 
@@ -11513,6 +14001,78 @@ fn command_info_returns_map_in_resp3_and_array_in_resp2() {
 }
 
 #[test]
+fn zset_external_surface_regressions_match_redis_zset_tcl() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "ZADD zset -inf a 1 b 2 c 3 d 4 e 5 f +inf g", 7);
+    assert_command_response(
+        &processor,
+        "ZRANGEBYSCORE zset (-inf (2",
+        b"*1\r\n$1\r\nb\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "ZRANGEBYSCORE zset (4 (+inf",
+        b"*1\r\n$1\r\nf\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "ZREVRANGEBYSCORE zset (+inf (4",
+        b"*1\r\n$1\r\nf\r\n",
+    );
+    assert_command_response(&processor, "ZRANGEBYSCORE zset 0 10 LIMIT -1 2", b"*0\r\n");
+    assert_command_response(
+        &processor,
+        "ZREVRANGEBYSCORE zset 10 0 LIMIT -1 2",
+        b"*0\r\n",
+    );
+
+    assert_command_integer(
+        &processor,
+        "ZADD zlex 0 alpha 0 bar 0 cool 0 down 0 elephant 0 foo 0 great 0 hill 0 omega",
+        9,
+    );
+    assert_command_response(&processor, "ZRANGEBYLEX zlex - [cool LIMIT -1 2", b"*0\r\n");
+    assert_command_response(&processor, "ZREVRANGEBYLEX zlex + [d LIMIT -1 5", b"*0\r\n");
+
+    assert_command_integer(&processor, "ZADD zranktmp 10 x 20 y 30 z", 3);
+    assert_command_response(
+        &processor,
+        "ZRANK zranktmp x WITHSCORE",
+        b"*2\r\n:0\r\n$2\r\n10\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "ZREVRANK zranktmp z WITHSCORE",
+        b"*2\r\n:0\r\n$2\r\n30\r\n",
+    );
+    assert_command_response(&processor, "ZRANK zranktmp foo WITHSCORE", b"*-1\r\n");
+    assert_command_response(&processor, "ZREVRANK zranktmp foo WITHSCORE", b"*-1\r\n");
+
+    assert_command_response(&processor, "SET wrongtype foo", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "ZPOPMIN wrongtype -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZPOPMIN wrongtype 0",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZPOPMAX wrongtype -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZPOPMAX wrongtype 0",
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n",
+    );
+}
+
+#[test]
 fn scan_and_sscan_return_set_type_in_resp3() {
     let processor = RequestProcessor::new().unwrap();
     assert_command_response(&processor, "SET k1 v1", b"+OK\r\n");
@@ -11615,6 +14175,25 @@ fn srandmember_and_spop_with_count_return_set_type_in_resp3() {
         resp3_spop.starts_with(b"~2\r\n"),
         "RESP3 SPOP with count should use set type, got: {:?}",
         String::from_utf8_lossy(&resp3_spop)
+    );
+}
+
+#[test]
+fn srandmember_rejects_i64_min_count_and_keeps_server_healthy() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "SADD s a b c", b":3\r\n");
+    assert_command_error(
+        &processor,
+        "SRANDMEMBER s -9223372036854775808",
+        b"-ERR value is out of range\r\n",
+    );
+
+    // Ensure the request processor continues serving subsequent commands.
+    assert_command_response(&processor, "SCARD s", b":3\r\n");
+    let after = execute_command_line(&processor, "SRANDMEMBER s -2").unwrap();
+    assert!(
+        after.starts_with(b"*2\r\n"),
+        "SRANDMEMBER after out-of-range error should still execute normally"
     );
 }
 
@@ -12159,6 +14738,41 @@ fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
         "CLUSTER COUNTKEYSINSLOT abc should fail"
     );
 
+    // COUNT/GETKEYSINSLOT should reflect actual keys in the requested slot.
+    let slot_key_a = "{slot-a}alpha";
+    let slot_key_b = "{slot-a}beta";
+    execute_command_line(&processor, &format!("SET {slot_key_a} v")).unwrap();
+    execute_command_line(&processor, &format!("HSET {slot_key_b} field 1")).unwrap();
+    let populated_slot = u16::from(redis_hash_slot(slot_key_a.as_bytes()));
+    let populated_count = execute_command_line(
+        &processor,
+        &format!("CLUSTER COUNTKEYSINSLOT {populated_slot}"),
+    )
+    .unwrap();
+    assert_eq!(populated_count, b":2\r\n");
+
+    let populated_keys = execute_command_line(
+        &processor,
+        &format!("CLUSTER GETKEYSINSLOT {populated_slot} 10"),
+    )
+    .unwrap();
+    let populated_keys_text = String::from_utf8_lossy(&populated_keys);
+    assert!(
+        populated_keys_text.contains(slot_key_a) && populated_keys_text.contains(slot_key_b),
+        "GETKEYSINSLOT should include both slot keys: {}",
+        populated_keys_text
+    );
+
+    let populated_keys_limited = execute_command_line(
+        &processor,
+        &format!("CLUSTER GETKEYSINSLOT {populated_slot} 1"),
+    )
+    .unwrap();
+    assert!(
+        populated_keys_limited.starts_with(b"*1\r\n"),
+        "GETKEYSINSLOT count limit should cap returned keys"
+    );
+
     // CLUSTER GETKEYSINSLOT returns empty array for valid slot
     let keys_0 = execute_command_line(&processor, "CLUSTER GETKEYSINSLOT 0 10").unwrap();
     assert_eq!(keys_0, b"*0\r\n");
@@ -12505,16 +15119,3122 @@ fn xgroup_createconsumer_delconsumer_and_help() {
         "DELCONSUMER on missing stream should fail"
     );
 
-    // XGROUP HELP returns updated count (12 entries)
+    // XGROUP HELP returns updated count (17 entries)
     let help = execute_command_line(&processor, "XGROUP HELP").unwrap();
     assert!(
-        help.starts_with(b"*12\r\n"),
-        "XGROUP HELP should return 12-element array"
+        help.starts_with(b"*17\r\n"),
+        "XGROUP HELP should return 17-element array"
+    );
+    assert_command_error(
+        &processor,
+        "XGROUP HELP extra",
+        b"-ERR wrong number of arguments for 'xgroup|help' command\r\n",
     );
 
     // XGROUP unknown subcommand returns error
     let unknown = execute_command_line(&processor, "XGROUP BADCMD mystream mygroup");
     assert!(unknown.is_err(), "XGROUP BADCMD should return error");
+}
+
+#[test]
+fn xgroup_create_surface_matches_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XGROUP CREATE: creation and duplicate group name detection"
+    // - "XGROUP CREATE: with ENTRIESREAD parameter"
+    // - "XGROUP CREATE: automatic stream creation fails without MKSTREAM"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    assert_command_response(&processor, "XADD mystream 1-1 a 1", b"$3\r\n1-1\r\n");
+    assert_command_response(&processor, "XADD mystream 1-2 b 2", b"$3\r\n1-2\r\n");
+    assert_command_response(&processor, "XADD mystream 1-3 c 3", b"$3\r\n1-3\r\n");
+    assert_command_response(&processor, "XADD mystream 1-4 d 4", b"$3\r\n1-4\r\n");
+
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup $", b"+OK\r\n");
+    assert_command_error(
+        &processor,
+        "XGROUP CREATE mystream mygroup $",
+        b"-BUSYGROUP Consumer Group name already exists\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XGROUP CREATE mystream badgroup $ ENTRIESREAD -3",
+        b"-ERR value for ENTRIESREAD must be positive or -1\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE mystream mygroup1 $ ENTRIESREAD 0",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE mystream mygroup2 $ ENTRIESREAD 3",
+        b"+OK\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XGROUP CREATE mystream_missing mygroup $",
+        b"-ERR The XGROUP subcommand requires the key to exist. Note that for CREATE you may want to use the MKSTREAM option to create an empty stream automatically.\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE mystream_created mygroup $ MKSTREAM",
+        b"+OK\r\n",
+    );
+
+    let xinfo_groups = execute_command_line(&processor, "XINFO GROUPS mystream").unwrap();
+    assert!(
+        xinfo_groups
+            .windows(b"$7\r\nmygroup\r\n".len())
+            .any(|window| window == b"$7\r\nmygroup\r\n"),
+        "XINFO GROUPS should include the first created group"
+    );
+    assert!(
+        xinfo_groups
+            .windows(b"$8\r\nmygroup1\r\n".len())
+            .any(|window| window == b"$8\r\nmygroup1\r\n"),
+        "XINFO GROUPS should include ENTRIESREAD=0 group"
+    );
+    assert!(
+        xinfo_groups
+            .windows(b"$8\r\nmygroup2\r\n".len())
+            .any(|window| window == b"$8\r\nmygroup2\r\n"),
+        "XINFO GROUPS should include ENTRIESREAD=3 group"
+    );
+    assert!(
+        xinfo_groups
+            .windows(b"$12\r\nentries-read\r\n:0\r\n$3\r\nlag\r\n:4\r\n".len())
+            .any(|window| window == b"$12\r\nentries-read\r\n:0\r\n$3\r\nlag\r\n:4\r\n"),
+        "XINFO GROUPS should expose ENTRIESREAD=0 and derived lag"
+    );
+    assert!(
+        xinfo_groups
+            .windows(b"$12\r\nentries-read\r\n:3\r\n$3\r\nlag\r\n:1\r\n".len())
+            .any(|window| window == b"$12\r\nentries-read\r\n:3\r\n$3\r\nlag\r\n:1\r\n"),
+        "XINFO GROUPS should expose ENTRIESREAD=3 and derived lag"
+    );
+}
+
+#[test]
+fn xread_and_xreadgroup_argument_surface_matches_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XREADGROUP stream and ID pairing"
+    // - "XREADGROUP stream ID format validation"
+    // - "XREAD and XREADGROUP against wrong parameter"
+    assert_command_response(&processor, "XADD mystream 666 f v", b"$5\r\n666-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup $", b"+OK\r\n");
+
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream > stream2",
+        b"-ERR Unbalanced 'xreadgroup' list of streams: for each stream key an ID or '>' must be specified.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream stream2 >",
+        b"-ERR Unbalanced 'xreadgroup' list of streams: for each stream key an ID or '>' must be specified.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP mygroup Alice COUNT 1 STREAMS mystream",
+        b"-ERR Unbalanced 'xreadgroup' list of streams: for each stream key an ID or '>' must be specified.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREAD COUNT 1 STREAMS mystream",
+        b"-ERR Unbalanced 'xread' list of streams: for each stream key an ID, '+', or '$' must be specified.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREAD COUNT 2 CLAIM 10 STREAMS mystream 0-0",
+        b"-ERR The CLAIM option is only supported by XREADGROUP. You called XREAD instead.\r\n",
+    );
+
+    for invalid_id_command in [
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream invalid-id",
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream 123-",
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream -123",
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream abc-def",
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream --",
+        "XREADGROUP GROUP mygroup consumer STREAMS mystream 123-abc",
+    ] {
+        assert_command_error(
+            &processor,
+            invalid_id_command,
+            b"-ERR Invalid stream ID specified as stream command argument\r\n",
+        );
+    }
+}
+
+#[test]
+fn xread_last_element_plus_matches_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XREAD last element from non-empty stream"
+    // - "XREAD last element from empty stream"
+    // - "XREAD last element from multiple streams"
+    // - "XREAD last element with count > 1"
+    // - "XREAD: read last element after XDEL (issue #13628)"
+    let expect_single_last =
+        |response: &[u8], stream: &[u8], id: &[u8], field: &[u8], value: &[u8]| {
+            let (actual_stream, entries) = parse_xread_single_stream_response(response).unwrap();
+            assert_eq!(actual_stream, stream);
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0, id);
+            assert_eq!(entries[0].1, vec![(field.to_vec(), value.to_vec())]);
+        };
+
+    let _ = execute_command_line(&processor, "DEL lestream").unwrap();
+    assert_command_response(&processor, "XADD lestream 1-0 k1 v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD lestream 2-0 k2 v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD lestream 3-0 k3 v3", b"$3\r\n3-0\r\n");
+
+    let first_last = execute_command_line(&processor, "XREAD STREAMS lestream +").unwrap();
+    expect_single_last(&first_last, b"lestream", b"3-0", b"k3", b"v3");
+
+    assert_command_response(
+        &processor,
+        "XADD lestream 3-18446744073709551614 k4 v4",
+        b"$22\r\n3-18446744073709551614\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XADD lestream 3-18446744073709551615 k5 v5",
+        b"$22\r\n3-18446744073709551615\r\n",
+    );
+
+    let max_seq_last = execute_command_line(&processor, "XREAD STREAMS lestream +").unwrap();
+    expect_single_last(
+        &max_seq_last,
+        b"lestream",
+        b"3-18446744073709551615",
+        b"k5",
+        b"v5",
+    );
+
+    let count_ignored =
+        execute_command_line(&processor, "XREAD COUNT 3 STREAMS lestream +").unwrap();
+    expect_single_last(
+        &count_ignored,
+        b"lestream",
+        b"3-18446744073709551615",
+        b"k5",
+        b"v5",
+    );
+
+    let _ = execute_command_line(&processor, "DEL lestream").unwrap();
+    let empty_stream = execute_command_line(&processor, "XREAD STREAMS lestream +").unwrap();
+    assert!(parse_xread_single_stream_response(&empty_stream).is_none());
+
+    assert_command_response(&processor, "XADD lestream 1-0 k1 v1", b"$3\r\n1-0\r\n");
+    assert_command_integer(&processor, "XDEL lestream 1-0", 1);
+    let deleted_last = execute_command_line(&processor, "XREAD STREAMS lestream +").unwrap();
+    assert!(parse_xread_single_stream_response(&deleted_last).is_none());
+
+    let _ = execute_command_line(&processor, "DEL lestream").unwrap();
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE lestream legroup $ MKSTREAM",
+        b"+OK\r\n",
+    );
+    let mkstream_empty = execute_command_line(&processor, "XREAD STREAMS lestream +").unwrap();
+    assert!(parse_xread_single_stream_response(&mkstream_empty).is_none());
+
+    let _ = execute_command_line(&processor, "DEL {lestream}1 {lestream}2 {lestream}3").unwrap();
+    assert_command_response(&processor, "XADD {lestream}1 1-0 k1 v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD {lestream}1 2-0 k2 v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD {lestream}1 3-0 k3 v3", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XADD {lestream}2 1-0 k1 v4", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD {lestream}2 2-0 k2 v5", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD {lestream}2 3-0 k3 v6", b"$3\r\n3-0\r\n");
+
+    let multi_last = execute_command_line(
+        &processor,
+        "XREAD STREAMS {lestream}1 {lestream}2 {lestream}3 + + +",
+    )
+    .unwrap();
+    let multi_root = parse_resp_test_value(&multi_last);
+    let streams = resp_test_array(&multi_root);
+    assert_eq!(streams.len(), 2);
+
+    let first_stream = resp_test_array(&streams[0]);
+    assert_eq!(resp_test_bulk(&first_stream[0]), b"{lestream}1");
+    let first_entries = resp_test_array(&first_stream[1]);
+    assert_eq!(first_entries.len(), 1);
+    let first_entry = resp_test_array(&first_entries[0]);
+    assert_eq!(resp_test_bulk(&first_entry[0]), b"3-0");
+    assert_eq!(
+        resp_test_field_pairs(&first_entry[1]),
+        vec![(b"k3".to_vec(), b"v3".to_vec())]
+    );
+
+    let second_stream = resp_test_array(&streams[1]);
+    assert_eq!(resp_test_bulk(&second_stream[0]), b"{lestream}2");
+    let second_entries = resp_test_array(&second_stream[1]);
+    assert_eq!(second_entries.len(), 1);
+    let second_entry = resp_test_array(&second_entries[0]);
+    assert_eq!(resp_test_bulk(&second_entry[0]), b"3-0");
+    assert_eq!(
+        resp_test_field_pairs(&second_entry[1]),
+        vec![(b"k3".to_vec(), b"v6".to_vec())]
+    );
+
+    let _ = execute_command_line(&processor, "DEL stream").unwrap();
+    assert_command_response(&processor, "XADD stream 1-0 f 1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD stream 2-0 f 2", b"$3\r\n2-0\r\n");
+    assert_command_integer(&processor, "XDEL stream 2-0", 1);
+    let after_xdel = execute_command_line(&processor, "XREAD STREAMS stream +").unwrap();
+    expect_single_last(&after_xdel, b"stream", b"1-0", b"f", b"1");
+}
+
+#[test]
+fn xadd_id_overflow_and_future_streamid_edge_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XADD IDs correctly report an error when overflowing"
+    // - "XADD streamID edge"
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    assert_command_response(
+        &processor,
+        "XADD mystream 18446744073709551615-18446744073709551615 a b",
+        b"$41\r\n18446744073709551615-18446744073709551615\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XADD mystream * c d",
+        b"-ERR value is out of range\r\n",
+    );
+
+    let _ = execute_command_line(&processor, "DEL x").unwrap();
+    assert_command_response(
+        &processor,
+        "XADD x 2577343934890-18446744073709551615 f v",
+        b"$34\r\n2577343934890-18446744073709551615\r\n",
+    );
+    assert_command_response(&processor, "XADD x * f2 v2", b"$15\r\n2577343934891-0\r\n");
+    assert_command_response(
+        &processor,
+        "XRANGE x - +",
+        b"*2\r\n*2\r\n$34\r\n2577343934890-18446744073709551615\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n*2\r\n$15\r\n2577343934891-0\r\n*2\r\n$2\r\nf2\r\n$2\r\nv2\r\n",
+    );
+}
+
+#[test]
+fn config_set_stream_idmp_validation_matches_external_stream_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "CONFIG SET stream-idmp-duration and stream-idmp-maxsize validation"
+    for command in [
+        "CONFIG SET stream-idmp-duration 86401",
+        "CONFIG SET stream-idmp-duration 100000",
+        "CONFIG SET stream-idmp-duration 0",
+        "CONFIG SET stream-idmp-duration -1",
+        "CONFIG SET stream-idmp-duration -100",
+        "CONFIG SET stream-idmp-maxsize 10001",
+        "CONFIG SET stream-idmp-maxsize 50000",
+        "CONFIG SET stream-idmp-maxsize 0",
+        "CONFIG SET stream-idmp-maxsize -1",
+        "CONFIG SET stream-idmp-maxsize -100",
+    ] {
+        let response = execute_command_line(&processor, command).unwrap();
+        let response_text = String::from_utf8_lossy(&response);
+        assert!(
+            response_text.contains("must be between"),
+            "expected range validation error for `{command}`, got: {response_text}"
+        );
+    }
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-idmp-duration 86400",
+        b"+OK\r\n",
+    );
+    let duration = execute_command_line(&processor, "CONFIG GET stream-idmp-duration").unwrap();
+    assert_eq!(
+        parse_bulk_array_payloads(&duration),
+        vec![b"stream-idmp-duration".to_vec(), b"86400".to_vec(),]
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-idmp-maxsize 10000",
+        b"+OK\r\n",
+    );
+    let maxsize = execute_command_line(&processor, "CONFIG GET stream-idmp-maxsize").unwrap();
+    assert_eq!(
+        parse_bulk_array_payloads(&maxsize),
+        vec![b"stream-idmp-maxsize".to_vec(), b"10000".to_vec(),]
+    );
+
+    assert_command_response(&processor, "CONFIG SET stream-idmp-duration 1", b"+OK\r\n");
+    let duration = execute_command_line(&processor, "CONFIG GET stream-idmp-duration").unwrap();
+    assert_eq!(
+        parse_bulk_array_payloads(&duration),
+        vec![b"stream-idmp-duration".to_vec(), b"1".to_vec(),]
+    );
+
+    assert_command_response(&processor, "CONFIG SET stream-idmp-maxsize 1", b"+OK\r\n");
+    let maxsize = execute_command_line(&processor, "CONFIG GET stream-idmp-maxsize").unwrap();
+    assert_eq!(
+        parse_bulk_array_payloads(&maxsize),
+        vec![b"stream-idmp-maxsize".to_vec(), b"1".to_vec(),]
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-idmp-duration 100",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "CONFIG SET stream-idmp-maxsize 100", b"+OK\r\n");
+}
+
+#[test]
+fn xrange_exclusive_ranges_match_external_stream_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl: "XRANGE exclusive ranges"
+    let _ = execute_command_line(&processor, "DEL vipstream").unwrap();
+    for id in [
+        "0-1",
+        "0-18446744073709551615",
+        "1-0",
+        "42-0",
+        "42-42",
+        "18446744073709551615-18446744073709551614",
+        "18446744073709551615-18446744073709551615",
+    ] {
+        let command = format!("XADD vipstream {id} foo bar");
+        assert!(
+            execute_command_line(&processor, &command).is_ok(),
+            "failed to seed `{command}`"
+        );
+    }
+
+    let all_entries = execute_command_line(&processor, "XRANGE vipstream - +").unwrap();
+    assert_eq!(parse_stream_entry_list_response(&all_entries).len(), 7);
+
+    let exclude_first = execute_command_line(&processor, "XRANGE vipstream (0-1 +").unwrap();
+    assert_eq!(parse_stream_entry_list_response(&exclude_first).len(), 6);
+
+    let exclude_last = execute_command_line(
+        &processor,
+        "XRANGE vipstream - (18446744073709551615-18446744073709551615",
+    )
+    .unwrap();
+    assert_eq!(parse_stream_entry_list_response(&exclude_last).len(), 6);
+
+    let middle_one = execute_command_line(&processor, "XRANGE vipstream (0-1 (1-0").unwrap();
+    let middle_entries = parse_stream_entry_list_response(&middle_one);
+    assert_eq!(middle_entries.len(), 1);
+    assert_eq!(middle_entries[0].0, b"0-18446744073709551615".to_vec());
+
+    let another_middle = execute_command_line(&processor, "XRANGE vipstream (1-0 (42-42").unwrap();
+    let middle_entries = parse_stream_entry_list_response(&another_middle);
+    assert_eq!(middle_entries.len(), 1);
+    assert_eq!(middle_entries[0].0, b"42-0".to_vec());
+
+    for command in [
+        "XRANGE vipstream (- +",
+        "XRANGE vipstream - (+",
+        "XRANGE vipstream (18446744073709551615-18446744073709551615 +",
+        "XRANGE vipstream - (0-0",
+    ] {
+        let error = execute_command_line(&processor, command).unwrap_err();
+        let CommandHarnessError::Request(error) = error else {
+            panic!("expected request error for `{command}`");
+        };
+        let mut response = Vec::new();
+        error.append_resp_error(&mut response);
+        assert!(
+            response.starts_with(b"-ERR "),
+            "expected ERR response for `{command}`, got {:?}",
+            String::from_utf8_lossy(&response)
+        );
+    }
+}
+
+#[test]
+fn xadd_and_xtrim_limit_semantics_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XADD with LIMIT delete entries no more than limit"
+    // - "XTRIM with MAXLEN option basic test"
+    // - "XADD with LIMIT consecutive calls"
+    // - "XTRIM with ~ is limited"
+    // - "XTRIM without ~ and with LIMIT"
+    // - "XTRIM with LIMIT delete entries no more than limit"
+    let _ = execute_command_line(&processor, "DEL yourstream").unwrap();
+    for _ in 0..3 {
+        let _ = execute_command_line(&processor, "XADD yourstream * xitem v").unwrap();
+    }
+    let _ =
+        execute_command_line(&processor, "XADD yourstream MAXLEN ~ 0 LIMIT 1 * xitem v").unwrap();
+    assert_command_integer(&processor, "XLEN yourstream", 4);
+
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for index in 0..1000 {
+        let command = format!("XADD mystream * xitem {index}");
+        let _ = execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN 666", 334);
+    assert_command_integer(&processor, "XLEN mystream", 666);
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN = 555", 111);
+    assert_command_integer(&processor, "XLEN mystream", 555);
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN ~ 444", 55);
+    assert_command_integer(&processor, "XLEN mystream", 500);
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN ~ 400", 100);
+    assert_command_integer(&processor, "XLEN mystream", 400);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 10",
+        b"+OK\r\n",
+    );
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for _ in 0..100 {
+        let _ = execute_command_line(&processor, "XADD mystream * xitem v").unwrap();
+    }
+    let _ =
+        execute_command_line(&processor, "XADD mystream MAXLEN ~ 55 LIMIT 30 * xitem v").unwrap();
+    assert_command_integer(&processor, "XLEN mystream", 71);
+    let _ =
+        execute_command_line(&processor, "XADD mystream MAXLEN ~ 55 LIMIT 30 * xitem v").unwrap();
+    assert_command_integer(&processor, "XLEN mystream", 62);
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 100",
+        b"+OK\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 1",
+        b"+OK\r\n",
+    );
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for _ in 0..102 {
+        let _ = execute_command_line(&processor, "XADD mystream * xitem v").unwrap();
+    }
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN ~ 1", 100);
+    assert_command_integer(&processor, "XLEN mystream", 2);
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 100",
+        b"+OK\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 1",
+        b"+OK\r\n",
+    );
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for _ in 0..102 {
+        let _ = execute_command_line(&processor, "XADD mystream * xitem v").unwrap();
+    }
+    let error = execute_command_line(&processor, "XTRIM mystream MAXLEN 1 LIMIT 30").unwrap_err();
+    let CommandHarnessError::Request(error) = error else {
+        panic!("expected request error for XTRIM exact LIMIT");
+    };
+    let mut response = Vec::new();
+    error.append_resp_error(&mut response);
+    assert!(
+        response.starts_with(b"-ERR "),
+        "expected ERR response for XTRIM exact LIMIT, got {:?}",
+        String::from_utf8_lossy(&response)
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 100",
+        b"+OK\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 2",
+        b"+OK\r\n",
+    );
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for _ in 0..3 {
+        let _ = execute_command_line(&processor, "XADD mystream * xitem v").unwrap();
+    }
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN ~ 0 LIMIT 1", 0);
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN ~ 0 LIMIT 2", 2);
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 100",
+        b"+OK\r\n",
+    );
+}
+
+#[test]
+fn xtrim_acked_and_delref_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XTRIM with approx and ACKED deletes entries correctly"
+    // - "XTRIM with approx and DELREF deletes entries correctly"
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 2",
+        b"+OK\r\n",
+    );
+
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for id in ["1-0", "2-0", "3-0", "4-0", "5-0"] {
+        let command = format!("XADD mystream {id} f v");
+        let _ = execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    let _ = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_command_integer(&processor, "XACK mystream mygroup 1-0 2-0 4-0", 3);
+    assert_command_integer(&processor, "XTRIM mystream MINID ~ 6-0 ACKED", 3);
+    assert_command_integer(&processor, "XLEN mystream", 2);
+    assert_command_response(
+        &processor,
+        "XRANGE mystream - +",
+        b"*2\r\n*2\r\n$3\r\n3-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n*2\r\n$3\r\n5-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n",
+    );
+
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for id in ["1-0", "2-0", "3-0", "4-0"] {
+        let command = format!("XADD mystream {id} f v");
+        let _ = execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    let _ = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_command_integer(&processor, "XTRIM mystream MINID ~ 5-0 DELREF", 4);
+    assert_command_integer(&processor, "XLEN mystream", 0);
+    assert_command_response(
+        &processor,
+        "XPENDING mystream mygroup",
+        b"*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n",
+    );
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET stream-node-max-entries 100",
+        b"+OK\r\n",
+    );
+}
+
+#[test]
+fn xadd_acked_and_delref_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XADD with MAXLEN option and ACKED option"
+    // - "XADD with ACKED option doesn't crash after DEBUG RELOAD"
+    // - "XADD with MAXLEN option and DELREF option"
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for id in ["1-0", "2-0", "3-0", "4-0", "5-0"] {
+        let command = format!("XADD mystream {id} f v");
+        let _ = execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_integer(&processor, "XLEN mystream", 5);
+
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "XADD mystream MAXLEN = 1 ACKED 6-0 f v",
+        b"$3\r\n6-0\r\n",
+    );
+    assert_command_integer(&processor, "XLEN mystream", 6);
+
+    let first_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, first_entries) = parse_xread_single_stream_response(&first_read).unwrap();
+    assert_eq!(first_entries.len(), 1);
+    let first_id = String::from_utf8(first_entries[0].0.clone()).unwrap();
+    assert_command_integer(&processor, &format!("XACK mystream mygroup {first_id}"), 1);
+    let (pending_count, _, _, _) = parse_xpending_summary_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup").unwrap(),
+    );
+    assert_eq!(pending_count, 0);
+
+    assert_command_response(
+        &processor,
+        "XADD mystream MAXLEN = 1 ACKED 7-0 f v",
+        b"$3\r\n7-0\r\n",
+    );
+    assert_command_integer(&processor, "XLEN mystream", 6);
+
+    let remaining_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, remaining_entries) = parse_xread_single_stream_response(&remaining_read).unwrap();
+    let mut remaining_ids = Vec::with_capacity(remaining_entries.len());
+    for (id, _) in remaining_entries {
+        remaining_ids.push(String::from_utf8(id).unwrap());
+    }
+    assert_eq!(remaining_ids.len(), 6);
+    assert_command_integer(
+        &processor,
+        &format!("XACK mystream mygroup {}", remaining_ids.join(" ")),
+        6,
+    );
+    let (pending_count, _, _, _) = parse_xpending_summary_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup").unwrap(),
+    );
+    assert_eq!(pending_count, 0);
+
+    let auto_id = execute_command_line(&processor, "XADD mystream MAXLEN = 1 ACKED * f v").unwrap();
+    assert!(auto_id.starts_with(b"$"));
+    assert_command_integer(&processor, "XLEN mystream", 1);
+
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    assert_command_response(&processor, "XADD mystream 1-0 f v", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    let reloaded_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, reloaded_entries) = parse_xread_single_stream_response(&reloaded_read).unwrap();
+    assert_eq!(reloaded_entries.len(), 1);
+    let reloaded_id = String::from_utf8(reloaded_entries[0].0.clone()).unwrap();
+    let (pending_count, _, _, _) = parse_xpending_summary_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup").unwrap(),
+    );
+    assert_eq!(pending_count, 1);
+
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "XADD mystream MAXLEN = 1 ACKED 2-0 f v",
+        b"$3\r\n2-0\r\n",
+    );
+    assert_command_integer(&processor, "XLEN mystream", 2);
+
+    assert_command_integer(
+        &processor,
+        &format!("XACK mystream mygroup {reloaded_id}"),
+        1,
+    );
+    let (pending_count, _, _, _) = parse_xpending_summary_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup").unwrap(),
+    );
+    assert_eq!(pending_count, 0);
+
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "XADD mystream MAXLEN = 1 ACKED 3-0 f v",
+        b"$3\r\n3-0\r\n",
+    );
+    assert_command_integer(&processor, "XLEN mystream", 2);
+
+    let _ = execute_command_line(&processor, "DEL mystream").unwrap();
+    for id in ["1-0", "2-0", "3-0", "4-0", "5-0"] {
+        let command = format!("XADD mystream {id} f v");
+        let _ = execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    let delref_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, delref_entries) = parse_xread_single_stream_response(&delref_read).unwrap();
+    assert_eq!(delref_entries.len(), 1);
+    let delref_auto_id =
+        execute_command_line(&processor, "XADD mystream MAXLEN = 1 DELREF * f v").unwrap();
+    assert!(delref_auto_id.starts_with(b"$"));
+    assert_command_integer(&processor, "XLEN mystream", 1);
+    let (pending_count, _, _, _) = parse_xpending_summary_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup").unwrap(),
+    );
+    assert_eq!(pending_count, 0);
+}
+
+#[test]
+fn xadd_idmp_basic_and_auto_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    fn execute_frame_error(processor: &RequestProcessor, parts: &[&[u8]]) -> Vec<u8> {
+        let frame = encode_resp(parts);
+        let mut args = [ArgSlice::EMPTY; 32];
+        let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+        let mut response = Vec::new();
+        let err = processor
+            .execute(&args[..meta.argument_count], &mut response)
+            .unwrap_err();
+        err.append_resp_error(&mut response);
+        response
+    }
+
+    fn execute_frame_bulk(processor: &RequestProcessor, parts: &[&[u8]]) -> Vec<u8> {
+        let response = execute_frame(processor, &encode_resp(parts));
+        resp_test_bulk(&parse_resp_test_value(&response)).to_vec()
+    }
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XADD IDMP with invalid syntax"
+    // - "XADD IDMP duplicate request returns same ID"
+    // - "XADD IDMP multiple different IIDs create multiple entries"
+    // - "XADD IDMPAUTO basic deduplication based on field-value pairs"
+    // - "XADD IDMPAUTO deduplicates regardless of field order"
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[b"XADD", b"mystream", b"IDMP", b"p1", b"*", b"f", b"v"]
+        ),
+        b"-ERR Invalid stream ID specified as stream command argument\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[
+                b"XADD",
+                b"mystream",
+                b"IDMP",
+                b"p1",
+                b"iid1",
+                b"1-1",
+                b"f",
+                b"v"
+            ],
+        ),
+        b"-ERR syntax error, IDMP/IDMPAUTO can be used only with auto-generated IDs\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[
+                b"XADD",
+                b"mystream",
+                b"IDMP",
+                b"p1",
+                b"iid1",
+                b"IDMP",
+                b"p2",
+                b"iid2",
+                b"*",
+                b"f",
+                b"v",
+            ],
+        ),
+        b"-ERR syntax error, IDMP/IDMPAUTO specified multiple times\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[
+                b"XADD",
+                b"mystream",
+                b"IDMPAUTO",
+                b"p1",
+                b"IDMP",
+                b"p2",
+                b"iid2",
+                b"*",
+                b"f",
+                b"v"
+            ],
+        ),
+        b"-ERR syntax error, IDMP/IDMPAUTO specified multiple times\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[
+                b"XADD",
+                b"mystream",
+                b"IDMP",
+                b"",
+                b"iid1",
+                b"*",
+                b"f",
+                b"v"
+            ],
+        ),
+        b"-ERR syntax error, IDMP requires a non-empty producer ID\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[b"XADD", b"mystream", b"IDMP", b"p1", b"", b"*", b"f", b"v"],
+        ),
+        b"-ERR syntax error, IDMP requires a non-empty idempotent ID\r\n",
+    );
+    assert_eq!(
+        execute_frame_error(
+            &processor,
+            &[b"XADD", b"mystream", b"IDMPAUTO", b"", b"*", b"f", b"v"],
+        ),
+        b"-ERR syntax error, IDMPAUTO requires a non-empty producer ID\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL mystream", 0);
+    let first_id = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMP",
+            b"p1",
+            b"payment-abc",
+            b"*",
+            b"amount",
+            b"100",
+            b"currency",
+            b"USD",
+        ],
+    );
+    let duplicate_id = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMP",
+            b"p1",
+            b"payment-abc",
+            b"*",
+            b"amount",
+            b"200",
+            b"currency",
+            b"EUR",
+        ],
+    );
+    assert_eq!(duplicate_id, first_id);
+    assert_command_integer(&processor, "XLEN mystream", 1);
+    let duplicate_entries = parse_stream_entry_list_response(
+        &execute_command_line(&processor, "XRANGE mystream - +").unwrap(),
+    );
+    assert_eq!(duplicate_entries.len(), 1);
+    assert_eq!(
+        duplicate_entries[0].1,
+        vec![
+            (b"amount".to_vec(), b"100".to_vec()),
+            (b"currency".to_vec(), b"USD".to_vec()),
+        ]
+    );
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    let id1 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMP",
+            b"p1",
+            b"req-1",
+            b"*",
+            b"user",
+            b"alice",
+        ],
+    );
+    let id2 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMP",
+            b"p1",
+            b"req-2",
+            b"*",
+            b"user",
+            b"bob",
+        ],
+    );
+    let id3 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMP",
+            b"p1",
+            b"req-3",
+            b"*",
+            b"user",
+            b"charlie",
+        ],
+    );
+    assert_ne!(id1, id2);
+    assert_ne!(id2, id3);
+    assert_ne!(id1, id3);
+    assert_command_integer(&processor, "XLEN mystream", 3);
+    let entries = parse_stream_entry_list_response(
+        &execute_command_line(&processor, "XRANGE mystream - +").unwrap(),
+    );
+    assert_eq!(entries.len(), 3);
+    assert_eq!(entries[0].1, vec![(b"user".to_vec(), b"alice".to_vec())]);
+    assert_eq!(entries[1].1, vec![(b"user".to_vec(), b"bob".to_vec())]);
+    assert_eq!(entries[2].1, vec![(b"user".to_vec(), b"charlie".to_vec())]);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    let auto_id_1 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMPAUTO",
+            b"p1",
+            b"*",
+            b"field",
+            b"value",
+            b"amount",
+            b"10",
+        ],
+    );
+    let auto_id_2 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMPAUTO",
+            b"p1",
+            b"*",
+            b"field",
+            b"value",
+            b"amount",
+            b"10",
+        ],
+    );
+    assert_eq!(auto_id_2, auto_id_1);
+    assert_command_integer(&processor, "XLEN mystream", 1);
+
+    let ordered_id_1 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMPAUTO",
+            b"p1",
+            b"*",
+            b"f1",
+            b"v1",
+            b"f2",
+            b"v2",
+        ],
+    );
+    let ordered_id_2 = execute_frame_bulk(
+        &processor,
+        &[
+            b"XADD",
+            b"mystream",
+            b"IDMPAUTO",
+            b"p1",
+            b"*",
+            b"f2",
+            b"v2",
+            b"f1",
+            b"v1",
+        ],
+    );
+    assert_eq!(ordered_id_2, ordered_id_1);
+}
+
+#[test]
+fn xcfgset_and_xinfo_idmp_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    fn xinfo_stream_map(
+        processor: &RequestProcessor,
+        command: &str,
+    ) -> std::collections::BTreeMap<Vec<u8>, RespTestValue> {
+        let response = execute_command_line(processor, command).unwrap();
+        let root = parse_resp_test_value(&response);
+        resp_test_flat_map(&root)
+            .into_iter()
+            .map(|(key, value)| (key, value.clone()))
+            .collect()
+    }
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XCFGSET set both IDMP-DURATION and IDMP-MAXSIZE"
+    // - "XCFGSET invalid syntax"
+    // - "XCFGSET changing IDMP-DURATION clears all iids history"
+    // - "XCFGSET setting same value preserves iids-tracked count"
+    // - "XINFO STREAM returns iids-tracked and iids-added fields"
+    // - "XINFO STREAM returns pids-tracked field"
+    // - "XINFO STREAM returns idmp-duration and idmp-maxsize fields"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    assert!(
+        execute_command_line(&processor, "XADD mystream * field value")
+            .unwrap()
+            .starts_with(b"$")
+    );
+    assert_command_response(
+        &processor,
+        "XCFGSET mystream IDMP-DURATION 3 IDMP-MAXSIZE 10000",
+        b"+OK\r\n",
+    );
+    let info = xinfo_stream_map(&processor, "XINFO STREAM mystream");
+    assert_eq!(resp_test_integer(&info[&b"idmp-duration".to_vec()]), 3);
+    assert_eq!(resp_test_integer(&info[&b"idmp-maxsize".to_vec()]), 10000);
+
+    assert_command_error(
+        &processor,
+        "XCFGSET mystream",
+        b"-ERR At least one parameter of IDMP-DURATION and IDMP-MAXSIZE should be specified\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XCFGSET mystream IDMP-DURATION",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XCFGSET mystream IDMP-MAXSIZE",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XCFGSET mystream IDMP-DURATION A",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XCFGSET mystream IDMP-DURATION 000000000",
+        b"-ERR value is not an integer or out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XCFGSET mystream IDMP-MAXSIZE 0",
+        b"-ERR IDMP-MAXSIZE must be between 1 and 10000 entries\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    let old_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-1 * field value1").unwrap(),
+    ))
+    .to_vec();
+    assert!(
+        execute_command_line(&processor, "XADD mystream IDMP p1 req-2 * field value2")
+            .unwrap()
+            .starts_with(b"$")
+    );
+    let duplicate_before_clear = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-1 * field dup").unwrap(),
+    ))
+    .to_vec();
+    assert_eq!(duplicate_before_clear, old_id);
+    assert_command_response(&processor, "XCFGSET mystream IDMP-DURATION 5", b"+OK\r\n");
+    let new_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-1 * field new1").unwrap(),
+    ))
+    .to_vec();
+    assert_ne!(new_id, old_id);
+    assert_command_integer(&processor, "XLEN mystream", 3);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    let p1_req1_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-1 * field value1").unwrap(),
+    ))
+    .to_vec();
+    let p1_req2_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-2 * field value2").unwrap(),
+    ))
+    .to_vec();
+    let _p2_req3_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p2 req-3 * field value3").unwrap(),
+    ))
+    .to_vec();
+    let before_same_value = xinfo_stream_map(&processor, "XINFO STREAM mystream");
+    assert_eq!(
+        resp_test_integer(&before_same_value[&b"iids-tracked".to_vec()]),
+        3
+    );
+    assert_eq!(
+        resp_test_integer(&before_same_value[&b"iids-added".to_vec()]),
+        3
+    );
+    assert_eq!(
+        resp_test_integer(&before_same_value[&b"pids-tracked".to_vec()]),
+        2
+    );
+    assert_command_response(
+        &processor,
+        "XCFGSET mystream IDMP-DURATION 100 IDMP-MAXSIZE 100",
+        b"+OK\r\n",
+    );
+    let after_same_value = xinfo_stream_map(&processor, "XINFO STREAM mystream");
+    assert_eq!(
+        resp_test_integer(&after_same_value[&b"iids-tracked".to_vec()]),
+        3
+    );
+    assert_eq!(
+        resp_test_integer(&after_same_value[&b"iids-added".to_vec()]),
+        3
+    );
+    assert_eq!(
+        resp_test_integer(&after_same_value[&b"pids-tracked".to_vec()]),
+        2
+    );
+
+    let duplicate_after_same_value = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-1 * field dup2").unwrap(),
+    ))
+    .to_vec();
+    let duplicate_second_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 req-2 * field dup3").unwrap(),
+    ))
+    .to_vec();
+    assert_eq!(duplicate_after_same_value, p1_req1_id);
+    assert_eq!(duplicate_second_id, p1_req2_id);
+
+    let full_info = xinfo_stream_map(&processor, "XINFO STREAM mystream FULL");
+    assert_eq!(
+        resp_test_integer(&full_info[&b"idmp-duration".to_vec()]),
+        100
+    );
+    assert_eq!(
+        resp_test_integer(&full_info[&b"idmp-maxsize".to_vec()]),
+        100
+    );
+    assert_eq!(resp_test_integer(&full_info[&b"iids-tracked".to_vec()]), 3);
+    assert_eq!(resp_test_integer(&full_info[&b"iids-added".to_vec()]), 3);
+    assert_eq!(resp_test_integer(&full_info[&b"pids-tracked".to_vec()]), 2);
+}
+
+#[test]
+fn idmp_and_xcfgset_persistence_match_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    fn xinfo_stream_map(
+        processor: &RequestProcessor,
+        command: &str,
+    ) -> std::collections::BTreeMap<Vec<u8>, RespTestValue> {
+        let response = execute_command_line(processor, command).unwrap();
+        let root = parse_resp_test_value(&response);
+        resp_test_flat_map(&root)
+            .into_iter()
+            .map(|(key, value)| (key, value.clone()))
+            .collect()
+    }
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XADD IDMP persists in RDB"
+    // - "XADD IDMP multiple producers persistence in RDB"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    let p1_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 persist-1 * field value1")
+            .unwrap(),
+    ))
+    .to_vec();
+    let p2_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p2 persist-1 * field value2")
+            .unwrap(),
+    ))
+    .to_vec();
+    let p3_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p3 persist-1 * field value3")
+            .unwrap(),
+    ))
+    .to_vec();
+    let before_save = xinfo_stream_map(&processor, "XINFO STREAM mystream");
+    assert_eq!(
+        resp_test_integer(&before_save[&b"pids-tracked".to_vec()]),
+        3
+    );
+    assert_eq!(
+        resp_test_integer(&before_save[&b"iids-tracked".to_vec()]),
+        3
+    );
+    assert_command_response(&processor, "SAVE", b"+OK\r\n");
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+
+    let restored_info = xinfo_stream_map(&processor, "XINFO STREAM mystream");
+    assert_eq!(
+        resp_test_integer(&restored_info[&b"pids-tracked".to_vec()]),
+        3
+    );
+    assert_eq!(
+        resp_test_integer(&restored_info[&b"iids-tracked".to_vec()]),
+        3
+    );
+    let p1_duplicate_after_reload = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p1 persist-1 * field dup1").unwrap(),
+    ))
+    .to_vec();
+    let p2_duplicate_after_reload = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p2 persist-1 * field dup2").unwrap(),
+    ))
+    .to_vec();
+    let p3_duplicate_after_reload = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD mystream IDMP p3 persist-1 * field dup3").unwrap(),
+    ))
+    .to_vec();
+    assert_eq!(p1_duplicate_after_reload, p1_id);
+    assert_eq!(p2_duplicate_after_reload, p2_id);
+    assert_eq!(p3_duplicate_after_reload, p3_id);
+    assert_command_integer(&processor, "XLEN mystream", 3);
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XCFGSET configuration persists in RDB"
+    assert_command_integer(&processor, "DEL cfgstream", 0);
+    assert!(
+        execute_command_line(&processor, "XADD cfgstream IDMP p1 req-1 * field value")
+            .unwrap()
+            .starts_with(b"$")
+    );
+    assert_command_response(
+        &processor,
+        "XCFGSET cfgstream IDMP-DURATION 75 IDMP-MAXSIZE 7500",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "SAVE", b"+OK\r\n");
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    let cfg_info = xinfo_stream_map(&processor, "XINFO STREAM cfgstream");
+    assert_eq!(resp_test_integer(&cfg_info[&b"idmp-duration".to_vec()]), 75);
+    assert_eq!(
+        resp_test_integer(&cfg_info[&b"idmp-maxsize".to_vec()]),
+        7500
+    );
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XADD IDMP set in AOF"
+    assert_command_integer(&processor, "DEL aofstream", 0);
+    let aof_id = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD aofstream IDMP p1 aof-1 * field value1").unwrap(),
+    ))
+    .to_vec();
+    assert!(
+        execute_command_line(&processor, "XADD aofstream IDMP p1 aof-2 * field value2")
+            .unwrap()
+            .starts_with(b"$")
+    );
+    let duplicate_before_loadaof = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD aofstream IDMP p1 aof-1 * field dup").unwrap(),
+    ))
+    .to_vec();
+    assert_eq!(duplicate_before_loadaof, aof_id);
+    assert_command_response(
+        &processor,
+        "BGREWRITEAOF",
+        b"+Background append only file rewriting started\r\n",
+    );
+    assert_command_response(&processor, "DEBUG LOADAOF", b"+OK\r\n");
+    assert_command_integer(&processor, "XLEN aofstream", 2);
+    let duplicate_after_loadaof = resp_test_bulk(&parse_resp_test_value(
+        &execute_command_line(&processor, "XADD aofstream IDMP p1 aof-1 * field dup2").unwrap(),
+    ))
+    .to_vec();
+    assert_eq!(duplicate_after_loadaof, aof_id);
+
+    // Redis tests/unit/type/stream.tcl:
+    // - "XCFGSET configuration in AOF"
+    assert_command_integer(&processor, "DEL aofcfg", 0);
+    assert!(
+        execute_command_line(&processor, "XADD aofcfg IDMP p1 req-1 * field value")
+            .unwrap()
+            .starts_with(b"$")
+    );
+    assert_command_response(
+        &processor,
+        "XCFGSET aofcfg IDMP-DURATION 45 IDMP-MAXSIZE 4500",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "BGREWRITEAOF",
+        b"+Background append only file rewriting started\r\n",
+    );
+    assert_command_response(&processor, "DEBUG LOADAOF", b"+OK\r\n");
+    let aof_info = xinfo_stream_map(&processor, "XINFO STREAM aofcfg");
+    assert_eq!(resp_test_integer(&aof_info[&b"idmp-duration".to_vec()]), 45);
+    assert_eq!(
+        resp_test_integer(&aof_info[&b"idmp-maxsize".to_vec()]),
+        4500
+    );
+}
+
+#[test]
+fn xadd_maxlen_and_xreadgroup_default_count_cover_external_stream_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream.tcl: "XADD with MAXLEN option"
+    assert_command_response(
+        &processor,
+        "XADD trimstream MAXLEN 2 1-0 f a",
+        b"$3\r\n1-0\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XADD trimstream MAXLEN 2 2-0 f b",
+        b"$3\r\n2-0\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XADD trimstream MAXLEN 2 3-0 f c",
+        b"$3\r\n3-0\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "XRANGE trimstream - +",
+        b"*2\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$1\r\nf\r\n$1\r\nb\r\n*2\r\n$3\r\n3-0\r\n*2\r\n$1\r\nf\r\n$1\r\nc\r\n",
+    );
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XREADGROUP will return only new elements"
+    assert_command_response(&processor, "XADD mystream2 1-0 foo bar", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream2 mygroup $", b"+OK\r\n");
+    assert_command_response(&processor, "XADD mystream2 1-1 a 1", b"$3\r\n1-1\r\n");
+    assert_command_response(&processor, "XADD mystream2 1-2 b 2", b"$3\r\n1-2\r\n");
+    assert_command_response(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer-1 STREAMS mystream2 >",
+        b"*1\r\n*2\r\n$9\r\nmystream2\r\n*2\r\n*2\r\n$3\r\n1-1\r\n*2\r\n$1\r\na\r\n$1\r\n1\r\n*2\r\n$3\r\n1-2\r\n*2\r\n$1\r\nb\r\n$1\r\n2\r\n",
+    );
+}
+
+#[test]
+fn xreadgroup_history_xpending_and_xack_match_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "XADD mystream 1-0 field value",
+        b"$3\r\n1-0\r\n",
+    );
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup $", b"+OK\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 a 1", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD mystream 3-0 b 2", b"$3\r\n3-0\r\n");
+
+    let first_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer-1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, first_entries) = parse_xread_single_stream_response(&first_read).unwrap();
+    assert_eq!(first_entries.len(), 2);
+    assert_eq!(first_entries[0].0, b"2-0".to_vec());
+    assert_eq!(first_entries[1].0, b"3-0".to_vec());
+
+    assert_command_response(&processor, "XADD mystream 4-0 c 3", b"$3\r\n4-0\r\n");
+    assert_command_response(&processor, "XADD mystream 5-0 d 4", b"$3\r\n5-0\r\n");
+
+    let second_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer-2 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, second_entries) = parse_xread_single_stream_response(&second_read).unwrap();
+    assert_eq!(second_entries.len(), 2);
+    assert_eq!(second_entries[0].0, b"4-0".to_vec());
+    assert_eq!(second_entries[1].0, b"5-0".to_vec());
+
+    let history_consumer_1 = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer-1 COUNT 10 STREAMS mystream 0",
+    )
+    .unwrap();
+    let (_, history_entries_1) = parse_xread_single_stream_response(&history_consumer_1).unwrap();
+    assert_eq!(
+        history_entries_1
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"2-0".to_vec(), b"3-0".to_vec()]
+    );
+
+    let history_consumer_2 = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer-2 COUNT 10 STREAMS mystream 0",
+    )
+    .unwrap();
+    let (_, history_entries_2) = parse_xread_single_stream_response(&history_consumer_2).unwrap();
+    assert_eq!(
+        history_entries_2
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"4-0".to_vec(), b"5-0".to_vec()]
+    );
+
+    let pending_detail =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10").unwrap();
+    let pending_entries = parse_xpending_detail_response(&pending_detail);
+    assert_eq!(pending_entries.len(), 4);
+    assert_eq!(pending_entries[0].1, b"consumer-1".to_vec());
+    assert_eq!(pending_entries[1].1, b"consumer-1".to_vec());
+    assert_eq!(pending_entries[2].1, b"consumer-2".to_vec());
+    assert_eq!(pending_entries[3].1, b"consumer-2".to_vec());
+    assert!(
+        pending_entries
+            .iter()
+            .all(|(_, _, _, deliveries)| *deliveries == 1)
+    );
+
+    let pending_consumer_1 =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10 consumer-1").unwrap();
+    assert_eq!(parse_xpending_detail_response(&pending_consumer_1).len(), 2);
+
+    thread::sleep(Duration::from_millis(20));
+    let pending_idle_filtered = execute_command_line(
+        &processor,
+        "XPENDING mystream mygroup IDLE 1 - + 10 consumer-1",
+    )
+    .unwrap();
+    assert_eq!(
+        parse_xpending_detail_response(&pending_idle_filtered).len(),
+        2
+    );
+
+    let pending_summary = execute_command_line(&processor, "XPENDING mystream mygroup").unwrap();
+    let (pending_count, smallest, greatest, pending_by_consumer) =
+        parse_xpending_summary_response(&pending_summary);
+    assert_eq!(pending_count, 4);
+    assert_eq!(smallest, Some(b"2-0".to_vec()));
+    assert_eq!(greatest, Some(b"5-0".to_vec()));
+    assert_eq!(
+        pending_by_consumer,
+        vec![(b"consumer-1".to_vec(), 2), (b"consumer-2".to_vec(), 2)]
+    );
+
+    let first_pending_id = pending_entries[0].0.clone();
+    let second_pending_id = pending_entries[1].0.clone();
+    assert_command_response(
+        &processor,
+        &format!(
+            "XACK mystream mygroup {}",
+            String::from_utf8(first_pending_id.clone()).unwrap()
+        ),
+        b":1\r\n",
+    );
+    let pending_after_first_ack =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10 consumer-1").unwrap();
+    let consumer_1_after_first_ack = parse_xpending_detail_response(&pending_after_first_ack);
+    assert_eq!(consumer_1_after_first_ack.len(), 1);
+    assert_eq!(consumer_1_after_first_ack[0].0, second_pending_id);
+
+    assert_command_response(
+        &processor,
+        &format!(
+            "XACK mystream mygroup {} {}",
+            String::from_utf8(first_pending_id).unwrap(),
+            String::from_utf8(consumer_1_after_first_ack[0].0.clone()).unwrap()
+        ),
+        b":1\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XACK mystream mygroup invalid-id",
+        b"-ERR Invalid stream ID specified as stream command argument\r\n",
+    );
+}
+
+#[test]
+fn xgroup_setid_and_xreadgroup_history_edge_cases_match_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL events", 0);
+    assert_command_response(&processor, "XADD events 1-0 f1 v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD events 2-0 f1 v1", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD events 3-0 f1 v1", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XADD events 4-0 f1 v1", b"$3\r\n4-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE events g1 $", b"+OK\r\n");
+    assert_command_response(&processor, "XADD events 5-0 f1 v1", b"$3\r\n5-0\r\n");
+
+    let first_delivery =
+        execute_command_line(&processor, "XREADGROUP GROUP g1 c1 STREAMS events >").unwrap();
+    let (_, first_delivery_entries) = parse_xread_single_stream_response(&first_delivery).unwrap();
+    assert_eq!(first_delivery_entries.len(), 1);
+    assert_eq!(first_delivery_entries[0].0, b"5-0".to_vec());
+
+    assert_command_response(&processor, "XGROUP SETID events g1 -", b"+OK\r\n");
+    let reset_delivery =
+        execute_command_line(&processor, "XREADGROUP GROUP g1 c2 STREAMS events >").unwrap();
+    let (_, reset_delivery_entries) = parse_xread_single_stream_response(&reset_delivery).unwrap();
+    assert_eq!(reset_delivery_entries.len(), 5);
+
+    assert_command_integer(&processor, "DEL events2", 0);
+    assert_command_response(&processor, "XADD events2 1-0 a 1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD events2 2-0 b 2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD events2 3-0 c 3", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE events2 mygroup 0", b"+OK\r\n");
+
+    let empty_history = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup myconsumer COUNT 3 STREAMS events2 0",
+    )
+    .unwrap();
+    let (_, empty_history_entries) = parse_xread_single_stream_response(&empty_history).unwrap();
+    assert!(empty_history_entries.is_empty());
+
+    let fresh_delivery = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup myconsumer COUNT 3 STREAMS events2 >",
+    )
+    .unwrap();
+    let (_, fresh_delivery_entries) = parse_xread_single_stream_response(&fresh_delivery).unwrap();
+    assert_eq!(fresh_delivery_entries.len(), 3);
+
+    let replay_history = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup myconsumer COUNT 3 STREAMS events2 0",
+    )
+    .unwrap();
+    let (_, replay_history_entries) = parse_xread_single_stream_response(&replay_history).unwrap();
+    assert_eq!(replay_history_entries.len(), 3);
+}
+
+#[test]
+fn xreadgroup_history_reports_deleted_entries_like_stream_cgroups_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL mystream3", 0);
+    assert_command_response(
+        &processor,
+        "XGROUP CREATE mystream3 mygroup $ MKSTREAM",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "XADD mystream3 1-0 field1 A", b"$3\r\n1-0\r\n");
+    let first_delivery = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup myconsumer STREAMS mystream3 >",
+    )
+    .unwrap();
+    let (_, first_delivery_entries) = parse_xread_single_stream_response(&first_delivery).unwrap();
+    assert_eq!(first_delivery_entries.len(), 1);
+
+    assert_command_response(
+        &processor,
+        "XADD mystream3 MAXLEN 1 2-0 field1 B",
+        b"$3\r\n2-0\r\n",
+    );
+    let second_delivery = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup myconsumer STREAMS mystream3 >",
+    )
+    .unwrap();
+    let (_, second_delivery_entries) =
+        parse_xread_single_stream_response(&second_delivery).unwrap();
+    assert_eq!(second_delivery_entries.len(), 1);
+
+    let history = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup myconsumer STREAMS mystream3 0-1",
+    )
+    .unwrap();
+    let (_, history_entries) = parse_xread_single_stream_response(&history).unwrap();
+    assert_eq!(history_entries.len(), 2);
+    assert_eq!(history_entries[0].0, b"1-0".to_vec());
+    assert!(history_entries[0].1.is_empty());
+    assert_eq!(history_entries[1].0, b"2-0".to_vec());
+    assert_eq!(
+        history_entries[1].1,
+        vec![(b"field1".to_vec(), b"B".to_vec())]
+    );
+}
+
+#[test]
+fn xclaim_matches_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XCLAIM can claim PEL items from another consumer"
+    // - "XCLAIM without JUSTID increments delivery count"
+    // - "XCLAIM same consumer"
+    // - "XCLAIM with XDEL"
+    // - "XCLAIM with trimming"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    let id1 =
+        parse_bulk_payload(&execute_command_line(&processor, "XADD mystream 1-0 a 1").unwrap())
+            .unwrap();
+    let id2 =
+        parse_bulk_payload(&execute_command_line(&processor, "XADD mystream 2-0 b 2").unwrap())
+            .unwrap();
+    let id3 =
+        parse_bulk_payload(&execute_command_line(&processor, "XADD mystream 3-0 c 3").unwrap())
+            .unwrap();
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+
+    let first_read = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, first_entries) = parse_xread_single_stream_response(&first_read).unwrap();
+    assert_eq!(first_entries.len(), 1);
+    assert_eq!(first_entries[0].0, id1);
+    assert_eq!(first_entries[0].1, vec![(b"a".to_vec(), b"1".to_vec())]);
+
+    let pending_before_claim =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10").unwrap();
+    assert_eq!(
+        parse_xpending_detail_response(&pending_before_claim).len(),
+        1
+    );
+    let pending_consumer1 =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10 consumer1").unwrap();
+    assert_eq!(parse_xpending_detail_response(&pending_consumer1).len(), 1);
+    let pending_consumer2 =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10 consumer2").unwrap();
+    assert!(parse_xpending_detail_response(&pending_consumer2).is_empty());
+
+    thread::sleep(Duration::from_millis(20));
+    let id1_text = String::from_utf8(first_entries[0].0.clone()).unwrap();
+    let claimed = execute_command_line(
+        &processor,
+        &format!("XCLAIM mystream mygroup consumer2 10 {id1_text}"),
+    )
+    .unwrap();
+    let claimed_entries = parse_stream_entry_list_response(&claimed);
+    assert_eq!(claimed_entries.len(), 1);
+    assert_eq!(claimed_entries[0].0, b"1-0".to_vec());
+    assert_eq!(claimed_entries[0].1, vec![(b"a".to_vec(), b"1".to_vec())]);
+
+    let pending_after_claim =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10").unwrap();
+    assert_eq!(
+        parse_xpending_detail_response(&pending_after_claim).len(),
+        1
+    );
+    let pending_consumer1_after_claim =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10 consumer1").unwrap();
+    assert!(parse_xpending_detail_response(&pending_consumer1_after_claim).is_empty());
+    let pending_consumer2_after_claim =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10 consumer2").unwrap();
+    assert_eq!(
+        parse_xpending_detail_response(&pending_consumer2_after_claim).len(),
+        1
+    );
+
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 2 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(20));
+
+    let id2_text = String::from_utf8(id2.clone()).unwrap();
+    assert_command_integer(&processor, &format!("XDEL mystream {id2_text}"), 1);
+    let deleted_claim = execute_command_line(
+        &processor,
+        &format!("XCLAIM mystream mygroup consumer2 10 {id2_text}"),
+    )
+    .unwrap();
+    assert!(parse_stream_entry_list_response(&deleted_claim).is_empty());
+
+    thread::sleep(Duration::from_millis(20));
+    let id3_text = String::from_utf8(id3.clone()).unwrap();
+    assert_command_integer(&processor, &format!("XDEL mystream {id3_text}"), 1);
+    let deleted_claim_2 = execute_command_line(
+        &processor,
+        &format!("XCLAIM mystream mygroup consumer2 10 {id3_text}"),
+    )
+    .unwrap();
+    assert!(parse_stream_entry_list_response(&deleted_claim_2).is_empty());
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 a 1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 b 2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD mystream 3-0 c 3", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(20));
+
+    let delivery_count_claim =
+        execute_command_line(&processor, "XCLAIM mystream mygroup consumer2 10 1-0").unwrap();
+    let delivery_count_entries = parse_stream_entry_list_response(&delivery_count_claim);
+    assert_eq!(delivery_count_entries.len(), 1);
+    let pending_after_delivery_claim =
+        execute_command_line(&processor, "XPENDING mystream mygroup - + 10").unwrap();
+    let pending_after_delivery_claim =
+        parse_xpending_detail_response(&pending_after_delivery_claim);
+    assert_eq!(pending_after_delivery_claim.len(), 1);
+    assert_eq!(pending_after_delivery_claim[0].3, 2);
+
+    thread::sleep(Duration::from_millis(20));
+    let justid_claim = execute_command_line(
+        &processor,
+        "XCLAIM mystream mygroup consumer3 10 1-0 JUSTID",
+    )
+    .unwrap();
+    assert_eq!(
+        parse_bulk_array_payloads(&justid_claim),
+        vec![b"1-0".to_vec()]
+    );
+    let pending_after_justid = parse_xpending_detail_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup - + 10").unwrap(),
+    );
+    assert_eq!(pending_after_justid[0].3, 2);
+
+    thread::sleep(Duration::from_millis(20));
+    let same_consumer_claim =
+        execute_command_line(&processor, "XCLAIM mystream mygroup consumer3 10 1-0").unwrap();
+    assert_eq!(
+        parse_stream_entry_list_response(&same_consumer_claim).len(),
+        1
+    );
+    let pending_same_consumer = parse_xpending_detail_response(
+        &execute_command_line(&processor, "XPENDING mystream mygroup - + 10").unwrap(),
+    );
+    assert_eq!(pending_same_consumer.len(), 1);
+    assert_eq!(pending_same_consumer[0].1, b"consumer3".to_vec());
+
+    assert_command_integer(&processor, "DEL x", 0);
+    assert_command_response(&processor, "XADD x 1-0 f v", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD x 2-0 f v", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD x 3-0 f v", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x grp 0", b"+OK\r\n");
+    assert_command_response(
+        &processor,
+        "XREADGROUP GROUP grp Alice STREAMS x >",
+        b"*1\r\n*2\r\n$1\r\nx\r\n*3\r\n*2\r\n$3\r\n1-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n*2\r\n$3\r\n3-0\r\n*2\r\n$1\r\nf\r\n$1\r\nv\r\n",
+    );
+    assert_command_integer(&processor, "XDEL x 2-0", 1);
+    let xdel_claim = execute_command_line(&processor, "XCLAIM x grp Bob 0 1-0 2-0 3-0").unwrap();
+    let xdel_claim_entries = parse_stream_entry_list_response(&xdel_claim);
+    assert_eq!(
+        xdel_claim_entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"1-0".to_vec(), b"3-0".to_vec()]
+    );
+    assert!(
+        parse_xpending_detail_response(
+            &execute_command_line(&processor, "XPENDING x grp - + 10 Alice").unwrap()
+        )
+        .is_empty()
+    );
+
+    assert_command_integer(&processor, "DEL x", 1);
+    assert_command_response(&processor, "XADD x 1-0 f v", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD x 2-0 f v", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD x 3-0 f v", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x grp 0", b"+OK\r\n");
+    execute_command_line(&processor, "XREADGROUP GROUP grp Alice STREAMS x >").unwrap();
+    assert_command_integer(&processor, "XTRIM x MAXLEN 1", 2);
+    let trimmed_claim = execute_command_line(&processor, "XCLAIM x grp Bob 0 1-0 2-0 3-0").unwrap();
+    let trimmed_claim_entries = parse_stream_entry_list_response(&trimmed_claim);
+    assert_eq!(
+        trimmed_claim_entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"3-0".to_vec()]
+    );
+    assert!(
+        parse_xpending_detail_response(
+            &execute_command_line(&processor, "XPENDING x grp - + 10 Alice").unwrap()
+        )
+        .is_empty()
+    );
+}
+
+#[test]
+fn xautoclaim_matches_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XAUTOCLAIM can claim PEL items from another consumer"
+    // - "XAUTOCLAIM as an iterator"
+    // - "XAUTOCLAIM COUNT must be > 0"
+    // - "XAUTOCLAIM with XDEL"
+    // - "XAUTOCLAIM with XDEL and count"
+    // - "XAUTOCLAIM with trimming"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    assert_command_response(&processor, "XADD mystream 1-0 a 1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 b 2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD mystream 3-0 c 3", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XADD mystream 4-0 d 4", b"$3\r\n4-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+
+    thread::sleep(Duration::from_millis(20));
+    let first_autoclaim = execute_command_line(
+        &processor,
+        "XAUTOCLAIM mystream mygroup consumer2 10 - COUNT 1",
+    )
+    .unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&first_autoclaim);
+    assert_eq!(cursor, b"0-0".to_vec());
+    assert_eq!(claimed_entries.len(), 1);
+    assert_eq!(claimed_entries[0].0, b"1-0".to_vec());
+    assert_eq!(claimed_entries[0].1, vec![(b"a".to_vec(), b"1".to_vec())]);
+    assert!(deleted_ids.is_empty());
+
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 3 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(20));
+
+    assert_command_integer(&processor, "XDEL mystream 2-0", 1);
+    let second_autoclaim = execute_command_line(
+        &processor,
+        "XAUTOCLAIM mystream mygroup consumer2 10 - COUNT 3",
+    )
+    .unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&second_autoclaim);
+    assert_eq!(cursor, b"4-0".to_vec());
+    assert_eq!(
+        claimed_entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"1-0".to_vec(), b"3-0".to_vec()]
+    );
+    assert_eq!(deleted_ids, vec![b"2-0".to_vec()]);
+
+    thread::sleep(Duration::from_millis(20));
+    assert_command_integer(&processor, "XDEL mystream 4-0", 1);
+    let justid_autoclaim = execute_command_line(
+        &processor,
+        "XAUTOCLAIM mystream mygroup consumer2 10 - JUSTID",
+    )
+    .unwrap();
+    let (cursor, claimed_ids, deleted_ids) = parse_xautoclaim_justid_response(&justid_autoclaim);
+    assert_eq!(cursor, b"0-0".to_vec());
+    assert_eq!(claimed_ids, vec![b"1-0".to_vec(), b"3-0".to_vec()]);
+    assert_eq!(deleted_ids, vec![b"4-0".to_vec()]);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 a 1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 b 2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD mystream 3-0 c 3", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XADD mystream 4-0 d 4", b"$3\r\n4-0\r\n");
+    assert_command_response(&processor, "XADD mystream 5-0 e 5", b"$3\r\n5-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream mygroup 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup consumer1 COUNT 90 STREAMS mystream >",
+    )
+    .unwrap();
+
+    thread::sleep(Duration::from_millis(20));
+    let iterator_first = execute_command_line(
+        &processor,
+        "XAUTOCLAIM mystream mygroup consumer2 10 - COUNT 2",
+    )
+    .unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&iterator_first);
+    assert_eq!(cursor, b"3-0".to_vec());
+    assert_eq!(claimed_entries.len(), 2);
+    assert_eq!(claimed_entries[0].1, vec![(b"a".to_vec(), b"1".to_vec())]);
+    assert!(deleted_ids.is_empty());
+
+    let iterator_second = execute_command_line(
+        &processor,
+        "XAUTOCLAIM mystream mygroup consumer2 10 3-0 COUNT 2",
+    )
+    .unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&iterator_second);
+    assert_eq!(cursor, b"5-0".to_vec());
+    assert_eq!(claimed_entries.len(), 2);
+    assert_eq!(claimed_entries[0].1, vec![(b"c".to_vec(), b"3".to_vec())]);
+    assert!(deleted_ids.is_empty());
+
+    let iterator_third = execute_command_line(
+        &processor,
+        "XAUTOCLAIM mystream mygroup consumer2 10 5-0 COUNT 1",
+    )
+    .unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&iterator_third);
+    assert_eq!(cursor, b"0-0".to_vec());
+    assert_eq!(claimed_entries.len(), 1);
+    assert_eq!(claimed_entries[0].1, vec![(b"e".to_vec(), b"5".to_vec())]);
+    assert!(deleted_ids.is_empty());
+
+    assert_command_error(
+        &processor,
+        "XAUTOCLAIM key group consumer 1 1 COUNT 0",
+        b"-ERR COUNT must be > 0\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XAUTOCLAIM x grp Bob 0 3-0 COUNT 8070450532247928833",
+        b"-ERR COUNT must be > 0\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL x", 0);
+    assert_command_response(&processor, "XADD x 1-0 f v", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD x 2-0 f v", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD x 3-0 f v", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x grp 0", b"+OK\r\n");
+    execute_command_line(&processor, "XREADGROUP GROUP grp Alice STREAMS x >").unwrap();
+    assert_command_integer(&processor, "XDEL x 2-0", 1);
+    let xdel_autoclaim = execute_command_line(&processor, "XAUTOCLAIM x grp Bob 0 0-0").unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&xdel_autoclaim);
+    assert_eq!(cursor, b"0-0".to_vec());
+    assert_eq!(
+        claimed_entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"1-0".to_vec(), b"3-0".to_vec()]
+    );
+    assert_eq!(deleted_ids, vec![b"2-0".to_vec()]);
+    assert!(
+        parse_xpending_detail_response(
+            &execute_command_line(&processor, "XPENDING x grp - + 10 Alice").unwrap()
+        )
+        .is_empty()
+    );
+
+    assert_command_integer(&processor, "DEL x", 1);
+    assert_command_response(&processor, "XADD x 1-0 f v", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD x 2-0 f v", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD x 3-0 f v", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x grp 0", b"+OK\r\n");
+    execute_command_line(&processor, "XREADGROUP GROUP grp Alice STREAMS x >").unwrap();
+    assert_command_integer(&processor, "XDEL x 1-0", 1);
+    assert_command_integer(&processor, "XDEL x 2-0", 1);
+
+    let xdel_count_first =
+        execute_command_line(&processor, "XAUTOCLAIM x grp Bob 0 0-0 COUNT 1").unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&xdel_count_first);
+    assert_eq!(cursor, b"2-0".to_vec());
+    assert!(claimed_entries.is_empty());
+    assert_eq!(deleted_ids, vec![b"1-0".to_vec()]);
+
+    let xdel_count_second =
+        execute_command_line(&processor, "XAUTOCLAIM x grp Bob 0 2-0 COUNT 1").unwrap();
+    let (cursor, claimed_entries, deleted_ids) =
+        parse_xautoclaim_entry_response(&xdel_count_second);
+    assert_eq!(cursor, b"3-0".to_vec());
+    assert!(claimed_entries.is_empty());
+    assert_eq!(deleted_ids, vec![b"2-0".to_vec()]);
+
+    let xdel_count_third =
+        execute_command_line(&processor, "XAUTOCLAIM x grp Bob 0 3-0 COUNT 1").unwrap();
+    let (cursor, claimed_entries, deleted_ids) = parse_xautoclaim_entry_response(&xdel_count_third);
+    assert_eq!(cursor, b"0-0".to_vec());
+    assert_eq!(
+        claimed_entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"3-0".to_vec()]
+    );
+    assert!(deleted_ids.is_empty());
+
+    assert_command_integer(&processor, "DEL x", 1);
+    assert_command_response(&processor, "XADD x 1-0 f v", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD x 2-0 f v", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD x 3-0 f v", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x grp 0", b"+OK\r\n");
+    execute_command_line(&processor, "XREADGROUP GROUP grp Alice STREAMS x >").unwrap();
+    assert_command_integer(&processor, "XTRIM x MAXLEN 1", 2);
+    let trimmed_autoclaim = execute_command_line(&processor, "XAUTOCLAIM x grp Bob 0 0-0").unwrap();
+    let (cursor, claimed_entries, deleted_ids) =
+        parse_xautoclaim_entry_response(&trimmed_autoclaim);
+    assert_eq!(cursor, b"0-0".to_vec());
+    assert_eq!(
+        claimed_entries
+            .iter()
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>(),
+        vec![b"3-0".to_vec()]
+    );
+    assert_eq!(deleted_ids, vec![b"1-0".to_vec(), b"2-0".to_vec()]);
+}
+
+#[test]
+fn xreadgroup_claim_surface_and_basic_semantics_match_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XREADGROUP CLAIM field types are correct"
+    // - "XREADGROUP CLAIM returns unacknowledged messages"
+    // - "XREADGROUP CLAIM respects min-idle-time threshold"
+    // - "XREADGROUP CLAIM with COUNT limit"
+    // - "XREADGROUP CLAIM without messages"
+    // - "XREADGROUP CLAIM without pending messages"
+    // - "XREADGROUP CLAIM message response format"
+    // - "XREADGROUP CLAIM delivery count"
+    // - "XREADGROUP CLAIM idle time"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+
+    let claim = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (stream_name, messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&claim).unwrap();
+    assert_eq!(stream_name, b"mystream".to_vec());
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0].0, b"1-0".to_vec());
+    assert_eq!(messages[0].1, vec![(b"f".to_vec(), b"v1".to_vec())]);
+    assert!(messages[0].2.unwrap() >= 50);
+    assert_eq!(messages[0].3, Some(1));
+    assert_eq!(messages[1].0, b"2-0".to_vec());
+    assert_eq!(messages[1].1, vec![(b"f".to_vec(), b"v2".to_vec())]);
+    assert!(messages[1].2.unwrap() >= 50);
+    assert_eq!(messages[1].3, Some(1));
+    let pending = parse_xpending_detail_response(
+        &execute_command_line(&processor, "XPENDING mystream group1 - + 10").unwrap(),
+    );
+    assert_eq!(pending.len(), 2);
+    assert_eq!(pending[0].1, b"consumer2".to_vec());
+    assert_eq!(pending[0].3, 2);
+    assert_eq!(pending[1].1, b"consumer2".to_vec());
+    assert_eq!(pending[1].3, 2);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    let threshold_miss = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 100 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_eq!(parse_bulk_array_payloads(&threshold_miss).len(), 0);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XADD mystream 3-0 f v3", b"$3\r\n3-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let count_limited = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 COUNT 2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, count_limited_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&count_limited).unwrap();
+    assert_eq!(count_limited_messages.len(), 2);
+    assert_eq!(count_limited_messages[0].0, b"1-0".to_vec());
+    assert_eq!(count_limited_messages[0].3, Some(1));
+    assert_eq!(count_limited_messages[1].0, b"2-0".to_vec());
+    assert_eq!(count_limited_messages[1].3, Some(1));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_integer(&processor, "XDEL mystream 1-0", 1);
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    let no_messages = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 100 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_eq!(parse_bulk_array_payloads(&no_messages).len(), 0);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    let no_pending = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 100 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, no_pending_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&no_pending).unwrap();
+    assert_eq!(no_pending_messages.len(), 2);
+    assert_eq!(no_pending_messages[0].2, Some(0));
+    assert_eq!(no_pending_messages[0].3, Some(0));
+    assert_eq!(no_pending_messages[1].2, Some(0));
+    assert_eq!(no_pending_messages[1].3, Some(0));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let mixed = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, mixed_messages) = parse_xreadgroup_maybe_claim_single_stream_response(&mixed).unwrap();
+    assert_eq!(mixed_messages.len(), 2);
+    assert_eq!(mixed_messages[0].0, b"1-0".to_vec());
+    assert_eq!(mixed_messages[0].3, Some(1));
+    assert_eq!(mixed_messages[1].0, b"2-0".to_vec());
+    assert_eq!(mixed_messages[1].3, Some(0));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let first_delivery_count = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, first_delivery_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&first_delivery_count).unwrap();
+    assert_eq!(first_delivery_messages[0].3, Some(1));
+    thread::sleep(Duration::from_millis(100));
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer3 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer3 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let repeated_delivery_count = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer3 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, repeated_delivery_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&repeated_delivery_count).unwrap();
+    assert_eq!(repeated_delivery_messages[0].3, Some(4));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let first_idle = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, first_idle_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&first_idle).unwrap();
+    assert!(first_idle_messages[0].2.unwrap() >= 50);
+    thread::sleep(Duration::from_millis(70));
+    let second_idle = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer3 CLAIM 60 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, second_idle_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&second_idle).unwrap();
+    assert!(second_idle_messages[0].2.unwrap() >= 60);
+}
+
+#[test]
+fn xreadgroup_claim_noack_positions_and_multistream_match_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XREADGROUP CLAIM with NOACK"
+    // - "XREADGROUP CLAIM with NOACK and pending messages"
+    // - "XREADGROUP CLAIM with multiple streams"
+    // - "XREADGROUP CLAIM with min-idle-time equal to zero"
+    // - "XREADGROUP CLAIM with large min-idle-time"
+    // - "XREADGROUP CLAIM with not integer for min-idle-time"
+    // - "XREADGROUP CLAIM with negative integer for min-idle-time"
+    // - "XREADGROUP CLAIM with different position"
+    // - "XREADGROUP CLAIM with specific ID"
+    // - "XREADGROUP CLAIM on non-existing consumer group"
+    // - "XREADGROUP CLAIM on non-existing consumer"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    thread::sleep(Duration::from_millis(100));
+    let noack = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 NOACK CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, noack_messages) = parse_xreadgroup_maybe_claim_single_stream_response(&noack).unwrap();
+    assert_eq!(noack_messages.len(), 2);
+    let (pending_total, smallest, greatest, consumers) = parse_xpending_summary_response(
+        &execute_command_line(&processor, "XPENDING mystream group1").unwrap(),
+    );
+    assert_eq!(pending_total, 0);
+    assert_eq!(smallest, None);
+    assert_eq!(greatest, None);
+    assert!(consumers.is_empty());
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let noack_pending = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 NOACK CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, noack_pending_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&noack_pending).unwrap();
+    assert_eq!(noack_pending_messages.len(), 2);
+    assert_eq!(
+        parse_xpending_detail_response(
+            &execute_command_line(&processor, "XPENDING mystream group1 - + 10").unwrap()
+        )
+        .len(),
+        1
+    );
+    thread::sleep(Duration::from_millis(100));
+    let noack_pending_again = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 NOACK CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, noack_pending_again_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&noack_pending_again).unwrap();
+    assert_eq!(noack_pending_again_messages.len(), 1);
+    assert_eq!(noack_pending_again_messages[0].0, b"1-0".to_vec());
+
+    for key in ["mystream{t}1", "mystream{t}2", "mystream{t}3"] {
+        let delete = format!("DEL {key}");
+        assert_command_integer(&processor, &delete, 0);
+    }
+    execute_command_line(&processor, "XADD mystream{t}1 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream{t}1 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream{t}2 3-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream{t}2 4-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream{t}3 5-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream{t}3 6-0 f v2").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream{t}1 group1 0").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream{t}2 group1 0").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream{t}3 group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS mystream{t}1 mystream{t}2 mystream{t}3 > > >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let multistream = parse_resp_test_value(
+        &execute_command_line(
+            &processor,
+            "XREADGROUP GROUP group1 consumer1 CLAIM 50 STREAMS mystream{t}1 mystream{t}2 mystream{t}3 > > >",
+        )
+        .unwrap(),
+    );
+    let multistream_items = resp_test_array(&multistream);
+    assert_eq!(multistream_items.len(), 3);
+    let stream_1 = resp_test_array(&multistream_items[0]);
+    assert_eq!(resp_test_bulk(&stream_1[0]), b"mystream{t}1");
+    let stream_1_messages = resp_test_array(&stream_1[1]);
+    assert_eq!(stream_1_messages.len(), 2);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&stream_1_messages[0])[0]),
+        b"1-0"
+    );
+    assert_eq!(
+        resp_test_integer(&resp_test_array(&stream_1_messages[0])[3]),
+        1
+    );
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&stream_1_messages[1])[0]),
+        b"2-0"
+    );
+    assert_eq!(
+        resp_test_integer(&resp_test_array(&stream_1_messages[1])[3]),
+        0
+    );
+
+    let stream_2 = resp_test_array(&multistream_items[1]);
+    assert_eq!(resp_test_bulk(&stream_2[0]), b"mystream{t}2");
+    let stream_2_messages = resp_test_array(&stream_2[1]);
+    assert_eq!(stream_2_messages.len(), 2);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&stream_2_messages[0])[0]),
+        b"3-0"
+    );
+    assert_eq!(
+        resp_test_integer(&resp_test_array(&stream_2_messages[0])[3]),
+        1
+    );
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&stream_2_messages[1])[0]),
+        b"4-0"
+    );
+    assert_eq!(
+        resp_test_integer(&resp_test_array(&stream_2_messages[1])[3]),
+        0
+    );
+
+    let stream_3 = resp_test_array(&multistream_items[2]);
+    assert_eq!(resp_test_bulk(&stream_3[0]), b"mystream{t}3");
+    let stream_3_messages = resp_test_array(&stream_3[1]);
+    assert_eq!(stream_3_messages.len(), 2);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&stream_3_messages[0])[0]),
+        b"5-0"
+    );
+    assert_eq!(
+        resp_test_integer(&resp_test_array(&stream_3_messages[0])[3]),
+        1
+    );
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&stream_3_messages[1])[0]),
+        b"6-0"
+    );
+    assert_eq!(
+        resp_test_integer(&resp_test_array(&stream_3_messages[1])[3]),
+        0
+    );
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let zero_idle = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 0 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, zero_idle_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&zero_idle).unwrap();
+    assert_eq!(zero_idle_messages.len(), 2);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    assert_command_response(&processor, "XADD mystream 1-0 f v1", b"$3\r\n1-0\r\n");
+    assert_command_response(&processor, "XADD mystream 2-0 f v2", b"$3\r\n2-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE mystream group1 0", b"+OK\r\n");
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let huge_idle = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 9223372036854775807 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, huge_idle_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&huge_idle).unwrap();
+    assert_eq!(huge_idle_messages.len(), 1);
+    assert_eq!(huge_idle_messages[0].0, b"2-0".to_vec());
+    assert_eq!(huge_idle_messages[0].3, Some(0));
+
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM test STREAMS mystream >",
+        b"-ERR min-idle-time is not an integer\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM +10 STREAMS mystream >",
+        b"-ERR min-idle-time is not an integer\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM -10 STREAMS mystream >",
+        b"-ERR min-idle-time must be a positive integer\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM -0 STREAMS mystream >",
+        b"-ERR min-idle-time is not an integer\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let count_before_claim = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 COUNT 1 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, count_before_claim_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&count_before_claim).unwrap();
+    assert_eq!(count_before_claim_messages.len(), 1);
+    assert_eq!(count_before_claim_messages[0].0, b"1-0".to_vec());
+    thread::sleep(Duration::from_millis(100));
+    let claim_before_count = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 50 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, claim_before_count_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&claim_before_count).unwrap();
+    assert_eq!(claim_before_count_messages.len(), 1);
+    assert_eq!(claim_before_count_messages[0].3, Some(2));
+    thread::sleep(Duration::from_millis(100));
+    let multiple_claims = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 50 COUNT 1 CLAIM 60 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, multiple_claim_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&multiple_claims).unwrap();
+    assert_eq!(multiple_claim_messages.len(), 1);
+    assert_eq!(multiple_claim_messages[0].3, Some(3));
+    thread::sleep(Duration::from_millis(100));
+    let claim_before_group = execute_command_line(
+        &processor,
+        "XREADGROUP CLAIM 50 GROUP group1 consumer1 COUNT 1 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, claim_before_group_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&claim_before_group).unwrap();
+    assert_eq!(claim_before_group_messages.len(), 1);
+    assert_eq!(claim_before_group_messages[0].3, Some(4));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream 3-0 f v3").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let claim_ignored_for_history = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 CLAIM 1000 STREAMS mystream 0",
+    )
+    .unwrap();
+    let (_, history_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&claim_ignored_for_history).unwrap();
+    assert_eq!(history_messages.len(), 3);
+    assert!(history_messages.iter().all(|entry| entry.2.is_none()));
+
+    assert_command_error(
+        &processor,
+        "XREADGROUP GROUP not_existing_group consumer1 CLAIM 50 STREAMS mystream >",
+        b"-NOGROUP No such key or consumer group\r\n",
+    );
+    thread::sleep(Duration::from_millis(100));
+    let created_consumer = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, created_consumer_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&created_consumer).unwrap();
+    assert_eq!(created_consumer_messages.len(), 3);
+}
+
+#[test]
+fn xreadgroup_claim_ownership_and_delivery_count_match_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XREADGROUP CLAIM verify ownership transfer and delivery count updates"
+    // - "XREADGROUP CLAIM verify XACK removes messages from CLAIM pool"
+    // - "XREADGROUP CLAIM verify that XCLAIM updates delivery count"
+    // - "XREADGROUP CLAIM verify forced entries are claimable"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream 3-0 f v3").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let transfer = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, transfer_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&transfer).unwrap();
+    assert_eq!(transfer_messages.len(), 3);
+    let transfer_pending = parse_xpending_detail_response(
+        &execute_command_line(&processor, "XPENDING mystream group1 - + 10").unwrap(),
+    );
+    assert_eq!(transfer_pending.len(), 3);
+    assert!(
+        transfer_pending
+            .iter()
+            .all(|entry| entry.1 == b"consumer2".to_vec())
+    );
+    assert!(transfer_pending.iter().all(|entry| entry.3 == 2));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream 3-0 f v3").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    execute_command_line(&processor, "XACK mystream group1 1-0 3-0").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let after_ack = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, after_ack_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&after_ack).unwrap();
+    assert_eq!(after_ack_messages.len(), 1);
+    assert_eq!(after_ack_messages[0].0, b"2-0".to_vec());
+    execute_command_line(&processor, "XACK mystream group1 2-0").unwrap();
+    let after_ack_empty = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_eq!(parse_bulk_array_payloads(&after_ack_empty).len(), 0);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream 3-0 f v3").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    thread::sleep(Duration::from_millis(100));
+    execute_command_line(&processor, "XCLAIM mystream group1 consumer3 50 2-0 3-0").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let after_xclaim = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, after_xclaim_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&after_xclaim).unwrap();
+    assert_eq!(after_xclaim_messages.len(), 3);
+    assert_eq!(after_xclaim_messages[0].0, b"1-0".to_vec());
+    assert_eq!(after_xclaim_messages[0].3, Some(1));
+    assert_eq!(after_xclaim_messages[1].0, b"2-0".to_vec());
+    assert_eq!(after_xclaim_messages[1].3, Some(2));
+    assert_eq!(after_xclaim_messages[2].0, b"3-0".to_vec());
+    assert_eq!(after_xclaim_messages[2].3, Some(2));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream 3-0 f v3").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XCLAIM mystream group1 consumer3 0 1-0 2-0 FORCE JUSTID",
+    )
+    .unwrap();
+    let forced = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 0 COUNT 2 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, forced_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&forced).unwrap();
+    assert_eq!(forced_messages.len(), 2);
+    assert_eq!(forced_messages[0].0, b"1-0".to_vec());
+    assert_eq!(forced_messages[0].3, Some(1));
+    assert_eq!(forced_messages[1].0, b"2-0".to_vec());
+    assert_eq!(forced_messages[1].3, Some(1));
+}
+
+#[test]
+fn xreadgroup_claim_pending_cleanup_and_setid_edge_cases_match_stream_cgroups_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // - "XREADGROUP CLAIM after consumer deleted with pending messages"
+    // - "XREADGROUP CLAIM after XGROUP SETID moves past pending messages"
+    // - "XREADGROUP CLAIM after XGROUP SETID moves before pending messages"
+    // - "XREADGROUP CLAIM when pending messages get trimmed"
+    assert_command_integer(&processor, "DEL mystream", 0);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_command_integer(
+        &processor,
+        "XGROUP DELCONSUMER mystream group1 consumer1",
+        1,
+    );
+    assert!(
+        parse_xpending_detail_response(
+            &execute_command_line(&processor, "XPENDING mystream group1 - + 10").unwrap(),
+        )
+        .is_empty()
+    );
+    thread::sleep(Duration::from_millis(100));
+    let deleted_consumer_claim = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_eq!(parse_bulk_array_payloads(&deleted_consumer_claim).len(), 0);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    execute_command_line(&processor, "XGROUP SETID mystream group1 2-0").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let moved_past = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, moved_past_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&moved_past).unwrap();
+    assert_eq!(moved_past_messages.len(), 2);
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 0 STREAMS mystream >",
+    )
+    .unwrap();
+    execute_command_line(&processor, "XGROUP SETID mystream group1 0").unwrap();
+    thread::sleep(Duration::from_millis(100));
+    let moved_before = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, moved_before_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&moved_before).unwrap();
+    assert_eq!(moved_before_messages.len(), 4);
+    assert_eq!(moved_before_messages[0].0, b"1-0".to_vec());
+    assert_eq!(moved_before_messages[0].3, Some(2));
+    assert_eq!(moved_before_messages[1].0, b"2-0".to_vec());
+    assert_eq!(moved_before_messages[1].3, Some(2));
+    assert_eq!(moved_before_messages[2].0, b"1-0".to_vec());
+    assert_eq!(moved_before_messages[2].3, Some(0));
+    assert_eq!(moved_before_messages[3].0, b"2-0".to_vec());
+    assert_eq!(moved_before_messages[3].3, Some(0));
+    thread::sleep(Duration::from_millis(100));
+    let moved_before_again = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    let (_, moved_before_again_messages) =
+        parse_xreadgroup_maybe_claim_single_stream_response(&moved_before_again).unwrap();
+    assert_eq!(moved_before_again_messages.len(), 2);
+    assert_eq!(moved_before_again_messages[0].0, b"1-0".to_vec());
+    assert_eq!(moved_before_again_messages[0].3, Some(1));
+    assert_eq!(moved_before_again_messages[1].0, b"2-0".to_vec());
+    assert_eq!(moved_before_again_messages[1].3, Some(1));
+
+    assert_command_integer(&processor, "DEL mystream", 1);
+    execute_command_line(&processor, "XADD mystream 1-0 f v1").unwrap();
+    execute_command_line(&processor, "XADD mystream 2-0 f v2").unwrap();
+    execute_command_line(&processor, "XADD mystream 3-0 f v3").unwrap();
+    execute_command_line(&processor, "XGROUP CREATE mystream group1 0").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer1 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_command_integer(&processor, "XTRIM mystream MAXLEN 0", 3);
+    thread::sleep(Duration::from_millis(100));
+    let trimmed = execute_command_line(
+        &processor,
+        "XREADGROUP GROUP group1 consumer2 CLAIM 50 STREAMS mystream >",
+    )
+    .unwrap();
+    assert_eq!(parse_bulk_array_payloads(&trimmed).len(), 0);
+}
+
+#[test]
+fn xinfo_full_matches_stream_cgroups_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL x", 0);
+    assert_command_response(&processor, "XADD x 100 a 1", b"$5\r\n100-0\r\n");
+    assert_command_response(&processor, "XADD x 101 b 1", b"$5\r\n101-0\r\n");
+    assert_command_response(&processor, "XADD x 102 c 1", b"$5\r\n102-0\r\n");
+    assert_command_response(&processor, "XADD x 103 e 1", b"$5\r\n103-0\r\n");
+    assert_command_response(&processor, "XADD x 104 f 1", b"$5\r\n104-0\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x g1 0", b"+OK\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x g2 0", b"+OK\r\n");
+    execute_command_line(&processor, "XREADGROUP GROUP g1 Alice COUNT 1 STREAMS x >").unwrap();
+    execute_command_line(&processor, "XREADGROUP GROUP g1 Bob COUNT 1 STREAMS x >").unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP g1 Bob NOACK COUNT 1 STREAMS x >",
+    )
+    .unwrap();
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP g2 Charlie COUNT 4 STREAMS x >",
+    )
+    .unwrap();
+    assert_command_integer(&processor, "XDEL x 103", 1);
+
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_items = resp_test_array(&full);
+    assert_eq!(full_items.len(), 30);
+    let full_map = resp_test_flat_map(&full);
+    assert_eq!(resp_test_integer(full_map[&b"length".to_vec()]), 4);
+    assert_eq!(
+        resp_test_array(full_map[&b"entries".to_vec()])
+            .iter()
+            .map(|entry| resp_test_bulk(&resp_test_array(entry)[0]).to_vec())
+            .collect::<Vec<_>>(),
+        vec![
+            b"100-0".to_vec(),
+            b"101-0".to_vec(),
+            b"102-0".to_vec(),
+            b"104-0".to_vec(),
+        ]
+    );
+
+    let groups = resp_test_array(full_map[&b"groups".to_vec()]);
+    assert_eq!(groups.len(), 2);
+
+    let g1 = resp_test_flat_map(&groups[0]);
+    assert_eq!(resp_test_bulk(g1[&b"name".to_vec()]), b"g1");
+    let g1_pending = resp_test_array(g1[&b"pending".to_vec()]);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&g1_pending[0])[0]),
+        b"100-0"
+    );
+    let g1_consumers = resp_test_array(g1[&b"consumers".to_vec()]);
+    let alice = resp_test_flat_map(&g1_consumers[0]);
+    assert_eq!(resp_test_bulk(alice[&b"name".to_vec()]), b"Alice");
+    let alice_pending = resp_test_array(alice[&b"pending".to_vec()]);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&alice_pending[0])[0]),
+        b"100-0"
+    );
+
+    let g2 = resp_test_flat_map(&groups[1]);
+    assert_eq!(resp_test_bulk(g2[&b"name".to_vec()]), b"g2");
+    let g2_consumers = resp_test_array(g2[&b"consumers".to_vec()]);
+    let charlie = resp_test_flat_map(&g2_consumers[0]);
+    assert_eq!(resp_test_bulk(charlie[&b"name".to_vec()]), b"Charlie");
+    let charlie_pending = resp_test_array(charlie[&b"pending".to_vec()]);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&charlie_pending[0])[0]),
+        b"100-0"
+    );
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&charlie_pending[1])[0]),
+        b"101-0"
+    );
+
+    let limited = parse_resp_test_value(
+        &execute_command_line(&processor, "XINFO STREAM x FULL COUNT 1").unwrap(),
+    );
+    let limited_items = resp_test_array(&limited);
+    assert_eq!(limited_items.len(), 30);
+    let limited_map = resp_test_flat_map(&limited);
+    let limited_entries = resp_test_array(limited_map[&b"entries".to_vec()]);
+    assert_eq!(limited_entries.len(), 1);
+    assert_eq!(
+        resp_test_bulk(&resp_test_array(&limited_entries[0])[0]),
+        b"100-0"
+    );
+}
+
+#[test]
+fn consumer_group_read_counter_and_lag_sanity_matches_stream_cgroups_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL x", 0);
+    for (id, value) in [
+        ("1-0", "a"),
+        ("2-0", "b"),
+        ("3-0", "c"),
+        ("4-0", "d"),
+        ("5-0", "e"),
+    ] {
+        let command = format!("XADD x {id} data {value}");
+        execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_response(&processor, "XGROUP CREATE x g1 0", b"+OK\r\n");
+
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert!(resp_test_is_null(group[&b"entries-read".to_vec()]));
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 5);
+
+    execute_command_line(&processor, "XREADGROUP GROUP g1 c11 COUNT 1 STREAMS x >").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 1);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 4);
+
+    execute_command_line(&processor, "XREADGROUP GROUP g1 c12 COUNT 10 STREAMS x >").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 0);
+
+    execute_command_line(&processor, "XADD x 6-0 data f").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 1);
+}
+
+#[test]
+fn consumer_group_lag_with_xdels_matches_stream_cgroups_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL x", 0);
+    for (id, value) in [
+        ("1-0", "a"),
+        ("2-0", "b"),
+        ("3-0", "c"),
+        ("4-0", "d"),
+        ("5-0", "e"),
+    ] {
+        let command = format!("XADD x {id} data {value}");
+        execute_command_line(&processor, &command).unwrap();
+    }
+    assert_command_integer(&processor, "XDEL x 3-0", 1);
+    assert_command_response(&processor, "XGROUP CREATE x g1 0", b"+OK\r\n");
+    assert_command_response(&processor, "XGROUP CREATE x g2 0", b"+OK\r\n");
+
+    for _ in 0..3 {
+        execute_command_line(&processor, "XREADGROUP GROUP g1 c11 COUNT 1 STREAMS x >").unwrap();
+        let full = parse_resp_test_value(
+            &execute_command_line(&processor, "XINFO STREAM x FULL").unwrap(),
+        );
+        let full_map = resp_test_flat_map(&full);
+        let group = xinfo_full_group_by_name(&full_map, b"g1");
+        assert!(resp_test_is_null(group[&b"entries-read".to_vec()]));
+        assert!(
+            resp_test_is_null(group[&b"lag".to_vec()]),
+            "expected null lag, got {:?}; group={group:?}; max_deleted={:?}; entries_added={:?}; length={:?}; last_generated={:?}",
+            group[&b"lag".to_vec()],
+            full_map[&b"max-deleted-entry-id".to_vec()],
+            full_map[&b"entries-added".to_vec()],
+            full_map[&b"length".to_vec()],
+            full_map[&b"last-generated-id".to_vec()]
+        );
+    }
+
+    execute_command_line(&processor, "XREADGROUP GROUP g1 c11 COUNT 1 STREAMS x >").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let g1 = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(g1[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(g1[&b"lag".to_vec()]), 0);
+
+    execute_command_line(&processor, "XADD x 6-0 data f").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let g1 = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(g1[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(g1[&b"lag".to_vec()]), 1);
+
+    assert_command_integer(&processor, "XTRIM x MINID = 3-0", 2);
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let g1 = xinfo_full_group_by_name(&full_map, b"g1");
+    let g2 = xinfo_full_group_by_name(&full_map, b"g2");
+    assert_eq!(resp_test_integer(g1[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(g1[&b"lag".to_vec()]), 1);
+    assert!(resp_test_is_null(g2[&b"entries-read".to_vec()]));
+    assert_eq!(resp_test_integer(g2[&b"lag".to_vec()]), 3);
+
+    assert_command_integer(&processor, "XTRIM x MINID = 5-0", 1);
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let g1 = xinfo_full_group_by_name(&full_map, b"g1");
+    let g2 = xinfo_full_group_by_name(&full_map, b"g2");
+    assert_eq!(resp_test_integer(g1[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(g1[&b"lag".to_vec()]), 1);
+    assert!(resp_test_is_null(g2[&b"entries-read".to_vec()]));
+    assert_eq!(resp_test_integer(g2[&b"lag".to_vec()]), 2);
+}
+
+#[test]
+fn consumer_group_lag_with_tombstone_after_last_id_matches_stream_cgroups_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL x", 0);
+    assert_command_response(&processor, "XGROUP CREATE x g1 $ MKSTREAM", b"+OK\r\n");
+    execute_command_line(&processor, "XADD x 1-0 data a").unwrap();
+    execute_command_line(&processor, "XREADGROUP GROUP g1 alice STREAMS x >").unwrap();
+    execute_command_line(&processor, "XADD x 2-0 data c").unwrap();
+    execute_command_line(&processor, "XADD x 3-0 data d").unwrap();
+    assert_command_integer(&processor, "XDEL x 2-0", 1);
+
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 1);
+    assert!(
+        resp_test_is_null(group[&b"lag".to_vec()]),
+        "expected null lag, got {:?}; group={group:?}",
+        group[&b"lag".to_vec()]
+    );
+
+    assert_command_integer(&processor, "XDEL x 1-0", 1);
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 1);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 1);
+
+    execute_command_line(&processor, "XREADGROUP GROUP g1 alice STREAMS x >").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"g1");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 3);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 0);
+}
+
+#[test]
+fn consumer_group_lag_with_xtrim_matches_stream_cgroups_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_integer(&processor, "DEL x", 0);
+    assert_command_response(&processor, "XGROUP CREATE x mygroup $ MKSTREAM", b"+OK\r\n");
+    for (id, value) in [
+        ("1-0", "a"),
+        ("2-0", "b"),
+        ("3-0", "c"),
+        ("4-0", "d"),
+        ("5-0", "e"),
+    ] {
+        let command = format!("XADD x {id} data {value}");
+        execute_command_line(&processor, &command).unwrap();
+    }
+    execute_command_line(
+        &processor,
+        "XREADGROUP GROUP mygroup alice COUNT 1 STREAMS x >",
+    )
+    .unwrap();
+
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"mygroup");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 1);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 4);
+
+    assert_command_integer(&processor, "XTRIM x MAXLEN 1", 4);
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    assert_eq!(
+        resp_test_bulk(full_map[&b"max-deleted-entry-id".to_vec()]),
+        b"0-0"
+    );
+    let group = xinfo_full_group_by_name(&full_map, b"mygroup");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 1);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 1);
+
+    execute_command_line(&processor, "XREADGROUP GROUP mygroup alice STREAMS x >").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"mygroup");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 0);
+
+    execute_command_line(&processor, "XADD x 6-0 data f").unwrap();
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"mygroup");
+    assert_eq!(resp_test_integer(group[&b"entries-read".to_vec()]), 5);
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 1);
+
+    assert_command_integer(&processor, "XTRIM x MAXLEN 0", 2);
+    let full =
+        parse_resp_test_value(&execute_command_line(&processor, "XINFO STREAM x FULL").unwrap());
+    let full_map = resp_test_flat_map(&full);
+    let group = xinfo_full_group_by_name(&full_map, b"mygroup");
+    assert_eq!(resp_test_integer(group[&b"lag".to_vec()]), 0);
 }
 
 #[test]

@@ -645,8 +645,8 @@ commands:
     status: FULL
     comment: ""
   - command: XACKDEL
-    status: DISABLED
-    comment: "Declared extension surface; runtime behavior is not implemented."
+    status: FULL
+    comment: ""
   - command: XADD
     status: FULL
     comment: ""
@@ -663,8 +663,8 @@ commands:
     status: FULL
     comment: ""
   - command: XDELEX
-    status: DISABLED
-    comment: "Declared extension surface; runtime behavior is not implemented."
+    status: FULL
+    comment: ""
   - command: XGROUP
     status: FULL
     comment: ""

@@ -11,6 +11,13 @@ This file defines default collaboration and execution rules for repository work,
 - DeepResearch request policy: `docs/performance/deepresearch-request-guidelines-2026-02-21.md`
 - Latest actor/locking guidance notes: `docs/performance/actor-lock-minimization-notes-2026-02-21.md`
 - TLA+ local workflow quickstart: `formal/tla/README.md`
+- Codex CLI execution runbook (MCP timeout fallback): `docs/operations/codex-cli-execution.md`
+
+## Codex Execution Path Policy
+
+- Do not run long-lived repository work through Codex MCP server calls.
+- If MCP-based execution times out, switch immediately to local `codex exec` CLI.
+- For this repository, treat `docs/operations/codex-cli-execution.md` as the default operational guide for Codex task execution.
 
 ## Rust Toolchain And Make Workflow
 
@@ -34,6 +41,7 @@ This file defines default collaboration and execution rules for repository work,
 5. Do not merge performance-sensitive changes without benchmark evidence.
 6. Do not rely on command exit status alone for tests; verify reported test counts and failed-case absence in output.
 7. Keep compatibility-sensitive behavior changes backed by explicit tests.
+8. When an external interop test fails, first add a Rust unit/integration test that reproduces the external scenario itself before or together with the fix; do not replace it with a smaller synthetic repro as the primary regression test.
 
 ## Code Quality Baseline
 
@@ -68,6 +76,11 @@ This file defines default collaboration and execution rules for repository work,
 - Core test gate:
   - `make test-server`
   - Verify displayed test-case counts and pass/fail summary.
+- During active compatibility backlog burn, use targeted-first validation for command behavior changes:
+  - First add or update exact Rust regression tests that mirror the touched external scenario.
+  - Run targeted Rust test selections for those regressions.
+  - Run targeted external verification only for the affected Redis unit/case/profile.
+  - Defer `redis-runtest-external-full` / `build_compatibility_report.sh` to milestone boundaries or explicit escalation cases listed below.
 - If command-path or concurrency code changed:
   - Run hot-path benchmark comparison with identical parameters before/after.
   - Preferred harness: `garnet-rs/benches/binary_ab_local.sh`
@@ -79,10 +92,18 @@ This file defines default collaboration and execution rules for repository work,
 When command behavior or command declarations change (`request_lifecycle`,
 `command_spec`, `command_dispatch`), run this sequence:
 
-1. `make test-server` (or `cd garnet-rs && cargo test -p garnet-server -- --nocapture` when stdout detail is required)
-2. `cd garnet-rs/tests/interop && REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis ./build_compatibility_report.sh`
+1. Add or update exact Rust regression tests for the touched external scenario.
+2. Run the narrowest relevant Rust test selection for those regressions.
+3. `make test-server` (or `cd garnet-rs && cargo test -p garnet-server -- --nocapture` when stdout detail is required)
+4. Run targeted external verification only for the affected Redis test scope (single case, isolated unit file, or focused profile).
+5. Run `cd garnet-rs/tests/interop && REDIS_REPO_ROOT=/Users/kazuki-matsuda/dev/src/github.com/redis/redis ./build_compatibility_report.sh` only when one of these is true:
+   - a task family or matrix slice is being closed,
+   - shared command infrastructure changed (`command_spec`, `command_dispatch`, broad parser/routing surfaces, replication rewrite plumbing),
+   - targeted probes suggest cross-test contamination or unknown regressions,
+   - compatibility artifacts must be refreshed for merge/review/release,
+   - the user explicitly asks for a full rerun.
 
-Commit the generated compatibility matrix files when status changes:
+Commit the generated compatibility matrix files when a full rerun is performed and status changes:
 
 - `docs/compatibility/redis-command-status.csv`
 - `docs/compatibility/redis-command-status-summary.md`
@@ -90,9 +111,9 @@ Commit the generated compatibility matrix files when status changes:
 - `docs/compatibility/redis-command-maturity-summary.md`
 - `docs/compatibility/compatibility-report.md`
 
-When a compatibility artifact changes, commit it in the same commit as the
-related code change (do not carry compatibility-report-only drift across
-multiple subsequent code commits).
+When a compatibility artifact changes from a full rerun, commit it in the same
+commit as the related code change (do not carry compatibility-report-only
+drift across multiple subsequent code commits).
 
 ## Implementation Reference Policy
 
@@ -114,7 +135,7 @@ Rationale:
 Guardrails:
 
 - Do not copy large code blocks verbatim from external projects.
-- Always validate behavior via the command workflow above and keep matrix files updated.
+- Always validate behavior via the command workflow above and keep matrix files updated at full-rerun milestones.
 
 ## Performance Regression Policy
 

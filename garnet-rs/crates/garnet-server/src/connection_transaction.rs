@@ -11,6 +11,7 @@ use crate::connection_protocol::ascii_eq_ignore_case;
 use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
+use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::ShardIndex;
 use crate::request_lifecycle::WatchVersion;
@@ -94,6 +95,7 @@ pub(crate) fn execute_transaction_queue(
     max_resp_arguments: usize,
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    selected_db: DbName,
 ) -> TransactionExecutionOutcome {
     let queued = std::mem::take(&mut transaction.queued_frames);
     transaction.in_multi = false;
@@ -117,6 +119,7 @@ pub(crate) fn execute_transaction_queue(
                 max_resp_arguments,
                 client_no_touch,
                 client_id,
+                selected_db,
             )
         })
         .unwrap_or_else(|_| TransactionExecutionOutcome {
@@ -170,10 +173,12 @@ fn execute_transaction_queue_on_owner_thread(
     max_resp_arguments: usize,
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    selected_db: DbName,
 ) -> TransactionExecutionOutcome {
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     let mut items = Vec::with_capacity(queued.len());
     let mut pending_replication_transition = None;
+    processor.begin_tracking_invalidation_batch();
     for frame in queued {
         let mut item_response = Vec::new();
         match parse_resp_command_arg_slices_dynamic(&frame, &mut args, max_resp_arguments) {
@@ -205,11 +210,12 @@ fn execute_transaction_queue_on_owner_thread(
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let _command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                match processor.execute_with_client_no_touch_in_transaction(
+                match processor.execute_with_client_no_touch_in_transaction_in_db(
                     &args[..meta.argument_count],
                     &mut item_response,
                     client_no_touch,
                     client_id,
+                    selected_db,
                 ) {
                     Ok(()) => {}
                     Err(error) => error.append_resp_error(&mut item_response),
@@ -225,6 +231,7 @@ fn execute_transaction_queue_on_owner_thread(
             response: item_response,
         });
     }
+    processor.finish_tracking_invalidation_batch(client_id);
     TransactionExecutionOutcome {
         items,
         pending_replication_transition,
