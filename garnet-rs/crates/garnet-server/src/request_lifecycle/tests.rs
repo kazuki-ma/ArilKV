@@ -14370,6 +14370,74 @@ fn list_quicklist_to_listpack_encoding_conversion_matches_external_scenario() {
 }
 
 #[test]
+fn list3_ziplist_value_encoding_and_backlink_external_scenario_runs_without_storage_failure() {
+    let processor = RequestProcessor::new_with_options_and_store_config(
+        1,
+        false,
+        scripting_runtime_config_from_values(None, None, None, None),
+        TsavoriteKvConfig {
+            max_in_memory_pages: 16_384,
+            ..TsavoriteKvConfig::default()
+        },
+    )
+    .unwrap();
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size 16",
+        b"+OK\r\n",
+    );
+
+    let build_external_values = || -> Vec<Vec<u8>> {
+        let mut values = Vec::with_capacity(200);
+        for index in 0usize..200 {
+            let value = match index % 7 {
+                0 => {
+                    let len = 20_000usize + ((index / 7) % 5) * 10_000usize;
+                    vec![b'x'; len]
+                }
+                1 => (1_000usize + index * 17).to_string().into_bytes(),
+                2 => (70_000usize + index * 12_345).to_string().into_bytes(),
+                3 => (5_000_000_000u64 + index as u64 * 1_000_000_003u64)
+                    .to_string()
+                    .into_bytes(),
+                4 => format!("-{}", 1_000usize + index * 31).into_bytes(),
+                5 => format!("-{}", 90_000usize + index * 123).into_bytes(),
+                _ => format!("-{}", 9_000_000_000u64 + index as u64 * 97_531u64).into_bytes(),
+            };
+            values.push(value);
+        }
+        values
+    };
+
+    for iteration in 0usize..10 {
+        assert_command_integer(&processor, "DEL l", if iteration == 0 { 0 } else { 1 });
+        let values = build_external_values();
+        for (position, value) in values.iter().enumerate() {
+            let response = execute_frame(&processor, &encode_resp(&[b"RPUSH", b"l", value]));
+            assert_eq!(
+                parse_integer_response(&response),
+                i64::try_from(position + 1).unwrap(),
+                "RPUSH failed in external list-3 iteration {iteration} position {position} value_len={}",
+                value.len()
+            );
+        }
+        assert_command_integer(&processor, "LLEN l", 200);
+        for index in (0usize..200).rev() {
+            let index_token = index.to_string();
+            let response = execute_frame(
+                &processor,
+                &encode_resp(&[b"LINDEX", b"l", index_token.as_bytes()]),
+            );
+            assert_eq!(
+                parse_bulk_payload(&response).unwrap(),
+                values[index],
+                "LINDEX mismatch in external list-3 iteration {iteration} index {index}"
+            );
+        }
+    }
+}
+
+#[test]
 fn debug_object_reports_metadata_for_existing_key() {
     let processor = RequestProcessor::new().unwrap();
 

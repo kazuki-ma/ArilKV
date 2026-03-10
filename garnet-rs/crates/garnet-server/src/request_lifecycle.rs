@@ -48,6 +48,7 @@ use tsavorite::ReadOperationStatus;
 use tsavorite::RmwOperationStatus;
 use tsavorite::SessionUserData;
 use tsavorite::TsavoriteKV;
+use tsavorite::TsavoriteKvConfig;
 use tsavorite::TsavoriteKvInitError;
 use tsavorite::UpsertInfo;
 
@@ -100,7 +101,7 @@ const GARNET_SCRIPTING_MAX_EXECUTION_MILLIS_ENV: &str = "GARNET_SCRIPTING_MAX_EX
 const GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS_ENV: &str = "GARNET_INTEROP_FORCE_RESP3_ZSET_PAIRS";
 const DEFAULT_SERVER_HASH_INDEX_SIZE_BITS: u8 = 16;
 const DEFAULT_STRING_STORE_PAGE_SIZE_BITS: u8 = 22;
-const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 20;
+const DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS: u8 = 22;
 const DEFAULT_ZSET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 /// Default quicklist packed threshold: 0 means disabled (no per-element byte-size limit
@@ -1953,8 +1954,21 @@ impl RequestProcessor {
         scripting_enabled: bool,
         scripting_runtime_config: ScriptingRuntimeConfig,
     ) -> Result<Self, RequestProcessorInitError> {
+        Self::new_with_options_and_store_config(
+            store_shard_count,
+            scripting_enabled,
+            scripting_runtime_config,
+            tsavorite_config_from_env(),
+        )
+    }
+
+    fn new_with_options_and_store_config(
+        store_shard_count: usize,
+        scripting_enabled: bool,
+        scripting_runtime_config: ScriptingRuntimeConfig,
+        store_config: TsavoriteKvConfig,
+    ) -> Result<Self, RequestProcessorInitError> {
         let store_shard_count = store_shard_count.max(1);
-        let store_config = tsavorite_config_from_env();
         let mut string_store_config = store_config;
         string_store_config.hash_index_size_bits =
             scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
@@ -1967,8 +1981,9 @@ impl RequestProcessor {
         let mut object_store_config = store_config;
         object_store_config.hash_index_size_bits =
             scale_hash_index_bits_for_shards(store_config.hash_index_size_bits, store_shard_count);
-        // Redis compatibility tests exercise object payloads (including streams) well beyond 16 KiB.
-        // Keep object pages large enough by default so those writes fit in a single record.
+        // Redis compatibility tests exercise object payloads (including streams and list-3 backlink
+        // stress cases) beyond 1 MiB. Keep object pages large enough by default so those writes fit
+        // in a single record under the current monolithic object-value model.
         object_store_config.page_size_bits = object_store_config
             .page_size_bits
             .max(DEFAULT_OBJECT_STORE_PAGE_SIZE_BITS);
