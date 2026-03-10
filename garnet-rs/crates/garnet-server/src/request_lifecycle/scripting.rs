@@ -14,6 +14,7 @@ use mlua::Value as LuaValue;
 use mlua::VmState;
 use sha1::Digest;
 use sha1::Sha1;
+use std::cell::Cell;
 use std::cell::RefCell;
 use std::fmt::Write;
 use std::rc::Rc;
@@ -128,7 +129,7 @@ enum LuaCallMode {
     PCall,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 enum RespFrame {
     SimpleString(Vec<u8>),
     Error(String),
@@ -136,6 +137,12 @@ enum RespFrame {
     Bulk(Option<Vec<u8>>),
     Array(Option<Vec<RespFrame>>),
     Null,
+    Boolean(bool),
+    Double(f64),
+    BigNumber(Vec<u8>),
+    VerbatimString { format: Vec<u8>, value: Vec<u8> },
+    Map(Vec<(RespFrame, RespFrame)>),
+    Set(Vec<RespFrame>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1448,6 +1455,8 @@ impl RequestProcessor {
         }
         let run_result = lua.scope(|scope| {
             let redis_table = lua.create_table()?;
+            let script_resp_protocol = Rc::new(Cell::new(RespProtocolVersion::Resp2));
+            let call_resp_protocol = Rc::clone(&script_resp_protocol);
             let call_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
                     lua,
@@ -1455,8 +1464,10 @@ impl RequestProcessor {
                     mutability,
                     script_allow_oom,
                     LuaCallMode::Call,
+                    call_resp_protocol.get(),
                 )
             })?;
+            let pcall_resp_protocol = Rc::clone(&script_resp_protocol);
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
                     lua,
@@ -1464,6 +1475,7 @@ impl RequestProcessor {
                     mutability,
                     script_allow_oom,
                     LuaCallMode::PCall,
+                    pcall_resp_protocol.get(),
                 )
             })?;
             let sha1hex_fn = scope.create_function(|_, args: MultiValue| {
@@ -1505,6 +1517,19 @@ impl RequestProcessor {
                 table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
             })?;
+            let setresp_state = Rc::clone(&script_resp_protocol);
+            let setresp_fn = scope.create_function(move |_, values: MultiValue| {
+                if values.len() != 1 {
+                    return Err(LuaError::RuntimeError(
+                        "redis.setresp() requires one argument.".to_string(),
+                    ));
+                }
+                let version = parse_lua_resp_protocol_version(
+                    values.into_iter().next().unwrap_or(LuaValue::Nil),
+                )?;
+                setresp_state.set(version);
+                Ok(())
+            })?;
             let log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
 
@@ -1513,6 +1538,7 @@ impl RequestProcessor {
             redis_table.set("sha1hex", sha1hex_fn)?;
             redis_table.set("status_reply", status_reply_fn)?;
             redis_table.set("error_reply", error_reply_fn)?;
+            redis_table.set("setresp", setresp_fn)?;
             redis_table.set("log", log_fn)?;
             redis_table.set("LOG_DEBUG", 0)?;
             redis_table.set("LOG_VERBOSE", 1)?;
@@ -1538,12 +1564,12 @@ impl RequestProcessor {
             env.raw_set("ARGV", argv_table)?;
 
             let value: LuaValue = eval_script_with_table_error_handler(&lua, lua_source, env)?;
-            Ok::<LuaValue, LuaError>(value)
+            Ok::<(LuaValue, RespProtocolVersion), LuaError>((value, script_resp_protocol.get()))
         });
 
         match run_result {
-            Ok(value) => {
-                let resp3 = self.resp_protocol_version().is_resp3();
+            Ok((value, script_resp_protocol)) => {
+                let client_resp3 = self.resp_protocol_version().is_resp3();
                 match returned_lua_error_reply_details(&lua, &value) {
                     Ok(Some(error_reply)) => {
                         self.record_command_failure(command_name.as_bytes());
@@ -1565,7 +1591,12 @@ impl RequestProcessor {
                         return;
                     }
                 }
-                if let Err(error_message) = append_lua_value_as_resp(value, response_out, resp3) {
+                if let Err(error_message) = append_lua_value_as_resp(
+                    value,
+                    response_out,
+                    client_resp3,
+                    script_resp_protocol,
+                ) {
                     let message = format!(
                         "ERR Error running script: {}",
                         sanitize_error_text(&error_message)
@@ -1688,11 +1719,28 @@ impl RequestProcessor {
             let globals = lua.globals();
             let runtime_getmetatable = globals.get::<LuaFunction>("getmetatable").ok();
             let load_redis_table = lua.create_table()?;
+            let load_resp_protocol = Rc::new(Cell::new(RespProtocolVersion::Resp2));
+            let load_call_resp_protocol = Rc::clone(&load_resp_protocol);
             let call_fn = scope.create_function(move |lua, values: MultiValue| {
-                self.execute_lua_redis_call(lua, values, mutability, allow_oom, LuaCallMode::Call)
+                self.execute_lua_redis_call(
+                    lua,
+                    values,
+                    mutability,
+                    allow_oom,
+                    LuaCallMode::Call,
+                    load_call_resp_protocol.get(),
+                )
             })?;
+            let load_pcall_resp_protocol = Rc::clone(&load_resp_protocol);
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
-                self.execute_lua_redis_call(lua, values, mutability, allow_oom, LuaCallMode::PCall)
+                self.execute_lua_redis_call(
+                    lua,
+                    values,
+                    mutability,
+                    allow_oom,
+                    LuaCallMode::PCall,
+                    load_pcall_resp_protocol.get(),
+                )
             })?;
             let sha1hex_fn = scope.create_function(|_, args: MultiValue| {
                 if args.len() != 1 {
@@ -1733,6 +1781,19 @@ impl RequestProcessor {
                 table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
             })?;
+            let load_setresp_state = Rc::clone(&load_resp_protocol);
+            let load_setresp_fn = scope.create_function(move |_, values: MultiValue| {
+                if values.len() != 1 {
+                    return Err(LuaError::RuntimeError(
+                        "redis.setresp() requires one argument.".to_string(),
+                    ));
+                }
+                let version = parse_lua_resp_protocol_version(
+                    values.into_iter().next().unwrap_or(LuaValue::Nil),
+                )?;
+                load_setresp_state.set(version);
+                Ok(())
+            })?;
             let log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
             let registered_functions = lua.create_table()?;
@@ -1755,6 +1816,7 @@ impl RequestProcessor {
             load_redis_table.set("sha1hex", sha1hex_fn)?;
             load_redis_table.set("status_reply", status_reply_fn)?;
             load_redis_table.set("error_reply", error_reply_fn)?;
+            load_redis_table.set("setresp", load_setresp_fn)?;
             load_redis_table.set("register_function", register_function_fn)?;
             load_redis_table.set("log", log_fn)?;
             load_redis_table.set("LOG_DEBUG", 0)?;
@@ -1781,11 +1843,28 @@ impl RequestProcessor {
             )?;
 
             let runtime_redis_table = lua.create_table()?;
+            let runtime_resp_protocol = Rc::new(Cell::new(RespProtocolVersion::Resp2));
+            let runtime_call_resp_protocol = Rc::clone(&runtime_resp_protocol);
             let runtime_call_fn = scope.create_function(move |lua, values: MultiValue| {
-                self.execute_lua_redis_call(lua, values, mutability, allow_oom, LuaCallMode::Call)
+                self.execute_lua_redis_call(
+                    lua,
+                    values,
+                    mutability,
+                    allow_oom,
+                    LuaCallMode::Call,
+                    runtime_call_resp_protocol.get(),
+                )
             })?;
+            let runtime_pcall_resp_protocol = Rc::clone(&runtime_resp_protocol);
             let runtime_pcall_fn = scope.create_function(move |lua, values: MultiValue| {
-                self.execute_lua_redis_call(lua, values, mutability, allow_oom, LuaCallMode::PCall)
+                self.execute_lua_redis_call(
+                    lua,
+                    values,
+                    mutability,
+                    allow_oom,
+                    LuaCallMode::PCall,
+                    runtime_pcall_resp_protocol.get(),
+                )
             })?;
             let runtime_sha1hex_fn = scope.create_function(|_, args: MultiValue| {
                 if args.len() != 1 {
@@ -1811,6 +1890,19 @@ impl RequestProcessor {
                 table.set("err", lua.create_string(&normalized)?)?;
                 Ok(table)
             })?;
+            let runtime_setresp_state = Rc::clone(&runtime_resp_protocol);
+            let runtime_setresp_fn = scope.create_function(move |_, values: MultiValue| {
+                if values.len() != 1 {
+                    return Err(LuaError::RuntimeError(
+                        "redis.setresp() requires one argument.".to_string(),
+                    ));
+                }
+                let version = parse_lua_resp_protocol_version(
+                    values.into_iter().next().unwrap_or(LuaValue::Nil),
+                )?;
+                runtime_setresp_state.set(version);
+                Ok(())
+            })?;
             let runtime_log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
             runtime_redis_table.set("call", runtime_call_fn)?;
@@ -1818,6 +1910,7 @@ impl RequestProcessor {
             runtime_redis_table.set("sha1hex", runtime_sha1hex_fn)?;
             runtime_redis_table.set("status_reply", runtime_status_reply_fn)?;
             runtime_redis_table.set("error_reply", runtime_error_reply_fn)?;
+            runtime_redis_table.set("setresp", runtime_setresp_fn)?;
             runtime_redis_table.set("log", runtime_log_fn)?;
             runtime_redis_table.set("LOG_DEBUG", 0)?;
             runtime_redis_table.set("LOG_VERBOSE", 1)?;
@@ -1860,12 +1953,12 @@ impl RequestProcessor {
             }
             let value: LuaValue =
                 call_function_with_table_error_handler(&lua, callback, keys_table, argv_table)?;
-            Ok::<LuaValue, LuaError>(value)
+            Ok::<(LuaValue, RespProtocolVersion), LuaError>((value, runtime_resp_protocol.get()))
         });
 
         match run_result {
-            Ok(value) => {
-                let resp3 = self.resp_protocol_version().is_resp3();
+            Ok((value, script_resp_protocol)) => {
+                let client_resp3 = self.resp_protocol_version().is_resp3();
                 match returned_lua_error_reply_details(&lua, &value) {
                     Ok(Some(error_reply)) => {
                         self.record_command_failure(command_name.as_bytes());
@@ -1887,7 +1980,12 @@ impl RequestProcessor {
                         return;
                     }
                 }
-                if let Err(error_message) = append_lua_value_as_resp(value, response_out, resp3) {
+                if let Err(error_message) = append_lua_value_as_resp(
+                    value,
+                    response_out,
+                    client_resp3,
+                    script_resp_protocol,
+                ) {
                     let message = format!(
                         "ERR Error running function: {}",
                         sanitize_error_text(&error_message)
@@ -1937,6 +2035,7 @@ impl RequestProcessor {
         mutability: ScriptMutability,
         allow_oom: bool,
         call_mode: LuaCallMode,
+        call_resp_protocol: RespProtocolVersion,
     ) -> mlua::Result<LuaValue> {
         if values.is_empty() {
             return Err(LuaError::RuntimeError(
@@ -1994,8 +2093,13 @@ impl RequestProcessor {
         }
 
         self.record_command_call(arg_refs[0]);
-        let mut response = Vec::new();
-        match self.execute_bytes(&arg_refs, &mut response) {
+        let execution = self.with_resp_protocol_version_override(call_resp_protocol, || {
+            let mut response = Vec::new();
+            let result = self.execute_bytes(&arg_refs, &mut response);
+            (result, response)
+        });
+        let (execution_result, response) = execution;
+        match execution_result {
             Ok(()) => {}
             Err(error) => {
                 self.record_command_failure(arg_refs[0]);
@@ -3860,19 +3964,40 @@ fn returned_lua_error_reply_details(
     }))
 }
 
+fn parse_lua_resp_protocol_version(value: LuaValue) -> mlua::Result<RespProtocolVersion> {
+    let numeric = match value {
+        LuaValue::Integer(value) => value,
+        LuaValue::Number(value) if value == 2.0 || value == 3.0 => value as i64,
+        _ => {
+            return Err(LuaError::RuntimeError(
+                "RESP version must be 2 or 3.".to_string(),
+            ));
+        }
+    };
+    match numeric {
+        2 => Ok(RespProtocolVersion::Resp2),
+        3 => Ok(RespProtocolVersion::Resp3),
+        _ => Err(LuaError::RuntimeError(
+            "RESP version must be 2 or 3.".to_string(),
+        )),
+    }
+}
+
 fn append_lua_value_as_resp(
     value: LuaValue,
     response_out: &mut Vec<u8>,
-    resp3: bool,
+    client_resp3: bool,
+    script_resp_protocol: RespProtocolVersion,
 ) -> Result<(), String> {
-    append_lua_value_as_resp_depth(value, response_out, 0, resp3)
+    append_lua_value_as_resp_depth(value, response_out, 0, client_resp3, script_resp_protocol)
 }
 
 fn append_lua_value_as_resp_depth(
     value: LuaValue,
     response_out: &mut Vec<u8>,
     depth: usize,
-    resp3: bool,
+    client_resp3: bool,
+    script_resp_protocol: RespProtocolVersion,
 ) -> Result<(), String> {
     if depth >= LUA_REPLY_MAX_DEPTH {
         append_error(response_out, b"ERR reached lua stack limit");
@@ -3880,7 +4005,7 @@ fn append_lua_value_as_resp_depth(
     }
     match value {
         LuaValue::Nil => {
-            if resp3 {
+            if client_resp3 {
                 append_null(response_out);
             } else {
                 append_null_bulk_string(response_out);
@@ -3888,9 +4013,15 @@ fn append_lua_value_as_resp_depth(
             Ok(())
         }
         LuaValue::Boolean(value) => {
-            if value {
+            if script_resp_protocol.is_resp3() {
+                if client_resp3 {
+                    append_resp3_boolean(response_out, value);
+                } else {
+                    append_integer(response_out, if value { 1 } else { 0 });
+                }
+            } else if value {
                 append_integer(response_out, 1);
-            } else if resp3 {
+            } else if client_resp3 {
                 append_null(response_out);
             } else {
                 append_null_bulk_string(response_out);
@@ -3915,7 +4046,13 @@ fn append_lua_value_as_resp_depth(
             append_bulk_string(response_out, value.as_bytes().as_ref());
             Ok(())
         }
-        LuaValue::Table(table) => append_lua_table_as_resp_depth(table, response_out, depth, resp3),
+        LuaValue::Table(table) => append_lua_table_as_resp_depth(
+            table,
+            response_out,
+            depth,
+            client_resp3,
+            script_resp_protocol,
+        ),
         _ => Err("Lua script returned unsupported value type".to_string()),
     }
 }
@@ -3924,7 +4061,8 @@ fn append_lua_table_as_resp_depth(
     table: LuaTable,
     response_out: &mut Vec<u8>,
     depth: usize,
-    resp3: bool,
+    client_resp3: bool,
+    script_resp_protocol: RespProtocolVersion,
 ) -> Result<(), String> {
     // Use raw_get to avoid triggering metamethods (matches Redis/Valkey behaviour).
     if let Some(error_payload) = lua_table_raw_string_field(&table, "err")? {
@@ -3936,7 +4074,95 @@ fn append_lua_table_as_resp_depth(
         return Ok(());
     }
     if let Some(double_payload) = lua_table_raw_double_field(&table, "double")? {
-        append_bulk_string(response_out, double_payload.to_string().as_bytes());
+        if client_resp3 {
+            append_double(response_out, double_payload);
+        } else {
+            append_bulk_string(response_out, format_resp_double(double_payload).as_bytes());
+        }
+        return Ok(());
+    }
+    if let Some(big_number_payload) = lua_table_raw_string_field_optional(&table, "big_number")? {
+        let normalized = sanitize_inline_resp_bytes(&big_number_payload);
+        if client_resp3 {
+            append_resp3_bignum(response_out, &normalized);
+        } else {
+            append_bulk_string(response_out, &normalized);
+        }
+        return Ok(());
+    }
+    if let Some((format, value)) = lua_table_raw_verbatim_field(&table)? {
+        if client_resp3 {
+            append_verbatim_string(response_out, &format, &value);
+        } else {
+            append_bulk_string(response_out, &value);
+        }
+        return Ok(());
+    }
+    if let Some(map_table) = lua_table_raw_table_field_optional(&table, "map")? {
+        let mut entries = Vec::new();
+        for pair in map_table.clone().pairs::<LuaValue, LuaValue>() {
+            let (key, value) = pair.map_err(|error| sanitize_error_text(&error.to_string()))?;
+            entries.push((key, value));
+        }
+        if client_resp3 {
+            append_map_length(response_out, entries.len());
+            for (key, value) in entries {
+                append_lua_value_as_resp_depth(
+                    key,
+                    response_out,
+                    depth + 1,
+                    client_resp3,
+                    script_resp_protocol,
+                )?;
+                append_lua_value_as_resp_depth(
+                    value,
+                    response_out,
+                    depth + 1,
+                    client_resp3,
+                    script_resp_protocol,
+                )?;
+            }
+        } else {
+            append_array_length(response_out, entries.len().saturating_mul(2));
+            for (key, value) in entries {
+                append_lua_value_as_resp_depth(
+                    key,
+                    response_out,
+                    depth + 1,
+                    client_resp3,
+                    script_resp_protocol,
+                )?;
+                append_lua_value_as_resp_depth(
+                    value,
+                    response_out,
+                    depth + 1,
+                    client_resp3,
+                    script_resp_protocol,
+                )?;
+            }
+        }
+        return Ok(());
+    }
+    if let Some(set_table) = lua_table_raw_table_field_optional(&table, "set")? {
+        let mut members = Vec::new();
+        for pair in set_table.clone().pairs::<LuaValue, LuaValue>() {
+            let (member, _) = pair.map_err(|error| sanitize_error_text(&error.to_string()))?;
+            members.push(member);
+        }
+        if client_resp3 {
+            append_set_length(response_out, members.len());
+        } else {
+            append_array_length(response_out, members.len());
+        }
+        for member in members {
+            append_lua_value_as_resp_depth(
+                member,
+                response_out,
+                depth + 1,
+                client_resp3,
+                script_resp_protocol,
+            )?;
+        }
         return Ok(());
     }
 
@@ -3951,7 +4177,13 @@ fn append_lua_table_as_resp_depth(
     }
     append_array_length(response_out, values.len());
     for value in values {
-        append_lua_value_as_resp_depth(value, response_out, depth + 1, resp3)?;
+        append_lua_value_as_resp_depth(
+            value,
+            response_out,
+            depth + 1,
+            client_resp3,
+            script_resp_protocol,
+        )?;
     }
     Ok(())
 }
@@ -3979,6 +4211,60 @@ fn lua_table_raw_double_field(table: &LuaTable, field: &str) -> Result<Option<f6
     }
 }
 
+fn lua_table_raw_string_field_optional(
+    table: &LuaTable,
+    field: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let value: LuaValue = table
+        .raw_get(field)
+        .map_err(|error| sanitize_error_text(&error.to_string()))?;
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::String(payload) => Ok(Some(payload.as_bytes().to_vec())),
+        _ => Ok(None),
+    }
+}
+
+fn lua_table_raw_table_field_optional(
+    table: &LuaTable,
+    field: &str,
+) -> Result<Option<LuaTable>, String> {
+    let value: LuaValue = table
+        .raw_get(field)
+        .map_err(|error| sanitize_error_text(&error.to_string()))?;
+    match value {
+        LuaValue::Nil => Ok(None),
+        LuaValue::Table(value) => Ok(Some(value)),
+        _ => Ok(None),
+    }
+}
+
+fn lua_table_raw_verbatim_field(table: &LuaTable) -> Result<Option<(Vec<u8>, Vec<u8>)>, String> {
+    let Some(verbatim_table) = lua_table_raw_table_field_optional(table, "verbatim_string")? else {
+        return Ok(None);
+    };
+    let Some(format) = lua_table_raw_string_field_optional(&verbatim_table, "format")? else {
+        return Ok(None);
+    };
+    let Some(value) = lua_table_raw_string_field_optional(&verbatim_table, "string")? else {
+        return Ok(None);
+    };
+    Ok(Some((format, value)))
+}
+
+fn sanitize_inline_resp_bytes(value: &[u8]) -> Vec<u8> {
+    value
+        .iter()
+        .map(|byte| {
+            if *byte == b'\r' || *byte == b'\n' {
+                b' '
+            } else {
+                *byte
+            }
+        })
+        .collect()
+}
+
 fn resp_frame_to_lua_value(lua: &Lua, frame: RespFrame) -> mlua::Result<LuaValue> {
     match frame {
         RespFrame::SimpleString(value) => {
@@ -3993,8 +4279,47 @@ fn resp_frame_to_lua_value(lua: &Lua, frame: RespFrame) -> mlua::Result<LuaValue
         }
         RespFrame::Integer(value) => Ok(LuaValue::Integer(value)),
         RespFrame::Bulk(Some(value)) => Ok(LuaValue::String(lua.create_string(&value)?)),
-        RespFrame::Bulk(None) | RespFrame::Array(None) | RespFrame::Null => {
-            Ok(LuaValue::Boolean(false))
+        RespFrame::Bulk(None) | RespFrame::Array(None) => Ok(LuaValue::Boolean(false)),
+        RespFrame::Null => Ok(LuaValue::Nil),
+        RespFrame::Boolean(value) => Ok(LuaValue::Boolean(value)),
+        RespFrame::Double(value) => {
+            let table = lua.create_table()?;
+            table.set("double", value)?;
+            Ok(LuaValue::Table(table))
+        }
+        RespFrame::BigNumber(value) => {
+            let table = lua.create_table()?;
+            table.set("big_number", lua.create_string(&value)?)?;
+            Ok(LuaValue::Table(table))
+        }
+        RespFrame::VerbatimString { format, value } => {
+            let payload = lua.create_table()?;
+            payload.set("format", lua.create_string(&format)?)?;
+            payload.set("string", lua.create_string(&value)?)?;
+            let table = lua.create_table()?;
+            table.set("verbatim_string", payload)?;
+            Ok(LuaValue::Table(table))
+        }
+        RespFrame::Map(items) => {
+            let entries = lua.create_table()?;
+            for (key, value) in items {
+                entries.set(
+                    resp_frame_to_lua_value(lua, key)?,
+                    resp_frame_to_lua_value(lua, value)?,
+                )?;
+            }
+            let table = lua.create_table()?;
+            table.set("map", entries)?;
+            Ok(LuaValue::Table(table))
+        }
+        RespFrame::Set(items) => {
+            let members = lua.create_table()?;
+            for item in items {
+                members.set(resp_frame_to_lua_value(lua, item)?, true)?;
+            }
+            let table = lua.create_table()?;
+            table.set("set", members)?;
+            Ok(LuaValue::Table(table))
         }
         RespFrame::Array(Some(items)) => {
             let table = lua.create_table_with_capacity(items.len(), 0)?;
@@ -4070,9 +4395,91 @@ fn parse_resp_frame(input: &[u8], index: &mut usize) -> Result<RespFrame, String
             }
             Ok(RespFrame::Array(Some(entries)))
         }
+        b'%' => {
+            let line = parse_resp_line(input, index)?;
+            let length = parse_resp_i64(line)?;
+            if length < 0 {
+                return Err("invalid negative map length".to_string());
+            }
+            let mut entries = Vec::with_capacity(length as usize);
+            for _ in 0..length {
+                let key = parse_resp_frame(input, index)?;
+                let value = parse_resp_frame(input, index)?;
+                entries.push((key, value));
+            }
+            Ok(RespFrame::Map(entries))
+        }
+        b'~' => {
+            let line = parse_resp_line(input, index)?;
+            let length = parse_resp_i64(line)?;
+            if length < 0 {
+                return Err("invalid negative set length".to_string());
+            }
+            let mut entries = Vec::with_capacity(length as usize);
+            for _ in 0..length {
+                entries.push(parse_resp_frame(input, index)?);
+            }
+            Ok(RespFrame::Set(entries))
+        }
+        b',' => {
+            let line = parse_resp_line(input, index)?;
+            let value = std::str::from_utf8(line)
+                .map_err(|_| "invalid RESP double".to_string())?
+                .parse::<f64>()
+                .map_err(|_| "invalid RESP double".to_string())?;
+            Ok(RespFrame::Double(value))
+        }
+        b'#' => {
+            let line = parse_resp_line(input, index)?;
+            match line {
+                b"t" => Ok(RespFrame::Boolean(true)),
+                b"f" => Ok(RespFrame::Boolean(false)),
+                _ => Err("invalid RESP boolean".to_string()),
+            }
+        }
+        b'(' => {
+            let line = parse_resp_line(input, index)?;
+            Ok(RespFrame::BigNumber(line.to_vec()))
+        }
+        b'=' => {
+            let line = parse_resp_line(input, index)?;
+            let length = parse_resp_i64(line)?;
+            if length < 0 {
+                return Err("invalid negative verbatim string length".to_string());
+            }
+            let length = length as usize;
+            if *index + length + 2 > input.len() {
+                return Err("verbatim payload exceeds available input".to_string());
+            }
+            let payload = input[*index..*index + length].to_vec();
+            *index += length;
+            if input.get(*index) != Some(&b'\r') || input.get(*index + 1) != Some(&b'\n') {
+                return Err("verbatim payload missing trailing CRLF".to_string());
+            }
+            *index += 2;
+            let Some(separator_index) = payload.iter().position(|byte| *byte == b':') else {
+                return Err("invalid RESP verbatim string".to_string());
+            };
+            Ok(RespFrame::VerbatimString {
+                format: payload[..separator_index].to_vec(),
+                value: payload[separator_index + 1..].to_vec(),
+            })
+        }
         b'_' => {
             expect_resp_crlf(input, index)?;
             Ok(RespFrame::Null)
+        }
+        b'|' => {
+            let line = parse_resp_line(input, index)?;
+            let length = parse_resp_i64(line)?;
+            if length < 0 {
+                return Err("invalid negative attribute length".to_string());
+            }
+            for _ in 0..length {
+                parse_resp_frame(input, index)?;
+                parse_resp_frame(input, index)?;
+            }
+            parse_resp_frame(input, index)
         }
         _ => Err("unsupported RESP type in scripting bridge".to_string()),
     }

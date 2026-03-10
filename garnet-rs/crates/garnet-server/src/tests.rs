@@ -1,4 +1,5 @@
 use super::*;
+use crate::request_lifecycle::RespProtocolVersion;
 use garnet_cluster::AsyncGossipEngine;
 use garnet_cluster::ChannelReplicationTransport;
 use garnet_cluster::CheckpointId;
@@ -2246,6 +2247,361 @@ async fn client_pause_write_unpause_releases_script_commands_without_busy_error(
         String::from_utf8_lossy(&script_b_response)
     );
     wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scripting_resp3_map_external_scenario_runs_as_tcp_integration_test() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap()
+    });
+
+    let timeout = Duration::from_secs(1);
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_hello_and_drain(&mut client, b"3").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HSET", b"hash", b"field", b"value"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let hgetall_resp = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"HGETALL", b"hash"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        hgetall_resp,
+        RespSocketValue::Map(vec![(
+            RespSocketValue::Bulk(b"field".to_vec()),
+            RespSocketValue::Bulk(b"value".to_vec()),
+        )])
+    );
+
+    let script_resp3 = b"redis.setresp(3); return redis.call('hgetall', KEYS[1])".as_slice();
+    let resp3_eval = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", script_resp3, b"1", b"hash"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp3_eval,
+        RespSocketValue::Map(vec![(
+            RespSocketValue::Bulk(b"field".to_vec()),
+            RespSocketValue::Bulk(b"value".to_vec()),
+        )])
+    );
+
+    let script_resp2 = b"redis.setresp(2); return redis.call('hgetall', KEYS[1])".as_slice();
+    let resp2_eval = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", script_resp2, b"1", b"hash"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp2_eval,
+        RespSocketValue::Array(vec![
+            RespSocketValue::Bulk(b"field".to_vec()),
+            RespSocketValue::Bulk(b"value".to_vec()),
+        ])
+    );
+
+    send_hello_and_drain(&mut client, b"2").await;
+
+    let resp3_eval_resp2_client = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", script_resp3, b"1", b"hash"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp3_eval_resp2_client,
+        RespSocketValue::Array(vec![
+            RespSocketValue::Bulk(b"field".to_vec()),
+            RespSocketValue::Bulk(b"value".to_vec()),
+        ])
+    );
+
+    let resp2_eval_resp2_client = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", script_resp2, b"1", b"hash"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp2_eval_resp2_client,
+        RespSocketValue::Array(vec![
+            RespSocketValue::Bulk(b"field".to_vec()),
+            RespSocketValue::Bulk(b"value".to_vec()),
+        ])
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scripting_resp_protocol_parsing_matrix_matches_external_scenarios() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap()
+    });
+
+    let timeout = Duration::from_secs(1);
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"SET-DISABLE-DENY-SCRIPTS", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let bignum_value = b"1234567999999999999999999999999999999".to_vec();
+    let malformed_bignum = b"123  123".to_vec();
+
+    for client_proto in [RespProtocolVersion::Resp2, RespProtocolVersion::Resp3] {
+        let mut client = TcpStream::connect(addr).await.unwrap();
+        send_hello_and_drain(
+            &mut client,
+            if client_proto.is_resp3() { b"3" } else { b"2" },
+        )
+        .await;
+
+        for script_proto in [RespProtocolVersion::Resp2, RespProtocolVersion::Resp3] {
+            let bignum_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'bignum')",
+                script_proto.as_u8()
+            );
+            let bignum_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", bignum_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                assert_eq!(
+                    bignum_response,
+                    RespSocketValue::BigNumber(bignum_value.clone())
+                );
+            } else {
+                assert_eq!(bignum_response, RespSocketValue::Bulk(bignum_value.clone()));
+            }
+
+            let malformed_bignum_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", b"return {big_number='123\\r\\n123'}", b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() {
+                assert_eq!(
+                    malformed_bignum_response,
+                    RespSocketValue::BigNumber(malformed_bignum.clone())
+                );
+            } else {
+                assert_eq!(
+                    malformed_bignum_response,
+                    RespSocketValue::Bulk(malformed_bignum.clone())
+                );
+            }
+
+            let map_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'map')",
+                script_proto.as_u8()
+            );
+            let map_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", map_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                match map_response {
+                    RespSocketValue::Map(entries) => assert_eq!(entries.len(), 3),
+                    other => panic!("expected RESP3 map, got {other:?}"),
+                }
+            } else {
+                match map_response {
+                    RespSocketValue::Array(items) => assert_eq!(items.len(), 6),
+                    other => panic!("expected RESP2 flattened map, got {other:?}"),
+                }
+            }
+
+            let set_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'set')",
+                script_proto.as_u8()
+            );
+            let set_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", set_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                match set_response {
+                    RespSocketValue::Set(entries) => assert_eq!(entries.len(), 3),
+                    other => panic!("expected RESP3 set, got {other:?}"),
+                }
+            } else {
+                match set_response {
+                    RespSocketValue::Array(items) => assert_eq!(items.len(), 3),
+                    other => panic!("expected RESP2 flattened set, got {other:?}"),
+                }
+            }
+
+            let double_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'double')",
+                script_proto.as_u8()
+            );
+            let double_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", double_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                assert_eq!(double_response, RespSocketValue::Double(b"3.141".to_vec()));
+            } else {
+                assert_eq!(double_response, RespSocketValue::Bulk(b"3.141".to_vec()));
+            }
+
+            let null_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'null')",
+                script_proto.as_u8()
+            );
+            client
+                .write_all(&encode_resp_command(&[
+                    b"EVAL",
+                    null_script.as_bytes(),
+                    b"0",
+                ]))
+                .await
+                .unwrap();
+            let null_header = read_resp_line_with_timeout(&mut client, timeout).await;
+            if client_proto.is_resp3() {
+                assert_eq!(null_header, b"_");
+            } else {
+                assert_eq!(null_header, b"$-1");
+            }
+
+            let verbatim_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'verbatim')",
+                script_proto.as_u8()
+            );
+            let verbatim_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", verbatim_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                assert_eq!(
+                    verbatim_response,
+                    RespSocketValue::Verbatim {
+                        format: b"txt".to_vec(),
+                        value: b"This is a verbatim\nstring".to_vec(),
+                    }
+                );
+            } else {
+                assert_eq!(
+                    verbatim_response,
+                    RespSocketValue::Bulk(b"This is a verbatim\nstring".to_vec())
+                );
+            }
+
+            let true_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'true')",
+                script_proto.as_u8()
+            );
+            let true_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", true_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                assert_eq!(true_response, RespSocketValue::Boolean(true));
+            } else {
+                assert_eq!(true_response, RespSocketValue::Integer(1));
+            }
+
+            let false_script = format!(
+                "redis.setresp({}); return redis.call('debug', 'protocol', 'false')",
+                script_proto.as_u8()
+            );
+            let false_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"EVAL", false_script.as_bytes(), b"0"]),
+                timeout,
+            )
+            .await;
+            if client_proto.is_resp3() && script_proto.is_resp3() {
+                assert_eq!(false_response, RespSocketValue::Boolean(false));
+            } else {
+                assert_eq!(false_response, RespSocketValue::Integer(0));
+            }
+        }
+
+        if client_proto.is_resp3() {
+            let attribute_response = send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"EVAL",
+                    b"redis.setresp(3); return redis.call('debug', 'protocol', 'attrib')",
+                    b"0",
+                ]),
+                timeout,
+            )
+            .await;
+            assert_eq!(
+                attribute_response,
+                RespSocketValue::Bulk(b"Some real reply following the attribute".to_vec())
+            );
+        }
+    }
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
@@ -11522,6 +11878,12 @@ enum RespSocketValue {
     Bulk(Vec<u8>),
     Simple(Vec<u8>),
     Array(Vec<RespSocketValue>),
+    Map(Vec<(RespSocketValue, RespSocketValue)>),
+    Set(Vec<RespSocketValue>),
+    Boolean(bool),
+    Double(Vec<u8>),
+    BigNumber(Vec<u8>),
+    Verbatim { format: Vec<u8>, value: Vec<u8> },
     Null,
 }
 
@@ -11566,6 +11928,30 @@ fn read_resp_value_with_timeout<'a>(
                 }
                 RespSocketValue::Array(items)
             }
+            b'%' => {
+                let len = std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    let key = read_resp_value_with_timeout(client, timeout).await;
+                    let value = read_resp_value_with_timeout(client, timeout).await;
+                    items.push((key, value));
+                }
+                RespSocketValue::Map(items)
+            }
+            b'~' => {
+                let len = std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                let mut items = Vec::with_capacity(len);
+                for _ in 0..len {
+                    items.push(read_resp_value_with_timeout(client, timeout).await);
+                }
+                RespSocketValue::Set(items)
+            }
             b'>' => {
                 let len = std::str::from_utf8(&header[1..])
                     .unwrap()
@@ -11577,6 +11963,27 @@ fn read_resp_value_with_timeout<'a>(
                 }
                 RespSocketValue::Array(items)
             }
+            b'#' => RespSocketValue::Boolean(&header[1..] == b"t"),
+            b',' => RespSocketValue::Double(header[1..].to_vec()),
+            b'(' => RespSocketValue::BigNumber(header[1..].to_vec()),
+            b'=' => {
+                let payload_len = std::str::from_utf8(&header[1..])
+                    .unwrap()
+                    .parse::<usize>()
+                    .unwrap();
+                let mut payload = vec![0u8; payload_len + 2];
+                tokio::time::timeout(timeout, client.read_exact(&mut payload))
+                    .await
+                    .unwrap()
+                    .unwrap();
+                payload.truncate(payload_len);
+                let separator = payload.iter().position(|byte| *byte == b':').unwrap();
+                RespSocketValue::Verbatim {
+                    format: payload[..separator].to_vec(),
+                    value: payload[separator + 1..].to_vec(),
+                }
+            }
+            b'_' => RespSocketValue::Null,
             other => panic!("unsupported RESP token from socket: {}", other as char),
         }
     })

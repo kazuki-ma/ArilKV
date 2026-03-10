@@ -136,6 +136,9 @@ thread_local! {
     static TRACKING_READ_STACK: RefCell<Vec<Vec<RedisKey>>> = const {
         RefCell::new(Vec::new())
     };
+    static RESP_PROTOCOL_OVERRIDE: Cell<Option<RespProtocolVersion>> = const {
+        Cell::new(None)
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -470,10 +473,13 @@ use self::resp::append_null;
 use self::resp::append_null_array;
 use self::resp::append_null_bulk_string;
 use self::resp::append_push_length;
+use self::resp::append_resp3_bignum;
+use self::resp::append_resp3_boolean;
 use self::resp::append_set_length;
 use self::resp::append_simple_string;
 use self::resp::append_verbatim_string;
 use self::resp::ascii_eq_ignore_case;
+use self::resp::format_resp_double;
 use self::session_functions::KvSessionFunctions;
 use self::session_functions::ObjectSessionFunctions;
 use self::value_codec::ContiguousI64RangeSet;
@@ -2168,8 +2174,34 @@ impl RequestProcessor {
     }
 
     pub(super) fn resp_protocol_version(&self) -> RespProtocolVersion {
+        if let Some(version) = RESP_PROTOCOL_OVERRIDE.with(|cell| cell.get()) {
+            return version;
+        }
         RespProtocolVersion::from_u8(self.resp_protocol_version.load(Ordering::Acquire))
             .unwrap_or(RespProtocolVersion::Resp2)
+    }
+
+    pub(super) fn with_resp_protocol_version_override<T>(
+        &self,
+        version: RespProtocolVersion,
+        f: impl FnOnce() -> T,
+    ) -> T {
+        struct RespProtocolOverrideReset<'a> {
+            cell: &'a Cell<Option<RespProtocolVersion>>,
+            previous: Option<RespProtocolVersion>,
+        }
+
+        impl Drop for RespProtocolOverrideReset<'_> {
+            fn drop(&mut self) {
+                self.cell.set(self.previous);
+            }
+        }
+
+        RESP_PROTOCOL_OVERRIDE.with(|cell| {
+            let previous = cell.replace(Some(version));
+            let _reset = RespProtocolOverrideReset { cell, previous };
+            f()
+        })
     }
 
     pub(super) fn emit_resp3_zset_pairs(&self) -> bool {

@@ -142,6 +142,22 @@ pub(super) fn append_double(response_out: &mut Vec<u8>, value: f64) {
     response_out.extend_from_slice(b"\r\n");
 }
 
+/// Emit RESP3 boolean value: `#t\r\n` or `#f\r\n`.
+pub(super) fn append_resp3_boolean(response_out: &mut Vec<u8>, value: bool) {
+    if value {
+        response_out.extend_from_slice(b"#t\r\n");
+    } else {
+        response_out.extend_from_slice(b"#f\r\n");
+    }
+}
+
+/// Emit RESP3 big number value: `(<value>\r\n`.
+pub(super) fn append_resp3_bignum(response_out: &mut Vec<u8>, value: &[u8]) {
+    response_out.push(b'(');
+    response_out.extend_from_slice(value);
+    response_out.extend_from_slice(b"\r\n");
+}
+
 /// Emit RESP3 push length prefix: `><count>\r\n`.
 pub(super) fn append_push_length(response_out: &mut Vec<u8>, len: usize) {
     response_out.push(b'>');

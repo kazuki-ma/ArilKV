@@ -1647,6 +1647,49 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "DEBUG", "DEBUG PROTOCOL <subcommand>")?;
             let protocol_subcommand = args[2];
             let resp3 = self.resp_protocol_version().is_resp3();
+            if ascii_eq_ignore_case(protocol_subcommand, b"DOUBLE") {
+                if resp3 {
+                    append_double(response_out, 3.141);
+                } else {
+                    append_bulk_string(response_out, b"3.141");
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"NULL") {
+                if resp3 {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"SET") {
+                if resp3 {
+                    append_set_length(response_out, 3);
+                } else {
+                    append_array_length(response_out, 3);
+                }
+                for member in 0..3 {
+                    append_integer(response_out, member);
+                }
+                return Ok(());
+            }
+            if ascii_eq_ignore_case(protocol_subcommand, b"MAP") {
+                if resp3 {
+                    append_map_length(response_out, 3);
+                } else {
+                    append_array_length(response_out, 6);
+                }
+                for member in 0..3 {
+                    append_integer(response_out, member);
+                    if resp3 {
+                        append_resp3_boolean(response_out, member == 1);
+                    } else {
+                        append_integer(response_out, if member == 1 { 1 } else { 0 });
+                    }
+                }
+                return Ok(());
+            }
             if ascii_eq_ignore_case(protocol_subcommand, b"ATTRIB") {
                 if resp3 {
                     response_out.extend_from_slice(b"|1\r\n");
@@ -6170,20 +6213,6 @@ fn bytes_eq(left: u8, right: u8, case_sensitivity: CaseSensitivity) -> bool {
         CaseSensitivity::Insensitive => left.eq_ignore_ascii_case(&right),
         CaseSensitivity::Sensitive => left == right,
     }
-}
-
-fn append_resp3_boolean(response_out: &mut Vec<u8>, value: bool) {
-    if value {
-        response_out.extend_from_slice(b"#t\r\n");
-    } else {
-        response_out.extend_from_slice(b"#f\r\n");
-    }
-}
-
-fn append_resp3_bignum(response_out: &mut Vec<u8>, value: &[u8]) {
-    response_out.push(b'(');
-    response_out.extend_from_slice(value);
-    response_out.extend_from_slice(b"\r\n");
 }
 
 #[cfg(test)]

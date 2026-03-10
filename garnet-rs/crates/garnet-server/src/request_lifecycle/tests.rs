@@ -11140,6 +11140,10 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
 
     let debug_attrib = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$6\r\nATTRIB\r\n";
     let debug_bignum = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$6\r\nBIGNUM\r\n";
+    let debug_double = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$6\r\nDOUBLE\r\n";
+    let debug_null = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$4\r\nNULL\r\n";
+    let debug_map = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$3\r\nMAP\r\n";
+    let debug_set = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$3\r\nSET\r\n";
     let debug_true = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$4\r\nTRUE\r\n";
     let debug_false = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$5\r\nFALSE\r\n";
     let debug_verbatim = b"*3\r\n$5\r\nDEBUG\r\n$8\r\nPROTOCOL\r\n$8\r\nVERBATIM\r\n";
@@ -11164,6 +11168,34 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         response,
         b"$37\r\n1234567999999999999999999999999999999\r\n"
     );
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_double, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$5\r\n3.141\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_null, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_map, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*6\r\n:0\r\n:0\r\n:1\r\n:1\r\n:2\r\n:0\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"*3\r\n:0\r\n:1\r\n:2\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_true, &mut args).unwrap();
@@ -11204,6 +11236,34 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert_eq!(response, b"(1234567999999999999999999999999999999\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_double, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b",3.141\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_null, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"_\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_map, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"%3\r\n:0\r\n#f\r\n:1\r\n#t\r\n:2\r\n#f\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(debug_set, &mut args).unwrap();
+    processor
+        .execute(&args[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"~3\r\n:0\r\n:1\r\n:2\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_true, &mut args).unwrap();
