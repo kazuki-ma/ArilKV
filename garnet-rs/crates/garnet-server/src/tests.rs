@@ -28,6 +28,15 @@ use tokio::time::Duration;
 use tokio::time::Instant;
 use tokio::time::sleep;
 
+fn scripting_test_mutex() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+async fn lock_scripting_test_serial() -> tokio::sync::MutexGuard<'static, ()> {
+    scripting_test_mutex().lock().await
+}
+
 #[tokio::test]
 async fn accept_loop_spawns_connection_handlers() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2254,6 +2263,7 @@ async fn client_pause_write_unpause_releases_script_commands_without_busy_error(
 
 #[tokio::test]
 async fn scripting_resp3_map_external_scenario_runs_as_tcp_integration_test() {
+    let _serial = lock_scripting_test_serial().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
@@ -2367,6 +2377,7 @@ async fn scripting_resp3_map_external_scenario_runs_as_tcp_integration_test() {
 
 #[tokio::test]
 async fn scripting_resp_protocol_parsing_matrix_matches_external_scenarios() {
+    let _serial = lock_scripting_test_serial().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
@@ -5902,6 +5913,7 @@ async fn wait_times_out_without_downstream_replicas() {
 
 #[tokio::test]
 async fn scripting_min_replicas_gate_matches_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
@@ -6821,6 +6833,7 @@ async fn sync_replication_stream_rewrites_hgetdel_as_hdel_like_redis_external_sc
 
 #[tokio::test]
 async fn sync_replication_stream_rewrites_script_spop_commands_like_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
@@ -6987,6 +7000,7 @@ async fn sync_replication_stream_rewrites_script_spop_commands_like_external_sce
 #[tokio::test]
 async fn sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_external_scenarios()
 {
+    let _serial = lock_scripting_test_serial().await;
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
@@ -7128,6 +7142,522 @@ async fn sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_
             b"KEEPTTL".to_vec(),
         ]
     );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+async fn start_scripting_test_server() -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    (addr, shutdown_tx, server)
+}
+
+async fn start_multishard_scripting_test_server() -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(2, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    (addr, shutdown_tx, server)
+}
+
+#[tokio::test]
+async fn scripting_deletes_expired_key_on_access_like_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-active-expire", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"key", b"value", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    sleep(Duration::from_millis(5)).await;
+
+    let debug_object = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"OBJECT", b"key"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(!resp_socket_bulk(&debug_object).is_empty());
+
+    let exists = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('EXISTS', 'key')", b"1", b"key"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer(&exists), 0);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-active-expire", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scripting_time_command_uses_cached_time_like_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let response = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"local result1 = {redis.call('TIME')}; redis.call('DEBUG', 'SLEEP', 0.01); local result2 = {redis.call('TIME')}; return {result1, result2}",
+            b"0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let results = resp_socket_array(&response);
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0], results[1]);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scripting_function_freezes_key_expiration_during_execution_like_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')\nend)",
+        ]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"test", b"1", b"key"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scripting_function_restore_expired_keys_with_expiration_time_like_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}\nend)",
+        ]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    let response = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let values = resp_socket_array(&response);
+    assert_eq!(values.len(), 2);
+    let first = resp_socket_integer(&values[0]);
+    let second = resp_socket_integer(&values[1]);
+    assert!(
+        first > 0,
+        "expected positive PEXPIRETIME values, got {values:?}"
+    );
+    assert_eq!(first, second);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripting_default_server_function_freezes_key_expiration_during_execution_like_external_scenario()
+ {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')\nend)",
+        ]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"test", b"1", b"key"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripting_default_server_function_restore_expired_keys_with_expiration_time_like_external_scenario()
+ {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}\nend)",
+        ]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    let response = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let values = resp_socket_array(&response);
+    assert_eq!(values.len(), 2);
+    let first = resp_socket_integer(&values[0]);
+    let second = resp_socket_integer(&values[1]);
+    assert!(
+        first > 0,
+        "expected positive PEXPIRETIME values, got {values:?}"
+    );
+    assert_eq!(first, second);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripting_function_freezes_expiration_while_active_expire_runs() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.08); return redis.call('EXISTS', 'key')\nend)",
+        ]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"test", b"1", b"key"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scripting_function_restore_keeps_frozen_ttl_under_active_expire() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); local p2a = redis.call('PEXPIRETIME', 'key2{t}'); redis.call('DEBUG', 'SLEEP', 0.08); local p2b = redis.call('PEXPIRETIME', 'key2{t}'); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); local p3 = redis.call('PEXPIRETIME', 'key3{t}'); return {p2a, p2b, p3}\nend)",
+        ]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    let response = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let values = resp_socket_array(&response);
+    assert_eq!(values.len(), 3);
+    let parsed = values.iter().map(resp_socket_integer).collect::<Vec<_>>();
+    assert!(
+        parsed[0] > 0,
+        "expected positive PEXPIRETIME values, got {parsed:?}"
+    );
+    assert_eq!(
+        parsed[0], parsed[1],
+        "expected key2 to survive active expire while function runs: {parsed:?}"
+    );
+    assert_eq!(
+        parsed[1], parsed[2],
+        "expected restored keys to share the same frozen deadline: {parsed:?}"
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scripting_freezes_time_for_expiration_related_commands_like_external_scenario() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let response = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"redis.call('SET', 'key1{t}', 'value', 'EX', 1); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key2{t}', 'value', 'PX', 1000); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key3{t}', 'value'); redis.call('EXPIRE', 'key3{t}', 1); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key4{t}', 'value'); redis.call('PEXPIRE', 'key4{t}', 1000); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SETEX', 'key5{t}', 1, 'value'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('PSETEX', 'key6{t}', 1000, 'value'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key7{t}', 'value'); redis.call('GETEX', 'key7{t}', 'EX', 1); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key8{t}', 'value'); redis.call('GETEX', 'key8{t}', 'PX', 1000); redis.call('DEBUG', 'SLEEP', 0.01); local ttl_results = {redis.call('TTL', 'key1{t}'), redis.call('TTL', 'key2{t}'), redis.call('TTL', 'key3{t}'), redis.call('TTL', 'key4{t}'), redis.call('TTL', 'key5{t}'), redis.call('TTL', 'key6{t}'), redis.call('TTL', 'key7{t}'), redis.call('TTL', 'key8{t}')}; local pttl_results = {redis.call('PTTL', 'key1{t}'), redis.call('PTTL', 'key2{t}'), redis.call('PTTL', 'key3{t}'), redis.call('PTTL', 'key4{t}'), redis.call('PTTL', 'key5{t}'), redis.call('PTTL', 'key6{t}'), redis.call('PTTL', 'key7{t}'), redis.call('PTTL', 'key8{t}')}; local expiretime_results = {redis.call('EXPIRETIME', 'key1{t}'), redis.call('EXPIRETIME', 'key2{t}'), redis.call('EXPIRETIME', 'key3{t}'), redis.call('EXPIRETIME', 'key4{t}'), redis.call('EXPIRETIME', 'key5{t}'), redis.call('EXPIRETIME', 'key6{t}'), redis.call('EXPIRETIME', 'key7{t}'), redis.call('EXPIRETIME', 'key8{t}')}; local pexpiretime_results = {redis.call('PEXPIRETIME', 'key1{t}'), redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}'), redis.call('PEXPIRETIME', 'key4{t}'), redis.call('PEXPIRETIME', 'key5{t}'), redis.call('PEXPIRETIME', 'key6{t}'), redis.call('PEXPIRETIME', 'key7{t}'), redis.call('PEXPIRETIME', 'key8{t}')}; return {ttl_results, pttl_results, expiretime_results, pexpiretime_results}",
+            b"8",
+            b"key1{t}",
+            b"key2{t}",
+            b"key3{t}",
+            b"key4{t}",
+            b"key5{t}",
+            b"key6{t}",
+            b"key7{t}",
+            b"key8{t}",
+        ]),
+        Duration::from_secs(2),
+    )
+    .await;
+
+    let groups = resp_socket_array(&response);
+    assert_eq!(groups.len(), 4);
+    for group in groups {
+        let values: Vec<i64> = resp_socket_array(group)
+            .iter()
+            .map(resp_socket_integer)
+            .collect();
+        assert_eq!(values.len(), 8);
+        let first = values[0];
+        assert!(
+            first > 0,
+            "expected positive expiration-derived value, got {values:?}"
+        );
+        assert!(
+            values.iter().all(|value| *value == first),
+            "expected equal expiration-derived values, got {values:?}"
+        );
+    }
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();

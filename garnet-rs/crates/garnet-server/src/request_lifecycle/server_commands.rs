@@ -449,11 +449,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "TIME", "TIME")?;
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-        let seconds = now.as_secs().to_string();
-        let microseconds = now.subsec_micros().to_string();
+        let now_micros =
+            current_unix_time_micros().ok_or(RequestExecutionError::ValueOutOfRange)?;
+        let seconds = (now_micros / 1_000_000).to_string();
+        let microseconds = (now_micros % 1_000_000).to_string();
         append_bulk_array(response_out, &[seconds.as_bytes(), microseconds.as_bytes()]);
         Ok(())
     }
@@ -1740,9 +1739,10 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"OBJECT") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(&key)?;
-            if !self.key_exists_any(&key)? {
-                return Err(RequestExecutionError::NoSuchKey);
+            let allow_expired_debug_access =
+                !self.active_expire_enabled() || self.allow_access_expired();
+            if !allow_expired_debug_access {
+                self.expire_key_if_needed(&key)?;
             }
             let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
             let list_compress_depth = self.list_compress_depth();
@@ -1753,7 +1753,15 @@ impl RequestProcessor {
                 let ql_compressed = if list_compress_depth > 0 { 1 } else { 0 };
                 format!(" ql_listpack_max:{list_max} ql_compressed:{ql_compressed}")
             };
-            let (encoding, serialized_len) = if let Some(value) = self.read_string_value(&key)? {
+            let string_value = with_expired_data_access(allow_expired_debug_access, || {
+                self.read_string_value(&key)
+            })?;
+            let object_value = if string_value.is_some() {
+                None
+            } else {
+                self.object_read(&key)?
+            };
+            let (encoding, serialized_len) = if let Some(value) = string_value {
                 let enc = String::from_utf8_lossy(string_encoding_name(
                     &value,
                     self.string_encoding_is_forced_raw(key.as_slice()),
@@ -1761,7 +1769,7 @@ impl RequestProcessor {
                 .into_owned();
                 let len = value.len();
                 (enc, len)
-            } else if let Some(object) = self.object_read(&key)? {
+            } else if let Some(object) = object_value {
                 // Check forced-quicklist flag so DEBUG OBJECT is consistent
                 // with OBJECT ENCODING for lists with oversized elements.
                 if object.object_type == LIST_OBJECT_TYPE_TAG
@@ -1815,7 +1823,7 @@ impl RequestProcessor {
                 let len = object.payload.len();
                 (enc, len)
             } else {
-                ("raw".to_owned(), 0)
+                return Err(RequestExecutionError::NoSuchKey);
             };
             let lru = self.key_lru_millis(&key).unwrap_or(0);
             let idle = self.key_idle_seconds(&key).unwrap_or(0);
@@ -4362,7 +4370,7 @@ impl RequestProcessor {
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-random")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl");
         if policy_is_volatile {
-            let now = Instant::now();
+            let now = current_instant();
             keys.retain(|key| {
                 self.string_expiration_deadline(key.as_slice())
                     .is_some_and(|deadline| deadline > now)
@@ -4379,12 +4387,11 @@ impl RequestProcessor {
         {
             keys.sort_by_key(|key| self.key_lru_millis(key.as_slice()).unwrap_or(0));
         } else if maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl") {
+            let now = current_instant();
             keys.sort_by_key(|key| {
                 self.string_expiration_deadline(key.as_slice())
                     .map_or(u128::MAX, |deadline| {
-                        deadline
-                            .saturating_duration_since(Instant::now())
-                            .as_millis()
+                        deadline.saturating_duration_since(now).as_millis()
                     })
             });
         }

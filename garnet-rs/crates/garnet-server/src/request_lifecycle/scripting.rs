@@ -1,3 +1,5 @@
+// TLA+ model: formal/tla/specs/ScriptActiveExpireFreeze.tla
+
 use super::*;
 use crate::CommandId;
 use crate::command_spec::command_is_mutating;
@@ -193,6 +195,7 @@ struct RunningScriptGuard<'a> {
 
 impl Drop for RunningScriptGuard<'_> {
     fn drop(&mut self) {
+        // TLA+ : EndScriptCriticalSection
         self.processor
             .script_running
             .store(false, Ordering::Release);
@@ -822,6 +825,16 @@ impl RequestProcessor {
         if running_script.is_some() {
             return Err(RequestExecutionError::BusyScript);
         }
+        let frozen_unix_micros = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .ok()
+            .and_then(|duration| u64::try_from(duration.as_micros()).ok())
+            .unwrap_or(0);
+        let frozen_time = ScriptTimeSnapshot {
+            unix_micros: frozen_unix_micros,
+            instant: Instant::now(),
+        };
+        // TLA+ : BeginScriptCriticalSection
         self.script_kill_requested.store(false, Ordering::Release);
         self.function_kill_requested.store(false, Ordering::Release);
         *running_script = Some(RunningScriptState {
@@ -829,6 +842,7 @@ impl RequestProcessor {
             name: name.to_string(),
             command,
             started_at: Instant::now(),
+            frozen_time,
             thread_id: std::thread::current().id(),
         });
         self.script_running.store(true, Ordering::Release);

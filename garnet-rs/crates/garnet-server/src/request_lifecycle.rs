@@ -139,6 +139,12 @@ thread_local! {
     static RESP_PROTOCOL_OVERRIDE: Cell<Option<RespProtocolVersion>> = const {
         Cell::new(None)
     };
+    static CURRENT_PROCESSOR_PTR: Cell<*const RequestProcessor> = const {
+        Cell::new(std::ptr::null())
+    };
+    static EXPIRED_DATA_ACCESS_OVERRIDE: Cell<bool> = const {
+        Cell::new(false)
+    };
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,8 +156,18 @@ struct RequestExecutionContext {
     tracking_reads_enabled: bool,
 }
 
+#[derive(Debug, Clone, Copy)]
+struct ScriptTimeSnapshot {
+    unix_micros: u64,
+    instant: Instant,
+}
+
 struct RequestExecutionContextScope {
     previous: RequestExecutionContext,
+}
+
+struct CurrentProcessorScope {
+    previous: *const RequestProcessor,
 }
 
 impl RequestExecutionContextScope {
@@ -163,6 +179,24 @@ impl RequestExecutionContextScope {
             previous
         });
         Self { previous }
+    }
+}
+
+impl CurrentProcessorScope {
+    #[inline]
+    fn enter(processor: *const RequestProcessor) -> Self {
+        let previous = CURRENT_PROCESSOR_PTR.with(|state| {
+            let previous = state.get();
+            state.set(processor);
+            previous
+        });
+        Self { previous }
+    }
+}
+
+impl Drop for CurrentProcessorScope {
+    fn drop(&mut self) {
+        CURRENT_PROCESSOR_PTR.with(|state| state.set(self.previous));
     }
 }
 
@@ -1169,6 +1203,7 @@ struct RunningScriptState {
     name: String,
     command: String,
     started_at: Instant,
+    frozen_time: ScriptTimeSnapshot,
     thread_id: std::thread::ThreadId,
 }
 
@@ -3718,6 +3753,19 @@ impl RequestProcessor {
         self.script_runtime_timeouts.load(Ordering::Relaxed)
     }
 
+    pub(crate) fn script_execution_in_progress(&self) -> bool {
+        self.script_running.load(Ordering::Acquire)
+    }
+
+    fn current_script_time_snapshot(&self) -> Option<ScriptTimeSnapshot> {
+        let running_script = self.running_script.lock().ok()?;
+        let state = running_script.as_ref()?;
+        if state.thread_id != std::thread::current().id() {
+            return None;
+        }
+        Some(state.frozen_time)
+    }
+
     pub(super) fn used_memory_vm_functions(&self) -> u64 {
         self.used_memory_vm_functions.load(Ordering::Relaxed)
     }
@@ -4730,6 +4778,7 @@ impl RequestProcessor {
             return Err(RequestExecutionError::UnknownCommand);
         }
         self.executed_command_count.fetch_add(1, Ordering::Relaxed);
+        let _current_processor_scope = CurrentProcessorScope::enter(self as *const _);
 
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();
@@ -5607,8 +5656,48 @@ fn classify_set_encoding_floor(
 }
 
 fn current_unix_time_millis() -> Option<u64> {
+    Some(current_unix_time_micros()? / 1000)
+}
+
+fn current_unix_time_micros() -> Option<u64> {
+    if let Some(snapshot) = current_script_time_snapshot() {
+        return Some(snapshot.unix_micros);
+    }
     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
-    u64::try_from(now.as_millis()).ok()
+    u64::try_from(now.as_micros()).ok()
+}
+
+fn current_instant() -> Instant {
+    current_script_time_snapshot()
+        .map(|snapshot| snapshot.instant)
+        .unwrap_or_else(Instant::now)
+}
+
+fn current_script_time_snapshot() -> Option<ScriptTimeSnapshot> {
+    let processor_ptr = CURRENT_PROCESSOR_PTR.with(|state| state.get());
+    if processor_ptr.is_null() {
+        return None;
+    }
+    // SAFETY: `CURRENT_PROCESSOR_PTR` is set only for the dynamic extent of
+    // `RequestProcessor::execute_bytes`, while the borrowed processor remains
+    // alive on that stack frame.
+    let processor = unsafe { &*processor_ptr };
+    processor.current_script_time_snapshot()
+}
+
+fn allow_expired_data_access() -> bool {
+    EXPIRED_DATA_ACCESS_OVERRIDE.with(|state| state.get())
+}
+
+fn with_expired_data_access<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
+    let previous = EXPIRED_DATA_ACCESS_OVERRIDE.with(|state| {
+        let previous = state.get();
+        state.set(enabled);
+        previous
+    });
+    let output = f();
+    EXPIRED_DATA_ACCESS_OVERRIDE.with(|state| state.set(previous));
+    output
 }
 
 fn normalize_ascii_lower(value: &[u8]) -> Vec<u8> {
@@ -5648,7 +5737,7 @@ fn expiration_metadata_from_relative_expire_amount(
 }
 
 fn instant_from_unix_millis(unix_millis: u64) -> Option<Instant> {
-    let now = Instant::now();
+    let now = current_instant();
     let now_unix_millis = current_unix_time_millis()?;
     if unix_millis <= now_unix_millis {
         return Some(now);

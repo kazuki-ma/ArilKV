@@ -31,7 +31,7 @@ impl RequestProcessor {
             return Ok(0);
         }
 
-        let now = Instant::now();
+        let now = current_instant();
         let expired_keys: Vec<RedisKey> = self
             .lock_string_expirations_for_shard(shard_index)
             .iter()
@@ -302,9 +302,10 @@ impl RequestProcessor {
         // so that expired_keys stats and replication are deferred until after
         // the pause ends.
         if self.is_expire_action_paused() {
+            let now = current_instant();
             let logically_expired = {
                 let expirations = self.lock_string_expirations_for_shard(shard_index);
-                matches!(expirations.get(key), Some(metadata) if metadata.deadline <= Instant::now())
+                matches!(expirations.get(key), Some(metadata) if metadata.deadline <= now)
             };
             crate::debug_sync_point!(
                 "request_processor.expire_key_if_needed.after_expiration_lookup"
@@ -315,7 +316,7 @@ impl RequestProcessor {
         let should_expire = {
             let mut expirations = self.lock_string_expirations_for_shard(shard_index);
             match expirations.get(key) {
-                Some(metadata) if metadata.deadline <= Instant::now() => {
+                Some(metadata) if metadata.deadline <= current_instant() => {
                     if expirations.remove(key).is_some() {
                         self.decrement_string_expiration_count(shard_index);
                     }
@@ -541,7 +542,7 @@ impl RequestProcessor {
         deadline: Option<Instant>,
     ) {
         let expiration = deadline.and_then(|deadline| {
-            let now = Instant::now();
+            let now = current_instant();
             let now_unix_millis = current_unix_time_millis()?;
             let unix_millis = if deadline <= now {
                 now_unix_millis
@@ -658,7 +659,7 @@ impl RequestProcessor {
             return Vec::new();
         }
         let shard_index = self.object_store_shard_index_for_key(key);
-        let now = Instant::now();
+        let now = current_instant();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
         let Some(per_key) = expirations.get_mut(key) else {
             return Vec::new();
@@ -683,7 +684,7 @@ impl RequestProcessor {
 
     pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<HashField> {
         let shard_index = self.object_store_shard_index_for_key(key);
-        let now = Instant::now();
+        let now = current_instant();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
         let Some(per_key) = expirations.get_mut(key) else {
             return Vec::new();

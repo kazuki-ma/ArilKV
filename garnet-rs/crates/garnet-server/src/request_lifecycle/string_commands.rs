@@ -2905,7 +2905,7 @@ impl RequestProcessor {
                 append_integer(response_out, -1);
             }
             Some(deadline) => {
-                let now = Instant::now();
+                let now = current_instant();
                 if deadline <= now {
                     self.expire_key_if_needed(&key)?;
                     append_integer(response_out, -2);
@@ -2960,7 +2960,7 @@ impl RequestProcessor {
                 append_integer(response_out, -1);
             }
             Some(deadline) => {
-                let now = Instant::now();
+                let now = current_instant();
                 if deadline <= now {
                     self.expire_key_if_needed(&key)?;
                     append_integer(response_out, -2);

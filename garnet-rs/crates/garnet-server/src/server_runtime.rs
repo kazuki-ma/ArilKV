@@ -1,3 +1,5 @@
+// TLA+ model: formal/tla/specs/ScriptActiveExpireFreeze.tla
+
 use std::future::Future;
 use std::io;
 use std::sync::Arc;
@@ -131,9 +133,11 @@ where
         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
         loop {
             interval.tick().await;
+            // TLA+ : SkipActiveExpireWhileScriptRunning
             if !expiration_processor.active_expire_enabled()
                 || expiration_processor.is_expire_action_paused()
                 || expiration_processor.debug_pause_cron()
+                || expiration_processor.script_execution_in_progress()
             {
                 continue;
             }

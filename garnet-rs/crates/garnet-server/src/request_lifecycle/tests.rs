@@ -14291,6 +14291,100 @@ fn debug_reload_returns_ok() {
 }
 
 #[test]
+fn scripting_restore_expired_keys_with_expiration_time_matches_external_scenario() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 1", b"+OK\r\n");
+
+    let eval_response = execute_frame(
+        &processor,
+        &encode_resp(&[
+            b"EVAL",
+            b"redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}",
+            b"3",
+            b"key1{t}",
+            b"key2{t}",
+            b"key3{t}",
+        ]),
+    );
+    let eval_value = parse_resp_test_value(&eval_response);
+    let eval_values = resp_test_array(&eval_value);
+    assert_eq!(eval_values.len(), 2);
+    let eval_first = resp_test_integer(&eval_values[0]);
+    let eval_second = resp_test_integer(&eval_values[1]);
+    assert!(
+        eval_first > 0,
+        "expected positive PEXPIRETIME values, got {eval_values:?}"
+    );
+    assert_eq!(eval_first, eval_second);
+
+    let function_source = b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}\nend)";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", function_source]),
+        ),
+        b"$4\r\ntest\r\n"
+    );
+    let fcall_response = execute_frame(
+        &processor,
+        &encode_resp(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
+    );
+    let fcall_value = parse_resp_test_value(&fcall_response);
+    let fcall_values = resp_test_array(&fcall_value);
+    assert_eq!(fcall_values.len(), 2);
+    let fcall_first = resp_test_integer(&fcall_values[0]);
+    let fcall_second = resp_test_integer(&fcall_values[1]);
+    assert!(
+        fcall_first > 0,
+        "expected positive FCALL PEXPIRETIME values, got {fcall_values:?}"
+    );
+    assert_eq!(fcall_first, fcall_second);
+
+    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 0", b"+OK\r\n");
+}
+
+#[test]
+fn scripting_freezes_key_expiration_during_execution_matches_external_scenario() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+
+    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 1", b"+OK\r\n");
+
+    let eval_response = execute_frame(
+        &processor,
+        &encode_resp(&[
+            b"EVAL",
+            b"redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')",
+            b"1",
+            b"key",
+        ]),
+    );
+    assert_eq!(
+        parse_resp_test_value(&eval_response),
+        RespTestValue::Integer(1)
+    );
+    assert_command_integer(&processor, "EXISTS key", 0);
+
+    let function_body = b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')\nend)";
+    assert_eq!(
+        execute_frame(
+            &processor,
+            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", function_body]),
+        ),
+        b"$4\r\ntest\r\n"
+    );
+    let fcall_response =
+        execute_frame(&processor, &encode_resp(&[b"FCALL", b"test", b"1", b"key"]));
+    assert_eq!(
+        parse_resp_test_value(&fcall_response),
+        RespTestValue::Integer(1)
+    );
+    assert_command_integer(&processor, "EXISTS key", 0);
+
+    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 0", b"+OK\r\n");
+}
+
+#[test]
 fn list_encoding_conversion_and_debug_reload_match_external_list_scenarios() {
     let processor = RequestProcessor::new().unwrap();
 

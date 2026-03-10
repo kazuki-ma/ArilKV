@@ -11,6 +11,7 @@ use tsavorite::UpsertInfo;
 use tsavorite::WriteReason;
 
 use super::UPSERT_USER_DATA_HAS_EXPIRATION;
+use super::allow_expired_data_access;
 use super::current_unix_time_millis;
 use super::decode_stored_value;
 use super::encode_stored_value;
@@ -37,7 +38,8 @@ impl ISessionFunctions for KvSessionFunctions {
         _read_info: &ReadInfo,
     ) -> bool {
         let decoded = decode_stored_value(value);
-        if let Some(expiration) = decoded.expiration_unix_millis
+        if !allow_expired_data_access()
+            && let Some(expiration) = decoded.expiration_unix_millis
             && let Some(now) = current_unix_time_millis()
             && now > expiration
         {
@@ -57,7 +59,8 @@ impl ISessionFunctions for KvSessionFunctions {
         _record_info: &RecordInfo,
     ) -> bool {
         let decoded = decode_stored_value(value);
-        if let Some(expiration) = decoded.expiration_unix_millis
+        if !allow_expired_data_access()
+            && let Some(expiration) = decoded.expiration_unix_millis
             && let Some(now) = current_unix_time_millis()
             && now > expiration
         {

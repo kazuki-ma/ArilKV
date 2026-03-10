@@ -1,0 +1,1147 @@
+diff --git a/TODO_AND_STATUS.md b/TODO_AND_STATUS.md
+index 280a27795d..0e5b6403ca 100644
+--- a/TODO_AND_STATUS.md
++++ b/TODO_AND_STATUS.md
+@@ -1,8 +1,8 @@
+ # TODO & Status Tracker — garnet-rs
+ 
+-> **Last Updated**: 2026-03-10
++> **Last Updated**: 2026-03-11
+ > **Current Phase**: Phase 11 — Performance Benchmarking
+-> **Current Iteration**: 636
++> **Current Iteration**: 637
+ 
+ ---
+ 
+@@ -571,6 +571,7 @@
+ | 11.419 | Triage post-commit full compatibility residuals (`err=66`, `ignore=306`) into actionable backlog | DONE | 11.418 / 615 | Analyzed `docs/compatibility/compatibility-report.md` and raw external logs from `garnet-rs/tests/interop/results/compatibility-report-20260310-075152/redis-runtest-external-full`. Collapsed the remaining `err=66` into 11 actionable buckets: `zset` parser/algebra/routing (`27` total), `slowlog` (`14`), `hash-field-expire` error-text/parser (`10`), `hash` encoding/admin (`4`), `string` LCS + `MEMORY USAGE` (`4`), plus `replybufsize`, `scan`, `sort`, `list-3`, and `list` residuals. Also classified `ignore=306` into `Not supported on external server` (`257`), `Not supported on singledb` (`21`), `large memory flag not provided` (`19`), and a small tail of special harness skips. Added dedicated TODO tables below for both `err` and `ignore` lanes, plus explicit note that isolated `unit/scripting` (`94`) and `unit/querybuf` (`4`) remain out-of-band from the `err=66` full-run count. Docs-only iteration; no new validation rerun. |
+ | 11.438 / 11.439 | Close isolated scripting `unpack` and `min-replicas` residuals with exact regressions and targeted isolated rerun | DONE | 11.437 | Bundled these two residuals intentionally because both live in the same isolated `unit/scripting` lane and share the expensive Lua/runtime rebuild, isolated rerun, and smoke benchmark cycle. Patched vendored `lua-src` through workspace `[patch.crates-io]` and raised `LUAI_MAXCSTACK` from `8000` to `32768`, which makes Redis' `redis.call('lpush', 'l', unpack(a))` workload with `7999` arguments succeed instead of failing on Lua's C stack ceiling. Added exact regression `scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function` for both `EVAL` and `FCALL`, keeping the existing safe-range `unpack` guard for invalid-index overflow protection. In parallel, wired direct-command `min-replicas-to-write` gating into `connection_handler` and aligned scripting-specific behavior: shebang scripts require good replicas unless flagged `no-writes`, non-shebang `EVAL` only gates on mutating bodies, and `FCALL` consults loaded function read-only metadata. Added exact TCP regression `scripting_min_replicas_gate_matches_external_scenario`. Validation: targeted Rust PASS; targeted external PASS for `Script check unpack with massive arguments` and `not enough good replicas`; `make fmt`; `make test-server` PASS (`532 + 23 + 1`); isolated `unit/scripting` rerun improved from `ok=292 err=18 ignore=26` to `ok=295 err=15 ignore=26` at `/tmp/garnet-scripting-isolated-1773152536`. Smoke benchmark artifacts are recorded under `docs/performance/experiments/2026-03-10/11.438-439-scripting-unpack-min-replicas/`; results were mixed/noisy across `RUNS=1`, `RUNS=3`, and `RUNS=3 REQUESTS=5000`, with no stable hot-path regression signal. |
+ | 11.440 | Close isolated scripting argv-rewrite replication residuals with exact regressions and targeted external probes | DONE | 11.438 / 11.439 | Ported the remaining Redis `tests/unit/scripting.tcl` argv-rewrite replication cases into exact TCP regressions first: `sync_replication_stream_rewrites_script_spop_commands_like_external_scenario` and `sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_external_scenarios`. Replaced top-level script replication fallback for `EVAL*`/`FCALL*` with a per-request `ScriptReplicationEffect` queue on `RequestProcessor`: each successful non-error inner `redis.call`/`redis.pcall` records the original command id, encoded argv, and RESP reply, and the connection path now emits replicated effects from that queue instead of replicating the outer script command. Added script-specific rewrite semantics so Redis scripting matches exactly: script `SPOP` replicates lowercase `srem` without collapsing the last removal into `DEL`, script expire-family commands rewrite to lowercase `pexpireat` or `del` based on post-command key existence, and script `INCRBYFLOAT` rewrites to lowercase `set key <value> KEEPTTL`. Also kept `FUNCTION LOAD` on the existing top-level path by narrowing effect-based replication to `EVAL*`/`FCALL*` only. Validation: targeted Rust PASS (`cargo test -p garnet-server sync_replication_stream_rewrites_script_ -- --nocapture`, `cargo test -p garnet-server replicaof_replication_propagates_function_load_and_fcall -- --nocapture`); `make fmt`; `make test-server` PASS (`534 + 23 + 1`); targeted external PASS for `SPOP: We can call scripts rewriting client->argv from Lua`, `EXPIRE: We can call scripts rewriting client->argv from Lua`, and `INCRBYFLOAT: We can call scripts expanding client->argv from Lua` at `garnet-rs/tests/interop/results/redis-runtest-scripting-argv-rewrite-20260310-235339/`; smoke benchmark artifacts under `docs/performance/experiments/2026-03-10/11.440-scripting-argv-rewrite/` show no regression signal (`SET ops +5.78%`, `GET ops +9.92%`, `SET p99 -13.45%`, `GET p99 -11.19%` in the `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64` smoke profile). |
++| 11.441 | Close isolated scripting frozen-time / expired-restore race with exact regressions, TLA+, and isolated rerun | DONE | 11.440 | Fixed the actual race between script/function execution and background active expiration. Added processor-scoped frozen-time plumbing (`CurrentProcessorScope`, `ScriptTimeSnapshot`, `current_unix_time_micros`, `current_instant`) so `TIME`, expiration calculations, and `RESTORE ABSTTL` inside `EVAL`/`FCALL` use a single cached timestamp across the whole script. Added `with_expired_data_access` and DEBUG-only expired-data reads for `DEBUG OBJECT`, while preserving `ERR no such key` for truly missing keys. The concurrency fix is in `server_runtime`: active-expire ticks now skip while any script/function critical section is running, preventing background deletion of keys restored with frozen deadlines before the script returns. Exact regressions were added first for both request-lifecycle and TCP paths: `scripting_freezes_key_expiration_during_execution_matches_external_scenario`, `scripting_restore_expired_keys_with_expiration_time_matches_external_scenario`, `scripting_function_freezes_key_expiration_during_execution_like_external_scenario`, `scripting_function_restore_expired_keys_with_expiration_time_like_external_scenario`, plus deterministic multishard race regressions `scripting_function_freezes_expiration_while_active_expire_runs` and `scripting_function_restore_keeps_frozen_ttl_under_active_expire`. Formal model `formal/tla/specs/ScriptActiveExpireFreeze.tla` captures the race: `ScriptActiveExpireFreeze_bug.cfg` shows the expected invariant violation and `ScriptActiveExpireFreeze_fixed.cfg` passes. Validation: direct Tcl repro against release `garnet-server` now returns equal positive `PEXPIRETIME` values for both `FCALL` and `EVAL`; `make fmt`; TLC bug/fixed runs as expected; `make test-server` PASS (`545 + 23 + 1`); targeted external single-case probes for `Script block the time during execution` and `RESTORE expired keys with expiration time` are currently harness-skipped in external-server mode (no failures, `ignore=14`); isolated rerun `RUNTEXT_RUN_ONLY_ISOLATED_UNIT=unit/scripting ./redis_runtest_external_subset.sh` improved `unit/scripting` from `ok=295 err=15 ignore=26` to `ok=307 err=2 ignore=26` at `garnet-rs/tests/interop/results/redis-runtest-scripting-isolated-11.441-20260311-005530/`, with both frozen-time cases `[ok]` and only `Script ACL check` remaining. Smoke benchmark artifacts under `docs/performance/experiments/2026-03-11/11.441-scripting-active-expire-freeze/` show no regression on a 3-run median (`SET ops +0.01%`, `GET ops +3.60%`, `SET p99 -6.72%`, `GET p99 -13.71%`). |
+ | 11.420 | Close residual `R-001` zset regular-set algebra / `ZRANDMEMBER` panic bucket and add exact server-path regressions | DONE | 11.419 | Extended `zset` algebra helpers to accept regular set inputs as score=`1.0` zset-like sources (`load_zset_like_object`) across `ZUNIONSTORE` / `ZINTERSTORE` / `ZDIFFSTORE` / `ZINTERCARD`, and hardened `ZRANDMEMBER key negative-count [WITHSCORES]` against `Vec` capacity overflow (`i64::MIN`, oversized `WITHSCORES`, `try_reserve`) so owner threads no longer panic and contaminate trailing probes with `ERR owner routing execution failed`. Added exact regressions first: request-lifecycle `zset_regular_set_algebra_matches_external_scenarios`, `zrandmember_overflow_and_emptyarray_match_external_scenarios`; TCP integration `zrandmember_skiplist_external_scenario_runs_as_tcp_integration_test`, `zset_regular_set_algebra_external_scenario_runs_as_tcp_integration_test`. Validation: targeted Rust PASS; `make fmt`; `make test-server` PASS (`508 + 23 + 1`); targeted external file-level probe `RUNTEXT_EXTRA_ARGS='--single unit/type/zset'` at `garnet-rs/tests/interop/results/redis-runtest-zset-r001-file-20260310-103915/` now reports `ok=308 err=16 timeout=0 ignore=0`, and `failed-tests.txt` no longer contains `ZUNIONSTORE with a regular set and weights`, `ZINTERSTORE with a regular set and weights`, `ZDIFFSTORE with a regular set`, `ZRANDMEMBER count overflow`, `ZRANDMEMBER with <count> - skiplist`, or `routing execution failed`. Note: single-case `--only` probes are not representative for these Tcl cases because Redis `unit/type/zset.tcl` reuses prior setup state; file-level targeted probe is the correct validation unit here. |
+ | 11.421 | Close `R-002` zset combine/parser error-shape slice (`ZINTERCARD LIMIT`, NaN weights, `at least 1 input key`) | DONE | 11.420 | Tightened zset combine validation semantics to match Redis/Valkey error branches. `parse_zset_numkeys_and_keys` now takes the command name and reports `ERR at least 1 input key is needed for '<command>' command` when `numkeys=0`; `parse_zset_combine_options` now reports `ERR weight value is not a float` for invalid `WEIGHTS` items; and `ZINTERCARD` now routes invalid/negative `LIMIT` values to the Redis-style `ERR LIMIT can't be negative` family instead of generic integer parse errors. Added exact request-lifecycle regression `zset_combine_validation_matches_external_scenarios` to pin the Tcl cases before changing behavior. Validation: targeted Rust PASS (`cargo test -p garnet-server zset_combine_validation_matches_external_scenarios -- --nocapture`); `make fmt`; `make test-server` PASS (`509 + 23 + 1`); targeted external file-level probe `RUNTEXT_EXTRA_ARGS='--single unit/type/zset'` at `garnet-rs/tests/interop/results/redis-runtest-zset-r002a-20260310-104812/` reports `ok=315 err=9 timeout=0 ignore=0`, and `failed-tests.txt` no longer contains `ZINTERCARD with illegal arguments`, `ZUNIONSTORE with NaN weights`, `ZINTERSTORE with NaN weights`, or `zunionInterDiffGenericCommand at least 1 input key`. Remaining `R-002` scope is now `ZINCRBY` hex float acceptance, invalid lex range specifiers, `ZRANGE`/`ZRANGESTORE` syntax + `BYSCORE REV LIMIT`/`BYLEX`, and `zset score double range`. |
+ | 11.422 | Close the remaining `R-002` zset parser/formatting residuals (`hex float`, lex-range diagnostics, generic `ZRANGE`, score rendering) | DONE | 11.421 | Completed the rest of the `unit/type/zset` parser/formatting bucket. Added exact regressions first: `zset_range_parser_and_hex_float_match_external_scenarios` and `zset_score_double_range_matches_external_scenario`. `parse_f64_ascii_allow_non_finite` now accepts C99-style hexadecimal float literals (`0x1p+0`) via an explicit hex parser; `ZRANGEBYLEX`/`ZREVRANGEBYLEX` and generic `ZRANGE ... BYLEX` now emit Redis-compatible `ERR min or max not valid string range item`; generic `ZRANGE`/`ZRANGESTORE` now parse the Valkey/Redis option grammar (`BYSCORE|BYLEX`, `REV`, `WITHSCORES`, `LIMIT`) with the correct conflict handling; and zset score replies now use a Redis-style double formatter instead of `f64::to_string()`, fixing `zset score double range` and other RESP2/RESP3 score rendering edge cases. Validation: targeted Rust PASS (`cargo test -p garnet-server zset_range_parser_and_hex_float_match_external_scenarios -- --nocapture`, `cargo test -p garnet-server zset_score_double_range_matches_external_scenario -- --nocapture`); `make fmt`; `make test-server` PASS (`511 + 23 + 1`); targeted external `RUNTEXT_EXTRA_ARGS='--single unit/type/zset' ./redis_runtest_external_subset.sh` at `garnet-rs/tests/interop/results/redis-runtest-zset-r002b-20260310-112824/` reports `ok=324 err=0 timeout=0 ignore=0`; milestone full compatibility rerun at `garnet-rs/tests/interop/results/compatibility-report-20260310-112934/redis-runtest-external-full` reduces the full snapshot to `ok=2170 err=37 timeout=1 ignore=306`, with `unit/type/zset` contributing no residual failures. The remaining timeout is `integration/redis-cli` (`Interactive CLI: should find first search result`) and is not part of the former `R-002` bucket. |
+@@ -1513,3 +1514,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
+ | 634 | 2026-03-10 | 11.437 | DONE | isolated `unit/scripting` の最大 bucket である `redis.setresp()` / RESP3 scripting bridge を targeted-first でクローズ。Redis `tests/unit/scripting.tcl` の `Script with RESP3 map` と `RESP2/2..RESP3/3 protocol parsing` / `resp3 attribute protocol parsing` を exact TCP regressions `scripting_resp3_map_external_scenario_runs_as_tcp_integration_test` と `scripting_resp_protocol_parsing_matrix_matches_external_scenarios` として先に移植し、その repro を基準に scripting runtime へ script-local RESP mode を追加した。実装内容は、(1) `redis.setresp(2|3)` を script/function runtime surface に追加、(2) `redis.call` / `redis.pcall` を thread-local RESP override 経由で script-local RESP2/3 実行に変更、(3) scripting bridge parser/serializer に RESP3 native type support を追加（map/set/double/bignum/verbatim/bool、attribute ignore、RESP3 null -> Lua nil, RESP2 null bulk/array -> Lua false）、(4) `DEBUG PROTOCOL` の不足 subcommand（`map` / `set` / `double` / `null`）を実装。追加で request-lifecycle regression `debug_protocol_subcommands_cover_resp2_and_resp3_shapes` も拡張した。検証: targeted Rust PASS（新規 2 tests + debug protocol regression）；`make fmt`; `make test-server` PASS（`530 + 23 + 1`）；targeted external scripting probe PASS at `garnet-rs/tests/interop/results/redis-runtest-scripting-setresp-20260310-1/` with `ok=40 err=0 timeout=0 ignore=14`；isolated `unit/scripting` rerun improved from `ok=216 err=94 ignore=26` to `ok=292 err=18 ignore=26` at `garnet-rs/tests/interop/results/redis-runtest-scripting-isolated-20260310-1/`。残件は `unpack` / `acl_check_cmd()` / frozen-time expiration / `RESTORE` expired TTL / argv rewrite replication / `WAIT` gate の 6 bucket に圧縮。Smoke benchmark artifact は `docs/performance/experiments/2026-03-10/11.437-scripting-setresp-resp3-bridge/`（before `7f88be61c8`, after worktree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops +0.13%`, `GET ops +2.76%`, `SET p99 +0.00%`, `GET p99 -6.72%`）。 |
+ | 635 | 2026-03-10 | 11.438 / 11.439 | DONE | isolated `unit/scripting` の残 bucket から `unpack` と `min-replicas` をまとめてクローズ。両者とも Lua/runtime rebuild と isolated `unit/scripting` rerun が必要なため、1 TODO = 1 commit の原則に対する mechanical-coupling 例外として同一 iteration に束ねた。まず vendored `lua-src` を workspace `[patch.crates-io]` で固定し、`LUAI_MAXCSTACK` を `8000 -> 32768` に上げて Redis `Script check unpack with massive arguments` シナリオを通した。exact regression `scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function` を追加し、`EVAL` と `FCALL` の両方で `redis.call('lpush', 'l', unpack(a))` with `7999` args を固定した。次に `min-replicas-to-write` gating を connection path に広げ、shebang script は `flags=no-writes` が無い限り good replicas を要求、non-shebang `EVAL` は actual mutating body のときだけ gate、`FCALL` は loaded function read-only metadata で gate するよう修正し、exact TCP regression `scripting_min_replicas_gate_matches_external_scenario` を追加した。検証: targeted Rust PASS（2 tests + existing unpack overflow guard）；targeted external single-case PASS for `Script check unpack with massive arguments` and `not enough good replicas`；`make fmt`; `make test-server` PASS（`532 + 23 + 1`）；isolated `unit/scripting` rerun improved from `ok=292 err=18 ignore=26` to `ok=295 err=15 ignore=26` at `/tmp/garnet-scripting-isolated-1773152536`。Smoke benchmark artifacts are stored in `docs/performance/experiments/2026-03-10/11.438-439-scripting-unpack-min-replicas/`; `binary_ab_local.sh` was noisy across `RUNS=1`, `RUNS=3`, and `RUNS=3 REQUESTS=5000`, so the result is recorded as no stable regression signal rather than as a throughput claim. |
+ | 636 | 2026-03-10 | 11.440 | DONE | isolated `unit/scripting` の argv-rewrite replication residual bucket を targeted-first でクローズ。Redis `tests/unit/scripting.tcl` の `SPOP: We can call scripts rewriting client->argv from Lua`, `EXPIRE: We can call scripts rewriting client->argv from Lua`, `INCRBYFLOAT: We can call scripts expanding client->argv from Lua` を exact TCP regressions `sync_replication_stream_rewrites_script_spop_commands_like_external_scenario` と `sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_external_scenarios` として先に移植し、その repro を基準に `RequestProcessor` へ per-request `ScriptReplicationEffect` queue を追加した。script 実行中の成功した non-error inner `redis.call`/`redis.pcall` ごとに command id / encoded argv / RESP reply を記録し、connection path は `EVAL*` / `FCALL*` のとき outer script command ではなくこの effect queue を replay して replica stream を構成する。Redis 互換の rewrite として、script `SPOP` は lowercase `srem` に固定、expire-family は lowercase `pexpireat` または `del`、script `INCRBYFLOAT` は lowercase `set key <value> KEEPTTL` に rewrite するようにした。`FUNCTION LOAD` まで巻き込まないよう effect-based replication は `EVAL*` / `FCALL*` に限定し、`replicaof_replication_propagates_function_load_and_fcall` も維持した。検証: targeted Rust PASS（`sync_replication_stream_rewrites_script_*`, `replicaof_replication_propagates_function_load_and_fcall`）；`make fmt`; `make test-server` PASS（`534 + 23 + 1`）；targeted external PASS at `garnet-rs/tests/interop/results/redis-runtest-scripting-argv-rewrite-20260310-235339/` with 3 single-case probes all `ok=1 err=0 timeout=0 ignore=14`。Smoke benchmark artifact は `docs/performance/experiments/2026-03-10/11.440-scripting-argv-rewrite/`（before `6bb29c5fa6`, after working tree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops +5.78%`, `GET ops +9.92%`, `SET p99 -13.45%`, `GET p99 -11.19%`）。 |
++| 637 | 2026-03-11 | 11.441 | DONE | isolated `unit/scripting` の frozen-time / expired-restore race bucket を targeted-first でクローズ。`RequestProcessor` 実行スコープに `CurrentProcessorScope` と `ScriptTimeSnapshot` を追加し、`TIME` / expiration 計算 / `RESTORE ABSTTL` が script/function 実行中は単一の frozen timestamp を共有するよう修正した。さらに `server_runtime` の active-expire tick を `script_execution_in_progress()` 中は skip するように変え、script 内で frozen deadline 付きに復元した key が background expire に先に消される race を止めた。exact regressions は request-lifecycle と TCP の両方で追加し、deterministic race probes `scripting_function_freezes_expiration_while_active_expire_runs` と `scripting_function_restore_keeps_frozen_ttl_under_active_expire` まで固定した。TLA+ は `formal/tla/specs/ScriptActiveExpireFreeze.tla` を追加し、bug cfg では期待どおり invariant violation、fixed cfg では TLC PASS を確認した。副作用で `DEBUG OBJECT` の expired debug-access を実装したが、missing key は引き続き `ERR no such key` へ絞り戻して unit regression を維持している。検証: direct Tcl repro against release `garnet-server` で `FCALL` / `EVAL` とも `PEXPIRETIME` が等しい正値を返すことを確認；`make fmt`; `make test-server` PASS（`545 + 23 + 1`）；external full-mode single-case probes は harness skip のまま no-failure；isolated rerun `RUNTEXT_RUN_ONLY_ISOLATED_UNIT=unit/scripting ./redis_runtest_external_subset.sh` で `unit/scripting ok=307 err=2 ignore=26` at `garnet-rs/tests/interop/results/redis-runtest-scripting-isolated-11.441-20260311-005530/`、`Script block the time during execution` と `RESTORE expired keys with expiration time` は両方 `[ok]`。3-run smoke benchmark artifact は `docs/performance/experiments/2026-03-11/11.441-scripting-active-expire-freeze/` に保存し、`SET ops +0.01%`, `GET ops +3.60%`, `SET p99 -6.72%`, `GET p99 -13.71%` で非回帰を確認した。残件は isolated `unit/scripting` の `Script ACL check` 2 件のみ。 |
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+index 50f39497d4..8d899c89af 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -139,6 +139,12 @@ thread_local! {
+     static RESP_PROTOCOL_OVERRIDE: Cell<Option<RespProtocolVersion>> = const {
+         Cell::new(None)
+     };
++    static CURRENT_PROCESSOR_PTR: Cell<*const RequestProcessor> = const {
++        Cell::new(std::ptr::null())
++    };
++    static EXPIRED_DATA_ACCESS_OVERRIDE: Cell<bool> = const {
++        Cell::new(false)
++    };
+ }
+ 
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+@@ -150,10 +156,20 @@ struct RequestExecutionContext {
+     tracking_reads_enabled: bool,
+ }
+ 
++#[derive(Debug, Clone, Copy)]
++struct ScriptTimeSnapshot {
++    unix_micros: u64,
++    instant: Instant,
++}
++
+ struct RequestExecutionContextScope {
+     previous: RequestExecutionContext,
+ }
+ 
++struct CurrentProcessorScope {
++    previous: *const RequestProcessor,
++}
++
+ impl RequestExecutionContextScope {
+     #[inline]
+     fn enter(context: RequestExecutionContext) -> Self {
+@@ -166,6 +182,24 @@ impl RequestExecutionContextScope {
+     }
+ }
+ 
++impl CurrentProcessorScope {
++    #[inline]
++    fn enter(processor: *const RequestProcessor) -> Self {
++        let previous = CURRENT_PROCESSOR_PTR.with(|state| {
++            let previous = state.get();
++            state.set(processor);
++            previous
++        });
++        Self { previous }
++    }
++}
++
++impl Drop for CurrentProcessorScope {
++    fn drop(&mut self) {
++        CURRENT_PROCESSOR_PTR.with(|state| state.set(self.previous));
++    }
++}
++
+ impl Drop for RequestExecutionContextScope {
+     fn drop(&mut self) {
+         REQUEST_EXECUTION_CONTEXT.with(|state| state.set(self.previous));
+@@ -1169,6 +1203,7 @@ struct RunningScriptState {
+     name: String,
+     command: String,
+     started_at: Instant,
++    frozen_time: ScriptTimeSnapshot,
+     thread_id: std::thread::ThreadId,
+ }
+ 
+@@ -3718,6 +3753,19 @@ impl RequestProcessor {
+         self.script_runtime_timeouts.load(Ordering::Relaxed)
+     }
+ 
++    pub(crate) fn script_execution_in_progress(&self) -> bool {
++        self.script_running.load(Ordering::Acquire)
++    }
++
++    fn current_script_time_snapshot(&self) -> Option<ScriptTimeSnapshot> {
++        let running_script = self.running_script.lock().ok()?;
++        let state = running_script.as_ref()?;
++        if state.thread_id != std::thread::current().id() {
++            return None;
++        }
++        Some(state.frozen_time)
++    }
++
+     pub(super) fn used_memory_vm_functions(&self) -> u64 {
+         self.used_memory_vm_functions.load(Ordering::Relaxed)
+     }
+@@ -4730,6 +4778,7 @@ impl RequestProcessor {
+             return Err(RequestExecutionError::UnknownCommand);
+         }
+         self.executed_command_count.fetch_add(1, Ordering::Relaxed);
++        let _current_processor_scope = CurrentProcessorScope::enter(self as *const _);
+ 
+         let command = dispatch_command_name(args[0]);
+         let subcommand = args.get(1).copied();
+@@ -5607,8 +5656,48 @@ fn classify_set_encoding_floor(
+ }
+ 
+ fn current_unix_time_millis() -> Option<u64> {
++    Some(current_unix_time_micros()? / 1000)
++}
++
++fn current_unix_time_micros() -> Option<u64> {
++    if let Some(snapshot) = current_script_time_snapshot() {
++        return Some(snapshot.unix_micros);
++    }
+     let now = SystemTime::now().duration_since(UNIX_EPOCH).ok()?;
+-    u64::try_from(now.as_millis()).ok()
++    u64::try_from(now.as_micros()).ok()
++}
++
++fn current_instant() -> Instant {
++    current_script_time_snapshot()
++        .map(|snapshot| snapshot.instant)
++        .unwrap_or_else(Instant::now)
++}
++
++fn current_script_time_snapshot() -> Option<ScriptTimeSnapshot> {
++    let processor_ptr = CURRENT_PROCESSOR_PTR.with(|state| state.get());
++    if processor_ptr.is_null() {
++        return None;
++    }
++    // SAFETY: `CURRENT_PROCESSOR_PTR` is set only for the dynamic extent of
++    // `RequestProcessor::execute_bytes`, while the borrowed processor remains
++    // alive on that stack frame.
++    let processor = unsafe { &*processor_ptr };
++    processor.current_script_time_snapshot()
++}
++
++fn allow_expired_data_access() -> bool {
++    EXPIRED_DATA_ACCESS_OVERRIDE.with(|state| state.get())
++}
++
++fn with_expired_data_access<T>(enabled: bool, f: impl FnOnce() -> T) -> T {
++    let previous = EXPIRED_DATA_ACCESS_OVERRIDE.with(|state| {
++        let previous = state.get();
++        state.set(enabled);
++        previous
++    });
++    let output = f();
++    EXPIRED_DATA_ACCESS_OVERRIDE.with(|state| state.set(previous));
++    output
+ }
+ 
+ fn normalize_ascii_lower(value: &[u8]) -> Vec<u8> {
+@@ -5648,7 +5737,7 @@ fn expiration_metadata_from_relative_expire_amount(
+ }
+ 
+ fn instant_from_unix_millis(unix_millis: u64) -> Option<Instant> {
+-    let now = Instant::now();
++    let now = current_instant();
+     let now_unix_millis = current_unix_time_millis()?;
+     if unix_millis <= now_unix_millis {
+         return Some(now);
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs
+index abcf351d76..b4260d6710 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/scripting.rs
+@@ -1,3 +1,5 @@
++// TLA+ model: formal/tla/specs/ScriptActiveExpireFreeze.tla
++
+ use super::*;
+ use crate::CommandId;
+ use crate::command_spec::command_is_mutating;
+@@ -193,6 +195,7 @@ struct RunningScriptGuard<'a> {
+ 
+ impl Drop for RunningScriptGuard<'_> {
+     fn drop(&mut self) {
++        // TLA+ : EndScriptCriticalSection
+         self.processor
+             .script_running
+             .store(false, Ordering::Release);
+@@ -822,6 +825,16 @@ impl RequestProcessor {
+         if running_script.is_some() {
+             return Err(RequestExecutionError::BusyScript);
+         }
++        let frozen_unix_micros = SystemTime::now()
++            .duration_since(UNIX_EPOCH)
++            .ok()
++            .and_then(|duration| u64::try_from(duration.as_micros()).ok())
++            .unwrap_or(0);
++        let frozen_time = ScriptTimeSnapshot {
++            unix_micros: frozen_unix_micros,
++            instant: Instant::now(),
++        };
++        // TLA+ : BeginScriptCriticalSection
+         self.script_kill_requested.store(false, Ordering::Release);
+         self.function_kill_requested.store(false, Ordering::Release);
+         *running_script = Some(RunningScriptState {
+@@ -829,6 +842,7 @@ impl RequestProcessor {
+             name: name.to_string(),
+             command,
+             started_at: Instant::now(),
++            frozen_time,
+             thread_id: std::thread::current().id(),
+         });
+         self.script_running.store(true, Ordering::Release);
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
+index 22fcc8d6ee..4d378195e8 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
+@@ -449,11 +449,10 @@ impl RequestProcessor {
+         response_out: &mut Vec<u8>,
+     ) -> Result<(), RequestExecutionError> {
+         require_exact_arity(args, 1, "TIME", "TIME")?;
+-        let now = SystemTime::now()
+-            .duration_since(UNIX_EPOCH)
+-            .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+-        let seconds = now.as_secs().to_string();
+-        let microseconds = now.subsec_micros().to_string();
++        let now_micros =
++            current_unix_time_micros().ok_or(RequestExecutionError::ValueOutOfRange)?;
++        let seconds = (now_micros / 1_000_000).to_string();
++        let microseconds = (now_micros % 1_000_000).to_string();
+         append_bulk_array(response_out, &[seconds.as_bytes(), microseconds.as_bytes()]);
+         Ok(())
+     }
+@@ -1740,9 +1739,10 @@ impl RequestProcessor {
+         if ascii_eq_ignore_case(subcommand, b"OBJECT") {
+             require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
+             let key = RedisKey::from(args[2]);
+-            self.expire_key_if_needed(&key)?;
+-            if !self.key_exists_any(&key)? {
+-                return Err(RequestExecutionError::NoSuchKey);
++            let allow_expired_debug_access =
++                !self.active_expire_enabled() || self.allow_access_expired();
++            if !allow_expired_debug_access {
++                self.expire_key_if_needed(&key)?;
+             }
+             let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
+             let list_compress_depth = self.list_compress_depth();
+@@ -1753,7 +1753,15 @@ impl RequestProcessor {
+                 let ql_compressed = if list_compress_depth > 0 { 1 } else { 0 };
+                 format!(" ql_listpack_max:{list_max} ql_compressed:{ql_compressed}")
+             };
+-            let (encoding, serialized_len) = if let Some(value) = self.read_string_value(&key)? {
++            let string_value = with_expired_data_access(allow_expired_debug_access, || {
++                self.read_string_value(&key)
++            })?;
++            let object_value = if string_value.is_some() {
++                None
++            } else {
++                self.object_read(&key)?
++            };
++            let (encoding, serialized_len) = if let Some(value) = string_value {
+                 let enc = String::from_utf8_lossy(string_encoding_name(
+                     &value,
+                     self.string_encoding_is_forced_raw(key.as_slice()),
+@@ -1761,7 +1769,7 @@ impl RequestProcessor {
+                 .into_owned();
+                 let len = value.len();
+                 (enc, len)
+-            } else if let Some(object) = self.object_read(&key)? {
++            } else if let Some(object) = object_value {
+                 // Check forced-quicklist flag so DEBUG OBJECT is consistent
+                 // with OBJECT ENCODING for lists with oversized elements.
+                 if object.object_type == LIST_OBJECT_TYPE_TAG
+@@ -1815,7 +1823,7 @@ impl RequestProcessor {
+                 let len = object.payload.len();
+                 (enc, len)
+             } else {
+-                ("raw".to_owned(), 0)
++                return Err(RequestExecutionError::NoSuchKey);
+             };
+             let lru = self.key_lru_millis(&key).unwrap_or(0);
+             let idle = self.key_idle_seconds(&key).unwrap_or(0);
+@@ -4362,7 +4370,7 @@ impl RequestProcessor {
+             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-random")
+             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl");
+         if policy_is_volatile {
+-            let now = Instant::now();
++            let now = current_instant();
+             keys.retain(|key| {
+                 self.string_expiration_deadline(key.as_slice())
+                     .is_some_and(|deadline| deadline > now)
+@@ -4379,12 +4387,11 @@ impl RequestProcessor {
+         {
+             keys.sort_by_key(|key| self.key_lru_millis(key.as_slice()).unwrap_or(0));
+         } else if maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl") {
++            let now = current_instant();
+             keys.sort_by_key(|key| {
+                 self.string_expiration_deadline(key.as_slice())
+                     .map_or(u128::MAX, |deadline| {
+-                        deadline
+-                            .saturating_duration_since(Instant::now())
+-                            .as_millis()
++                        deadline.saturating_duration_since(now).as_millis()
+                     })
+             });
+         }
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/session_functions.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/session_functions.rs
+index be671aea5f..a797d94be0 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/session_functions.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/session_functions.rs
+@@ -11,6 +11,7 @@ use tsavorite::UpsertInfo;
+ use tsavorite::WriteReason;
+ 
+ use super::UPSERT_USER_DATA_HAS_EXPIRATION;
++use super::allow_expired_data_access;
+ use super::current_unix_time_millis;
+ use super::decode_stored_value;
+ use super::encode_stored_value;
+@@ -37,7 +38,8 @@ impl ISessionFunctions for KvSessionFunctions {
+         _read_info: &ReadInfo,
+     ) -> bool {
+         let decoded = decode_stored_value(value);
+-        if let Some(expiration) = decoded.expiration_unix_millis
++        if !allow_expired_data_access()
++            && let Some(expiration) = decoded.expiration_unix_millis
+             && let Some(now) = current_unix_time_millis()
+             && now > expiration
+         {
+@@ -57,7 +59,8 @@ impl ISessionFunctions for KvSessionFunctions {
+         _record_info: &RecordInfo,
+     ) -> bool {
+         let decoded = decode_stored_value(value);
+-        if let Some(expiration) = decoded.expiration_unix_millis
++        if !allow_expired_data_access()
++            && let Some(expiration) = decoded.expiration_unix_millis
+             && let Some(now) = current_unix_time_millis()
+             && now > expiration
+         {
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
+index b59b86eb64..95dc1031bd 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_commands.rs
+@@ -2905,7 +2905,7 @@ impl RequestProcessor {
+                 append_integer(response_out, -1);
+             }
+             Some(deadline) => {
+-                let now = Instant::now();
++                let now = current_instant();
+                 if deadline <= now {
+                     self.expire_key_if_needed(&key)?;
+                     append_integer(response_out, -2);
+@@ -2960,7 +2960,7 @@ impl RequestProcessor {
+                 append_integer(response_out, -1);
+             }
+             Some(deadline) => {
+-                let now = Instant::now();
++                let now = current_instant();
+                 if deadline <= now {
+                     self.expire_key_if_needed(&key)?;
+                     append_integer(response_out, -2);
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs
+index 99881e7fb2..7c5cc7ff3c 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/string_store.rs
+@@ -31,7 +31,7 @@ impl RequestProcessor {
+             return Ok(0);
+         }
+ 
+-        let now = Instant::now();
++        let now = current_instant();
+         let expired_keys: Vec<RedisKey> = self
+             .lock_string_expirations_for_shard(shard_index)
+             .iter()
+@@ -302,9 +302,10 @@ impl RequestProcessor {
+         // so that expired_keys stats and replication are deferred until after
+         // the pause ends.
+         if self.is_expire_action_paused() {
++            let now = current_instant();
+             let logically_expired = {
+                 let expirations = self.lock_string_expirations_for_shard(shard_index);
+-                matches!(expirations.get(key), Some(metadata) if metadata.deadline <= Instant::now())
++                matches!(expirations.get(key), Some(metadata) if metadata.deadline <= now)
+             };
+             crate::debug_sync_point!(
+                 "request_processor.expire_key_if_needed.after_expiration_lookup"
+@@ -315,7 +316,7 @@ impl RequestProcessor {
+         let should_expire = {
+             let mut expirations = self.lock_string_expirations_for_shard(shard_index);
+             match expirations.get(key) {
+-                Some(metadata) if metadata.deadline <= Instant::now() => {
++                Some(metadata) if metadata.deadline <= current_instant() => {
+                     if expirations.remove(key).is_some() {
+                         self.decrement_string_expiration_count(shard_index);
+                     }
+@@ -541,7 +542,7 @@ impl RequestProcessor {
+         deadline: Option<Instant>,
+     ) {
+         let expiration = deadline.and_then(|deadline| {
+-            let now = Instant::now();
++            let now = current_instant();
+             let now_unix_millis = current_unix_time_millis()?;
+             let unix_millis = if deadline <= now {
+                 now_unix_millis
+@@ -658,7 +659,7 @@ impl RequestProcessor {
+             return Vec::new();
+         }
+         let shard_index = self.object_store_shard_index_for_key(key);
+-        let now = Instant::now();
++        let now = current_instant();
+         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
+         let Some(per_key) = expirations.get_mut(key) else {
+             return Vec::new();
+@@ -683,7 +684,7 @@ impl RequestProcessor {
+ 
+     pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<HashField> {
+         let shard_index = self.object_store_shard_index_for_key(key);
+-        let now = Instant::now();
++        let now = current_instant();
+         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
+         let Some(per_key) = expirations.get_mut(key) else {
+             return Vec::new();
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+index c2886eadb3..c4dc790702 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -14290,6 +14290,100 @@ fn debug_reload_returns_ok() {
+     assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+ }
+ 
++#[test]
++fn scripting_restore_expired_keys_with_expiration_time_matches_external_scenario() {
++    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
++
++    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 1", b"+OK\r\n");
++
++    let eval_response = execute_frame(
++        &processor,
++        &encode_resp(&[
++            b"EVAL",
++            b"redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}",
++            b"3",
++            b"key1{t}",
++            b"key2{t}",
++            b"key3{t}",
++        ]),
++    );
++    let eval_value = parse_resp_test_value(&eval_response);
++    let eval_values = resp_test_array(&eval_value);
++    assert_eq!(eval_values.len(), 2);
++    let eval_first = resp_test_integer(&eval_values[0]);
++    let eval_second = resp_test_integer(&eval_values[1]);
++    assert!(
++        eval_first > 0,
++        "expected positive PEXPIRETIME values, got {eval_values:?}"
++    );
++    assert_eq!(eval_first, eval_second);
++
++    let function_source = b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}\nend)";
++    assert_eq!(
++        execute_frame(
++            &processor,
++            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", function_source]),
++        ),
++        b"$4\r\ntest\r\n"
++    );
++    let fcall_response = execute_frame(
++        &processor,
++        &encode_resp(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
++    );
++    let fcall_value = parse_resp_test_value(&fcall_response);
++    let fcall_values = resp_test_array(&fcall_value);
++    assert_eq!(fcall_values.len(), 2);
++    let fcall_first = resp_test_integer(&fcall_values[0]);
++    let fcall_second = resp_test_integer(&fcall_values[1]);
++    assert!(
++        fcall_first > 0,
++        "expected positive FCALL PEXPIRETIME values, got {fcall_values:?}"
++    );
++    assert_eq!(fcall_first, fcall_second);
++
++    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 0", b"+OK\r\n");
++}
++
++#[test]
++fn scripting_freezes_key_expiration_during_execution_matches_external_scenario() {
++    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
++
++    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 1", b"+OK\r\n");
++
++    let eval_response = execute_frame(
++        &processor,
++        &encode_resp(&[
++            b"EVAL",
++            b"redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')",
++            b"1",
++            b"key",
++        ]),
++    );
++    assert_eq!(
++        parse_resp_test_value(&eval_response),
++        RespTestValue::Integer(1)
++    );
++    assert_command_integer(&processor, "EXISTS key", 0);
++
++    let function_body = b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')\nend)";
++    assert_eq!(
++        execute_frame(
++            &processor,
++            &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", function_body]),
++        ),
++        b"$4\r\ntest\r\n"
++    );
++    let fcall_response =
++        execute_frame(&processor, &encode_resp(&[b"FCALL", b"test", b"1", b"key"]));
++    assert_eq!(
++        parse_resp_test_value(&fcall_response),
++        RespTestValue::Integer(1)
++    );
++    assert_command_integer(&processor, "EXISTS key", 0);
++
++    assert_command_response(&processor, "DEBUG set-disable-deny-scripts 0", b"+OK\r\n");
++}
++
+ #[test]
+ fn list_encoding_conversion_and_debug_reload_match_external_list_scenarios() {
+     let processor = RequestProcessor::new().unwrap();
+diff --git a/garnet-rs/crates/garnet-server/src/server_runtime.rs b/garnet-rs/crates/garnet-server/src/server_runtime.rs
+index 7a959fb10c..e629ad562e 100644
+--- a/garnet-rs/crates/garnet-server/src/server_runtime.rs
++++ b/garnet-rs/crates/garnet-server/src/server_runtime.rs
+@@ -1,3 +1,5 @@
++// TLA+ model: formal/tla/specs/ScriptActiveExpireFreeze.tla
++
+ use std::future::Future;
+ use std::io;
+ use std::sync::Arc;
+@@ -131,9 +133,11 @@ where
+         interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+         loop {
+             interval.tick().await;
++            // TLA+ : SkipActiveExpireWhileScriptRunning
+             if !expiration_processor.active_expire_enabled()
+                 || expiration_processor.is_expire_action_paused()
+                 || expiration_processor.debug_pause_cron()
++                || expiration_processor.script_execution_in_progress()
+             {
+                 continue;
+             }
+diff --git a/garnet-rs/crates/garnet-server/src/tests.rs b/garnet-rs/crates/garnet-server/src/tests.rs
+index 39d1c6d8f6..ea2edbbd16 100644
+--- a/garnet-rs/crates/garnet-server/src/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/tests.rs
+@@ -28,6 +28,15 @@ use tokio::time::Duration;
+ use tokio::time::Instant;
+ use tokio::time::sleep;
+ 
++fn scripting_test_mutex() -> &'static tokio::sync::Mutex<()> {
++    static LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
++    LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
++}
++
++async fn lock_scripting_test_serial() -> tokio::sync::MutexGuard<'static, ()> {
++    scripting_test_mutex().lock().await
++}
++
+ #[tokio::test]
+ async fn accept_loop_spawns_connection_handlers() {
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+@@ -2254,6 +2263,7 @@ async fn client_pause_write_unpause_releases_script_commands_without_busy_error(
+ 
+ #[tokio::test]
+ async fn scripting_resp3_map_external_scenario_runs_as_tcp_integration_test() {
++    let _serial = lock_scripting_test_serial().await;
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let addr = listener.local_addr().unwrap();
+     let metrics = Arc::new(ServerMetrics::default());
+@@ -2367,6 +2377,7 @@ async fn scripting_resp3_map_external_scenario_runs_as_tcp_integration_test() {
+ 
+ #[tokio::test]
+ async fn scripting_resp_protocol_parsing_matrix_matches_external_scenarios() {
++    let _serial = lock_scripting_test_serial().await;
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let addr = listener.local_addr().unwrap();
+     let metrics = Arc::new(ServerMetrics::default());
+@@ -5902,6 +5913,7 @@ async fn wait_times_out_without_downstream_replicas() {
+ 
+ #[tokio::test]
+ async fn scripting_min_replicas_gate_matches_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let addr = listener.local_addr().unwrap();
+     let metrics = Arc::new(ServerMetrics::default());
+@@ -6821,6 +6833,7 @@ async fn sync_replication_stream_rewrites_hgetdel_as_hdel_like_redis_external_sc
+ 
+ #[tokio::test]
+ async fn sync_replication_stream_rewrites_script_spop_commands_like_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let addr = listener.local_addr().unwrap();
+     let metrics = Arc::new(ServerMetrics::default());
+@@ -6987,6 +7000,7 @@ async fn sync_replication_stream_rewrites_script_spop_commands_like_external_sce
+ #[tokio::test]
+ async fn sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_external_scenarios()
+ {
++    let _serial = lock_scripting_test_serial().await;
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+     let addr = listener.local_addr().unwrap();
+     let metrics = Arc::new(ServerMetrics::default());
+@@ -7133,6 +7147,522 @@ async fn sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_
+     server.await.unwrap();
+ }
+ 
++async fn start_scripting_test_server() -> (
++    std::net::SocketAddr,
++    oneshot::Sender<()>,
++    tokio::task::JoinHandle<()>,
++) {
++    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let addr = listener.local_addr().unwrap();
++    let metrics = Arc::new(ServerMetrics::default());
++    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
++    let processor =
++        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
++
++    let server_metrics = Arc::clone(&metrics);
++    let server = tokio::spawn(async move {
++        run_listener_with_shutdown_and_cluster_with_processor(
++            listener,
++            1024,
++            server_metrics,
++            async move {
++                let _ = shutdown_rx.await;
++            },
++            None,
++            processor,
++        )
++        .await
++        .unwrap();
++    });
++
++    (addr, shutdown_tx, server)
++}
++
++async fn start_multishard_scripting_test_server() -> (
++    std::net::SocketAddr,
++    oneshot::Sender<()>,
++    tokio::task::JoinHandle<()>,
++) {
++    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let addr = listener.local_addr().unwrap();
++    let metrics = Arc::new(ServerMetrics::default());
++    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
++    let processor =
++        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(2, true).unwrap());
++
++    let server_metrics = Arc::clone(&metrics);
++    let server = tokio::spawn(async move {
++        run_listener_with_shutdown_and_cluster_with_processor(
++            listener,
++            1024,
++            server_metrics,
++            async move {
++                let _ = shutdown_rx.await;
++            },
++            None,
++            processor,
++        )
++        .await
++        .unwrap();
++    });
++
++    (addr, shutdown_tx, server)
++}
++
++#[tokio::test]
++async fn scripting_deletes_expired_key_on_access_like_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-active-expire", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"SET", b"key", b"value", b"PX", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    sleep(Duration::from_millis(5)).await;
++
++    let debug_object = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"OBJECT", b"key"]),
++        Duration::from_secs(1),
++    )
++    .await;
++    assert!(!resp_socket_bulk(&debug_object).is_empty());
++
++    let exists = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[b"EVAL", b"return redis.call('EXISTS', 'key')", b"1", b"key"]),
++        Duration::from_secs(1),
++    )
++    .await;
++    assert_eq!(resp_socket_integer(&exists), 0);
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EXISTS", b"key"]),
++        b":0\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-active-expire", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test]
++async fn scripting_time_command_uses_cached_time_like_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    let response = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[
++            b"EVAL",
++            b"local result1 = {redis.call('TIME')}; redis.call('DEBUG', 'SLEEP', 0.01); local result2 = {redis.call('TIME')}; return {result1, result2}",
++            b"0",
++        ]),
++        Duration::from_secs(1),
++    )
++    .await;
++    let results = resp_socket_array(&response);
++    assert_eq!(results.len(), 2);
++    assert_eq!(results[0], results[1]);
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test]
++async fn scripting_function_freezes_key_expiration_during_execution_like_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"FUNCTION",
++            b"LOAD",
++            b"REPLACE",
++            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')\nend)",
++        ]),
++        b"$4\r\ntest\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"FCALL", b"test", b"1", b"key"]),
++        b":1\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EXISTS", b"key"]),
++        b":0\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test]
++async fn scripting_function_restore_expired_keys_with_expiration_time_like_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"FUNCTION",
++            b"LOAD",
++            b"REPLACE",
++            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}\nend)",
++        ]),
++        b"$4\r\ntest\r\n",
++    )
++    .await;
++    let response = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
++        Duration::from_secs(1),
++    )
++    .await;
++    let values = resp_socket_array(&response);
++    assert_eq!(values.len(), 2);
++    let first = resp_socket_integer(&values[0]);
++    let second = resp_socket_integer(&values[1]);
++    assert!(
++        first > 0,
++        "expected positive PEXPIRETIME values, got {values:?}"
++    );
++    assert_eq!(first, second);
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn scripting_default_server_function_freezes_key_expiration_during_execution_like_external_scenario()
++ {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"FUNCTION",
++            b"LOAD",
++            b"REPLACE",
++            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.01); return redis.call('EXISTS', 'key')\nend)",
++        ]),
++        b"$4\r\ntest\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"FCALL", b"test", b"1", b"key"]),
++        b":1\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EXISTS", b"key"]),
++        b":0\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn scripting_default_server_function_restore_expired_keys_with_expiration_time_like_external_scenario()
++ {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"FUNCTION",
++            b"LOAD",
++            b"REPLACE",
++            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); return {redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}')}\nend)",
++        ]),
++        b"$4\r\ntest\r\n",
++    )
++    .await;
++    let response = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
++        Duration::from_secs(1),
++    )
++    .await;
++    let values = resp_socket_array(&response);
++    assert_eq!(values.len(), 2);
++    let first = resp_socket_integer(&values[0]);
++    let second = resp_socket_integer(&values[1]);
++    assert!(
++        first > 0,
++        "expected positive PEXPIRETIME values, got {values:?}"
++    );
++    assert_eq!(first, second);
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn scripting_function_freezes_expiration_while_active_expire_runs() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"FUNCTION",
++            b"LOAD",
++            b"REPLACE",
++            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key', 'value', 'PX', '1'); redis.call('DEBUG', 'SLEEP', 0.08); return redis.call('EXISTS', 'key')\nend)",
++        ]),
++        b"$4\r\ntest\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"FCALL", b"test", b"1", b"key"]),
++        b":1\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EXISTS", b"key"]),
++        b":0\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
++async fn scripting_function_restore_keeps_frozen_ttl_under_active_expire() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_multishard_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"FUNCTION",
++            b"LOAD",
++            b"REPLACE",
++            b"#!lua name=test\nredis.register_function('test', function(KEYS, ARGV)\n redis.call('SET', 'key1{t}', 'value'); local encoded = redis.call('DUMP', 'key1{t}'); redis.call('RESTORE', 'key2{t}', 1, encoded, 'REPLACE'); local p2a = redis.call('PEXPIRETIME', 'key2{t}'); redis.call('DEBUG', 'SLEEP', 0.08); local p2b = redis.call('PEXPIRETIME', 'key2{t}'); redis.call('RESTORE', 'key3{t}', 1, encoded, 'REPLACE'); local p3 = redis.call('PEXPIRETIME', 'key3{t}'); return {p2a, p2b, p3}\nend)",
++        ]),
++        b"$4\r\ntest\r\n",
++    )
++    .await;
++    let response = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[b"FCALL", b"test", b"3", b"key1{t}", b"key2{t}", b"key3{t}"]),
++        Duration::from_secs(1),
++    )
++    .await;
++    let values = resp_socket_array(&response);
++    assert_eq!(values.len(), 3);
++    let parsed = values.iter().map(resp_socket_integer).collect::<Vec<_>>();
++    assert!(
++        parsed[0] > 0,
++        "expected positive PEXPIRETIME values, got {parsed:?}"
++    );
++    assert_eq!(
++        parsed[0], parsed[1],
++        "expected key2 to survive active expire while function runs: {parsed:?}"
++    );
++    assert_eq!(
++        parsed[1], parsed[2],
++        "expected restored keys to share the same frozen deadline: {parsed:?}"
++    );
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test]
++async fn scripting_freezes_time_for_expiration_related_commands_like_external_scenario() {
++    let _serial = lock_scripting_test_serial().await;
++    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
++    let mut client = TcpStream::connect(addr).await.unwrap();
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++    let response = send_and_read_resp_value(
++        &mut client,
++        &encode_resp_command(&[
++            b"EVAL",
++            b"redis.call('SET', 'key1{t}', 'value', 'EX', 1); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key2{t}', 'value', 'PX', 1000); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key3{t}', 'value'); redis.call('EXPIRE', 'key3{t}', 1); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key4{t}', 'value'); redis.call('PEXPIRE', 'key4{t}', 1000); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SETEX', 'key5{t}', 1, 'value'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('PSETEX', 'key6{t}', 1000, 'value'); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key7{t}', 'value'); redis.call('GETEX', 'key7{t}', 'EX', 1); redis.call('DEBUG', 'SLEEP', 0.01); redis.call('SET', 'key8{t}', 'value'); redis.call('GETEX', 'key8{t}', 'PX', 1000); redis.call('DEBUG', 'SLEEP', 0.01); local ttl_results = {redis.call('TTL', 'key1{t}'), redis.call('TTL', 'key2{t}'), redis.call('TTL', 'key3{t}'), redis.call('TTL', 'key4{t}'), redis.call('TTL', 'key5{t}'), redis.call('TTL', 'key6{t}'), redis.call('TTL', 'key7{t}'), redis.call('TTL', 'key8{t}')}; local pttl_results = {redis.call('PTTL', 'key1{t}'), redis.call('PTTL', 'key2{t}'), redis.call('PTTL', 'key3{t}'), redis.call('PTTL', 'key4{t}'), redis.call('PTTL', 'key5{t}'), redis.call('PTTL', 'key6{t}'), redis.call('PTTL', 'key7{t}'), redis.call('PTTL', 'key8{t}')}; local expiretime_results = {redis.call('EXPIRETIME', 'key1{t}'), redis.call('EXPIRETIME', 'key2{t}'), redis.call('EXPIRETIME', 'key3{t}'), redis.call('EXPIRETIME', 'key4{t}'), redis.call('EXPIRETIME', 'key5{t}'), redis.call('EXPIRETIME', 'key6{t}'), redis.call('EXPIRETIME', 'key7{t}'), redis.call('EXPIRETIME', 'key8{t}')}; local pexpiretime_results = {redis.call('PEXPIRETIME', 'key1{t}'), redis.call('PEXPIRETIME', 'key2{t}'), redis.call('PEXPIRETIME', 'key3{t}'), redis.call('PEXPIRETIME', 'key4{t}'), redis.call('PEXPIRETIME', 'key5{t}'), redis.call('PEXPIRETIME', 'key6{t}'), redis.call('PEXPIRETIME', 'key7{t}'), redis.call('PEXPIRETIME', 'key8{t}')}; return {ttl_results, pttl_results, expiretime_results, pexpiretime_results}",
++            b"8",
++            b"key1{t}",
++            b"key2{t}",
++            b"key3{t}",
++            b"key4{t}",
++            b"key5{t}",
++            b"key6{t}",
++            b"key7{t}",
++            b"key8{t}",
++        ]),
++        Duration::from_secs(2),
++    )
++    .await;
++
++    let groups = resp_socket_array(&response);
++    assert_eq!(groups.len(), 4);
++    for group in groups {
++        let values: Vec<i64> = resp_socket_array(group)
++            .iter()
++            .map(resp_socket_integer)
++            .collect();
++        assert_eq!(values.len(), 8);
++        let first = values[0];
++        assert!(
++            first > 0,
++            "expected positive expiration-derived value, got {values:?}"
++        );
++        assert!(
++            values.iter().all(|value| *value == first),
++            "expected equal expiration-derived values, got {values:?}"
++        );
++    }
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"DEBUG", b"set-disable-deny-scripts", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
+ #[tokio::test]
+ async fn sync_replication_stream_rewrites_delex_as_del_like_redis_external_scenario() {
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
