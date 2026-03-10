@@ -1649,6 +1649,7 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"PSYNC") {
+                metrics.set_client_type(client_id, ClientTypeFilter::Replica);
                 replica_subscriber = Some(replication.subscribe_downstream());
                 responses.extend_from_slice(&replication.build_fullresync_payload());
                 disconnect_after_write |= finalize_client_command(
@@ -1667,6 +1668,7 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"SYNC") {
+                metrics.set_client_type(client_id, ClientTypeFilter::Replica);
                 replica_subscriber = Some(replication.subscribe_downstream());
                 responses.extend_from_slice(&replication.build_sync_payload());
                 disconnect_after_write |= finalize_client_command(
@@ -2511,7 +2513,12 @@ pub(crate) async fn handle_connection(
             }
             if let Some(subscriber) = replica_subscriber {
                 return replication
-                    .serve_downstream_replica_with_subscriber(stream, subscriber)
+                    .serve_downstream_replica_with_metrics(
+                        stream,
+                        subscriber,
+                        Arc::clone(&metrics),
+                        client_id,
+                    )
                     .await;
             }
             return replication.serve_downstream_replica(stream).await;

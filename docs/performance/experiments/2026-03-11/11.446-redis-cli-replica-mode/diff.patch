@@ -1,0 +1,494 @@
+diff --git a/TODO_AND_STATUS.md b/TODO_AND_STATUS.md
+index e83ffa366c..06a0931c50 100644
+--- a/TODO_AND_STATUS.md
++++ b/TODO_AND_STATUS.md
+@@ -2,7 +2,7 @@
+ 
+ > **Last Updated**: 2026-03-11
+ > **Current Phase**: Phase 11 — Performance Benchmarking
+-> **Current Iteration**: 641
++> **Current Iteration**: 642
+ 
+ ---
+ 
+@@ -1523,3 +1523,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
+ | 639 | 2026-03-11 | 11.443 | DONE | `integration/redis-cli` full-run timeout の root cause を harness 側で解消した。Redis upstream `tests/support/cli.tcl` が固定で `${REDIS_REPO_ROOT}/src/redis-cli` を使うが、この workspace の `src/redis-cli` は Linux `ELF 64-bit` で macOS 上では `exec format error` となるため、interactive CLI tests が `read_cli` で永遠待ちになっていた。`garnet-rs/tests/interop/redis_runtest_external_subset.sh` に runnable CLI resolver（`REDIS_CLI_OVERRIDE_BIN` -> repo `src/redis-cli` if runnable -> native `$(command -v redis-cli)` fallback）と temporary `cli.tcl` override patch を追加し、cleanup で restore するようにした。検証: `bash -n` PASS；targeted `RUNTEXT_EXTRA_ARGS='--single integration/redis-cli' ./redis_runtest_external_subset.sh` で旧 timeout `Interactive CLI: should find first search result` は `[ok]` 化し、suite は `garnet-rs/tests/interop/results/redis-runtest-redis-cli-11.443-20260311-013012/` まで進行した。その結果、残件は timeout ではなく実互換 bucket として `Subscribed mode`, `command-line hinting`, `DEBUG POPULATE`/RDB dump admin support, `--replica` connection mode に収束した。 |
+ | 640 | 2026-03-11 | 11.444 | DONE | `integration/redis-cli` の実残件から `Subscribed mode` を targeted-first でクローズ。connection path に RESP2 pubsub subscribed-context gate を追加し、subscription count が正で protocol が RESP2 のときは `(P|S)SUBSCRIBE`, `(P|S)UNSUBSCRIBE`, `PING`, `QUIT`, `RESET` 以外を Redis-compatible error `ERR Can't execute '<cmd>': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context` で拒否するようにした。exact TCP regression `subscribed_mode_resp2_after_hello2_rejects_regular_commands_like_external_redis_cli_scenario` を追加し、`HELLO 3` subscribe / publish / `HELLO 2` downgrade / subscribed `GET` reject / pubsub `PING` / `RESET` を固定した。検証: targeted Rust PASS；`make fmt`; `make test-server` PASS（`547 + 23 + 1`）；file-level external rerun `garnet-rs/tests/interop/results/redis-runtest-redis-cli-file-11.444-20260311-014013/` では `Subscribed mode` が失敗一覧から消え、残件は `command-line hinting`, `DEBUG POPULATE`/RDB dump admin support, `--replica` connection mode の 3 bucket に縮退した。Smoke benchmark artifact は `docs/performance/experiments/2026-03-11/11.444-resp2-subscribed-gate/`（before `0e4e98332a`, after working tree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops -0.10%`, `GET ops -1.72%`, `SET p99 +7.21%`, `GET p99 +9.58%`）。 |
+ | 641 | 2026-03-11 | 11.445 | DONE | `integration/redis-cli` の `command-line hinting` residual をクローズ。問題は 2 層あり、`latest server` は server が `COMMAND DOCS` 空 map/array を返して redis-cli がそれを authoritative と見なしていたこと、`old/no server` は host 上の system `redis-cli` が repo hint suite と一致しないことだった。対策として、server では `COMMAND DOCS` を `ERR unknown subcommand` に変更して fallback を有効化し、同時に `INFO SERVER` / `HELLO` / `LOLWUT` の version surface を `8.4.0` に揃えて redis-cli static docs の version filter を通るようにした。harness では `garnet-rs/tests/interop/redis_runtest_external_subset.sh` に repo `redis-cli` auto-build (`make redis-cli -j4`) を追加し、repo binary が absent / non-runnable でも host-built upstream CLI を優先できるようにした。exact regressions として TCP integration `redis_cli_hint_suite_matches_external_scenarios_when_repo_cli_is_available` を追加し、upstream `tests/assets/test_cli_hint_suite.txt` で `latest server`, `no server`, `old server` の 3 ケースを固定した。検証: targeted Rust PASS；`make fmt`; `make test-server` PASS（`548 + 23 + 1`）；direct hint-suite probes は `docs/performance/experiments/2026-03-11/11.445-redis-cli-hint-fallback/artifacts/hint-*.txt` で全て `SUCCESS: 69/69 passed`；interop harness smoke は repo `src/redis-cli` を一度退避して auto-build path を実際に踏ませた上で `garnet-rs/tests/interop/results/redis-runtest-redis-cli-harness-smoke-11.445-20260311-020742/` に PASS。Smoke benchmark artifact は `docs/performance/experiments/2026-03-11/11.445-redis-cli-hint-fallback/`（before `bc74bd295d`, after working tree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops -1.26%`, `GET ops -0.18%`, `SET p99 +0.00%`, `GET p99 +29.63%`, absolute `0.135ms -> 0.175ms`）。残る `integration/redis-cli` bucket は `DEBUG POPULATE` / RDB dump admin support と `--replica` connection mode。 |
++| 642 | 2026-03-11 | 11.446 | DONE | `integration/redis-cli` の `--replica` residual を targeted-first でクローズ。`ServerMetrics` に live `client_type` を追加し、`SYNC/PSYNC` downstream connection を `Replica` として登録、`CLIENT KILL TYPE REPLICA|SLAVE` が実際に replica stream client を kill できるようにした。replica stream 側は kill flag を polling して server-side disconnect に従うよう変更。`INFO REPLICATION` は attached metrics から `connected_slaves:<n>` と `slaveN:ip=...,port=...,state=online,offset=0,lag=0` を live render するよう更新した。exact regressions として TCP integration `sync_client_appears_in_info_replication_and_client_kill_type_slave_disconnects_it` と upstream `redis-cli --replica` を直接起動する `redis_cli_replica_mode_matches_external_scenario_when_repo_cli_is_available` を追加し、external `tests/integration/redis-cli.tcl` の `Connecting as a replica` flow を固定した。検証: targeted Rust PASS；`make fmt`; `make test-server` PASS（`550 + 23 + 1`）；targeted external PASS at `garnet-rs/tests/interop/results/redis-runtest-external-20260311-022609/` with `ok=1 err=0 ignore=1` for `Connecting as a replica`；smoke benchmark artifact is `docs/performance/experiments/2026-03-11/11.446-redis-cli-replica-mode/`（before `2c9580ab3f`, after working tree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops +2.05%`, `GET ops -11.68%`, `SET p99 -7.21%`, `GET p99 +19.16%`, absolute GET p99 `0.167ms -> 0.199ms`）。残る `integration/redis-cli` bucket は `DEBUG POPULATE` / RDB dump admin support のみ。 |
+diff --git a/garnet-rs/crates/garnet-server/src/connection_handler.rs b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+index 052485b60a..251d73e1f3 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_handler.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+@@ -1649,6 +1649,7 @@ pub(crate) async fn handle_connection(
+             }
+ 
+             if ascii_eq_ignore_case(command_name, b"PSYNC") {
++                metrics.set_client_type(client_id, ClientTypeFilter::Replica);
+                 replica_subscriber = Some(replication.subscribe_downstream());
+                 responses.extend_from_slice(&replication.build_fullresync_payload());
+                 disconnect_after_write |= finalize_client_command(
+@@ -1667,6 +1668,7 @@ pub(crate) async fn handle_connection(
+             }
+ 
+             if ascii_eq_ignore_case(command_name, b"SYNC") {
++                metrics.set_client_type(client_id, ClientTypeFilter::Replica);
+                 replica_subscriber = Some(replication.subscribe_downstream());
+                 responses.extend_from_slice(&replication.build_sync_payload());
+                 disconnect_after_write |= finalize_client_command(
+@@ -2511,7 +2513,12 @@ pub(crate) async fn handle_connection(
+             }
+             if let Some(subscriber) = replica_subscriber {
+                 return replication
+-                    .serve_downstream_replica_with_subscriber(stream, subscriber)
++                    .serve_downstream_replica_with_metrics(
++                        stream,
++                        subscriber,
++                        Arc::clone(&metrics),
++                        client_id,
++                    )
+                     .await;
+             }
+             return replication.serve_downstream_replica(stream).await;
+diff --git a/garnet-rs/crates/garnet-server/src/lib.rs b/garnet-rs/crates/garnet-server/src/lib.rs
+index f5e66e31a0..9637de1054 100644
+--- a/garnet-rs/crates/garnet-server/src/lib.rs
++++ b/garnet-rs/crates/garnet-server/src/lib.rs
+@@ -227,6 +227,7 @@ struct ClientRuntimeInfo {
+     /// Last time the reply buffer peak window was reset.
+     reply_buffer_peak_last_reset: Instant,
+     selected_db: DbName,
++    client_type: ClientTypeFilter,
+ }
+ 
+ const REPLY_BUFFER_MIN_BYTES: usize = 1024;
+@@ -319,6 +320,7 @@ impl ClientRuntimeInfo {
+             reply_buffer_peak: 0,
+             reply_buffer_peak_last_reset: now,
+             selected_db: DbName::default(),
++            client_type: ClientTypeFilter::Normal,
+         }
+     }
+ 
+@@ -663,6 +665,26 @@ impl ServerMetrics {
+         }
+     }
+ 
++    pub(crate) fn set_client_type(&self, client_id: ClientId, client_type: ClientTypeFilter) {
++        if let Ok(mut clients) = self.clients.lock()
++            && let Some(client) = clients.get_mut(&client_id)
++        {
++            client.client_type = client_type;
++            client.last_activity = Instant::now();
++        }
++    }
++
++    pub(crate) fn replica_client_addrs(&self) -> Vec<Vec<u8>> {
++        let Ok(clients) = self.clients.lock() else {
++            return Vec::new();
++        };
++        clients
++            .values()
++            .filter(|client| !client.killed && client.client_type == ClientTypeFilter::Replica)
++            .map(|client| client.addr.clone())
++            .collect()
++    }
++
+     pub fn connected_client_count(&self) -> u64 {
+         let Ok(clients) = self.clients.lock() else {
+             return 0;
+@@ -696,7 +718,7 @@ impl ServerMetrics {
+                 continue;
+             }
+             if let Some(expected_type) = filter.client_type
+-                && expected_type != ClientTypeFilter::Normal
++                && client.client_type != expected_type
+             {
+                 continue;
+             }
+@@ -868,7 +890,19 @@ fn render_client_line(
+ ) -> Vec<u8> {
+     let age_seconds = now.duration_since(client.connect_time).as_secs();
+     let idle_seconds = now.duration_since(client.last_activity).as_secs();
+-    let flags = if client.blocked { "b" } else { "N" };
++    let mut flags = String::new();
++    if client.blocked {
++        flags.push('b');
++    }
++    match client.client_type {
++        ClientTypeFilter::Normal => {}
++        ClientTypeFilter::Master => flags.push('M'),
++        ClientTypeFilter::Replica => flags.push('S'),
++        ClientTypeFilter::Pubsub => flags.push('P'),
++    }
++    if flags.is_empty() {
++        flags.push('N');
++    }
+     let name = client
+         .name
+         .as_ref()
+diff --git a/garnet-rs/crates/garnet-server/src/redis_replication.rs b/garnet-rs/crates/garnet-server/src/redis_replication.rs
+index b2426b4dfb..d42ceaf89e 100644
+--- a/garnet-rs/crates/garnet-server/src/redis_replication.rs
++++ b/garnet-rs/crates/garnet-server/src/redis_replication.rs
+@@ -5,6 +5,7 @@
+ mod protocol;
+ 
+ use crate::RequestProcessor;
++use crate::ServerMetrics;
+ use crate::ShardOwnerThreadPool;
+ use crate::command_spec::command_is_effectively_mutating;
+ use crate::connection_owner_routing::OwnerThreadExecutionError;
+@@ -320,10 +321,31 @@ impl RedisReplicationCoordinator {
+             .await
+     }
+ 
++    pub(crate) async fn serve_downstream_replica_with_metrics(
++        &self,
++        stream: TcpStream,
++        subscriber: broadcast::Receiver<Arc<[u8]>>,
++        metrics: Arc<ServerMetrics>,
++        client_id: crate::ClientId,
++    ) -> io::Result<()> {
++        self.serve_downstream_replica_inner(stream, subscriber, Some((metrics, client_id)))
++            .await
++    }
++
+     pub(crate) async fn serve_downstream_replica_with_subscriber(
++        &self,
++        stream: TcpStream,
++        subscriber: broadcast::Receiver<Arc<[u8]>>,
++    ) -> io::Result<()> {
++        self.serve_downstream_replica_inner(stream, subscriber, None)
++            .await
++    }
++
++    async fn serve_downstream_replica_inner(
+         &self,
+         mut stream: TcpStream,
+         mut subscriber: broadcast::Receiver<Arc<[u8]>>,
++        kill_watch: Option<(Arc<ServerMetrics>, crate::ClientId)>,
+     ) -> io::Result<()> {
+         let replica_id = self.register_downstream_replica().await;
+         let mut inbound_buf = [0u8; 1024];
+@@ -335,6 +357,15 @@ impl RedisReplicationCoordinator {
+ 
+         loop {
+             tokio::select! {
++                _ = tokio::time::sleep(Duration::from_millis(25)), if kill_watch.is_some() => {
++                    let Some((metrics, client_id)) = kill_watch.as_ref() else {
++                        continue;
++                    };
++                    if metrics.is_client_killed(*client_id) {
++                        self.unregister_downstream_replica(replica_id).await;
++                        return Ok(());
++                    }
++                }
+                 result = subscriber.recv() => {
+                     match result {
+                         Ok(frame) => {
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
+index 92eadd3162..f92bdc294a 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
+@@ -659,8 +659,26 @@ impl RequestProcessor {
+                     );
+                 }
+                 InfoSection::Replication => {
++                    let replica_addrs = self
++                        .server_metrics
++                        .get()
++                        .map(|metrics| metrics.replica_client_addrs())
++                        .unwrap_or_default();
++                    payload.push_str("# Replication\r\nrole:master\r\nconnected_slaves:");
++                    payload.push_str(&replica_addrs.len().to_string());
++                    payload.push_str("\r\n");
++                    for (index, addr) in replica_addrs.iter().enumerate() {
++                        let (ip, port) = split_client_addr_for_replication(addr);
++                        payload.push_str("slave");
++                        payload.push_str(&index.to_string());
++                        payload.push_str(":ip=");
++                        payload.push_str(&ip);
++                        payload.push_str(",port=");
++                        payload.push_str(&port);
++                        payload.push_str(",state=online,offset=0,lag=0\r\n");
++                    }
+                     payload.push_str(
+-                        "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_replid:0000000000000000000000000000000000000000\r\nmaster_replid2:0000000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_size:1048576\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n",
++                        "master_replid:0000000000000000000000000000000000000000\r\nmaster_replid2:0000000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_size:1048576\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n",
+                     );
+                 }
+                 InfoSection::Cpu => {
+@@ -5904,6 +5922,14 @@ fn parse_db_name_arg(value: &[u8]) -> Result<DbName, RequestExecutionError> {
+     Ok(DbName::new(index))
+ }
+ 
++fn split_client_addr_for_replication(addr: &[u8]) -> (String, String) {
++    let text = String::from_utf8_lossy(addr);
++    if let Some((ip, port)) = text.rsplit_once(':') {
++        return (ip.to_string(), port.to_string());
++    }
++    (text.into_owned(), "0".to_string())
++}
++
+ fn parse_configured_db_name_arg(
+     value: &[u8],
+     configured_databases: usize,
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+index 8cc2d7dbea..7cd8ca60ce 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -15573,11 +15573,7 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
+ 
+     // COMMAND DOCS currently returns an error so redis-cli can fall back to
+     // bundled command metadata instead of trusting an empty docs table.
+-    assert_command_error(
+-        &processor,
+-        "COMMAND DOCS",
+-        b"-ERR unknown subcommand\r\n",
+-    );
++    assert_command_error(&processor, "COMMAND DOCS", b"-ERR unknown subcommand\r\n");
+ 
+     // RESP3: CLIENT INFO returns verbatim string
+     processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
+@@ -15588,11 +15584,7 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
+     );
+ 
+     // RESP3 keeps the same error shape.
+-    assert_command_error(
+-        &processor,
+-        "COMMAND DOCS",
+-        b"-ERR unknown subcommand\r\n",
+-    );
++    assert_command_error(&processor, "COMMAND DOCS", b"-ERR unknown subcommand\r\n");
+ }
+ 
+ #[test]
+diff --git a/garnet-rs/crates/garnet-server/src/tests.rs b/garnet-rs/crates/garnet-server/src/tests.rs
+index b2bfb12722..8f541bb76c 100644
+--- a/garnet-rs/crates/garnet-server/src/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/tests.rs
+@@ -24,6 +24,7 @@ use garnet_cluster::redis_hash_slot;
+ use std::path::PathBuf;
+ use std::process::Command;
+ use std::process::Output;
++use std::process::Stdio;
+ use tokio::io::AsyncReadExt;
+ use tokio::io::AsyncWriteExt;
+ use tokio::process::Command as TokioCommand;
+@@ -95,6 +96,48 @@ fn assert_redis_cli_hint_suite_success(output: &Output, context: &str) {
+     );
+ }
+ 
++async fn collect_process_output<R>(mut reader: R, sink: Arc<tokio::sync::Mutex<Vec<u8>>>)
++where
++    R: tokio::io::AsyncRead + Unpin,
++{
++    let mut chunk = [0u8; 1024];
++    loop {
++        match reader.read(&mut chunk).await {
++            Ok(0) => return,
++            Ok(bytes_read) => sink.lock().await.extend_from_slice(&chunk[..bytes_read]),
++            Err(_) => return,
++        }
++    }
++}
++
++async fn wait_for_replica_info_line(
++    client: &mut TcpStream,
++    expected_connected_replicas: u64,
++    timeout: Duration,
++) -> Vec<u8> {
++    let deadline = Instant::now() + timeout;
++    loop {
++        let payload = send_and_read_bulk_payload(
++            client,
++            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
++            Duration::from_secs(1),
++        )
++        .await;
++        let text = String::from_utf8_lossy(&payload);
++        if read_info_u64(&payload, "connected_slaves") == Some(expected_connected_replicas)
++            && text.contains("slave0:")
++            && text.contains("state=online")
++        {
++            return payload;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "timed out waiting for connected_slaves={expected_connected_replicas}; last payload: {text}"
++        );
++        sleep(Duration::from_millis(10)).await;
++    }
++}
++
+ #[tokio::test]
+ async fn accept_loop_spawns_connection_handlers() {
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+@@ -12395,6 +12438,166 @@ async fn redis_cli_hint_suite_matches_external_scenarios_when_repo_cli_is_availa
+     server.await.unwrap();
+ }
+ 
++#[tokio::test]
++async fn sync_client_appears_in_info_replication_and_client_kill_type_slave_disconnects_it() {
++    let (addr, shutdown_tx, server) = start_test_server().await;
++    wait_for_server_ping(addr).await;
++
++    let mut admin = TcpStream::connect(addr).await.unwrap();
++    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
++    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
++
++    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
++    assert!(
++        header.starts_with(b"$"),
++        "SYNC response must start with bulk RDB length, got: {}",
++        String::from_utf8_lossy(&header)
++    );
++    let payload_len = std::str::from_utf8(&header[1..])
++        .unwrap()
++        .parse::<usize>()
++        .unwrap();
++    let _ = read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
++
++    let info_payload = wait_for_replica_info_line(&mut admin, 1, Duration::from_secs(5)).await;
++    let info_text = String::from_utf8_lossy(&info_payload);
++    assert!(
++        info_text.contains("slave0:ip=127.0.0.1"),
++        "replication info should expose replica address, got: {info_text}"
++    );
++
++    let killed = send_and_read_integer(
++        &mut admin,
++        &encode_resp_command(&[b"CLIENT", b"KILL", b"TYPE", b"SLAVE"]),
++        Duration::from_secs(5),
++    )
++    .await;
++    assert_eq!(killed, 1);
++
++    let mut eof_probe = [0u8; 1];
++    let read_result =
++        tokio::time::timeout(Duration::from_secs(5), replica_stream.read(&mut eof_probe)).await;
++    match read_result {
++        Ok(Ok(0)) => {}
++        Ok(Err(error))
++            if matches!(
++                error.kind(),
++                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
++            ) => {}
++        other => {
++            panic!("replica stream did not disconnect after CLIENT KILL TYPE SLAVE: {other:?}")
++        }
++    }
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
++#[tokio::test]
++async fn redis_cli_replica_mode_matches_external_scenario_when_repo_cli_is_available() {
++    let Some(redis_cli) = runnable_repo_redis_cli() else {
++        return;
++    };
++
++    let (addr, shutdown_tx, server) = start_test_server().await;
++    wait_for_server_ping(addr).await;
++    let host = "127.0.0.1".to_string();
++    let port = addr.port().to_string();
++
++    let mut replica_cli = TokioCommand::new(redis_cli);
++    replica_cli
++        .arg("-h")
++        .arg(&host)
++        .arg("-p")
++        .arg(&port)
++        .arg("--replica")
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped());
++    let mut replica_cli = replica_cli.spawn().unwrap();
++
++    let stdout_buffer = Arc::new(tokio::sync::Mutex::new(Vec::new()));
++    let stderr_buffer = Arc::new(tokio::sync::Mutex::new(Vec::new()));
++    let stdout_task = tokio::spawn(collect_process_output(
++        replica_cli.stdout.take().unwrap(),
++        Arc::clone(&stdout_buffer),
++    ));
++    let stderr_task = tokio::spawn(collect_process_output(
++        replica_cli.stderr.take().unwrap(),
++        Arc::clone(&stderr_buffer),
++    ));
++
++    let mut admin = TcpStream::connect(addr).await.unwrap();
++    let _ = wait_for_replica_info_line(&mut admin, 1, Duration::from_secs(5)).await;
++
++    for index in 0..100 {
++        let value = format!("test-value-{index}");
++        send_and_expect(
++            &mut admin,
++            &encode_resp_command(&[b"SET", b"test-key", value.as_bytes()]),
++            b"+OK\r\n",
++        )
++        .await;
++    }
++
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        let stdout = stdout_buffer.lock().await.clone();
++        let stderr = stderr_buffer.lock().await.clone();
++        let combined = [stdout.as_slice(), stderr.as_slice()].concat();
++        if combined
++            .windows(b"test-value-99".len())
++            .any(|window| window == b"test-value-99")
++        {
++            break;
++        }
++        assert!(
++            Instant::now() < deadline,
++            "redis-cli --replica did not print the replicated command stream\nstdout:\n{}\nstderr:\n{}",
++            String::from_utf8_lossy(&stdout),
++            String::from_utf8_lossy(&stderr)
++        );
++        sleep(Duration::from_millis(10)).await;
++    }
++
++    let killed = send_and_read_integer(
++        &mut admin,
++        &encode_resp_command(&[b"CLIENT", b"KILL", b"TYPE", b"SLAVE"]),
++        Duration::from_secs(5),
++    )
++    .await;
++    assert_eq!(killed, 1);
++
++    let status = tokio::time::timeout(Duration::from_secs(5), replica_cli.wait())
++        .await
++        .unwrap()
++        .unwrap();
++    stdout_task.await.unwrap();
++    stderr_task.await.unwrap();
++    let stdout = stdout_buffer.lock().await.clone();
++    let stderr = stderr_buffer.lock().await.clone();
++    let combined = [stdout.as_slice(), stderr.as_slice()].concat();
++    let combined_text = String::from_utf8_lossy(&combined);
++    assert!(
++        combined_text.contains("test-value-99"),
++        "redis-cli --replica output should contain the latest replicated value\nstdout:\n{}\nstderr:\n{}",
++        String::from_utf8_lossy(&stdout),
++        String::from_utf8_lossy(&stderr)
++    );
++    assert!(
++        combined_text.contains("Server closed the connection"),
++        "redis-cli --replica should report server-side disconnect after CLIENT KILL TYPE slave\nstdout:\n{}\nstderr:\n{}",
++        String::from_utf8_lossy(&stdout),
++        String::from_utf8_lossy(&stderr)
++    );
++    assert!(
++        !status.success(),
++        "redis-cli --replica is expected to exit non-zero after server-side disconnect"
++    );
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
+ #[tokio::test]
+ async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
+     let (addr, shutdown_tx, server) = start_test_server().await;

@@ -227,6 +227,7 @@ struct ClientRuntimeInfo {
     /// Last time the reply buffer peak window was reset.
     reply_buffer_peak_last_reset: Instant,
     selected_db: DbName,
+    client_type: ClientTypeFilter,
 }
 
 const REPLY_BUFFER_MIN_BYTES: usize = 1024;
@@ -319,6 +320,7 @@ impl ClientRuntimeInfo {
             reply_buffer_peak: 0,
             reply_buffer_peak_last_reset: now,
             selected_db: DbName::default(),
+            client_type: ClientTypeFilter::Normal,
         }
     }
 
@@ -663,6 +665,26 @@ impl ServerMetrics {
         }
     }
 
+    pub(crate) fn set_client_type(&self, client_id: ClientId, client_type: ClientTypeFilter) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.client_type = client_type;
+            client.last_activity = Instant::now();
+        }
+    }
+
+    pub(crate) fn replica_client_addrs(&self) -> Vec<Vec<u8>> {
+        let Ok(clients) = self.clients.lock() else {
+            return Vec::new();
+        };
+        clients
+            .values()
+            .filter(|client| !client.killed && client.client_type == ClientTypeFilter::Replica)
+            .map(|client| client.addr.clone())
+            .collect()
+    }
+
     pub fn connected_client_count(&self) -> u64 {
         let Ok(clients) = self.clients.lock() else {
             return 0;
@@ -696,7 +718,7 @@ impl ServerMetrics {
                 continue;
             }
             if let Some(expected_type) = filter.client_type
-                && expected_type != ClientTypeFilter::Normal
+                && client.client_type != expected_type
             {
                 continue;
             }
@@ -868,7 +890,19 @@ fn render_client_line(
 ) -> Vec<u8> {
     let age_seconds = now.duration_since(client.connect_time).as_secs();
     let idle_seconds = now.duration_since(client.last_activity).as_secs();
-    let flags = if client.blocked { "b" } else { "N" };
+    let mut flags = String::new();
+    if client.blocked {
+        flags.push('b');
+    }
+    match client.client_type {
+        ClientTypeFilter::Normal => {}
+        ClientTypeFilter::Master => flags.push('M'),
+        ClientTypeFilter::Replica => flags.push('S'),
+        ClientTypeFilter::Pubsub => flags.push('P'),
+    }
+    if flags.is_empty() {
+        flags.push('N');
+    }
     let name = client
         .name
         .as_ref()

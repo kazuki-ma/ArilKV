@@ -15573,11 +15573,7 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
 
     // COMMAND DOCS currently returns an error so redis-cli can fall back to
     // bundled command metadata instead of trusting an empty docs table.
-    assert_command_error(
-        &processor,
-        "COMMAND DOCS",
-        b"-ERR unknown subcommand\r\n",
-    );
+    assert_command_error(&processor, "COMMAND DOCS", b"-ERR unknown subcommand\r\n");
 
     // RESP3: CLIENT INFO returns verbatim string
     processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
@@ -15588,11 +15584,7 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
     );
 
     // RESP3 keeps the same error shape.
-    assert_command_error(
-        &processor,
-        "COMMAND DOCS",
-        b"-ERR unknown subcommand\r\n",
-    );
+    assert_command_error(&processor, "COMMAND DOCS", b"-ERR unknown subcommand\r\n");
 }
 
 #[test]

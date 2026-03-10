@@ -5,6 +5,7 @@
 mod protocol;
 
 use crate::RequestProcessor;
+use crate::ServerMetrics;
 use crate::ShardOwnerThreadPool;
 use crate::command_spec::command_is_effectively_mutating;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
@@ -320,10 +321,31 @@ impl RedisReplicationCoordinator {
             .await
     }
 
+    pub(crate) async fn serve_downstream_replica_with_metrics(
+        &self,
+        stream: TcpStream,
+        subscriber: broadcast::Receiver<Arc<[u8]>>,
+        metrics: Arc<ServerMetrics>,
+        client_id: crate::ClientId,
+    ) -> io::Result<()> {
+        self.serve_downstream_replica_inner(stream, subscriber, Some((metrics, client_id)))
+            .await
+    }
+
     pub(crate) async fn serve_downstream_replica_with_subscriber(
+        &self,
+        stream: TcpStream,
+        subscriber: broadcast::Receiver<Arc<[u8]>>,
+    ) -> io::Result<()> {
+        self.serve_downstream_replica_inner(stream, subscriber, None)
+            .await
+    }
+
+    async fn serve_downstream_replica_inner(
         &self,
         mut stream: TcpStream,
         mut subscriber: broadcast::Receiver<Arc<[u8]>>,
+        kill_watch: Option<(Arc<ServerMetrics>, crate::ClientId)>,
     ) -> io::Result<()> {
         let replica_id = self.register_downstream_replica().await;
         let mut inbound_buf = [0u8; 1024];
@@ -335,6 +357,15 @@ impl RedisReplicationCoordinator {
 
         loop {
             tokio::select! {
+                _ = tokio::time::sleep(Duration::from_millis(25)), if kill_watch.is_some() => {
+                    let Some((metrics, client_id)) = kill_watch.as_ref() else {
+                        continue;
+                    };
+                    if metrics.is_client_killed(*client_id) {
+                        self.unregister_downstream_replica(replica_id).await;
+                        return Ok(());
+                    }
+                }
                 result = subscriber.recv() => {
                     match result {
                         Ok(frame) => {

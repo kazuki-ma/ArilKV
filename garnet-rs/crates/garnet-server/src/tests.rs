@@ -24,6 +24,7 @@ use garnet_cluster::redis_hash_slot;
 use std::path::PathBuf;
 use std::process::Command;
 use std::process::Output;
+use std::process::Stdio;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command as TokioCommand;
@@ -93,6 +94,48 @@ fn assert_redis_cli_hint_suite_success(output: &Output, context: &str) {
         stdout.contains("SUCCESS: 69/69 passed"),
         "{context} did not report full hint-suite success\nstdout:\n{stdout}\nstderr:\n{stderr}"
     );
+}
+
+async fn collect_process_output<R>(mut reader: R, sink: Arc<tokio::sync::Mutex<Vec<u8>>>)
+where
+    R: tokio::io::AsyncRead + Unpin,
+{
+    let mut chunk = [0u8; 1024];
+    loop {
+        match reader.read(&mut chunk).await {
+            Ok(0) => return,
+            Ok(bytes_read) => sink.lock().await.extend_from_slice(&chunk[..bytes_read]),
+            Err(_) => return,
+        }
+    }
+}
+
+async fn wait_for_replica_info_line(
+    client: &mut TcpStream,
+    expected_connected_replicas: u64,
+    timeout: Duration,
+) -> Vec<u8> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        let payload = send_and_read_bulk_payload(
+            client,
+            &encode_resp_command(&[b"INFO", b"REPLICATION"]),
+            Duration::from_secs(1),
+        )
+        .await;
+        let text = String::from_utf8_lossy(&payload);
+        if read_info_u64(&payload, "connected_slaves") == Some(expected_connected_replicas)
+            && text.contains("slave0:")
+            && text.contains("state=online")
+        {
+            return payload;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for connected_slaves={expected_connected_replicas}; last payload: {text}"
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 #[tokio::test]
@@ -12389,6 +12432,166 @@ async fn redis_cli_hint_suite_matches_external_scenarios_when_repo_cli_is_availa
     assert!(
         deleted_users == 0 || deleted_users == 1,
         "ACL DELUSER cleanup should return 0 or 1, got {deleted_users}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_client_appears_in_info_replication_and_client_kill_type_slave_disconnects_it() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _ = read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let info_payload = wait_for_replica_info_line(&mut admin, 1, Duration::from_secs(5)).await;
+    let info_text = String::from_utf8_lossy(&info_payload);
+    assert!(
+        info_text.contains("slave0:ip=127.0.0.1"),
+        "replication info should expose replica address, got: {info_text}"
+    );
+
+    let killed = send_and_read_integer(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"KILL", b"TYPE", b"SLAVE"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(killed, 1);
+
+    let mut eof_probe = [0u8; 1];
+    let read_result =
+        tokio::time::timeout(Duration::from_secs(5), replica_stream.read(&mut eof_probe)).await;
+    match read_result {
+        Ok(Ok(0)) => {}
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+            ) => {}
+        other => {
+            panic!("replica stream did not disconnect after CLIENT KILL TYPE SLAVE: {other:?}")
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn redis_cli_replica_mode_matches_external_scenario_when_repo_cli_is_available() {
+    let Some(redis_cli) = runnable_repo_redis_cli() else {
+        return;
+    };
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+    let host = "127.0.0.1".to_string();
+    let port = addr.port().to_string();
+
+    let mut replica_cli = TokioCommand::new(redis_cli);
+    replica_cli
+        .arg("-h")
+        .arg(&host)
+        .arg("-p")
+        .arg(&port)
+        .arg("--replica")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    let mut replica_cli = replica_cli.spawn().unwrap();
+
+    let stdout_buffer = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let stderr_buffer = Arc::new(tokio::sync::Mutex::new(Vec::new()));
+    let stdout_task = tokio::spawn(collect_process_output(
+        replica_cli.stdout.take().unwrap(),
+        Arc::clone(&stdout_buffer),
+    ));
+    let stderr_task = tokio::spawn(collect_process_output(
+        replica_cli.stderr.take().unwrap(),
+        Arc::clone(&stderr_buffer),
+    ));
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let _ = wait_for_replica_info_line(&mut admin, 1, Duration::from_secs(5)).await;
+
+    for index in 0..100 {
+        let value = format!("test-value-{index}");
+        send_and_expect(
+            &mut admin,
+            &encode_resp_command(&[b"SET", b"test-key", value.as_bytes()]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let stdout = stdout_buffer.lock().await.clone();
+        let stderr = stderr_buffer.lock().await.clone();
+        let combined = [stdout.as_slice(), stderr.as_slice()].concat();
+        if combined
+            .windows(b"test-value-99".len())
+            .any(|window| window == b"test-value-99")
+        {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "redis-cli --replica did not print the replicated command stream\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&stdout),
+            String::from_utf8_lossy(&stderr)
+        );
+        sleep(Duration::from_millis(10)).await;
+    }
+
+    let killed = send_and_read_integer(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"KILL", b"TYPE", b"SLAVE"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(killed, 1);
+
+    let status = tokio::time::timeout(Duration::from_secs(5), replica_cli.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    stdout_task.await.unwrap();
+    stderr_task.await.unwrap();
+    let stdout = stdout_buffer.lock().await.clone();
+    let stderr = stderr_buffer.lock().await.clone();
+    let combined = [stdout.as_slice(), stderr.as_slice()].concat();
+    let combined_text = String::from_utf8_lossy(&combined);
+    assert!(
+        combined_text.contains("test-value-99"),
+        "redis-cli --replica output should contain the latest replicated value\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert!(
+        combined_text.contains("Server closed the connection"),
+        "redis-cli --replica should report server-side disconnect after CLIENT KILL TYPE slave\nstdout:\n{}\nstderr:\n{}",
+        String::from_utf8_lossy(&stdout),
+        String::from_utf8_lossy(&stderr)
+    );
+    assert!(
+        !status.success(),
+        "redis-cli --replica is expected to exit non-zero after server-side disconnect"
     );
 
     let _ = shutdown_tx.send(());

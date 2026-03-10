@@ -659,8 +659,26 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Replication => {
+                    let replica_addrs = self
+                        .server_metrics
+                        .get()
+                        .map(|metrics| metrics.replica_client_addrs())
+                        .unwrap_or_default();
+                    payload.push_str("# Replication\r\nrole:master\r\nconnected_slaves:");
+                    payload.push_str(&replica_addrs.len().to_string());
+                    payload.push_str("\r\n");
+                    for (index, addr) in replica_addrs.iter().enumerate() {
+                        let (ip, port) = split_client_addr_for_replication(addr);
+                        payload.push_str("slave");
+                        payload.push_str(&index.to_string());
+                        payload.push_str(":ip=");
+                        payload.push_str(&ip);
+                        payload.push_str(",port=");
+                        payload.push_str(&port);
+                        payload.push_str(",state=online,offset=0,lag=0\r\n");
+                    }
                     payload.push_str(
-                        "# Replication\r\nrole:master\r\nconnected_slaves:0\r\nmaster_replid:0000000000000000000000000000000000000000\r\nmaster_replid2:0000000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_size:1048576\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n",
+                        "master_replid:0000000000000000000000000000000000000000\r\nmaster_replid2:0000000000000000000000000000000000000000\r\nmaster_repl_offset:0\r\nsecond_repl_offset:-1\r\nrepl_backlog_active:0\r\nrepl_backlog_size:1048576\r\nrepl_backlog_first_byte_offset:0\r\nrepl_backlog_histlen:0\r\n",
                     );
                 }
                 InfoSection::Cpu => {
@@ -5902,6 +5920,14 @@ fn parse_db_name_arg(value: &[u8]) -> Result<DbName, RequestExecutionError> {
     }
     let index = usize::try_from(index).map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
     Ok(DbName::new(index))
+}
+
+fn split_client_addr_for_replication(addr: &[u8]) -> (String, String) {
+    let text = String::from_utf8_lossy(addr);
+    if let Some((ip, port)) = text.rsplit_once(':') {
+        return (ip.to_string(), port.to_string());
+    }
+    (text.into_owned(), "0".to_string())
 }
 
 fn parse_configured_db_name_arg(
