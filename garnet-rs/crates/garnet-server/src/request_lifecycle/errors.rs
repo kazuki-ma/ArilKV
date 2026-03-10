@@ -56,12 +56,14 @@ pub enum RequestExecutionError {
     HashMandatoryFieldsArgumentMissing,
     HashNumfieldsParameterMustMatchArguments,
     HashNumberOfFieldsMustBePositiveInteger,
+    HashNumFieldsParameterShouldBeGreaterThanZero,
     HashInvalidNumberOfFields,
     HashUnknownArgument,
     HashMissingExpireTime,
     HashOnlyOneOfFxxFnxArgumentsCanBeSpecified,
     HashOnlyOneOfHsetexExpireArgumentsCanBeSpecified,
     HashOnlyOneOfHgetexExpireArgumentsCanBeSpecified,
+    HashMultipleConditionFlagsSpecified,
     HashFieldsKeywordSpecifiedMultipleTimes,
     NumkeysMustBeGreaterThanZero,
     CountMustBeGreaterThanZero,
@@ -235,6 +237,10 @@ impl RequestExecutionError {
                 response_out,
                 "ERR Number of fields must be a positive integer",
             ),
+            Self::HashNumFieldsParameterShouldBeGreaterThanZero => append_error(
+                response_out,
+                "ERR Parameter numFields should be greater than 0",
+            ),
             Self::HashInvalidNumberOfFields => {
                 append_error(response_out, "ERR invalid number of fields")
             }
@@ -252,6 +258,9 @@ impl RequestExecutionError {
                 response_out,
                 "ERR Only one of EX, PX, EXAT, PXAT or PERSIST arguments can be specified",
             ),
+            Self::HashMultipleConditionFlagsSpecified => {
+                append_error(response_out, "ERR Multiple condition flags specified")
+            }
             Self::HashFieldsKeywordSpecifiedMultipleTimes => {
                 append_error(response_out, "ERR FIELDS keyword specified multiple times")
             }

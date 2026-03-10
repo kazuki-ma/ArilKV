@@ -1489,6 +1489,241 @@ fn hsetex_hgetex_field_count_and_condition_semantics_match_external_scenarios() 
 }
 
 #[test]
+fn hash_field_expire_error_surface_matches_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    for (encoding_name, max_listpack_entries) in [("listpackex", 512usize), ("hashtable", 0)] {
+        assert_command_response(
+            &processor,
+            &format!("CONFIG SET hash-max-listpack-entries {max_listpack_entries}"),
+            b"+OK\r\n",
+        );
+        let _ = execute_command_line(&processor, "DEL myhash").unwrap();
+        assert_command_response(
+            &processor,
+            "HSET myhash f1 v1 field1 value1 field2 value2 field3 value3",
+            b":4\r\n",
+        );
+
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 FIELDS 0 f1",
+            b"-ERR Parameter numFields should be greater than 0\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 FIELDS -1 f1",
+            b"-ERR Parameter numFields should be greater than 0\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HSETEX myhash FIELDS 0 f1 v1 EX 60",
+            b"-ERR invalid number of fields\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HGETEX myhash FIELDS 0 f1 EX 60",
+            b"-ERR invalid number of fields\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 2 f1 f2",
+            b"-ERR unknown argument\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HSETEX myhash EX 60 2 f1 v1 f2 v2",
+            b"-ERR unknown argument\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash NX FIELDS 1 f1",
+            b"-ERR value is not an integer or out of range\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HPEXPIRE myhash FIELDS 1 f1 XX",
+            b"-ERR value is not an integer or out of range\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 NX XX FIELDS 1 f1",
+            b"-ERR Multiple condition flags specified\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HPEXPIRE myhash 5000 GT LT FIELDS 1 f1",
+            b"-ERR Multiple condition flags specified\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 FIELDS 1 f1 NX XX",
+            b"-ERR Multiple condition flags specified\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HPEXPIRE myhash 5000 FIELDS 1 f1 FIELDS 1 f2",
+            b"-ERR FIELDS keyword specified multiple times\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HPEXPIRE myhash 7200000 FIELDS 3 field1 field2 field3 field4 field5",
+            b"-ERR unknown argument\r\n",
+        );
+
+        let ttl = parse_integer_array_response(
+            &execute_command_line(&processor, "HTTL myhash FIELDS 4 f1 field1 field2 field3")
+                .unwrap(),
+        );
+        assert_eq!(ttl.len(), 4, "{encoding_name}");
+        assert_eq!(ttl, vec![-1, -1, -1, -1], "{encoding_name}");
+    }
+}
+
+#[test]
+fn hash_field_expire_complex_and_backward_compatibility_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    for (encoding_name, max_listpack_entries) in [("listpackex", 512usize), ("hashtable", 0)] {
+        assert_command_response(
+            &processor,
+            &format!("CONFIG SET hash-max-listpack-entries {max_listpack_entries}"),
+            b"+OK\r\n",
+        );
+
+        let mut hset_command = String::from("HSET myhash");
+        for i in 1..=20 {
+            hset_command.push_str(&format!(" field{i} value{i}"));
+        }
+        let _ = execute_command_line(&processor, "DEL myhash").unwrap();
+        assert_command_integer(&processor, &hset_command, 20);
+
+        let mut first_ten_fields = String::new();
+        for i in 1..=10 {
+            first_ten_fields.push_str(&format!(" field{i}"));
+        }
+        let expire_ten = execute_command_line(
+            &processor,
+            &format!("HEXPIRE myhash 3600 NX FIELDS 10{first_ten_fields}"),
+        )
+        .unwrap();
+        assert_eq!(
+            parse_integer_array_response(&expire_ten),
+            vec![1; 10],
+            "{encoding_name}",
+        );
+
+        let expire_next_five = execute_command_line(
+            &processor,
+            "HPEXPIRE myhash 3600000 NX FIELDS 5 field11 field12 field13 field14 field15",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_integer_array_response(&expire_next_five),
+            vec![1; 5],
+            "{encoding_name}",
+        );
+        let refresh_next_five = execute_command_line(
+            &processor,
+            "HPEXPIRE myhash 7200000 XX FIELDS 5 field11 field12 field13 field14 field15",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_integer_array_response(&refresh_next_five),
+            vec![1; 5],
+            "{encoding_name}",
+        );
+        let gt_first_three = execute_command_line(
+            &processor,
+            "HEXPIRE myhash 7200 GT FIELDS 3 field1 field2 field3",
+        )
+        .unwrap();
+        assert_eq!(
+            parse_integer_array_response(&gt_first_three),
+            vec![1; 3],
+            "{encoding_name}",
+        );
+
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 3600 FIELDS 15 field1 field2 field3",
+            b"-ERR wrong number of arguments for 'hexpire' command\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HPEXPIRE myhash 7200000 FIELDS 3 field1 field2 field3 field4 field5",
+            b"-ERR unknown argument\r\n",
+        );
+
+        let mut first_fifteen_fields = String::new();
+        for i in 1..=15 {
+            first_fifteen_fields.push_str(&format!(" field{i}"));
+        }
+        let ttl_result = parse_integer_array_response(
+            &execute_command_line(
+                &processor,
+                &format!("HTTL myhash FIELDS 15{first_fifteen_fields}"),
+            )
+            .unwrap(),
+        );
+        assert_eq!(ttl_result.len(), 15, "{encoding_name}");
+        assert!(ttl_result.iter().all(|ttl| *ttl > 0), "{encoding_name}");
+
+        assert_command_response(&processor, "DEL myhash", b":1\r\n");
+        assert_command_response(&processor, "HSET myhash f1 v1 f2 v2 f3 v3", b":3\r\n");
+        assert_eq!(
+            parse_integer_array_response(
+                &execute_command_line(&processor, "HEXPIRE myhash 60 FIELDS 2 f1 f2").unwrap(),
+            ),
+            vec![1, 1],
+            "{encoding_name}",
+        );
+        assert_eq!(
+            parse_integer_array_response(
+                &execute_command_line(&processor, "HPEXPIRE myhash 5000 NX FIELDS 1 f3").unwrap(),
+            ),
+            vec![1],
+            "{encoding_name}",
+        );
+        let future_seconds = current_unix_time_millis()
+            .unwrap()
+            .checked_div(1000)
+            .unwrap()
+            + 300;
+        assert_eq!(
+            parse_integer_array_response(
+                &execute_command_line(
+                    &processor,
+                    &format!("HEXPIREAT myhash {future_seconds} XX FIELDS 1 f1"),
+                )
+                .unwrap(),
+            ),
+            vec![1],
+            "{encoding_name}",
+        );
+
+        assert_command_response(&processor, "DEL myhash", b":1\r\n");
+        assert_command_integer(&processor, "HSETEX myhash EX 60 FIELDS 2 f1 v1 f2 v2", 1);
+        assert_command_response(
+            &processor,
+            "HGETEX myhash PX 5000 FIELDS 2 f1 f2",
+            b"*2\r\n$2\r\nv1\r\n$2\r\nv2\r\n",
+        );
+
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 FIELDS 0 f1",
+            b"-ERR Parameter numFields should be greater than 0\r\n",
+        );
+        assert_command_error(
+            &processor,
+            "HEXPIRE myhash 60 2 f1 f2",
+            b"-ERR unknown argument\r\n",
+        );
+    }
+}
+
+#[test]
 fn hgetall_returns_map_in_resp3_and_flat_array_in_resp2() {
     let processor = RequestProcessor::new().unwrap();
     assert_command_response(&processor, "HSET mh f1 v1 f2 v2", b":2\r\n");
