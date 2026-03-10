@@ -1172,6 +1172,13 @@ struct RunningScriptState {
     thread_id: std::thread::ThreadId,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ScriptReplicationEffect {
+    pub(crate) command: CommandId,
+    pub(crate) frame: Vec<u8>,
+    pub(crate) response: Vec<u8>,
+}
+
 #[derive(Debug, Default)]
 struct FunctionRegistry {
     functions: HashMap<String, LoadedFunctionDescriptor>,
@@ -1794,6 +1801,7 @@ pub struct RequestProcessor {
     key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<RedisKey>>,
+    script_replication_effects: Mutex<Vec<ScriptReplicationEffect>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
     script_cache_insertion_order: Mutex<VecDeque<String>>,
     script_cache_hits: AtomicU64,
@@ -2088,6 +2096,7 @@ impl RequestProcessor {
             key_lfu_frequency: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
+            script_replication_effects: Mutex::new(Vec::new()),
             script_cache: Mutex::new(HashMap::new()),
             script_cache_insertion_order: Mutex::new(VecDeque::new()),
             script_cache_hits: AtomicU64::new(0),
@@ -3498,6 +3507,36 @@ impl RequestProcessor {
 
     pub(crate) fn take_lazy_expired_keys_for_replication(&self) -> Vec<RedisKey> {
         let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() else {
+            return Vec::new();
+        };
+        std::mem::take(&mut *pending)
+    }
+
+    pub(crate) fn clear_script_replication_effects(&self) {
+        let Ok(mut pending) = self.script_replication_effects.lock() else {
+            return;
+        };
+        pending.clear();
+    }
+
+    pub(crate) fn enqueue_script_replication_effect(
+        &self,
+        command: CommandId,
+        frame: Vec<u8>,
+        response: Vec<u8>,
+    ) {
+        let Ok(mut pending) = self.script_replication_effects.lock() else {
+            return;
+        };
+        pending.push(ScriptReplicationEffect {
+            command,
+            frame,
+            response,
+        });
+    }
+
+    pub(crate) fn take_script_replication_effects(&self) -> Vec<ScriptReplicationEffect> {
+        let Ok(mut pending) = self.script_replication_effects.lock() else {
             return Vec::new();
         };
         std::mem::take(&mut *pending)

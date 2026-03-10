@@ -2267,7 +2267,7 @@ pub(crate) async fn handle_connection(
                             stream.write_all(&responses).await?;
                             responses.clear();
                         }
-                        let mut replication_frame: Option<Vec<u8>> = None;
+                        let mut replication_frames: Vec<Vec<u8>> = Vec::new();
                         let mut wait_for_blocking_progress = false;
                         let blocked_before = if command_mutating {
                             processor.blocked_clients()
@@ -2357,14 +2357,21 @@ pub(crate) async fn handle_connection(
                                     &metrics,
                                 );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);
-                                if blocking_outcome.should_replicate {
-                                    replication_frame = replication_frame_for_command(
+                                if command_uses_script_effect_replication(command) {
+                                    replication_frames = take_script_effect_replication_frames(
+                                        &processor,
+                                        max_resp_arguments,
+                                    );
+                                } else if blocking_outcome.should_replicate {
+                                    if let Some(replication_frame) = replication_frame_for_command(
                                         &processor,
                                         command,
                                         &args[..argument_count],
                                         &blocking_outcome.frame_response,
                                         frame,
-                                    );
+                                    ) {
+                                        replication_frames.push(replication_frame);
+                                    }
                                 }
                             }
                             Err(OwnerThreadExecutionError::Request(error)) => {
@@ -2412,13 +2419,15 @@ pub(crate) async fn handle_connection(
                                 published_replication_write = true;
                             }
                         }
-                        if let Some(frame_to_replicate) = replication_frame.as_ref() {
+                        if !replication_frames.is_empty() {
                             if !published_select {
                                 publish_select_if_needed(&replication, client_state.selected_db);
                             }
-                            processor.record_rdb_change(1);
-                            replication.publish_write_frame(frame_to_replicate);
-                            published_replication_write = true;
+                            for frame_to_replicate in &replication_frames {
+                                processor.record_rdb_change(1);
+                                replication.publish_write_frame(frame_to_replicate);
+                                published_replication_write = true;
+                            }
                         }
                         if published_replication_write {
                             wait_target_offset_for_connection =
@@ -3387,6 +3396,18 @@ fn publish_transaction_replication_frames(
     Some(replication.current_master_repl_offset())
 }
 
+fn command_uses_script_effect_replication(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Eval
+            | CommandId::EvalRo
+            | CommandId::Evalsha
+            | CommandId::EvalshaRo
+            | CommandId::Fcall
+            | CommandId::FcallRo
+    )
+}
+
 fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Vec<Vec<u8>> {
     if frame_response == b"*0\r\n" {
         return Vec::new();
@@ -3446,6 +3467,77 @@ fn xreadgroup_replication_frames(args: &[ArgSlice], frame_response: &[u8]) -> Ve
         b"0",
     ]));
     frames
+}
+
+fn take_script_effect_replication_frames(
+    processor: &RequestProcessor,
+    max_resp_arguments: usize,
+) -> Vec<Vec<u8>> {
+    let effects = processor.take_script_replication_effects();
+    if effects.is_empty() {
+        return Vec::new();
+    }
+
+    let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
+    let mut replication_frames = Vec::new();
+    for effect in effects {
+        if effect.frame.is_empty() || resp_is_error(&effect.response) {
+            continue;
+        }
+        let Ok(meta) =
+            parse_resp_command_arg_slices_dynamic(&effect.frame, &mut args, max_resp_arguments)
+        else {
+            continue;
+        };
+        if meta.bytes_consumed != effect.frame.len() || meta.argument_count == 0 {
+            continue;
+        }
+
+        let subcommand = if meta.argument_count > 1 {
+            Some(arg_slice_bytes(&args[1]))
+        } else {
+            None
+        };
+        let command_mutating = command_is_effectively_mutating(effect.command, subcommand);
+        if !(command_mutating && transaction_command_had_effect(effect.command, &effect.response)) {
+            continue;
+        }
+
+        let Some(replication_frame) = script_effect_replication_frame_for_command(
+            processor,
+            effect.command,
+            &args[..meta.argument_count],
+            &effect.response,
+            &effect.frame,
+        ) else {
+            continue;
+        };
+        replication_frames.push(replication_frame);
+    }
+    replication_frames
+}
+
+fn script_effect_replication_frame_for_command(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    match command {
+        CommandId::Spop => {
+            rewrite_script_spop_replication_frame(args, frame_response, original_frame)
+        }
+        CommandId::Expire | CommandId::Pexpire | CommandId::Expireat | CommandId::Pexpireat => {
+            rewrite_script_expire_family_replication_frame(processor, args, frame_response)
+        }
+        CommandId::Incrbyfloat => {
+            rewrite_script_incrbyfloat_replication_frame(args, frame_response, original_frame)
+        }
+        _ => {
+            replication_frame_for_command(processor, command, args, frame_response, original_frame)
+        }
+    }
 }
 
 fn script_eval_effect_replication_frame(
@@ -4928,6 +5020,10 @@ fn replication_frame_for_command(
         return rewrite_getex_replication_frame(processor, args, frame_response, original_frame);
     }
 
+    if command == CommandId::Incrbyfloat {
+        return rewrite_incrbyfloat_replication_frame(args, frame_response, original_frame);
+    }
+
     if command == CommandId::Getdel {
         // GETDEL returns null when the key does not exist; no side-effect, so
         // skip replication.  When the key existed the value was returned and
@@ -5160,6 +5256,69 @@ fn rewrite_getex_replication_frame(
     Some(original_frame.to_vec())
 }
 
+fn rewrite_incrbyfloat_replication_frame(
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    let Some(key_arg) = args.get(1) else {
+        return Some(original_frame.to_vec());
+    };
+    let parsed = match parse_resp_bulk_string(frame_response, 0) {
+        Some(parsed) => parsed,
+        None => return Some(original_frame.to_vec()),
+    };
+    Some(encode_resp_frame_slices(&[
+        b"SET",
+        arg_slice_bytes(key_arg),
+        parsed.value,
+        b"KEEPTTL",
+    ]))
+}
+
+fn rewrite_script_incrbyfloat_replication_frame(
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    let Some(key_arg) = args.get(1) else {
+        return Some(original_frame.to_vec());
+    };
+    let parsed = match parse_resp_bulk_string(frame_response, 0) {
+        Some(parsed) => parsed,
+        None => return Some(original_frame.to_vec()),
+    };
+    Some(encode_resp_frame_slices(&[
+        b"set",
+        arg_slice_bytes(key_arg),
+        parsed.value,
+        b"KEEPTTL",
+    ]))
+}
+
+fn rewrite_script_expire_family_replication_frame(
+    processor: &RequestProcessor,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+) -> Option<Vec<u8>> {
+    if parse_resp_integer(frame_response) != Some(1) {
+        return None;
+    }
+    let key = args.get(1).map(arg_slice_bytes)?;
+
+    match processor.key_exists_any(key) {
+        Ok(false) => Some(encode_resp_frame_slices(&[b"del", key])),
+        Ok(true) => processor
+            .expiration_unix_millis_for_key(key)
+            .map(|expiration_unix_millis| {
+                let mut expiration_digits = [0u8; 20];
+                let expiration = u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
+                encode_resp_frame_slices(&[b"pexpireat", key, expiration])
+            }),
+        Err(_) => None,
+    }
+}
+
 fn rewrite_restore_replication_frame(
     processor: &RequestProcessor,
     args: &[ArgSlice],
@@ -5260,6 +5419,33 @@ fn rewrite_spop_replication_frame(
         }
         Err(_) => Some(original_frame.to_vec()),
     }
+}
+
+fn rewrite_script_spop_replication_frame(
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    original_frame: &[u8],
+) -> Option<Vec<u8>> {
+    let Some(key_arg) = args.get(1) else {
+        return Some(original_frame.to_vec());
+    };
+    let members = match parse_spop_response_members(frame_response) {
+        Some(members) => members,
+        None => return Some(original_frame.to_vec()),
+    };
+    if members.is_empty() {
+        return None;
+    }
+
+    let key = arg_slice_bytes(key_arg);
+    let mut rewritten = Vec::new();
+    append_array_length_frame(&mut rewritten, members.len() + 2);
+    append_bulk_string_frame(&mut rewritten, b"srem");
+    append_bulk_string_frame(&mut rewritten, key);
+    for member in members {
+        append_bulk_string_frame(&mut rewritten, &member);
+    }
+    Some(rewritten)
 }
 
 fn rewrite_hgetdel_replication_frame(

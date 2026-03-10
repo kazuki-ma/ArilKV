@@ -6820,6 +6820,320 @@ async fn sync_replication_stream_rewrites_hgetdel_as_hdel_like_redis_external_sc
 }
 
 #[tokio::test]
+async fn sync_replication_stream_rewrites_script_spop_commands_like_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"myset", b"ppp"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"myset"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"myset", b"a", b"b", b"c"]),
+        b":3\r\n",
+    )
+    .await;
+
+    let first_spop = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('spop', 'myset')", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(first_spop, RespSocketValue::Bulk(ref payload) if !payload.is_empty()),
+        "expected non-empty bulk reply from scripted SPOP, got {first_spop:?}"
+    );
+
+    let second_spop = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('spop', 'myset', 1)", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    match second_spop {
+        RespSocketValue::Array(items) => {
+            assert_eq!(items.len(), 1);
+            assert!(!resp_socket_bulk(&items[0]).is_empty());
+        }
+        other => panic!("expected single-item array reply from scripted SPOP count, got {other:?}"),
+    }
+
+    let third_spop = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.call('spop', KEYS[1])",
+            b"1",
+            b"myset",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(third_spop, RespSocketValue::Bulk(ref payload) if !payload.is_empty()),
+        "expected non-empty bulk reply from keyed scripted SPOP, got {third_spop:?}"
+    );
+
+    let empty_spop = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.call('spop', KEYS[1])",
+            b"1",
+            b"myset",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(empty_spop, RespSocketValue::Null);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"trailingkey", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"0".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SADD".to_vec(), b"myset".to_vec(), b"ppp".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"DEL".to_vec(), b"myset".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![
+            b"SADD".to_vec(),
+            b"myset".to_vec(),
+            b"a".to_vec(),
+            b"b".to_vec(),
+            b"c".to_vec(),
+        ]
+    );
+
+    let mut popped_members = Vec::new();
+    for _ in 0..3 {
+        let command =
+            read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1))
+                .await;
+        assert_eq!(command.len(), 3);
+        assert_eq!(command[0], b"srem");
+        assert_eq!(command[1], b"myset");
+        popped_members.push(command[2].clone());
+    }
+    popped_members.sort();
+    assert_eq!(
+        popped_members,
+        vec![b"a".to_vec(), b"b".to_vec(), b"c".to_vec()]
+    );
+
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SET".to_vec(), b"trailingkey".to_vec(), b"1".to_vec()]
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_rewrites_script_expire_and_argv_expansion_like_external_scenarios()
+{
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"expirekey", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let expire_result = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.call('expire', KEYS[1], ARGV[1])",
+            b"1",
+            b"expirekey",
+            b"3",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer(&expire_result), 1);
+
+    let hmget_result = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.call('hmget', KEYS[1], 1, 2, 3)",
+            b"1",
+            b"key",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let hmget_values = resp_socket_array(&hmget_result);
+    assert_eq!(hmget_values.len(), 3);
+    assert!(
+        hmget_values
+            .iter()
+            .all(|value| *value == RespSocketValue::Null)
+    );
+
+    let incrbyfloat_result = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.call('incrbyfloat', KEYS[1], 1)",
+            b"1",
+            b"key",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&incrbyfloat_result), b"1");
+
+    let set_keep_ttl_result = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.call('set', KEYS[1], '1', 'KEEPTTL')",
+            b"1",
+            b"key",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&set_keep_ttl_result), b"OK");
+
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"0".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SET".to_vec(), b"expirekey".to_vec(), b"1".to_vec()]
+    );
+
+    let expire_command =
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert_eq!(expire_command.len(), 3);
+    assert_eq!(expire_command[0], b"pexpireat");
+    assert_eq!(expire_command[1], b"expirekey");
+    assert!(
+        std::str::from_utf8(&expire_command[2])
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
+
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![
+            b"set".to_vec(),
+            b"key".to_vec(),
+            b"1".to_vec(),
+            b"KEEPTTL".to_vec(),
+        ]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![
+            b"set".to_vec(),
+            b"key".to_vec(),
+            b"1".to_vec(),
+            b"KEEPTTL".to_vec(),
+        ]
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_rewrites_delex_as_del_like_redis_external_scenario() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -12104,6 +12418,17 @@ fn resp_socket_integer_array(value: &RespSocketValue) -> Vec<i64> {
     resp_socket_array(value)
         .iter()
         .map(resp_socket_integer)
+        .collect()
+}
+
+async fn read_replication_command_with_timeout(
+    client: &mut TcpStream,
+    timeout: Duration,
+) -> Vec<Vec<u8>> {
+    let value = read_resp_value_with_timeout(client, timeout).await;
+    resp_socket_array(&value)
+        .iter()
+        .map(|item| resp_socket_bulk(item).to_vec())
         .collect()
 }
 

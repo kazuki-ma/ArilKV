@@ -42,13 +42,12 @@ const SCRIPT_FUNCTION_LOAD_TIMEOUT_ERROR_TEXT: &str = "ERR FUNCTION LOAD timeout
 const SCRIPT_KILLED_ERROR_TEXT: &str = "ERR script killed by user";
 const SCRIPT_INTERNAL_TRACKED_ERROR_KEY: &[u8] = b"\0garnet_tracked_error";
 const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
-/// Maximum number of results that `unpack()` is allowed to push onto the Lua
-/// stack. Matches the C-level `LUAI_MAXCSTACK` constant (8 000) used by the
-/// vendored Lua 5.1 runtime.  The vanilla `luaB_unpack` relies on signed
-/// integer overflow (undefined behaviour in C) to detect huge ranges; under
-/// optimised ARM64 builds the compiler may elide the safety check, leading to
-/// a SIGSEGV when the stack grows into unmapped memory.  By capping the range
-/// in Rust before the C code runs, we avoid the UB entirely.
+/// Conservative ceiling for results that the Rust `unpack()` wrapper will push
+/// onto the Lua stack.  The vanilla `luaB_unpack` relies on signed integer
+/// overflow (undefined behaviour in C) to detect huge ranges; under optimized
+/// ARM64 builds the compiler may elide that safety check, leading to SIGSEGV
+/// when the stack grows into unmapped memory.  By capping the range in Rust
+/// before the C code runs, we avoid the UB entirely.
 const LUA_UNPACK_MAX_RESULTS: i64 = 8_000;
 /// Maximum recursion depth when converting a Lua value to RESP.
 /// Matches Redis/Valkey behaviour: recursive tables produce nested `*1`
@@ -1409,6 +1408,7 @@ impl RequestProcessor {
                     return;
                 }
             };
+        self.clear_script_replication_effects();
         let lua = Lua::new();
         if let Err(error) = install_safe_unpack(&lua)
             .and_then(|()| install_safe_loadstring(&lua))
@@ -1669,6 +1669,7 @@ impl RequestProcessor {
                 return;
             }
         };
+        self.clear_script_replication_effects();
 
         let lua = Lua::new();
         if let Err(error) = install_safe_unpack(&lua)
@@ -2123,7 +2124,14 @@ impl RequestProcessor {
                 let rewritten = rewrite_script_error_message(&message);
                 lua_call_error_or_pcall_error(lua, call_mode, &rewritten)
             }
-            other => resp_frame_to_lua_value(lua, other),
+            other => {
+                self.enqueue_script_replication_effect(
+                    command,
+                    encode_script_call_frame(&arg_refs),
+                    response,
+                );
+                resp_frame_to_lua_value(lua, other)
+            }
         }
     }
 
@@ -2216,6 +2224,15 @@ impl RequestProcessor {
         )?;
         Ok(())
     }
+}
+
+fn encode_script_call_frame(parts: &[&[u8]]) -> Vec<u8> {
+    let mut output = Vec::new();
+    append_array_length(&mut output, parts.len());
+    for part in parts {
+        append_bulk_string(&mut output, part);
+    }
+    output
 }
 
 fn lua_error_is_timeout(error: &LuaError) -> bool {
