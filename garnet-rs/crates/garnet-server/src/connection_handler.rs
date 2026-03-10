@@ -179,6 +179,52 @@ fn parse_resp_single_integer_array(frame: &[u8]) -> Option<i64> {
     parse_i64_ascii_bytes(&frame[5..frame.len().saturating_sub(2)])
 }
 
+fn parse_resp_length_line(buffer: &[u8], prefix: u8) -> Option<(i64, usize)> {
+    if buffer.first().copied()? != prefix {
+        return None;
+    }
+    let mut cursor = 1usize;
+    while cursor + 1 < buffer.len() {
+        if buffer[cursor] == b'\r' && buffer[cursor + 1] == b'\n' {
+            let value = parse_i64_ascii_bytes(&buffer[1..cursor])?;
+            return Some((value, cursor + 2));
+        }
+        cursor += 1;
+    }
+    None
+}
+
+fn logical_query_buffer_bytes(buffer: &[u8]) -> usize {
+    let mut estimated = buffer.len();
+    let Some((array_len, mut cursor)) = parse_resp_length_line(buffer, b'*') else {
+        return estimated;
+    };
+    if array_len <= 0 {
+        return estimated;
+    }
+    let array_len = usize::try_from(array_len).ok().unwrap_or(usize::MAX);
+    for _ in 0..array_len {
+        if cursor >= buffer.len() {
+            return estimated;
+        }
+        let Some((bulk_len, bulk_header_len)) = parse_resp_length_line(&buffer[cursor..], b'$')
+        else {
+            return estimated;
+        };
+        if bulk_len < 0 {
+            return estimated;
+        }
+        let bulk_len = usize::try_from(bulk_len).ok().unwrap_or(usize::MAX);
+        let total_bulk_bytes = bulk_header_len
+            .checked_add(bulk_len)
+            .and_then(|value| value.checked_add(2))
+            .unwrap_or(usize::MAX);
+        estimated = estimated.max(cursor.saturating_add(total_bulk_bytes));
+        cursor = cursor.saturating_add(total_bulk_bytes);
+    }
+    estimated
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct ClusterSlotRange {
     start: u16,
@@ -2409,6 +2455,7 @@ pub(crate) async fn handle_connection(
             return replication.serve_downstream_replica(stream).await;
         }
 
+        let observed_query_buffer_bytes = logical_query_buffer_bytes(&receive_buffer);
         if consumed > 0 {
             receive_buffer.drain(..consumed);
         }
@@ -2416,10 +2463,8 @@ pub(crate) async fn handle_connection(
         // Update CLIENT LIST buffer tracking fields after draining consumed bytes.
         metrics.update_client_buffer_info(
             client_id,
+            observed_query_buffer_bytes,
             receive_buffer.len(),
-            receive_buffer
-                .capacity()
-                .saturating_sub(receive_buffer.len()),
             read_buffer.len(),
         );
 

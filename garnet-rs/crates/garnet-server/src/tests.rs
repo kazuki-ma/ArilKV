@@ -1176,6 +1176,270 @@ async fn reply_buffer_limits_match_external_scenario() {
 }
 
 #[tokio::test]
+async fn query_buffer_resizing_matches_external_scenarios() {
+    let timeout = Duration::from_secs(1);
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"hz", b"100"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let partial_name = "querybuf_partial";
+    let mut partial_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut partial_client,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", partial_name.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        query_buffer_total_for_named_client(&mut inspector, partial_name).await,
+        0
+    );
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"PAUSE-CRON", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    partial_client
+        .write_all(b"*3\r\n$3\r\nset\r\n$2\r\na")
+        .await
+        .unwrap();
+    let partial_deadline = Instant::now() + Duration::from_secs(1);
+    let mut partial_query_buffer = 0usize;
+    while Instant::now() < partial_deadline {
+        partial_query_buffer =
+            query_buffer_total_for_named_client(&mut inspector, partial_name).await;
+        if partial_query_buffer > 0 {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        partial_query_buffer > 0,
+        "client should start using a private query buffer"
+    );
+
+    partial_client.write_all(b"a\r\n$1\r\nb\r\n").await.unwrap();
+    let partial_set_reply = read_resp_line_with_timeout(&mut partial_client, timeout).await;
+    assert_eq!(partial_set_reply, b"+OK".to_vec());
+
+    let original_partial_query_buffer =
+        query_buffer_total_for_named_client(&mut inspector, partial_name).await;
+    assert!(
+        (16_384..=32_770).contains(&original_partial_query_buffer),
+        "unexpected private query buffer size after partial command: {original_partial_query_buffer}"
+    );
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"PAUSE-CRON", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let partial_shrink_deadline = Instant::now() + Duration::from_secs(5);
+    let mut partial_shrunk = false;
+    while Instant::now() < partial_shrink_deadline {
+        let idle_seconds = client_idle_seconds_for_named_client(&mut inspector, partial_name).await;
+        let query_buffer = query_buffer_total_for_named_client(&mut inspector, partial_name).await;
+        if idle_seconds >= 3 && query_buffer < original_partial_query_buffer {
+            partial_shrunk = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(partial_shrunk, "query buffer was not resized");
+    drop(partial_client);
+
+    let busy_name = "querybuf_busy";
+    let mut busy_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut busy_client,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", busy_name.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"PAUSE-CRON", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let large_value = vec![b'A'; 400_000];
+    send_and_expect(
+        &mut busy_client,
+        &encode_resp_command(&[b"SET", b"x", large_value.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let original_busy_query_buffer =
+        query_buffer_total_for_named_client(&mut inspector, busy_name).await;
+    assert!(
+        original_busy_query_buffer > 32_768,
+        "large query buffer should exceed resize threshold, got {original_busy_query_buffer}"
+    );
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"PAUSE-CRON", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let small_value = vec![b'A'; 100];
+    let busy_shrink_deadline = Instant::now() + Duration::from_secs(1);
+    while Instant::now() < busy_shrink_deadline {
+        send_and_expect(
+            &mut busy_client,
+            &encode_resp_command(&[b"SET", b"x", small_value.as_slice()]),
+            b"+OK\r\n",
+        )
+        .await;
+        let current_query_buffer =
+            query_buffer_total_for_named_client(&mut inspector, busy_name).await;
+        if current_query_buffer < original_busy_query_buffer {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    let final_busy_query_buffer =
+        query_buffer_total_for_named_client(&mut inspector, busy_name).await;
+    assert!(
+        final_busy_query_buffer > 0 && final_busy_query_buffer < original_busy_query_buffer,
+        "query buffer should shrink but remain private after recent small writes: {final_busy_query_buffer}"
+    );
+    drop(busy_client);
+
+    let fat_name = "querybuf_fat";
+    let mut fat_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut fat_client,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", fat_name.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"PAUSE-CRON", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    fat_client
+        .write_all(b"*3\r\n$3\r\nset\r\n$1\r\na\r\n$1000000\r\n")
+        .await
+        .unwrap();
+    let fat_deadline = Instant::now() + Duration::from_secs(1);
+    let mut fat_query_buffer = 0usize;
+    while Instant::now() < fat_deadline {
+        fat_query_buffer = query_buffer_total_for_named_client(&mut inspector, fat_name).await;
+        if fat_query_buffer > 1_000_000 {
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        fat_query_buffer > 1_000_000,
+        "client should start using a large private query buffer"
+    );
+
+    fat_client.write_all(b"a").await.unwrap();
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"PAUSE-CRON", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    sleep(Duration::from_millis(120)).await;
+    assert!(
+        query_buffer_total_for_named_client(&mut inspector, fat_name).await > 1_000_000,
+        "query buffer should not be resized when client idle time is smaller than 2 seconds"
+    );
+
+    let fat_shrink_deadline = Instant::now() + Duration::from_secs(5);
+    let mut fat_shrunk = false;
+    while Instant::now() < fat_shrink_deadline {
+        let idle_seconds = client_idle_seconds_for_named_client(&mut inspector, fat_name).await;
+        let query_buffer = query_buffer_total_for_named_client(&mut inspector, fat_name).await;
+        if idle_seconds >= 3 && query_buffer < 1_000_000 {
+            fat_shrunk = true;
+            break;
+        }
+        sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        fat_shrunk,
+        "query buffer should be resized when client idle time is bigger than 2 seconds"
+    );
+    drop(fat_client);
+
+    let reusable_name = "querybuf_reusable";
+    let mut reusable_client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut reusable_client,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", reusable_name.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let reusable_payload = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let reusable_payload_text = String::from_utf8(reusable_payload).unwrap();
+    let reusable_client_line = client_list_line_with_name(&reusable_payload_text, reusable_name)
+        .unwrap_or_else(|| {
+            panic!("client named `{reusable_name}` not found in CLIENT LIST payload")
+        });
+    assert!(
+        reusable_client_line.contains(" qbuf=0 qbuf-free=0 ")
+            && reusable_client_line.contains(" cmd=client|setname "),
+        "reusable query buffer line mismatch: {reusable_client_line}"
+    );
+
+    let io_threads = send_and_read_bulk_array_payloads(
+        &mut inspector,
+        &encode_resp_command(&[b"CONFIG", b"GET", b"io-threads"]),
+        timeout,
+    )
+    .await;
+    let client_list_line = client_list_line_with_command(&reusable_payload_text, "client|list")
+        .unwrap_or_else(|| panic!("CLIENT LIST response should include the executing client line"));
+    if io_threads
+        .get(1)
+        .is_some_and(|value| value.as_slice() == b"1")
+    {
+        assert!(
+            client_list_line.contains(" qbuf=26 qbuf-free="),
+            "CLIENT LIST should expose reusable query buffer bytes while executing: {client_list_line}"
+        );
+    } else {
+        assert!(
+            client_list_line.contains(" qbuf=0 qbuf-free="),
+            "CLIENT LIST should expose zero qbuf for reusable-buffer execution: {client_list_line}"
+        );
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sscan_shrink_regression_issue_4906_matches_external_scenario() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
@@ -11158,6 +11422,63 @@ async fn reply_buffer_size_for_named_client(client: &mut TcpStream, name: &str) 
         "client named `{name}` not found in CLIENT LIST payload: {}",
         String::from_utf8_lossy(&payload)
     );
+}
+
+async fn query_buffer_total_for_named_client(client: &mut TcpStream, name: &str) -> usize {
+    let payload = send_and_read_bulk_payload(
+        client,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let text = std::str::from_utf8(&payload).unwrap();
+    let line = client_list_line_with_name(text, name).unwrap_or_else(|| {
+        panic!(
+            "client named `{name}` not found in CLIENT LIST payload: {}",
+            String::from_utf8_lossy(&payload)
+        )
+    });
+    let qbuf = client_list_field_value(line, "qbuf")
+        .unwrap_or_else(|| panic!("qbuf field not found in {line}"))
+        .parse::<usize>()
+        .unwrap();
+    let qbuf_free = client_list_field_value(line, "qbuf-free")
+        .unwrap_or_else(|| panic!("qbuf-free field not found in {line}"))
+        .parse::<usize>()
+        .unwrap();
+    qbuf + qbuf_free
+}
+
+async fn client_idle_seconds_for_named_client(client: &mut TcpStream, name: &str) -> u64 {
+    let payload = send_and_read_bulk_payload(
+        client,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let text = std::str::from_utf8(&payload).unwrap();
+    let line = client_list_line_with_name(text, name).unwrap_or_else(|| {
+        panic!(
+            "client named `{name}` not found in CLIENT LIST payload: {}",
+            String::from_utf8_lossy(&payload)
+        )
+    });
+    client_list_field_value(line, "idle")
+        .unwrap_or_else(|| panic!("idle field not found in {line}"))
+        .parse::<u64>()
+        .unwrap()
+}
+
+fn client_list_line_with_name<'a>(payload: &'a str, name: &str) -> Option<&'a str> {
+    payload
+        .split("\r\n")
+        .find(|line| client_list_field_value(line, "name") == Some(name))
+}
+
+fn client_list_line_with_command<'a>(payload: &'a str, command: &str) -> Option<&'a str> {
+    payload
+        .split("\r\n")
+        .find(|line| client_list_field_value(line, "cmd") == Some(command))
 }
 
 fn client_list_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {

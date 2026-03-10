@@ -187,6 +187,8 @@ struct ClientRuntimeInfo {
     query_buffer_used: usize,
     /// Free bytes in the client's query (receive) buffer (capacity - len).
     query_buffer_free: usize,
+    /// Logical allocation of the private query buffer surfaced via CLIENT LIST.
+    query_buffer_capacity: usize,
     /// Allocated size of the client's read buffer.
     read_buffer_size: usize,
     /// Logical reply buffer size surfaced through CLIENT LIST rbs=.
@@ -201,6 +203,8 @@ struct ClientRuntimeInfo {
 const REPLY_BUFFER_MIN_BYTES: usize = 1024;
 const REPLY_BUFFER_CHUNK_BYTES: usize = 16 * 1024;
 const REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME_MILLIS: u64 = 5_000;
+const QUERY_BUFFER_REUSABLE_BYTES: usize = 16 * 1024;
+const QUERY_BUFFER_IDLE_SHRINK_AFTER: Duration = Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy)]
 struct ReplyBufferSettings {
@@ -280,12 +284,71 @@ impl ClientRuntimeInfo {
             total_commands: 0,
             query_buffer_used: 0,
             query_buffer_free: 0,
+            query_buffer_capacity: 0,
             read_buffer_size: 0,
             reply_buffer_size: REPLY_BUFFER_CHUNK_BYTES,
             reply_buffer_peak: 0,
             reply_buffer_peak_last_reset: now,
             selected_db: DbName::default(),
         }
+    }
+
+    fn observe_query_buffer_activity(
+        &mut self,
+        observed_bytes_before_drain: usize,
+        buffered_bytes_after_drain: usize,
+        read_buffer_size: usize,
+    ) {
+        self.read_buffer_size = read_buffer_size;
+
+        let observed_peak = observed_bytes_before_drain.max(buffered_bytes_after_drain);
+        let should_use_private_buffer = buffered_bytes_after_drain > 0
+            || observed_bytes_before_drain > QUERY_BUFFER_REUSABLE_BYTES;
+        if should_use_private_buffer {
+            let target_capacity = private_query_buffer_capacity_for(observed_peak);
+            if target_capacity > self.query_buffer_capacity {
+                self.query_buffer_capacity = target_capacity;
+            }
+        } else if self.query_buffer_capacity > 0 && observed_bytes_before_drain > 0 {
+            let target_capacity = private_query_buffer_capacity_for(observed_peak);
+            if target_capacity < self.query_buffer_capacity {
+                self.query_buffer_capacity = target_capacity;
+            }
+        }
+
+        if self.query_buffer_capacity == 0 {
+            self.query_buffer_used = 0;
+            self.query_buffer_free = 0;
+            return;
+        }
+
+        self.query_buffer_used = buffered_bytes_after_drain;
+        self.query_buffer_free = self
+            .query_buffer_capacity
+            .saturating_sub(buffered_bytes_after_drain);
+    }
+
+    fn apply_query_buffer_housekeeping(&mut self, now: Instant) {
+        if self.query_buffer_capacity == 0 {
+            self.query_buffer_used = 0;
+            self.query_buffer_free = 0;
+            return;
+        }
+
+        if now.duration_since(self.last_activity) >= QUERY_BUFFER_IDLE_SHRINK_AFTER {
+            if self.query_buffer_used == 0 {
+                self.query_buffer_capacity = 0;
+                self.query_buffer_used = 0;
+                self.query_buffer_free = 0;
+                return;
+            }
+
+            self.query_buffer_capacity = private_query_buffer_capacity_for(self.query_buffer_used);
+        }
+
+        self.query_buffer_free = self
+            .query_buffer_capacity
+            .saturating_sub(self.query_buffer_used);
     }
 
     fn observe_reply_bytes(&mut self, bytes: usize, settings: ReplyBufferSettings, now: Instant) {
@@ -362,6 +425,11 @@ impl Default for ServerMetrics {
             monitor_broadcast: broadcast::channel(4096).0,
         }
     }
+}
+
+fn private_query_buffer_capacity_for(observed_bytes: usize) -> usize {
+    let required = observed_bytes.max(QUERY_BUFFER_REUSABLE_BYTES);
+    required.checked_next_power_of_two().unwrap_or(required)
 }
 
 impl ServerMetrics {
@@ -530,16 +598,18 @@ impl ServerMetrics {
     pub fn update_client_buffer_info(
         &self,
         client_id: ClientId,
-        query_buffer_used: usize,
-        query_buffer_free: usize,
+        observed_bytes_before_drain: usize,
+        buffered_bytes_after_drain: usize,
         read_buffer_size: usize,
     ) {
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
-            client.query_buffer_used = query_buffer_used;
-            client.query_buffer_free = query_buffer_free;
-            client.read_buffer_size = read_buffer_size;
+            client.observe_query_buffer_activity(
+                observed_bytes_before_drain,
+                buffered_bytes_after_drain,
+                read_buffer_size,
+            );
         }
     }
 
@@ -667,6 +737,7 @@ impl ServerMetrics {
         if client.killed {
             return None;
         }
+        client.apply_query_buffer_housekeeping(now);
         let reply_buffer_size = client.apply_reply_buffer_housekeeping(settings, now);
         Some(render_client_line(
             client_id,
@@ -696,6 +767,7 @@ impl ServerMetrics {
             if !out.is_empty() {
                 out.extend_from_slice(b"\r\n");
             }
+            client.apply_query_buffer_housekeeping(now);
             let reply_buffer_size = client.apply_reply_buffer_housekeeping(settings, now);
             out.extend_from_slice(&render_client_line(
                 *id,
