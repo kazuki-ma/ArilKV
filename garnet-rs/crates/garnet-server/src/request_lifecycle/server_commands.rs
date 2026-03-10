@@ -247,7 +247,7 @@ const CLIENT_HELP_LINES: [&[u8]; 35] = [
     b"UNBLOCK <clientid> [TIMEOUT|ERROR]",
     b"    Unblock a client blocked by a blocking command.",
 ];
-const DEBUG_HELP_LINES: [&[u8]; 28] = [
+const DEBUG_HELP_LINES: [&[u8]; 30] = [
     b"DEBUG <subcommand> [<arg> [value] [opt] ...]",
     b"Available subcommands:",
     b"DIGEST",
@@ -262,6 +262,8 @@ const DEBUG_HELP_LINES: [&[u8]; 28] = [
     b"    Show low-level info about the given key.",
     b"PAUSE-CRON <0|1>",
     b"    Pause or resume active expiration cron sweep.",
+    b"POPULATE <count> [prefix] [size]",
+    b"    Create string keys named prefix:index without overwriting existing keys.",
     b"PROTOCOL <type>",
     b"    Return a sample of the specified RESP protocol type (ATTRIB|BIGNUM|TRUE|FALSE|VERBATIM).",
     b"RELOAD [NOSAVE|NOFLUSH|MERGE]",
@@ -1535,6 +1537,40 @@ impl RequestProcessor {
             std::thread::sleep(Duration::from_secs_f64(seconds));
             let latency_millis = (seconds * 1000.0).round() as u64;
             self.record_latency_event(b"command", latency_millis.max(1));
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+        if ascii_eq_ignore_case(subcommand, b"POPULATE") {
+            ensure_ranged_arity(
+                args,
+                3,
+                5,
+                "DEBUG",
+                "DEBUG POPULATE <count> [prefix] [size]",
+            )?;
+
+            let key_count = parse_debug_populate_number(args[2])?;
+            let key_prefix = if args.len() >= 4 { args[3] } else { b"key" };
+            let value_size = if args.len() == 5 {
+                let parsed = parse_debug_populate_number(args[4])?;
+                usize::try_from(parsed)
+                    .map_err(|_| RequestExecutionError::ValueOutOfRangePositive)?
+            } else {
+                0
+            };
+
+            for index in 0..key_count {
+                let key_name = encode_debug_populate_key_name(key_prefix, index);
+                let key = RedisKey::from(key_name.as_slice());
+                self.expire_key_if_needed(&key)?;
+                if self.key_exists_any(&key)? {
+                    continue;
+                }
+
+                let value = encode_debug_populate_value(index, value_size);
+                self.upsert_string_value_for_migration(&key, value.as_slice(), None)?;
+            }
+
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -5920,6 +5956,34 @@ fn parse_db_name_arg(value: &[u8]) -> Result<DbName, RequestExecutionError> {
     }
     let index = usize::try_from(index).map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
     Ok(DbName::new(index))
+}
+
+fn parse_debug_populate_number(value: &[u8]) -> Result<u64, RequestExecutionError> {
+    let parsed = parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+    if parsed < 0 {
+        return Err(RequestExecutionError::ValueOutOfRangePositive);
+    }
+    u64::try_from(parsed).map_err(|_| RequestExecutionError::ValueOutOfRangePositive)
+}
+
+fn encode_debug_populate_key_name(prefix: &[u8], index: u64) -> Vec<u8> {
+    let mut key = Vec::with_capacity(prefix.len() + 24);
+    key.extend_from_slice(prefix);
+    key.push(b':');
+    key.extend_from_slice(index.to_string().as_bytes());
+    key
+}
+
+fn encode_debug_populate_value(index: u64, value_size: usize) -> Vec<u8> {
+    let default_value = format!("value:{index}").into_bytes();
+    if value_size == 0 {
+        return default_value;
+    }
+
+    let mut value = vec![0u8; value_size];
+    let copy_len = default_value.len().min(value.len());
+    value[..copy_len].copy_from_slice(&default_value[..copy_len]);
+    value
 }
 
 fn split_client_addr_for_replication(addr: &[u8]) -> (String, String) {

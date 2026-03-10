@@ -11133,6 +11133,34 @@ fn debug_loadaof_returns_ok() {
 }
 
 #[test]
+fn debug_populate_creates_requested_string_keys_without_overwriting_existing_values() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET seed:1 keep", b"+OK\r\n");
+    assert_command_response(&processor, "DEBUG POPULATE 3 seed 4", b"+OK\r\n");
+    assert_command_integer(&processor, "DBSIZE", 3);
+    assert_command_response(&processor, "GET seed:0", b"$4\r\nvalu\r\n");
+    assert_command_response(&processor, "GET seed:1", b"$4\r\nkeep\r\n");
+    assert_command_integer(&processor, "STRLEN seed:2", 4);
+    assert_command_response(&processor, "GET seed:3", b"$-1\r\n");
+
+    assert_command_response(&processor, "DEBUG POPULATE 1", b"+OK\r\n");
+    assert_command_integer(&processor, "DBSIZE", 4);
+    assert_command_response(&processor, "GET key:0", b"$7\r\nvalue:0\r\n");
+
+    assert_command_error(
+        &processor,
+        "DEBUG POPULATE -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "DEBUG POPULATE 1 seed -1",
+        b"-ERR value is out of range, must be positive\r\n",
+    );
+}
+
+#[test]
 fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

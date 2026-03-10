@@ -12599,6 +12599,46 @@ async fn redis_cli_replica_mode_matches_external_scenario_when_repo_cli_is_avail
 }
 
 #[tokio::test]
+async fn debug_populate_matches_external_redis_cli_rdb_dump_precondition() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"key:1", b"keep"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"POPULATE", b"3", b"key", b"4"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"key:0"]),
+        b"$4\r\nvalu\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"key:1"]),
+        b"$4\r\nkeep\r\n",
+    )
+    .await;
+    let dbsize =
+        send_and_read_integer(&mut client, &encode_resp_command(&[b"DBSIZE"]), timeout).await;
+    assert_eq!(dbsize, 3);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
