@@ -275,9 +275,9 @@ pub(super) fn serialize_hash_object_payload(hash: &BTreeMap<Vec<u8>, Vec<u8>>) -
     encoded
 }
 
-pub(super) fn deserialize_hash_object_payload(
+pub(super) fn deserialize_hash_object_payload_entries(
     encoded: &[u8],
-) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
+) -> Option<Vec<(Vec<u8>, Vec<u8>)>> {
     let mut cursor = 0usize;
 
     fn take_u32(encoded: &[u8], cursor: &mut usize) -> Option<u32> {
@@ -290,7 +290,7 @@ pub(super) fn deserialize_hash_object_payload(
     }
 
     let count = take_u32(encoded, &mut cursor)? as usize;
-    let mut hash = BTreeMap::new();
+    let mut entries = Vec::with_capacity(count);
     for _ in 0..count {
         let field_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
         let field_end = cursor.checked_add(field_len)?;
@@ -302,11 +302,21 @@ pub(super) fn deserialize_hash_object_payload(
         let value = encoded.get(cursor..value_end)?.to_vec();
         cursor = value_end;
 
-        hash.insert(field, value);
+        entries.push((field, value));
     }
 
     if cursor != encoded.len() {
         return None;
+    }
+    Some(entries)
+}
+
+pub(super) fn deserialize_hash_object_payload(
+    encoded: &[u8],
+) -> Option<BTreeMap<Vec<u8>, Vec<u8>>> {
+    let mut hash = BTreeMap::new();
+    for (field, value) in deserialize_hash_object_payload_entries(encoded)? {
+        hash.insert(field, value);
     }
     Some(hash)
 }
@@ -383,12 +393,10 @@ pub(super) fn upsert_single_hash_field_payload(
 ) -> Option<HashPayloadUpsertResult> {
     let mut cursor = 0usize;
     let count = take_u32(encoded, &mut cursor)?;
-    let mut insert_offset = encoded.len();
     let mut update_value_len_offset = None;
     let mut update_value_end = 0usize;
 
     for _ in 0..count {
-        let entry_start = cursor;
         let field_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
         let field_end = cursor.checked_add(field_len)?;
         let existing_field = encoded.get(cursor..field_end)?;
@@ -400,18 +408,10 @@ pub(super) fn upsert_single_hash_field_payload(
         encoded.get(cursor..value_end)?;
         cursor = value_end;
 
-        match existing_field.cmp(field) {
-            std::cmp::Ordering::Equal => {
-                update_value_len_offset = Some(value_len_offset);
-                update_value_end = value_end;
-                break;
-            }
-            std::cmp::Ordering::Greater => {
-                if insert_offset == encoded.len() {
-                    insert_offset = entry_start;
-                }
-            }
-            std::cmp::Ordering::Less => {}
+        if existing_field == field {
+            update_value_len_offset = Some(value_len_offset);
+            update_value_end = value_end;
+            break;
         }
     }
 
@@ -439,9 +439,6 @@ pub(super) fn upsert_single_hash_field_payload(
 
     let field_len_u32 = u32::try_from(field.len()).ok()?;
     let next_count = count.checked_add(1)?;
-    if insert_offset < size_of::<u32>() || insert_offset > encoded.len() {
-        return None;
-    }
     let mut next = Vec::with_capacity(
         encoded
             .len()
@@ -450,12 +447,11 @@ pub(super) fn upsert_single_hash_field_payload(
             .checked_add(value.len())?,
     );
     next.extend_from_slice(&next_count.to_le_bytes());
-    next.extend_from_slice(&encoded[size_of::<u32>()..insert_offset]);
+    next.extend_from_slice(&encoded[size_of::<u32>()..]);
     next.extend_from_slice(&field_len_u32.to_le_bytes());
     next.extend_from_slice(field);
     next.extend_from_slice(&value_len_u32.to_le_bytes());
     next.extend_from_slice(value);
-    next.extend_from_slice(&encoded[insert_offset..]);
     Some(HashPayloadUpsertResult {
         payload: next,
         inserted: true,
@@ -488,15 +484,11 @@ pub(super) fn delete_single_hash_field_payload(
         encoded.get(cursor..value_end)?;
         cursor = value_end;
 
-        match existing_field.cmp(field) {
-            std::cmp::Ordering::Equal => {
-                found_entry_start = entry_start;
-                found_entry_end = value_end;
-                found = true;
-                break;
-            }
-            std::cmp::Ordering::Greater => break,
-            std::cmp::Ordering::Less => {}
+        if existing_field == field {
+            found_entry_start = entry_start;
+            found_entry_end = value_end;
+            found = true;
+            break;
         }
     }
 
@@ -544,67 +536,29 @@ pub(super) fn upsert_hash_fields_payload_batch(
         });
     }
 
-    let mut updates = BTreeMap::<Vec<u8>, &[u8]>::new();
+    let mut entries = deserialize_hash_object_payload_entries(encoded)?;
+    let mut inserted_count = 0usize;
     for (field, value) in field_values {
         u32::try_from(field.len()).ok()?;
         u32::try_from(value.len()).ok()?;
-        updates.insert((*field).to_vec(), *value);
-    }
-    let updates = updates.into_iter().collect::<Vec<_>>();
-
-    let mut cursor = 0usize;
-    let original_count = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-    let mut merged = Vec::with_capacity(encoded.len());
-    merged.extend_from_slice(&0u32.to_le_bytes());
-
-    let mut update_index = 0usize;
-    let mut inserted_count = 0usize;
-
-    for _ in 0..original_count {
-        let field_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let field_end = cursor.checked_add(field_len)?;
-        let existing_field = encoded.get(cursor..field_end)?;
-        cursor = field_end;
-
-        let value_len = usize::try_from(take_u32(encoded, &mut cursor)?).ok()?;
-        let value_end = cursor.checked_add(value_len)?;
-        let existing_value = encoded.get(cursor..value_end)?;
-        cursor = value_end;
-
-        while update_index < updates.len() && updates[update_index].0.as_slice() < existing_field {
-            append_hash_entry(
-                &mut merged,
-                updates[update_index].0.as_slice(),
-                updates[update_index].1,
-            )?;
-            inserted_count = inserted_count.checked_add(1)?;
-            update_index += 1;
-        }
-
-        if update_index < updates.len() && updates[update_index].0.as_slice() == existing_field {
-            append_hash_entry(&mut merged, existing_field, updates[update_index].1)?;
-            update_index += 1;
+        if let Some((_, existing_value)) = entries
+            .iter_mut()
+            .find(|(existing_field, _)| existing_field.as_slice() == *field)
+        {
+            *existing_value = (*value).to_vec();
         } else {
-            append_hash_entry(&mut merged, existing_field, existing_value)?;
+            entries.push(((*field).to_vec(), (*value).to_vec()));
+            inserted_count = inserted_count.checked_add(1)?;
         }
     }
-    if cursor != encoded.len() {
-        return None;
-    }
 
-    while update_index < updates.len() {
-        append_hash_entry(
-            &mut merged,
-            updates[update_index].0.as_slice(),
-            updates[update_index].1,
-        )?;
-        inserted_count = inserted_count.checked_add(1)?;
-        update_index += 1;
-    }
-
-    let merged_count = original_count.checked_add(inserted_count)?;
+    let merged_count = entries.len();
     let merged_count_u32 = u32::try_from(merged_count).ok()?;
-    merged[..size_of::<u32>()].copy_from_slice(&merged_count_u32.to_le_bytes());
+    let mut merged = Vec::new();
+    merged.extend_from_slice(&merged_count_u32.to_le_bytes());
+    for (field, value) in &entries {
+        append_hash_entry(&mut merged, field, value)?;
+    }
 
     Some(HashPayloadBatchUpsertResult {
         payload: merged,
@@ -1618,7 +1572,7 @@ mod tests {
     }
 
     #[test]
-    fn upsert_hash_fields_payload_batch_preserves_sorted_order_for_single_update() {
+    fn upsert_hash_fields_payload_batch_preserves_existing_order_for_single_update() {
         let mut map = BTreeMap::new();
         map.insert(b"b".to_vec(), b"2".to_vec());
         map.insert(b"d".to_vec(), b"4".to_vec());
@@ -1627,9 +1581,12 @@ mod tests {
         let inserted = upsert_hash_fields_payload_batch(&encoded, &[(b"a", b"1")])
             .expect("payload must stay decodable");
         assert_eq!(inserted.inserted, 1);
-        let decoded = deserialize_hash_object_payload(&inserted.payload).expect("decode inserted");
-        let fields = decoded.keys().cloned().collect::<Vec<_>>();
-        assert_eq!(fields, vec![b"a".to_vec(), b"b".to_vec(), b"d".to_vec()]);
+        let fields = deserialize_hash_object_payload_entries(&inserted.payload)
+            .expect("decode inserted")
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect::<Vec<_>>();
+        assert_eq!(fields, vec![b"b".to_vec(), b"d".to_vec(), b"a".to_vec()]);
 
         let updated = upsert_hash_fields_payload_batch(&inserted.payload, &[(b"b", b"22")])
             .expect("payload must stay decodable");
@@ -1681,7 +1638,8 @@ mod tests {
     }
 
     #[test]
-    fn upsert_hash_fields_payload_batch_merges_sorted_and_counts_unique_inserts() {
+    fn upsert_hash_fields_payload_batch_preserves_first_insertion_order_and_counts_unique_inserts()
+    {
         let mut map = BTreeMap::new();
         map.insert(b"b".to_vec(), b"2".to_vec());
         map.insert(b"d".to_vec(), b"4".to_vec());
@@ -1698,18 +1656,22 @@ mod tests {
             upsert_hash_fields_payload_batch(&encoded, &updates).expect("batch upsert must work");
         assert_eq!(merged.inserted, 3);
 
-        let decoded = deserialize_hash_object_payload(&merged.payload).expect("decode merged");
-        let fields = decoded.keys().cloned().collect::<Vec<_>>();
+        let fields = deserialize_hash_object_payload_entries(&merged.payload)
+            .expect("decode merged")
+            .into_iter()
+            .map(|(field, _)| field)
+            .collect::<Vec<_>>();
         assert_eq!(
             fields,
             vec![
-                b"a".to_vec(),
                 b"b".to_vec(),
-                b"c".to_vec(),
                 b"d".to_vec(),
+                b"c".to_vec(),
+                b"a".to_vec(),
                 b"e".to_vec()
             ]
         );
+        let decoded = deserialize_hash_object_payload(&merged.payload).expect("decode merged");
         assert_eq!(decoded.get(b"a".as_slice()), Some(&b"1".to_vec()));
         assert_eq!(decoded.get(b"b".as_slice()), Some(&b"22".to_vec()));
         assert_eq!(decoded.get(b"c".as_slice()), Some(&b"33".to_vec()));

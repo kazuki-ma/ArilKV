@@ -288,6 +288,9 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: ShardIndex,
     ) -> Result<bool, RequestExecutionError> {
+        if self.allow_access_expired() {
+            return Ok(false);
+        }
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return Ok(false);
         }

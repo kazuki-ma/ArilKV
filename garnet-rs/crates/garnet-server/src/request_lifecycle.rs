@@ -107,6 +107,7 @@ const DEFAULT_LIST_MAX_LISTPACK_SIZE: i64 = -2;
 /// beyond the normal listpack byte-budget).  Redis uses 0 as the disabled sentinel.
 const DEFAULT_QUICKLIST_PACKED_THRESHOLD: usize = 0;
 const DEFAULT_HASH_MAX_LISTPACK_ENTRIES: usize = 128;
+const DEFAULT_HASH_MAX_LISTPACK_VALUE: usize = 64;
 const DEFAULT_SET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_SET_MAX_LISTPACK_VALUE: usize = 64;
 const DEFAULT_SET_MAX_INTSET_ENTRIES: usize = 512;
@@ -1798,9 +1799,11 @@ pub struct RequestProcessor {
     /// quicklist encoding instead of listpack.
     quicklist_packed_threshold: AtomicUsize,
     hash_max_listpack_entries: AtomicUsize,
+    hash_max_listpack_value: AtomicUsize,
     set_max_listpack_entries: AtomicUsize,
     set_max_listpack_value: AtomicUsize,
     set_max_intset_entries: AtomicUsize,
+    allow_access_expired: AtomicBool,
     functions: KvSessionFunctions,
     object_functions: ObjectSessionFunctions,
     /// CLIENT PAUSE end time as milliseconds since UNIX epoch. 0 means not paused.
@@ -2073,9 +2076,11 @@ impl RequestProcessor {
             list_max_listpack_size: AtomicI64::new(DEFAULT_LIST_MAX_LISTPACK_SIZE),
             quicklist_packed_threshold: AtomicUsize::new(DEFAULT_QUICKLIST_PACKED_THRESHOLD),
             hash_max_listpack_entries: AtomicUsize::new(DEFAULT_HASH_MAX_LISTPACK_ENTRIES),
+            hash_max_listpack_value: AtomicUsize::new(DEFAULT_HASH_MAX_LISTPACK_VALUE),
             set_max_listpack_entries: AtomicUsize::new(DEFAULT_SET_MAX_LISTPACK_ENTRIES),
             set_max_listpack_value: AtomicUsize::new(DEFAULT_SET_MAX_LISTPACK_VALUE),
             set_max_intset_entries: AtomicUsize::new(DEFAULT_SET_MAX_INTSET_ENTRIES),
+            allow_access_expired: AtomicBool::new(false),
             functions: KvSessionFunctions,
             object_functions: ObjectSessionFunctions,
             client_pause_end_millis: AtomicU64::new(0),
@@ -4354,6 +4359,14 @@ impl RequestProcessor {
 
     pub(super) fn set_active_expire_enabled(&self, enabled: bool) {
         self.active_expire_enabled.store(enabled, Ordering::Release);
+    }
+
+    pub(super) fn allow_access_expired(&self) -> bool {
+        self.allow_access_expired.load(Ordering::Acquire)
+    }
+
+    pub(super) fn set_allow_access_expired(&self, enabled: bool) {
+        self.allow_access_expired.store(enabled, Ordering::Release);
     }
 
     pub(crate) fn debug_pause_cron(&self) -> bool {

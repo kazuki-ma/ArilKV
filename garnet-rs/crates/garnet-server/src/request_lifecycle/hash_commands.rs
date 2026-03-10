@@ -3,6 +3,7 @@ use super::value_codec::HashPayloadBatchGetDeleteResult;
 use super::value_codec::HashPayloadDeleteResult;
 use super::value_codec::delete_hash_fields_payload_batch;
 use super::value_codec::delete_single_hash_field_payload;
+use super::value_codec::deserialize_hash_object_payload_entries;
 use super::value_codec::get_and_delete_hash_fields_payload_batch;
 use super::value_codec::get_hash_fields_payload_batch;
 use super::value_codec::upsert_hash_fields_payload_batch;
@@ -156,6 +157,40 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
+        if !self.has_hash_field_expirations_for_key(key.as_slice()) {
+            self.expire_key_if_needed(&key)?;
+            let object = match self.object_read(&key)? {
+                Some(object) => object,
+                None => {
+                    if self.key_exists(key.as_slice())? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    if resp3 {
+                        append_map_length(response_out, 0);
+                    } else {
+                        append_array_length(response_out, 0);
+                    }
+                    return Ok(());
+                }
+            };
+            if object.object_type != HASH_OBJECT_TYPE_TAG {
+                return Err(RequestExecutionError::WrongType);
+            }
+            let entries =
+                deserialize_hash_object_payload_entries(&object.payload).ok_or_else(|| {
+                    storage_failure("handle_hgetall", "failed to deserialize hash payload")
+                })?;
+            if resp3 {
+                append_map_length(response_out, entries.len());
+            } else {
+                append_array_length(response_out, entries.len().saturating_mul(2));
+            }
+            for (field, value) in &entries {
+                append_bulk_string(response_out, field);
+                append_bulk_string(response_out, value);
+            }
+            return Ok(());
+        }
         let hash = match self.load_hash_object(&key)? {
             Some(hash) => hash,
             None => {

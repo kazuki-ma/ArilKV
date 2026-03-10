@@ -1724,6 +1724,167 @@ fn hash_field_expire_complex_and_backward_compatibility_match_external_scenarios
 }
 
 #[test]
+fn hash_object_encoding_and_allow_access_expired_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET hash-max-ziplist-value 8",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG GET hash-max-ziplist-value",
+        b"*2\r\n$22\r\nhash-max-ziplist-value\r\n$1\r\n8\r\n",
+    );
+
+    let _ = execute_command_line(&processor, "DEL smallhash").unwrap();
+    let _ = execute_command_line(&processor, "DEL bighash").unwrap();
+    assert_command_response(&processor, "HSET smallhash tmp 0", b":1\r\n");
+    assert_command_response(&processor, "HSET bighash tmp 0", b":1\r\n");
+    assert_command_response(
+        &processor,
+        "HINCRBYFLOAT smallhash tmp 0.000005",
+        b"$8\r\n0.000005\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "HINCRBYFLOAT bighash tmp 0.0000005",
+        b"$9\r\n0.0000005\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING smallhash",
+        b"$8\r\nlistpack\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING bighash",
+        b"$9\r\nhashtable\r\n",
+    );
+
+    let _ = execute_command_line(&processor, "DEL smallhash").unwrap();
+    let _ = execute_command_line(&processor, "DEL bighash").unwrap();
+    assert_command_response(
+        &processor,
+        "HINCRBYFLOAT smallhash abcdefgh 1",
+        b"$1\r\n1\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "HINCRBYFLOAT bighash abcdefghi 1",
+        b"$1\r\n1\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING smallhash",
+        b"$8\r\nlistpack\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING bighash",
+        b"$9\r\nhashtable\r\n",
+    );
+
+    assert_command_response(&processor, "DEBUG SET-ALLOW-ACCESS-EXPIRED 1", b"+OK\r\n");
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n");
+    assert_command_response(&processor, "FLUSHALL", b"+OK\r\n");
+    assert_command_response(&processor, "SET key1 value1", b"+OK\r\n");
+    assert_command_response(&processor, "PEXPIRE key1 1", b":1\r\n");
+    thread::sleep(Duration::from_millis(5));
+    assert_command_response(&processor, "KEYS *", b"*1\r\n$4\r\nkey1\r\n");
+    assert_command_response(&processor, "DEBUG SET-ALLOW-ACCESS-EXPIRED 0", b"+OK\r\n");
+    assert_command_response(&processor, "KEYS *", b"*0\r\n");
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 1", b"+OK\r\n");
+}
+
+#[test]
+fn hash_hgetall_preserves_payload_order_across_restore_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut fields = [ArgSlice::EMPTY; 16];
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET hash-max-ziplist-entries 1000000000",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG SET hash-max-ziplist-value 1000000000",
+        b"+OK\r\n",
+    );
+    let _ = execute_command_line(&processor, "DEL k").unwrap();
+    let _ = execute_command_line(&processor, "DEL kk").unwrap();
+
+    let long_31 = vec![b'x'; 31];
+    let long_8191 = vec![b'x'; 8191];
+    let long_65535 = vec![b'x'; 65535];
+    let hset_entries = vec![
+        (b"ZIP_INT_8B".as_slice(), b"127".as_slice()),
+        (b"ZIP_INT_16B".as_slice(), b"32767".as_slice()),
+        (b"ZIP_INT_32B".as_slice(), b"2147483647".as_slice()),
+        (b"ZIP_INT_64B".as_slice(), b"9223372036854775808".as_slice()),
+        (b"ZIP_INT_IMM_MIN".as_slice(), b"0".as_slice()),
+        (b"ZIP_INT_IMM_MAX".as_slice(), b"12".as_slice()),
+        (b"ZIP_STR_06B".as_slice(), long_31.as_slice()),
+        (b"ZIP_STR_14B".as_slice(), long_8191.as_slice()),
+        (b"ZIP_STR_32B".as_slice(), long_65535.as_slice()),
+    ];
+    for (field, value) in &hset_entries {
+        assert_eq!(
+            execute_frame(&processor, &encode_resp(&[b"HSET", b"k", field, value])),
+            b":1\r\n",
+        );
+    }
+
+    let expected_filtered = vec![
+        b"ZIP_INT_8B".to_vec(),
+        b"127".to_vec(),
+        b"ZIP_INT_16B".to_vec(),
+        b"32767".to_vec(),
+        b"ZIP_INT_32B".to_vec(),
+        b"2147483647".to_vec(),
+        b"ZIP_INT_64B".to_vec(),
+        b"9223372036854775808".to_vec(),
+        b"ZIP_INT_IMM_MIN".to_vec(),
+        b"0".to_vec(),
+        b"ZIP_INT_IMM_MAX".to_vec(),
+        b"12".to_vec(),
+    ];
+    let original_hgetall = parse_bulk_array_payloads(&execute_frame(
+        &processor,
+        &encode_resp(&[b"HGETALL", b"k"]),
+    ));
+    let filtered_original = original_hgetall
+        .chunks_exact(2)
+        .filter(|entry| !entry[0].starts_with(b"ZIP_STR_"))
+        .flat_map(|entry| entry.iter().cloned())
+        .collect::<Vec<_>>();
+    assert_eq!(filtered_original, expected_filtered);
+
+    let dump_payload =
+        parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"DUMP", b"k"]))).unwrap();
+    assert_command_response(
+        &processor,
+        "CONFIG SET hash-max-listpack-entries 2",
+        b"+OK\r\n",
+    );
+    let restore = encode_resp(&[b"RESTORE", b"kk", b"0", dump_payload.as_slice()]);
+    let meta = parse_resp_command_arg_slices(&restore, &mut fields).unwrap();
+    let mut response = Vec::new();
+    processor
+        .execute(&fields[..meta.argument_count], &mut response)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    let restored_hgetall = parse_bulk_array_payloads(&execute_frame(
+        &processor,
+        &encode_resp(&[b"HGETALL", b"kk"]),
+    ));
+    assert_eq!(restored_hgetall, original_hgetall);
+}
+
+#[test]
 fn hgetall_returns_map_in_resp3_and_flat_array_in_resp2() {
     let processor = RequestProcessor::new().unwrap();
     assert_command_response(&processor, "HSET mh f1 v1 f2 v2", b":2\r\n");

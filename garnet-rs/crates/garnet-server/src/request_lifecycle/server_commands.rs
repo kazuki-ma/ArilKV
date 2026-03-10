@@ -246,7 +246,7 @@ const CLIENT_HELP_LINES: [&[u8]; 35] = [
     b"UNBLOCK <clientid> [TIMEOUT|ERROR]",
     b"    Unblock a client blocked by a blocking command.",
 ];
-const DEBUG_HELP_LINES: [&[u8]; 26] = [
+const DEBUG_HELP_LINES: [&[u8]; 28] = [
     b"DEBUG <subcommand> [<arg> [value] [opt] ...]",
     b"Available subcommands:",
     b"DIGEST",
@@ -269,6 +269,8 @@ const DEBUG_HELP_LINES: [&[u8]; 26] = [
     b"    Control reply buffer settings.",
     b"SET-ACTIVE-EXPIRE <0|1>",
     b"    Enable or disable active expiration sweeps.",
+    b"SET-ALLOW-ACCESS-EXPIRED <0|1>",
+    b"    Allow commands to access expired keys without deleting them.",
     b"SET-DISABLE-DENY-SCRIPTS <0|1>",
     b"    Temporarily allow/disallow commands that are usually blocked from scripts.",
     b"SLEEP <seconds>",
@@ -1486,6 +1488,16 @@ impl RequestProcessor {
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
+        if ascii_eq_ignore_case(subcommand, b"SET-ALLOW-ACCESS-EXPIRED") {
+            require_exact_arity(args, 3, "DEBUG", "DEBUG SET-ALLOW-ACCESS-EXPIRED <0|1>")?;
+            let enabled = args[2];
+            if enabled != b"0" && enabled != b"1" {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            self.set_allow_access_expired(enabled == b"1");
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
         if ascii_eq_ignore_case(subcommand, b"LOADAOF") {
             require_exact_arity(args, 2, "DEBUG", "DEBUG LOADAOF")?;
             // Compatibility path: in-memory test mode has no persisted AOF replay boundary.
@@ -1585,6 +1597,7 @@ impl RequestProcessor {
             let zset_max = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
             let hash_max = self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let hash_max_value = self.hash_max_listpack_value.load(Ordering::Acquire);
             let set_max_lp = self.set_max_listpack_entries.load(Ordering::Acquire);
             let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
@@ -1602,6 +1615,7 @@ impl RequestProcessor {
                 zset_max,
                 list_max,
                 hash_max,
+                hash_max_value,
                 set_max_lp,
                 set_max_lp_value,
                 set_max_is,
@@ -1717,6 +1731,7 @@ impl RequestProcessor {
                 let zset_max = self.zset_max_listpack_entries.load(Ordering::Acquire);
                 let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
                 let hash_max = self.hash_max_listpack_entries.load(Ordering::Acquire);
+                let hash_max_value = self.hash_max_listpack_value.load(Ordering::Acquire);
                 let set_max_lp = self.set_max_listpack_entries.load(Ordering::Acquire);
                 let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
                 let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
@@ -1733,6 +1748,7 @@ impl RequestProcessor {
                     zset_max,
                     list_max,
                     hash_max,
+                    hash_max_value,
                     set_max_lp,
                     set_max_lp_value,
                     set_max_is,
@@ -1890,6 +1906,7 @@ impl RequestProcessor {
             let zset_max_listpack_entries = self.zset_max_listpack_entries.load(Ordering::Acquire);
             let list_max_listpack_size = self.list_max_listpack_size.load(Ordering::Acquire);
             let hash_max_listpack_entries = self.hash_max_listpack_entries.load(Ordering::Acquire);
+            let hash_max_listpack_value = self.hash_max_listpack_value.load(Ordering::Acquire);
             let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
             let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
@@ -1906,6 +1923,7 @@ impl RequestProcessor {
                 zset_max_listpack_entries,
                 list_max_listpack_size,
                 hash_max_listpack_entries,
+                hash_max_listpack_value,
                 set_max_listpack_entries,
                 set_max_listpack_value,
                 set_max_intset_entries,
@@ -1975,6 +1993,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "KEYS", "KEYS pattern")?;
         let pattern = args[1];
+        let allow_access_expired = self.allow_access_expired();
 
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
@@ -1982,6 +2001,13 @@ impl RequestProcessor {
         let mut matched = Vec::new();
         for key in keys {
             self.expire_key_if_needed(key.as_slice())?;
+
+            if allow_access_expired {
+                if redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
+                    matched.push(key);
+                }
+                continue;
+            }
 
             let string_exists = self.key_exists(key.as_slice())?;
             let object_exists = self.object_key_exists(key.as_slice())?;
@@ -3792,6 +3818,8 @@ impl RequestProcessor {
                     || parameter == b"slowlog-max-len"
                     || parameter == b"repl-backlog-size"
                     || parameter == b"repl-diskless-sync-delay"
+                    || parameter == b"hash-max-ziplist-entries"
+                    || parameter == b"hash-max-ziplist-value"
                     || parameter == b"hash-max-listpack-entries"
                     || parameter == b"hash-max-listpack-value"
                     || parameter == b"set-max-intset-entries"
@@ -3853,10 +3881,19 @@ impl RequestProcessor {
                         parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.list_max_listpack_size.store(parsed, Ordering::Release);
                     self.clear_all_forced_list_quicklist_encodings();
-                } else if parameter == b"hash-max-listpack-entries" {
+                } else if parameter == b"hash-max-ziplist-entries"
+                    || parameter == b"hash-max-listpack-entries"
+                {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.hash_max_listpack_entries
+                        .store(parsed as usize, Ordering::Release);
+                } else if parameter == b"hash-max-ziplist-value"
+                    || parameter == b"hash-max-listpack-value"
+                {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.hash_max_listpack_value
                         .store(parsed as usize, Ordering::Release);
                 } else if parameter == b"set-max-listpack-entries" {
                     let parsed =
@@ -3921,6 +3958,8 @@ impl RequestProcessor {
             let list_max_listpack_size_value = list_max_listpack_size.to_string();
             let hash_max_listpack_entries = self.hash_max_listpack_entries.load(Ordering::Acquire);
             let hash_max_listpack_entries_value = hash_max_listpack_entries.to_string();
+            let hash_max_listpack_value = self.hash_max_listpack_value.load(Ordering::Acquire);
+            let hash_max_listpack_value_value = hash_max_listpack_value.to_string();
             let set_max_listpack_entries = self.set_max_listpack_entries.load(Ordering::Acquire);
             let set_max_listpack_entries_value = set_max_listpack_entries.to_string();
             let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
@@ -3973,8 +4012,20 @@ impl RequestProcessor {
                 zset_max_listpack_entries_value.as_bytes().to_vec(),
             );
             config_map.insert(
+                b"hash-max-ziplist-entries".to_vec(),
+                hash_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
                 b"hash-max-listpack-entries".to_vec(),
                 hash_max_listpack_entries_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"hash-max-ziplist-value".to_vec(),
+                hash_max_listpack_value_value.as_bytes().to_vec(),
+            );
+            config_map.insert(
+                b"hash-max-listpack-value".to_vec(),
+                hash_max_listpack_value_value.as_bytes().to_vec(),
             );
             config_map.insert(
                 b"set-max-listpack-entries".to_vec(),
@@ -5338,6 +5389,7 @@ fn object_encoding_name(
     zset_listpack_max_entries: usize,
     list_max_listpack_size: i64,
     hash_listpack_max_entries: usize,
+    hash_listpack_max_value: usize,
     set_listpack_max_entries: usize,
     set_listpack_max_value: usize,
     set_intset_max_entries: usize,
@@ -5391,7 +5443,7 @@ fn object_encoding_name(
             })?;
             let compact = hash.len() <= hash_listpack_max_entries
                 && hash.iter().all(|(field, value)| {
-                    field.len() <= SMALL_ELEMENT_BYTES && value.len() <= SMALL_ELEMENT_BYTES
+                    field.len() <= hash_listpack_max_value && value.len() <= hash_listpack_max_value
                 });
             if compact {
                 if hash_has_field_expirations {
