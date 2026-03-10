@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=base-346214b8d1
+new_label=worktree-11.438-439
+base-346214b8d1.median_set_ops=69138.000
+base-346214b8d1.median_get_ops=68719.000
+base-346214b8d1.median_set_p99_ms=0.10300
+base-346214b8d1.median_get_p99_ms=0.12700
+worktree-11.438-439.median_set_ops=66776.000
+worktree-11.438-439.median_get_ops=72151.000
+worktree-11.438-439.median_set_p99_ms=0.15100
+worktree-11.438-439.median_get_p99_ms=0.11100
+delta.set_ops_pct=-3.42
+delta.get_ops_pct=4.99
+delta.set_p99_ms_pct=46.60
+delta.get_p99_ms_pct=-12.60

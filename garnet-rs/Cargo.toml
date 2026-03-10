@@ -27,3 +27,6 @@ thiserror = "2"
 criterion = "0.5"
 proptest = "1"
 ryu = "1"
+
+[patch.crates-io]
+lua-src = { path = "third_party/lua-src-550.0.0" }

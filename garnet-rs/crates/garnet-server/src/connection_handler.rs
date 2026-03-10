@@ -51,6 +51,7 @@ use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_scripting_family;
 use crate::command_spec::command_is_write_pause_affected_with_script;
 use crate::command_spec::command_transaction_control;
+use crate::command_spec::eval_script_shebang_flags;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
 use crate::connection_owner_routing::RoutedExecutionError;
 use crate::connection_owner_routing::capture_owned_frame_args;
@@ -2168,6 +2169,35 @@ pub(crate) async fn handle_connection(
                             }
                             continue;
                         }
+                        let requires_good_replicas = command_requires_good_replicas(
+                            processor.as_ref(),
+                            command,
+                            &args[..argument_count],
+                        );
+                        let min_replicas_to_write = processor.min_replicas_to_write();
+                        if requires_good_replicas
+                            && min_replicas_to_write > 0
+                            && replication.downstream_replica_count() < min_replicas_to_write
+                        {
+                            responses.extend_from_slice(
+                                b"-NOREPLICAS Not enough good replicas to write.\r\n",
+                            );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
+                            continue;
+                        }
                         // CLIENT PAUSE gating: block until pause expires or is cancelled.
                         // For EVAL, pass the script body to check shebang flags.
                         // For EVALSHA, look up the cached script body.
@@ -3085,6 +3115,7 @@ fn transaction_runtime_abort_reason(
     max_resp_arguments: usize,
 ) -> Result<Option<TransactionRuntimeAbortReason>, RequestExecutionError> {
     let mut has_mutating_command = false;
+    let mut requires_good_replicas = false;
     let replica_mode = replication.is_replica_mode();
     let reject_reads_on_stale_replica =
         replica_mode && !processor.replica_serve_stale_data() && !replication.is_upstream_link_up();
@@ -3110,6 +3141,9 @@ fn transaction_runtime_abort_reason(
             None
         };
         let command_mutating = command_is_effectively_mutating(command, subcommand);
+        if command_requires_good_replicas(processor, command, &args[..meta.argument_count]) {
+            requires_good_replicas = true;
+        }
         if command_mutating {
             has_mutating_command = true;
             if replica_mode {
@@ -3120,17 +3154,64 @@ fn transaction_runtime_abort_reason(
         }
     }
 
-    if !has_mutating_command {
+    if !has_mutating_command && !requires_good_replicas {
         return Ok(None);
     }
     let min_replicas_to_write = processor.min_replicas_to_write();
-    if min_replicas_to_write > 0 && replication.downstream_replica_count() < min_replicas_to_write {
+    if requires_good_replicas
+        && min_replicas_to_write > 0
+        && replication.downstream_replica_count() < min_replicas_to_write
+    {
         return Ok(Some(TransactionRuntimeAbortReason::NoReplicas));
     }
     if processor.should_reject_mutating_command_for_maxmemory(has_mutating_command)? {
         return Ok(Some(TransactionRuntimeAbortReason::Oom));
     }
     Ok(None)
+}
+
+fn command_requires_good_replicas(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> bool {
+    match command {
+        CommandId::Eval | CommandId::Evalsha => {
+            eval_script_requires_good_replicas(processor, command, args)
+        }
+        CommandId::EvalRo | CommandId::EvalshaRo | CommandId::FcallRo => false,
+        CommandId::Fcall => {
+            let Some(function_name) = args.get(1) else {
+                return true;
+            };
+            !processor.is_function_read_only(arg_slice_bytes(function_name))
+        }
+        _ => {
+            let subcommand = if args.len() > 1 {
+                Some(arg_slice_bytes(&args[1]))
+            } else {
+                None
+            };
+            command_is_effectively_mutating(command, subcommand)
+        }
+    }
+}
+
+fn eval_script_requires_good_replicas(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> bool {
+    let Some(script_source) = script_source_for_replication(processor, command, args) else {
+        return true;
+    };
+    let Ok(flags) = eval_script_shebang_flags(&script_source) else {
+        return true;
+    };
+    if flags.has_shebang {
+        return !flags.no_writes;
+    }
+    script_contains_mutating_call(&script_source)
 }
 
 fn transaction_runtime_execabort_message(reason: TransactionRuntimeAbortReason) -> &'static [u8] {

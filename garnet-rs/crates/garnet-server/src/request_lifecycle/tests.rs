@@ -14168,6 +14168,35 @@ fn eval_unpack_with_huge_range_returns_error_instead_of_crash() {
 }
 
 #[test]
+fn scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let script_body =
+        "local a = {} for i=1,7999 do a[i] = 1 end return redis.call('lpush', 'l', unpack(a))";
+
+    let eval_response = execute_frame(
+        &processor,
+        &encode_resp(&[b"EVAL", script_body.as_bytes(), b"1", b"l"]),
+    );
+    assert_eq!(eval_response, b":7999\r\n");
+    assert_command_response(&processor, "LLEN l", b":7999\r\n");
+
+    assert_command_response(&processor, "DEL l", b":1\r\n");
+
+    let library = format!(
+        "#!lua name=test\nredis.register_function('test', function(keys, args)\n{script_body}\nend)"
+    );
+    let loaded_library = execute_frame(
+        &processor,
+        &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", library.as_bytes()]),
+    );
+    assert_eq!(loaded_library, b"$4\r\ntest\r\n");
+
+    let fcall_response = execute_frame(&processor, &encode_resp(&[b"FCALL", b"test", b"1", b"l"]));
+    assert_eq!(fcall_response, b":7999\r\n");
+    assert_command_response(&processor, "LLEN l", b":7999\r\n");
+}
+
+#[test]
 fn evalsha_honours_no_writes_shebang_flag() {
     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
 

@@ -1,0 +1,333 @@
+diff --git a/TODO_AND_STATUS.md b/TODO_AND_STATUS.md
+index fc6209b57a..bfdd712f29 100644
+--- a/TODO_AND_STATUS.md
++++ b/TODO_AND_STATUS.md
+@@ -2,7 +2,7 @@
+ 
+ > **Last Updated**: 2026-03-10
+ > **Current Phase**: Phase 11 — Performance Benchmarking
+-> **Current Iteration**: 634
++> **Current Iteration**: 635
+ 
+ ---
+ 
+@@ -569,6 +569,7 @@
+ | 11.417 | Implement `stream-cgroups` claim/full-info/destroy follow-up (`XCLAIM`/`XAUTOCLAIM`/`XINFO FULL`/destroy unblock/AOF`) | DONE | 11.416 | Completed the remaining `stream-cgroups` compatibility slices. Exact external scenarios were first ported into Rust regressions for `XREADGROUP CLAIM`, dirty/AOF semantics, `XDELEX`/`XACKDEL`, `XINFO FULL`, consumer lag/`entries_read`, and finally legacy stream persistence load (`rdb_ver < 10/11`). Implementation now covers Redis-style `RESTORE` of legacy stream DUMP payloads for `RDB_TYPE_STREAM_LISTPACKS` / `_2` / `_3` (footer/version/CRC64 verification, LZF string decode, stream listpack parse, consumer-group/PEL reconstruction, old `entries_read` estimation). Full compatibility rerun at `garnet-rs/tests/interop/results/compatibility-report-20260309-095556/redis-runtest-external-full` confirms `Loading from legacy (Redis <= v6.2.x, rdb_ver < 10) persistence` and `Loading from legacy (Redis <= v7.0.x, rdb_ver < 11) persistence` are both `[ok]`, and `unexpected-failed-tests.txt` no longer contains `stream-cgroups` cases. Remaining stream-related failures are now outside this task, in generic `unit/type/stream` backlog (`XREAD ... +` / IDMP / IDMPAUTO / `XCFGSET`). |
+ | 11.418 | Close remaining generic `unit/type/stream` compatibility gaps (`XREAD ... +`, IDMP/IDMPAUTO, `XCFGSET`, timeout root cause) | IN_PROGRESS | 11.417 | `XREAD ... +`, `XREAD streamID edge (blocking)`, `XADD` ID overflow / future-max streamID edge, `XRANGE` exclusive ranges, Redis `XADD`/`XTRIM` trim-limit / approx / `ACKED` / `DELREF` semantics, and the remaining non-IDMP tail (`XSETID`, partial-ID max-seq, stream HELP arity, AOF rewrite after `XDEL` lastid) are now closed with exact Rust regressions. IDMP / IDMPAUTO / `XCFGSET` has started: first slice (syntax/basic dedup/per-stream config/XINFO counters) is now closed, and the remaining mass is the deeper persistence / expiry / maxsize / multi-producer / binary-safe coverage across the rest of the family. Keep using exact external scenario tests first, then close semantics on the current data model. Validation cadence for this backlog is now targeted-first: exact Rust regressions + targeted external probes each slice, with full `redis-runtest-external-full` reserved for milestone boundaries, shared-infra changes, contamination triage, or explicit requests. |
+ | 11.419 | Triage post-commit full compatibility residuals (`err=66`, `ignore=306`) into actionable backlog | DONE | 11.418 / 615 | Analyzed `docs/compatibility/compatibility-report.md` and raw external logs from `garnet-rs/tests/interop/results/compatibility-report-20260310-075152/redis-runtest-external-full`. Collapsed the remaining `err=66` into 11 actionable buckets: `zset` parser/algebra/routing (`27` total), `slowlog` (`14`), `hash-field-expire` error-text/parser (`10`), `hash` encoding/admin (`4`), `string` LCS + `MEMORY USAGE` (`4`), plus `replybufsize`, `scan`, `sort`, `list-3`, and `list` residuals. Also classified `ignore=306` into `Not supported on external server` (`257`), `Not supported on singledb` (`21`), `large memory flag not provided` (`19`), and a small tail of special harness skips. Added dedicated TODO tables below for both `err` and `ignore` lanes, plus explicit note that isolated `unit/scripting` (`94`) and `unit/querybuf` (`4`) remain out-of-band from the `err=66` full-run count. Docs-only iteration; no new validation rerun. |
++| 11.438 / 11.439 | Close isolated scripting `unpack` and `min-replicas` residuals with exact regressions and targeted isolated rerun | DONE | 11.437 | Bundled these two residuals intentionally because both live in the same isolated `unit/scripting` lane and share the expensive Lua/runtime rebuild, isolated rerun, and smoke benchmark cycle. Patched vendored `lua-src` through workspace `[patch.crates-io]` and raised `LUAI_MAXCSTACK` from `8000` to `32768`, which makes Redis' `redis.call('lpush', 'l', unpack(a))` workload with `7999` arguments succeed instead of failing on Lua's C stack ceiling. Added exact regression `scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function` for both `EVAL` and `FCALL`, keeping the existing safe-range `unpack` guard for invalid-index overflow protection. In parallel, wired direct-command `min-replicas-to-write` gating into `connection_handler` and aligned scripting-specific behavior: shebang scripts require good replicas unless flagged `no-writes`, non-shebang `EVAL` only gates on mutating bodies, and `FCALL` consults loaded function read-only metadata. Added exact TCP regression `scripting_min_replicas_gate_matches_external_scenario`. Validation: targeted Rust PASS; targeted external PASS for `Script check unpack with massive arguments` and `not enough good replicas`; `make fmt`; `make test-server` PASS (`532 + 23 + 1`); isolated `unit/scripting` rerun improved from `ok=292 err=18 ignore=26` to `ok=295 err=15 ignore=26` at `/tmp/garnet-scripting-isolated-1773152536`. Smoke benchmark artifacts are recorded under `docs/performance/experiments/2026-03-10/11.438-439-scripting-unpack-min-replicas/`; results were mixed/noisy across `RUNS=1`, `RUNS=3`, and `RUNS=3 REQUESTS=5000`, with no stable hot-path regression signal. |
+ | 11.420 | Close residual `R-001` zset regular-set algebra / `ZRANDMEMBER` panic bucket and add exact server-path regressions | DONE | 11.419 | Extended `zset` algebra helpers to accept regular set inputs as score=`1.0` zset-like sources (`load_zset_like_object`) across `ZUNIONSTORE` / `ZINTERSTORE` / `ZDIFFSTORE` / `ZINTERCARD`, and hardened `ZRANDMEMBER key negative-count [WITHSCORES]` against `Vec` capacity overflow (`i64::MIN`, oversized `WITHSCORES`, `try_reserve`) so owner threads no longer panic and contaminate trailing probes with `ERR owner routing execution failed`. Added exact regressions first: request-lifecycle `zset_regular_set_algebra_matches_external_scenarios`, `zrandmember_overflow_and_emptyarray_match_external_scenarios`; TCP integration `zrandmember_skiplist_external_scenario_runs_as_tcp_integration_test`, `zset_regular_set_algebra_external_scenario_runs_as_tcp_integration_test`. Validation: targeted Rust PASS; `make fmt`; `make test-server` PASS (`508 + 23 + 1`); targeted external file-level probe `RUNTEXT_EXTRA_ARGS='--single unit/type/zset'` at `garnet-rs/tests/interop/results/redis-runtest-zset-r001-file-20260310-103915/` now reports `ok=308 err=16 timeout=0 ignore=0`, and `failed-tests.txt` no longer contains `ZUNIONSTORE with a regular set and weights`, `ZINTERSTORE with a regular set and weights`, `ZDIFFSTORE with a regular set`, `ZRANDMEMBER count overflow`, `ZRANDMEMBER with <count> - skiplist`, or `routing execution failed`. Note: single-case `--only` probes are not representative for these Tcl cases because Redis `unit/type/zset.tcl` reuses prior setup state; file-level targeted probe is the correct validation unit here. |
+ | 11.421 | Close `R-002` zset combine/parser error-shape slice (`ZINTERCARD LIMIT`, NaN weights, `at least 1 input key`) | DONE | 11.420 | Tightened zset combine validation semantics to match Redis/Valkey error branches. `parse_zset_numkeys_and_keys` now takes the command name and reports `ERR at least 1 input key is needed for '<command>' command` when `numkeys=0`; `parse_zset_combine_options` now reports `ERR weight value is not a float` for invalid `WEIGHTS` items; and `ZINTERCARD` now routes invalid/negative `LIMIT` values to the Redis-style `ERR LIMIT can't be negative` family instead of generic integer parse errors. Added exact request-lifecycle regression `zset_combine_validation_matches_external_scenarios` to pin the Tcl cases before changing behavior. Validation: targeted Rust PASS (`cargo test -p garnet-server zset_combine_validation_matches_external_scenarios -- --nocapture`); `make fmt`; `make test-server` PASS (`509 + 23 + 1`); targeted external file-level probe `RUNTEXT_EXTRA_ARGS='--single unit/type/zset'` at `garnet-rs/tests/interop/results/redis-runtest-zset-r002a-20260310-104812/` reports `ok=315 err=9 timeout=0 ignore=0`, and `failed-tests.txt` no longer contains `ZINTERCARD with illegal arguments`, `ZUNIONSTORE with NaN weights`, `ZINTERSTORE with NaN weights`, or `zunionInterDiffGenericCommand at least 1 input key`. Remaining `R-002` scope is now `ZINCRBY` hex float acceptance, invalid lex range specifiers, `ZRANGE`/`ZRANGESTORE` syntax + `BYSCORE REV LIMIT`/`BYLEX`, and `zset score double range`. |
+ | 11.422 | Close the remaining `R-002` zset parser/formatting residuals (`hex float`, lex-range diagnostics, generic `ZRANGE`, score rendering) | DONE | 11.421 | Completed the rest of the `unit/type/zset` parser/formatting bucket. Added exact regressions first: `zset_range_parser_and_hex_float_match_external_scenarios` and `zset_score_double_range_matches_external_scenario`. `parse_f64_ascii_allow_non_finite` now accepts C99-style hexadecimal float literals (`0x1p+0`) via an explicit hex parser; `ZRANGEBYLEX`/`ZREVRANGEBYLEX` and generic `ZRANGE ... BYLEX` now emit Redis-compatible `ERR min or max not valid string range item`; generic `ZRANGE`/`ZRANGESTORE` now parse the Valkey/Redis option grammar (`BYSCORE|BYLEX`, `REV`, `WITHSCORES`, `LIMIT`) with the correct conflict handling; and zset score replies now use a Redis-style double formatter instead of `f64::to_string()`, fixing `zset score double range` and other RESP2/RESP3 score rendering edge cases. Validation: targeted Rust PASS (`cargo test -p garnet-server zset_range_parser_and_hex_float_match_external_scenarios -- --nocapture`, `cargo test -p garnet-server zset_score_double_range_matches_external_scenario -- --nocapture`); `make fmt`; `make test-server` PASS (`511 + 23 + 1`); targeted external `RUNTEXT_EXTRA_ARGS='--single unit/type/zset' ./redis_runtest_external_subset.sh` at `garnet-rs/tests/interop/results/redis-runtest-zset-r002b-20260310-112824/` reports `ok=324 err=0 timeout=0 ignore=0`; milestone full compatibility rerun at `garnet-rs/tests/interop/results/compatibility-report-20260310-112934/redis-runtest-external-full` reduces the full snapshot to `ok=2170 err=37 timeout=1 ignore=306`, with `unit/type/zset` contributing no residual failures. The remaining timeout is `integration/redis-cli` (`Interactive CLI: should find first search result`) and is not part of the former `R-002` bucket. |
+@@ -645,7 +646,7 @@ Source:
+ Current full-run snapshot:
+ 
+ - `ok=2207 err=0 timeout=1 ignore=306`
+-- separate isolated residuals outside the full `err=0`: `unit/scripting err=18` (`11.437` で `94 -> 18` に縮小)、`unit/querybuf` は `11.435` で解消、`unit/other` timeout は `11.436` で解消
++- separate isolated residuals outside the full `err=0`: `unit/scripting err=15`（`11.437` で `94 -> 18`、`11.438 / 11.439` で `18 -> 15` に縮小）、`unit/querybuf` は `11.435` で解消、`unit/other` timeout は `11.436` で解消
+ - full-run timeout tail: `integration/redis-cli` (`Interactive CLI: should find first search result`)
+ 
+ #### Err Backlog
+@@ -679,7 +680,7 @@ Main full external sweep residuals are now closed (`err=0`). Keep the completed
+ 
+ | Order | Lane | Reason |
+ |---|---|---|
+-| 1 | isolated `unit/scripting` lane | `11.437` で `err=94 -> 18` まで縮小。残りは `unpack`, `acl_check_cmd()`, frozen-time/expiration, `RESTORE` expired TTL, argv-rewrite replication, `WAIT` gate の 6 bucket。 |
++| 1 | isolated `unit/scripting` lane | `11.437` と `11.438 / 11.439` で `err=94 -> 15` まで縮小。残りは `acl_check_cmd()`, frozen-time/expiration, `RESTORE` expired TTL, argv-rewrite replication の 4 bucket。 |
+ | 2 | `I-002` MultiDB lane | biggest enableable `ignore` bucket after the isolated residuals. |
+ | 3 | `I-001`, `I-003`, `I-004` | harness and architecture-dependent enablement backlog. |
+ 
+@@ -1509,3 +1510,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
+ | 632 | 2026-03-10 | 11.435 | DONE | isolated `unit/querybuf` lane を targeted-first でクローズ。Redis `tests/unit/querybuf.tcl` の 4 ケースを exact TCP regression `query_buffer_resizing_matches_external_scenarios` として先に移植し、その repro を基準に `ServerMetrics` の query-buffer accounting を raw `receive_buffer.len()/capacity()` から Redis 互換の reusable/private model へ置換した。内容は、(1) per-client query-buffer logical allocation を追加し `CLIENT LIST qbuf/qbuf-free` を private-buffer state から描画、(2) partial command / large complete command / fat-argv incomplete frame で private qbuf を維持するよう connection path から observed query-buffer bytes を渡す、(3) RESP multibulk header の declared bulk length を軽量 parse して fat argv (`$1000000`) でも Redis 同様に >1MB qbuf を見せる、(4) idle shrink と recent-small-write shrink を logical housekeeping として適用する、の 4 点。検証: targeted Rust `cargo test -p garnet-server query_buffer_resizing_matches_external_scenarios -- --nocapture` PASS；`make fmt`; `make test-server` PASS（`528 + 23 + 1`）；targeted external `RUNTEXT_EXTRA_ARGS='--single unit/querybuf' ./redis_runtest_external_subset.sh` PASS at `garnet-rs/tests/interop/results/redis-runtest-querybuf-20260310-1/` with `ok=4 err=0 timeout=0 ignore=0`。connection hot-path change なので smoke benchmark も追加し、`docs/performance/experiments/2026-03-10/11.435-querybuf-compat-rerender/` に `binary_ab_local.sh` 比較結果を保存した（before `bf2ac09e8f`, after worktree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops +7.92%`, `GET ops +4.57%`, `SET p99 -38.32%`, `GET p99 -5.93%`。1 run のため非回帰 guard として扱う）。 |
+ | 633 | 2026-03-10 | 11.436 | DONE | isolated `unit/other` timeout lane を harness 側でクローズ。まず Redis `tests/unit/other.tcl` の timeout source を切り分け、既存 exact TCP regression `inline_pipelining_stresser_external_scenario_round_trips_all_pairs` は `make test-server` で安定 PASS する一方、external Tcl path では `PIPELINING stresser (also a regression for the old epoll bug)` が generic `--timeout 120` だと落ちることを確認した。単独 probe を `RUNTEXT_TIMEOUT_SECONDS=180` で再実行すると `unit/other ok=25 err=0 timeout=0 ignore=6` at `garnet-rs/tests/interop/results/redis-runtest-other-timeout-probe-20260310-1/` で PASS したため server bug ではなく harness budget 不足と判断。対応として `redis_runtest_external_subset.sh` に `RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS=180` を追加し、full mode の isolated `unit/other` だけ長い timeout を使うよう変更した。合わせて developer smoke 用に `RUNTEXT_RUN_ONLY_ISOLATED_UNIT=<unit/path>` を追加し、同じ restart/probe wrapper で isolated path だけを単独実行できるようにした。検証: `bash -n garnet-rs/tests/interop/redis_runtest_external_subset.sh` PASS；`RUNTEXT_RUN_ONLY_ISOLATED_UNIT=unit/other ./redis_runtest_external_subset.sh` PASS with `redis_runtest_unit_other_external ok=25 err=0 timeout=0 ignore=6`；README も新 env と timeout policy に更新。 |
+ | 634 | 2026-03-10 | 11.437 | DONE | isolated `unit/scripting` の最大 bucket である `redis.setresp()` / RESP3 scripting bridge を targeted-first でクローズ。Redis `tests/unit/scripting.tcl` の `Script with RESP3 map` と `RESP2/2..RESP3/3 protocol parsing` / `resp3 attribute protocol parsing` を exact TCP regressions `scripting_resp3_map_external_scenario_runs_as_tcp_integration_test` と `scripting_resp_protocol_parsing_matrix_matches_external_scenarios` として先に移植し、その repro を基準に scripting runtime へ script-local RESP mode を追加した。実装内容は、(1) `redis.setresp(2|3)` を script/function runtime surface に追加、(2) `redis.call` / `redis.pcall` を thread-local RESP override 経由で script-local RESP2/3 実行に変更、(3) scripting bridge parser/serializer に RESP3 native type support を追加（map/set/double/bignum/verbatim/bool、attribute ignore、RESP3 null -> Lua nil, RESP2 null bulk/array -> Lua false）、(4) `DEBUG PROTOCOL` の不足 subcommand（`map` / `set` / `double` / `null`）を実装。追加で request-lifecycle regression `debug_protocol_subcommands_cover_resp2_and_resp3_shapes` も拡張した。検証: targeted Rust PASS（新規 2 tests + debug protocol regression）；`make fmt`; `make test-server` PASS（`530 + 23 + 1`）；targeted external scripting probe PASS at `garnet-rs/tests/interop/results/redis-runtest-scripting-setresp-20260310-1/` with `ok=40 err=0 timeout=0 ignore=14`；isolated `unit/scripting` rerun improved from `ok=216 err=94 ignore=26` to `ok=292 err=18 ignore=26` at `garnet-rs/tests/interop/results/redis-runtest-scripting-isolated-20260310-1/`。残件は `unpack` / `acl_check_cmd()` / frozen-time expiration / `RESTORE` expired TTL / argv rewrite replication / `WAIT` gate の 6 bucket に圧縮。Smoke benchmark artifact は `docs/performance/experiments/2026-03-10/11.437-scripting-setresp-resp3-bridge/`（before `7f88be61c8`, after worktree, `RUNS=1 THREADS=1 CONNS=4 REQUESTS=2000 PRELOAD_REQUESTS=2000 PIPELINE=1 SIZE_RANGE=1-64`; `SET ops +0.13%`, `GET ops +2.76%`, `SET p99 +0.00%`, `GET p99 -6.72%`）。 |
++| 635 | 2026-03-10 | 11.438 / 11.439 | DONE | isolated `unit/scripting` の残 bucket から `unpack` と `min-replicas` をまとめてクローズ。両者とも Lua/runtime rebuild と isolated `unit/scripting` rerun が必要なため、1 TODO = 1 commit の原則に対する mechanical-coupling 例外として同一 iteration に束ねた。まず vendored `lua-src` を workspace `[patch.crates-io]` で固定し、`LUAI_MAXCSTACK` を `8000 -> 32768` に上げて Redis `Script check unpack with massive arguments` シナリオを通した。exact regression `scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function` を追加し、`EVAL` と `FCALL` の両方で `redis.call('lpush', 'l', unpack(a))` with `7999` args を固定した。次に `min-replicas-to-write` gating を connection path に広げ、shebang script は `flags=no-writes` が無い限り good replicas を要求、non-shebang `EVAL` は actual mutating body のときだけ gate、`FCALL` は loaded function read-only metadata で gate するよう修正し、exact TCP regression `scripting_min_replicas_gate_matches_external_scenario` を追加した。検証: targeted Rust PASS（2 tests + existing unpack overflow guard）；targeted external single-case PASS for `Script check unpack with massive arguments` and `not enough good replicas`；`make fmt`; `make test-server` PASS（`532 + 23 + 1`）；isolated `unit/scripting` rerun improved from `ok=292 err=18 ignore=26` to `ok=295 err=15 ignore=26` at `/tmp/garnet-scripting-isolated-1773152536`。Smoke benchmark artifacts are stored in `docs/performance/experiments/2026-03-10/11.438-439-scripting-unpack-min-replicas/`; `binary_ab_local.sh` was noisy across `RUNS=1`, `RUNS=3`, and `RUNS=3 REQUESTS=5000`, so the result is recorded as no stable regression signal rather than as a throughput claim. |
+diff --git a/garnet-rs/Cargo.lock b/garnet-rs/Cargo.lock
+index fd9eaf2fc1..23978538d3 100644
+--- a/garnet-rs/Cargo.lock
++++ b/garnet-rs/Cargo.lock
+@@ -542,8 +542,6 @@ checksum = "5e5032e24019045c762d3c0f28f5b6b8bbf38563a65908389bf7978758920897"
+ [[package]]
+ name = "lua-src"
+ version = "550.0.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e836dc8ae16806c9bdcf42003a88da27d163433e3f9684c52f0301258004a4fb"
+ dependencies = [
+  "cc",
+ ]
+diff --git a/garnet-rs/Cargo.toml b/garnet-rs/Cargo.toml
+index 035de0f288..b567eb64b3 100644
+--- a/garnet-rs/Cargo.toml
++++ b/garnet-rs/Cargo.toml
+@@ -27,3 +27,6 @@ thiserror = "2"
+ criterion = "0.5"
+ proptest = "1"
+ ryu = "1"
++
++[patch.crates-io]
++lua-src = { path = "third_party/lua-src-550.0.0" }
+diff --git a/garnet-rs/crates/garnet-server/src/connection_handler.rs b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+index 06015da2a1..a2799db1c2 100644
+--- a/garnet-rs/crates/garnet-server/src/connection_handler.rs
++++ b/garnet-rs/crates/garnet-server/src/connection_handler.rs
+@@ -51,6 +51,7 @@ use crate::command_spec::command_is_mutating;
+ use crate::command_spec::command_is_scripting_family;
+ use crate::command_spec::command_is_write_pause_affected_with_script;
+ use crate::command_spec::command_transaction_control;
++use crate::command_spec::eval_script_shebang_flags;
+ use crate::connection_owner_routing::OwnerThreadExecutionError;
+ use crate::connection_owner_routing::RoutedExecutionError;
+ use crate::connection_owner_routing::capture_owned_frame_args;
+@@ -2168,6 +2169,35 @@ pub(crate) async fn handle_connection(
+                             }
+                             continue;
+                         }
++                        let requires_good_replicas = command_requires_good_replicas(
++                            processor.as_ref(),
++                            command,
++                            &args[..argument_count],
++                        );
++                        let min_replicas_to_write = processor.min_replicas_to_write();
++                        if requires_good_replicas
++                            && min_replicas_to_write > 0
++                            && replication.downstream_replica_count() < min_replicas_to_write
++                        {
++                            responses.extend_from_slice(
++                                b"-NOREPLICAS Not enough good replicas to write.\r\n",
++                            );
++                            disconnect_after_write |= finalize_client_command(
++                                &metrics,
++                                client_id,
++                                &mut responses,
++                                response_mark,
++                                &mut client_state,
++                                command,
++                                command_outcome,
++                                commands_processed,
++                            );
++                            consumed += frame_bytes_consumed;
++                            if disconnect_after_write {
++                                break;
++                            }
++                            continue;
++                        }
+                         // CLIENT PAUSE gating: block until pause expires or is cancelled.
+                         // For EVAL, pass the script body to check shebang flags.
+                         // For EVALSHA, look up the cached script body.
+@@ -3085,6 +3115,7 @@ fn transaction_runtime_abort_reason(
+     max_resp_arguments: usize,
+ ) -> Result<Option<TransactionRuntimeAbortReason>, RequestExecutionError> {
+     let mut has_mutating_command = false;
++    let mut requires_good_replicas = false;
+     let replica_mode = replication.is_replica_mode();
+     let reject_reads_on_stale_replica =
+         replica_mode && !processor.replica_serve_stale_data() && !replication.is_upstream_link_up();
+@@ -3110,6 +3141,9 @@ fn transaction_runtime_abort_reason(
+             None
+         };
+         let command_mutating = command_is_effectively_mutating(command, subcommand);
++        if command_requires_good_replicas(processor, command, &args[..meta.argument_count]) {
++            requires_good_replicas = true;
++        }
+         if command_mutating {
+             has_mutating_command = true;
+             if replica_mode {
+@@ -3120,11 +3154,14 @@ fn transaction_runtime_abort_reason(
+         }
+     }
+ 
+-    if !has_mutating_command {
++    if !has_mutating_command && !requires_good_replicas {
+         return Ok(None);
+     }
+     let min_replicas_to_write = processor.min_replicas_to_write();
+-    if min_replicas_to_write > 0 && replication.downstream_replica_count() < min_replicas_to_write {
++    if requires_good_replicas
++        && min_replicas_to_write > 0
++        && replication.downstream_replica_count() < min_replicas_to_write
++    {
+         return Ok(Some(TransactionRuntimeAbortReason::NoReplicas));
+     }
+     if processor.should_reject_mutating_command_for_maxmemory(has_mutating_command)? {
+@@ -3133,6 +3170,50 @@ fn transaction_runtime_abort_reason(
+     Ok(None)
+ }
+ 
++fn command_requires_good_replicas(
++    processor: &RequestProcessor,
++    command: CommandId,
++    args: &[ArgSlice],
++) -> bool {
++    match command {
++        CommandId::Eval | CommandId::Evalsha => {
++            eval_script_requires_good_replicas(processor, command, args)
++        }
++        CommandId::EvalRo | CommandId::EvalshaRo | CommandId::FcallRo => false,
++        CommandId::Fcall => {
++            let Some(function_name) = args.get(1) else {
++                return true;
++            };
++            !processor.is_function_read_only(arg_slice_bytes(function_name))
++        }
++        _ => {
++            let subcommand = if args.len() > 1 {
++                Some(arg_slice_bytes(&args[1]))
++            } else {
++                None
++            };
++            command_is_effectively_mutating(command, subcommand)
++        }
++    }
++}
++
++fn eval_script_requires_good_replicas(
++    processor: &RequestProcessor,
++    command: CommandId,
++    args: &[ArgSlice],
++) -> bool {
++    let Some(script_source) = script_source_for_replication(processor, command, args) else {
++        return true;
++    };
++    let Ok(flags) = eval_script_shebang_flags(&script_source) else {
++        return true;
++    };
++    if flags.has_shebang {
++        return !flags.no_writes;
++    }
++    script_contains_mutating_call(&script_source)
++}
++
+ fn transaction_runtime_execabort_message(reason: TransactionRuntimeAbortReason) -> &'static [u8] {
+     match reason {
+         TransactionRuntimeAbortReason::ReadOnlyReplica => {
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+index 8968fd43d7..c2886eadb3 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -14167,6 +14167,35 @@ fn eval_unpack_with_huge_range_returns_error_instead_of_crash() {
+     assert_eq!(response3, b"*0\r\n");
+ }
+ 
++#[test]
++fn scripting_massive_unpack_arguments_match_external_scenario_for_eval_and_function() {
++    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
++    let script_body =
++        "local a = {} for i=1,7999 do a[i] = 1 end return redis.call('lpush', 'l', unpack(a))";
++
++    let eval_response = execute_frame(
++        &processor,
++        &encode_resp(&[b"EVAL", script_body.as_bytes(), b"1", b"l"]),
++    );
++    assert_eq!(eval_response, b":7999\r\n");
++    assert_command_response(&processor, "LLEN l", b":7999\r\n");
++
++    assert_command_response(&processor, "DEL l", b":1\r\n");
++
++    let library = format!(
++        "#!lua name=test\nredis.register_function('test', function(keys, args)\n{script_body}\nend)"
++    );
++    let loaded_library = execute_frame(
++        &processor,
++        &encode_resp(&[b"FUNCTION", b"LOAD", b"REPLACE", library.as_bytes()]),
++    );
++    assert_eq!(loaded_library, b"$4\r\ntest\r\n");
++
++    let fcall_response = execute_frame(&processor, &encode_resp(&[b"FCALL", b"test", b"1", b"l"]));
++    assert_eq!(fcall_response, b":7999\r\n");
++    assert_command_response(&processor, "LLEN l", b":7999\r\n");
++}
++
+ #[test]
+ fn evalsha_honours_no_writes_shebang_flag() {
+     let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+diff --git a/garnet-rs/crates/garnet-server/src/tests.rs b/garnet-rs/crates/garnet-server/src/tests.rs
+index 79a290088a..4ce2404c1d 100644
+--- a/garnet-rs/crates/garnet-server/src/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/tests.rs
+@@ -5900,6 +5900,86 @@ async fn wait_times_out_without_downstream_replicas() {
+     server.await.unwrap();
+ }
+ 
++#[tokio::test]
++async fn scripting_min_replicas_gate_matches_external_scenario() {
++    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++    let addr = listener.local_addr().unwrap();
++    let metrics = Arc::new(ServerMetrics::default());
++    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
++    let processor =
++        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
++
++    let server_metrics = Arc::clone(&metrics);
++    let server = tokio::spawn(async move {
++        run_listener_with_shutdown_and_cluster_with_processor(
++            listener,
++            1024,
++            server_metrics,
++            async move {
++                let _ = shutdown_rx.await;
++            },
++            None,
++            processor,
++        )
++        .await
++        .unwrap()
++    });
++
++    let mut client = TcpStream::connect(addr).await.unwrap();
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"SET", b"x", b"some value"]),
++        b"+OK\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"CONFIG", b"SET", b"min-replicas-to-write", b"1"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[
++            b"EVAL",
++            b"#!lua flags=no-writes\nreturn redis.call('get','x')",
++            b"1",
++            b"x",
++        ]),
++        b"$10\r\nsome value\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EVAL", b"return redis.call('get','x')", b"1", b"x"]),
++        b"$10\r\nsome value\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EVAL", b"#!lua\nreturn redis.call('get','x')", b"1", b"x"]),
++        b"-NOREPLICAS Not enough good replicas to write.\r\n",
++    )
++    .await;
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"EVAL", b"return redis.call('set','x',1)", b"1", b"x"]),
++        b"-NOREPLICAS Not enough good replicas to write.\r\n",
++    )
++    .await;
++
++    send_and_expect(
++        &mut client,
++        &encode_resp_command(&[b"CONFIG", b"SET", b"min-replicas-to-write", b"0"]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
+ #[tokio::test]
+ async fn replicaof_replication_rewrites_evalsha_after_replica_cache_flush() {
+     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

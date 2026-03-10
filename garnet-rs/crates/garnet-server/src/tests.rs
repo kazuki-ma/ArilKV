@@ -5901,6 +5901,86 @@ async fn wait_times_out_without_downstream_replicas() {
 }
 
 #[tokio::test]
+async fn scripting_min_replicas_gate_matches_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap()
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"some value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"min-replicas-to-write", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"#!lua flags=no-writes\nreturn redis.call('get','x')",
+            b"1",
+            b"x",
+        ]),
+        b"$10\r\nsome value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('get','x')", b"1", b"x"]),
+        b"$10\r\nsome value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"#!lua\nreturn redis.call('get','x')", b"1", b"x"]),
+        b"-NOREPLICAS Not enough good replicas to write.\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('set','x',1)", b"1", b"x"]),
+        b"-NOREPLICAS Not enough good replicas to write.\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"min-replicas-to-write", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn replicaof_replication_rewrites_evalsha_after_replica_cache_flush() {
     let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let master_addr = master_listener.local_addr().unwrap();
