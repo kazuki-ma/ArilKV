@@ -7311,6 +7311,128 @@ async fn scripting_time_command_uses_cached_time_like_external_scenario() {
 }
 
 #[tokio::test]
+async fn scripting_acl_check_cmd_matches_external_scenario_for_eval_and_function() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"bob",
+            b"on",
+            b">123",
+            b"+@scripting",
+            b"+set",
+            b"~x*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"bob", b"123"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.acl_check_cmd('set','xx',1)",
+            b"1",
+            b"xx",
+        ]),
+        b":1\r\n",
+    )
+    .await;
+    let denied_command = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.acl_check_cmd('hset','xx','f',1)",
+            b"1",
+            b"xx",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(denied_command, RespSocketValue::Null);
+    let denied_key = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.acl_check_cmd('set','yy',1)", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(denied_key, RespSocketValue::Null);
+    let eval_invalid = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"return redis.acl_check_cmd('invalid-cmd','arg')",
+            b"0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(eval_invalid.contains("Invalid command passed to redis.acl_check_cmd()"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=aclcheck\nredis.register_function('aclcheck', function(KEYS, ARGV)\n return redis.acl_check_cmd(unpack(ARGV))\nend)",
+        ]),
+        b"$8\r\naclcheck\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"aclcheck", b"1", b"xx", b"set", b"xx", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    let function_denied_command = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"FCALL",
+            b"aclcheck",
+            b"1",
+            b"xx",
+            b"hset",
+            b"xx",
+            b"f",
+            b"1",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(function_denied_command, RespSocketValue::Null);
+    let function_denied_key = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"aclcheck", b"0", b"set", b"yy", b"1"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(function_denied_key, RespSocketValue::Null);
+    let function_invalid = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"aclcheck", b"0", b"invalid-cmd", b"arg"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(function_invalid.contains("Invalid command passed to redis.acl_check_cmd()"));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn scripting_function_freezes_key_expiration_during_execution_like_external_scenario() {
     let _serial = lock_scripting_test_serial().await;
     let (addr, shutdown_tx, server) = start_scripting_test_server().await;

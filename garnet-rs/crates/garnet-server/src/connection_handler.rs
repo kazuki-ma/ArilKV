@@ -35,6 +35,7 @@ use tokio::sync::broadcast;
 use tokio::task::yield_now;
 use tokio::time::sleep;
 
+use crate::AclUserProfile;
 use crate::ClientId;
 use crate::ClientKillFilter;
 use crate::ClientTypeFilter;
@@ -4898,7 +4899,66 @@ fn maybe_apply_acl_setuser_side_effects(
     if user.is_empty() {
         return;
     }
-    metrics.register_acl_user(user);
+    let profile = parse_acl_setuser_profile(metrics.acl_user_profile(user), &args[3..]);
+    metrics.set_acl_user_profile(user, profile);
+}
+
+fn parse_acl_setuser_profile(
+    existing: Option<AclUserProfile>,
+    modifiers: &[ArgSlice],
+) -> AclUserProfile {
+    let mut profile = existing.unwrap_or_else(AclUserProfile::restricted);
+    for modifier in modifiers {
+        let token = arg_slice_bytes(modifier);
+        if ascii_eq_ignore_case(token, b"ON") {
+            profile.enabled = true;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"OFF") {
+            profile.enabled = false;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"RESETKEYS") {
+            profile.key_patterns.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"+@ALL") {
+            profile.allow_all_commands = true;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"-@ALL") {
+            profile.allow_all_commands = false;
+            profile.allowed_commands.clear();
+            continue;
+        }
+        if let Some(pattern) = token.strip_prefix(b"~") {
+            profile.key_patterns.push(pattern.to_vec());
+            continue;
+        }
+        if let Some(command_name) = token.strip_prefix(b"+") {
+            if !command_name.starts_with(b"@") && !command_name.is_empty() {
+                profile
+                    .allowed_commands
+                    .insert(normalize_acl_command_name(command_name));
+            }
+            continue;
+        }
+        if let Some(command_name) = token.strip_prefix(b"-") {
+            if !command_name.starts_with(b"@") && !command_name.is_empty() {
+                profile
+                    .allowed_commands
+                    .remove(normalize_acl_command_name(command_name).as_slice());
+            }
+        }
+    }
+    profile
+}
+
+fn normalize_acl_command_name(command_name: &[u8]) -> Vec<u8> {
+    command_name
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]

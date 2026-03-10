@@ -2,10 +2,15 @@
 
 use super::*;
 use crate::CommandId;
+use crate::command_spec::KeyAccessPattern;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_write_pause_affected;
+use crate::command_spec::command_key_access_pattern;
+use crate::command_spec::command_name_upper;
 use crate::command_spec::eval_script_shebang_flags;
 use crate::dispatch_command_name;
+use crate::request_lifecycle::server_commands::CaseSensitivity;
+use crate::request_lifecycle::server_commands::redis_glob_match;
 use mlua::Error as LuaError;
 use mlua::Function as LuaFunction;
 use mlua::HookTriggers;
@@ -1544,6 +1549,9 @@ impl RequestProcessor {
                 setresp_state.set(version);
                 Ok(())
             })?;
+            let acl_check_cmd_fn = scope.create_function(move |_, values: MultiValue| {
+                self.execute_lua_acl_check_cmd(values)
+            })?;
             let log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
 
@@ -1553,6 +1561,7 @@ impl RequestProcessor {
             redis_table.set("status_reply", status_reply_fn)?;
             redis_table.set("error_reply", error_reply_fn)?;
             redis_table.set("setresp", setresp_fn)?;
+            redis_table.set("acl_check_cmd", acl_check_cmd_fn)?;
             redis_table.set("log", log_fn)?;
             redis_table.set("LOG_DEBUG", 0)?;
             redis_table.set("LOG_VERBOSE", 1)?;
@@ -1918,6 +1927,10 @@ impl RequestProcessor {
                 runtime_setresp_state.set(version);
                 Ok(())
             })?;
+            let runtime_acl_check_cmd_fn =
+                scope.create_function(move |_, values: MultiValue| {
+                    self.execute_lua_acl_check_cmd(values)
+                })?;
             let runtime_log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
             runtime_redis_table.set("call", runtime_call_fn)?;
@@ -1926,6 +1939,7 @@ impl RequestProcessor {
             runtime_redis_table.set("status_reply", runtime_status_reply_fn)?;
             runtime_redis_table.set("error_reply", runtime_error_reply_fn)?;
             runtime_redis_table.set("setresp", runtime_setresp_fn)?;
+            runtime_redis_table.set("acl_check_cmd", runtime_acl_check_cmd_fn)?;
             runtime_redis_table.set("log", runtime_log_fn)?;
             runtime_redis_table.set("LOG_DEBUG", 0)?;
             runtime_redis_table.set("LOG_VERBOSE", 1)?;
@@ -2147,6 +2161,88 @@ impl RequestProcessor {
                 resp_frame_to_lua_value(lua, other)
             }
         }
+    }
+
+    fn execute_lua_acl_check_cmd(&self, values: MultiValue) -> mlua::Result<bool> {
+        if values.is_empty() {
+            return Err(LuaError::RuntimeError(
+                "ERR redis.acl_check_cmd() requires a command argument".to_string(),
+            ));
+        }
+
+        let mut encoded_args = Vec::with_capacity(values.len());
+        for (index, value) in values.into_iter().enumerate() {
+            encoded_args.push(lua_argument_to_bytes(value, index)?);
+        }
+        let arg_refs = encoded_args
+            .iter()
+            .map(Vec::as_slice)
+            .collect::<Vec<&[u8]>>();
+
+        let command = dispatch_command_name(arg_refs[0]);
+        if command == CommandId::Unknown {
+            return Err(LuaError::RuntimeError(
+                "ERR Invalid command passed to redis.acl_check_cmd()".to_string(),
+            ));
+        }
+
+        Ok(self.current_user_acl_allows(command, &arg_refs))
+    }
+
+    fn current_user_acl_allows(&self, command: CommandId, arg_refs: &[&[u8]]) -> bool {
+        let Some(metrics) = self.server_metrics.get() else {
+            return true;
+        };
+        let user = current_request_client_id()
+            .and_then(|client_id| metrics.client_user(client_id))
+            .unwrap_or_else(|| b"default".to_vec());
+        let Some(profile) = metrics.acl_user_profile(&user) else {
+            return true;
+        };
+        if !profile.enabled {
+            return false;
+        }
+        if !profile.allow_all_commands {
+            let command_name = command_name_upper(command)
+                .iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect::<Vec<u8>>();
+            if !profile.allowed_commands.contains(command_name.as_slice()) {
+                return false;
+            }
+        }
+        self.acl_profile_allows_keys(&profile.key_patterns, command, arg_refs)
+    }
+
+    fn acl_profile_allows_keys(
+        &self,
+        key_patterns: &[Vec<u8>],
+        command: CommandId,
+        arg_refs: &[&[u8]],
+    ) -> bool {
+        let key_args = match command_key_access_pattern(command) {
+            KeyAccessPattern::None => return true,
+            KeyAccessPattern::FirstKey => {
+                if arg_refs.len() < 2 {
+                    return true;
+                }
+                &arg_refs[1..2]
+            }
+            KeyAccessPattern::AllKeysFromArg1 => {
+                if arg_refs.len() < 2 {
+                    return true;
+                }
+                &arg_refs[1..]
+            }
+        };
+        if key_patterns.is_empty() {
+            return false;
+        }
+        key_args.iter().all(|key| {
+            key_patterns
+                .iter()
+                .any(|pattern| redis_glob_match(pattern, key, CaseSensitivity::Sensitive, 0))
+        })
     }
 
     fn configure_lua_runtime_limits(

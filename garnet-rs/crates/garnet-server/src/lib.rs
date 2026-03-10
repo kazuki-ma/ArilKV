@@ -83,6 +83,7 @@ pub use shard_owner_threads::ShardOwnerThreadPool;
 pub use shard_owner_threads::ShardOwnerThreadPoolError;
 
 use std::collections::BTreeMap;
+use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::net::SocketAddr;
@@ -163,8 +164,36 @@ pub struct ServerMetrics {
     next_client_id: AtomicU64,
     clients: Mutex<BTreeMap<ClientId, ClientRuntimeInfo>>,
     reply_buffer_settings: Mutex<ReplyBufferSettings>,
-    acl_users: Mutex<HashSet<Vec<u8>>>,
+    acl_users: Mutex<HashMap<Vec<u8>, AclUserProfile>>,
     monitor_broadcast: broadcast::Sender<Vec<u8>>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AclUserProfile {
+    pub(crate) enabled: bool,
+    pub(crate) allow_all_commands: bool,
+    pub(crate) allowed_commands: HashSet<Vec<u8>>,
+    pub(crate) key_patterns: Vec<Vec<u8>>,
+}
+
+impl AclUserProfile {
+    fn default_superuser() -> Self {
+        Self {
+            enabled: true,
+            allow_all_commands: true,
+            allowed_commands: HashSet::new(),
+            key_patterns: vec![b"*".to_vec()],
+        }
+    }
+
+    pub(crate) fn restricted() -> Self {
+        Self {
+            enabled: false,
+            allow_all_commands: false,
+            allowed_commands: HashSet::new(),
+            key_patterns: Vec::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -411,8 +440,8 @@ impl ClientRuntimeInfo {
 
 impl Default for ServerMetrics {
     fn default() -> Self {
-        let mut acl_users = HashSet::new();
-        acl_users.insert(b"default".to_vec());
+        let mut acl_users = HashMap::new();
+        acl_users.insert(b"default".to_vec(), AclUserProfile::default_superuser());
         Self {
             accepted_connections: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
@@ -706,7 +735,7 @@ impl ServerMetrics {
     pub fn acl_user_exists(&self, user: &[u8]) -> bool {
         self.acl_users
             .lock()
-            .map(|users| users.contains(user))
+            .map(|users| users.get(user).is_some_and(|profile| profile.enabled))
             .unwrap_or(false)
     }
 
@@ -715,8 +744,26 @@ impl ServerMetrics {
             return;
         }
         if let Ok(mut users) = self.acl_users.lock() {
-            users.insert(user.to_vec());
+            users
+                .entry(user.to_vec())
+                .or_insert_with(AclUserProfile::restricted);
         }
+    }
+
+    pub(crate) fn set_acl_user_profile(&self, user: &[u8], profile: AclUserProfile) {
+        if user.is_empty() {
+            return;
+        }
+        if let Ok(mut users) = self.acl_users.lock() {
+            users.insert(user.to_vec(), profile);
+        }
+    }
+
+    pub(crate) fn acl_user_profile(&self, user: &[u8]) -> Option<AclUserProfile> {
+        self.acl_users
+            .lock()
+            .ok()
+            .and_then(|users| users.get(user).cloned())
     }
 
     pub fn monitor_subscribe(&self) -> broadcast::Receiver<Vec<u8>> {
