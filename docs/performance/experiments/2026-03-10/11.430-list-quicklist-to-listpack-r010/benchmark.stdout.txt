@@ -1,0 +1,18 @@
+Running base benchmark gate...
+Running new benchmark gate...
+binary_ab_comparison
+base_label=base
+new_label=new
+base.median_set_ops=44339.000
+base.median_get_ops=44006.000
+base.median_set_p99_ms=0.08700
+base.median_get_p99_ms=0.11900
+new.median_set_ops=43288.000
+new.median_get_ops=43917.000
+new.median_set_p99_ms=0.10300
+new.median_get_p99_ms=0.11900
+delta.set_ops_pct=-2.37
+delta.get_ops_pct=-0.20
+delta.set_p99_ms_pct=18.39
+delta.get_p99_ms_pct=0.00
+comparison_path=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/experiments/2026-03-10/11.430-list-quicklist-to-listpack-r010/artifacts/comparison.txt

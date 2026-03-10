@@ -373,13 +373,25 @@ impl RequestProcessor {
             return Err(RequestExecutionError::IndexOutOfRange);
         };
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        let force_quicklist_after_replace =
-            listpack_growth_would_force_quicklist(&list, configured_size, &[value.as_slice()]);
+        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+            || !list_listpack_compatible(&list, configured_size);
+        let force_quicklist_after_replace = if previous_was_quicklist {
+            false
+        } else {
+            listpack_growth_would_force_quicklist(&list, configured_size, &[value.as_slice()])
+        };
         list[index] = value;
         self.save_list_object(&key, &list)?;
         self.notify_keyspace_event(NOTIFY_LIST, b"lset", &key);
         if force_quicklist_after_replace {
             self.force_list_quicklist_encoding(&key);
+        } else if previous_was_quicklist {
+            self.maybe_preserve_quicklist_after_shrink(
+                &key,
+                previous_was_quicklist,
+                configured_size,
+                &list,
+            );
         }
         append_simple_string(response_out, b"OK");
         Ok(())

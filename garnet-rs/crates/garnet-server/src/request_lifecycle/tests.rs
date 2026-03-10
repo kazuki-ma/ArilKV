@@ -14155,6 +14155,109 @@ fn list_encoding_conversion_and_debug_reload_match_external_list_scenarios() {
 }
 
 #[test]
+fn list_quicklist_to_listpack_encoding_conversion_matches_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    let large_quicklist_value = vec![b'x'; 8192];
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size 3",
+        b"+OK\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL lst", 0);
+    assert_command_integer(&processor, "RPUSH lst a b c d", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(
+        &processor,
+        "RPOP lst 3",
+        b"*3\r\n$1\r\nd\r\n$1\r\nc\r\n$1\r\nb\r\n",
+    );
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    assert_command_integer(&processor, "RPUSH lst a a a d", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_integer(&processor, "LREM lst 3 a", 3);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    assert_command_integer(&processor, "RPUSH lst a b c d", 4);
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(&processor, "LTRIM lst 1 1", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size -1",
+        b"+OK\r\n",
+    );
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    let create_quicklist_rpop = encode_resp(&[
+        b"RPUSH",
+        b"lst",
+        b"a",
+        b"b",
+        b"c",
+        large_quicklist_value.as_slice(),
+    ]);
+    assert_eq!(execute_frame(&processor, &create_quicklist_rpop), b":4\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(
+        &processor,
+        "RPOP lst 1",
+        format!(
+            "*1\r\n${}\r\n{}\r\n",
+            large_quicklist_value.len(),
+            String::from_utf8_lossy(&large_quicklist_value)
+        )
+        .as_bytes(),
+    );
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    let create_quicklist_lrem =
+        encode_resp(&[b"RPUSH", b"lst", b"a", large_quicklist_value.as_slice()]);
+    assert_eq!(execute_frame(&processor, &create_quicklist_lrem), b":2\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    let lrem_large = encode_resp(&[b"LREM", b"lst", b"1", large_quicklist_value.as_slice()]);
+    assert_eq!(execute_frame(&processor, &lrem_large), b":1\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    let create_quicklist_ltrim = encode_resp(&[
+        b"RPUSH",
+        b"lst",
+        b"a",
+        b"b",
+        large_quicklist_value.as_slice(),
+    ]);
+    assert_eq!(
+        execute_frame(&processor, &create_quicklist_ltrim),
+        b":3\r\n"
+    );
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(&processor, "LTRIM lst 0 1", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+
+    assert_command_integer(&processor, "DEL lst", 1);
+    let create_quicklist_lset = encode_resp(&[
+        b"RPUSH",
+        b"lst",
+        large_quicklist_value.as_slice(),
+        b"a",
+        b"b",
+    ]);
+    assert_eq!(execute_frame(&processor, &create_quicklist_lset), b":3\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(&processor, "RPOP lst 2", b"*2\r\n$1\r\nb\r\n$1\r\na\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$9\r\nquicklist\r\n");
+    assert_command_response(&processor, "LSET lst -1 c", b"+OK\r\n");
+    assert_command_response(&processor, "OBJECT ENCODING lst", b"$8\r\nlistpack\r\n");
+}
+
+#[test]
 fn debug_object_reports_metadata_for_existing_key() {
     let processor = RequestProcessor::new().unwrap();
 
