@@ -3546,60 +3546,97 @@ struct LcsComputation {
 fn lcs_sequence_and_matches(left: &[u8], right: &[u8]) -> LcsComputation {
     let left_len = left.len();
     let right_len = right.len();
-    let mut dp = vec![vec![0usize; right_len + 1]; left_len + 1];
-    for i in (0..left_len).rev() {
-        for j in (0..right_len).rev() {
-            dp[i][j] = if left[i] == right[j] {
-                dp[i + 1][j + 1] + 1
+    let row_width = right_len + 1;
+    let mut dp = vec![0usize; (left_len + 1) * row_width];
+    let index = |i: usize, j: usize| -> usize { i * row_width + j };
+
+    for i in 1..=left_len {
+        for j in 1..=right_len {
+            let table_index = index(i, j);
+            dp[table_index] = if left[i - 1] == right[j - 1] {
+                dp[index(i - 1, j - 1)] + 1
             } else {
-                dp[i + 1][j].max(dp[i][j + 1])
+                dp[index(i - 1, j)].max(dp[index(i, j - 1)])
             };
         }
     }
 
-    let mut sequence = Vec::with_capacity(dp[0][0]);
+    let lcs_length = dp[index(left_len, right_len)];
+    let mut sequence = vec![0u8; lcs_length];
     let mut matches = Vec::<LcsMatchSegment>::new();
-    let mut i = 0usize;
-    let mut j = 0usize;
-    while i < left_len && j < right_len {
-        if left[i] == right[j] && dp[i][j] == dp[i + 1][j + 1] + 1 {
-            sequence.push(left[i]);
-            if let Some(last) = matches.last_mut() {
-                if i == last.end_left + 1 && j == last.end_right + 1 {
-                    last.end_left = i;
-                    last.end_right = j;
-                    last.length += 1;
-                } else {
-                    matches.push(LcsMatchSegment {
-                        start_left: i,
-                        end_left: i,
-                        start_right: j,
-                        end_right: j,
+    let mut next_sequence_index = lcs_length;
+    let mut current_match = None::<LcsMatchSegment>;
+    let mut i = left_len;
+    let mut j = right_len;
+
+    while i > 0 && j > 0 {
+        let mut should_emit_match = false;
+
+        if left[i - 1] == right[j - 1] {
+            next_sequence_index -= 1;
+            sequence[next_sequence_index] = left[i - 1];
+
+            match current_match.as_mut() {
+                None => {
+                    current_match = Some(LcsMatchSegment {
+                        start_left: i - 1,
+                        end_left: i - 1,
+                        start_right: j - 1,
+                        end_right: j - 1,
                         length: 1,
                     });
                 }
-            } else {
-                matches.push(LcsMatchSegment {
-                    start_left: i,
-                    end_left: i,
-                    start_right: j,
-                    end_right: j,
+                Some(range) => {
+                    if range.start_left == i && range.start_right == j {
+                        range.start_left -= 1;
+                        range.start_right -= 1;
+                        range.length += 1;
+                    } else {
+                        should_emit_match = true;
+                    }
+                }
+            }
+
+            if should_emit_match {
+                if let Some(range) = current_match.take() {
+                    matches.push(range);
+                }
+                current_match = Some(LcsMatchSegment {
+                    start_left: i - 1,
+                    end_left: i - 1,
+                    start_right: j - 1,
+                    end_right: j - 1,
                     length: 1,
                 });
+                should_emit_match = false;
             }
-            i += 1;
-            j += 1;
-            continue;
-        }
-        if dp[i + 1][j] >= dp[i][j + 1] {
-            i += 1;
+
+            if let Some(range) = current_match.as_ref() {
+                if range.start_left == 0 || range.start_right == 0 {
+                    should_emit_match = true;
+                }
+            }
+
+            i -= 1;
+            j -= 1;
         } else {
-            j += 1;
+            if dp[index(i - 1, j)] > dp[index(i, j - 1)] {
+                i -= 1;
+            } else {
+                j -= 1;
+            }
+            should_emit_match = current_match.is_some();
+        }
+
+        if should_emit_match {
+            if let Some(range) = current_match.take() {
+                matches.push(range);
+            }
         }
     }
 
     LcsComputation {
-        length: dp[0][0],
+        length: lcs_length,
         sequence,
         matches,
     }
@@ -3634,7 +3671,7 @@ fn append_lcs_idx_response(
     append_array_length(response_out, 4);
     append_bulk_string(response_out, b"matches");
     append_array_length(response_out, matches.len());
-    for entry in matches.iter().rev() {
+    for entry in matches {
         append_lcs_match_entry(response_out, entry, with_match_len);
     }
     append_bulk_string(response_out, b"len");

@@ -1436,7 +1436,7 @@ impl RequestProcessor {
         if let Some(value) = self.read_string_value(&key)? {
             append_integer(
                 response_out,
-                estimate_memory_usage_bytes(key.len(), value.len()),
+                estimate_string_memory_usage_bytes(key.len(), value.len()),
             );
             return Ok(());
         }
@@ -4223,7 +4223,7 @@ impl RequestProcessor {
         for key in keys {
             if let Some(value) = self.read_string_value(key.as_slice())? {
                 total_bytes = total_bytes.saturating_add(
-                    u64::try_from(estimate_memory_usage_bytes(key.len(), value.len()))
+                    u64::try_from(estimate_string_memory_usage_bytes(key.len(), value.len()))
                         .unwrap_or(u64::MAX),
                 );
                 continue;
@@ -5578,6 +5578,18 @@ fn estimate_memory_usage_bytes(key_len: usize, value_len: usize) -> i64 {
     let total = key_len
         .saturating_add(value_len)
         .saturating_add(ESTIMATED_ENTRY_OVERHEAD_BYTES);
+    i64::try_from(total).unwrap_or(i64::MAX)
+}
+
+fn estimate_string_memory_usage_bytes(key_len: usize, value_len: usize) -> i64 {
+    let string_header_bytes = if cfg!(target_pointer_width = "32") {
+        12usize
+    } else {
+        16usize
+    };
+    let total = key_len
+        .saturating_add(value_len)
+        .saturating_add(string_header_bytes);
     i64::try_from(total).unwrap_or(i64::MAX)
 }
 

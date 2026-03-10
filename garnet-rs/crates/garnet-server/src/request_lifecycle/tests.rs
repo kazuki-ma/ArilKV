@@ -7725,6 +7725,118 @@ fn lcs_supports_sequence_len_idx_and_validation_paths() {
 }
 
 #[test]
+fn lcs_idx_and_matchlen_match_external_string_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+    let rna1 = b"CACCTTCCCAGGTAACAAACCAACCAACTTTCGATCTCTTGTAGATCTGTTCTCTAAACGAACTTTAAAATCTGTGTGGCTGTCACTCGGCTGCATGCTTAGTGCACTCACGCAGTATAATTAATAACTAATTACTGTCGTTGACAGGACACGAGTAACTCGTCTATCTTCTGCAGGCTGCTTACGGTTTCGTCCGTGTTGCAGCCGATCATCAGCACATCTAGGTTTCGTCCGGGTGTG";
+    let rna2 = b"ATTAAAGGTTTATACCTTCCCAGGTAACAAACCAACCAACTTTCGATCTCTTGTAGATCTGTTCTCTAAACGAACTTTAAAATCTGTGTGGCTGTCACTCGGCTGCATGCTTAGTGCACTCACGCAGTATAATTAATAACTAATTACTGTCGTTGACAGGACACGAGTAACTCGTCTATCTTCTGCAGGCTGCTTACGGTTTCGTCCGTGTTGCAGCCGATCATCAGCACATCTAGGTTT";
+
+    execute_frame(&processor, &encode_resp(&[b"SET", b"virus1{t}", rna1]));
+    execute_frame(&processor, &encode_resp(&[b"SET", b"virus2{t}", rna2]));
+
+    let idx = parse_resp_test_value(&execute_frame(
+        &processor,
+        &encode_resp(&[b"LCS", b"virus1{t}", b"virus2{t}", b"IDX"]),
+    ));
+    let idx_map = resp_test_flat_map(&idx);
+    assert_eq!(resp_test_integer(idx_map[&b"len".to_vec()]), 227);
+    let matches = resp_test_array(idx_map[&b"matches".to_vec()]);
+    let actual_matches: Vec<((i64, i64), (i64, i64), Option<i64>)> = matches
+        .iter()
+        .map(|entry| {
+            let parts = resp_test_array(entry);
+            (
+                (
+                    resp_test_integer(&resp_test_array(&parts[0])[0]),
+                    resp_test_integer(&resp_test_array(&parts[0])[1]),
+                ),
+                (
+                    resp_test_integer(&resp_test_array(&parts[1])[0]),
+                    resp_test_integer(&resp_test_array(&parts[1])[1]),
+                ),
+                None,
+            )
+        })
+        .collect();
+    assert_eq!(
+        actual_matches,
+        vec![
+            ((238, 238), (239, 239), None),
+            ((236, 236), (238, 238), None),
+            ((229, 230), (236, 237), None),
+            ((224, 224), (235, 235), None),
+            ((1, 222), (13, 234), None),
+        ]
+    );
+
+    let idx_with_len = parse_resp_test_value(&execute_frame(
+        &processor,
+        &encode_resp(&[b"LCS", b"virus1{t}", b"virus2{t}", b"IDX", b"WITHMATCHLEN"]),
+    ));
+    let idx_with_len_map = resp_test_flat_map(&idx_with_len);
+    let matches = resp_test_array(idx_with_len_map[&b"matches".to_vec()]);
+    let actual_matches: Vec<((i64, i64), (i64, i64), Option<i64>)> = matches
+        .iter()
+        .map(|entry| {
+            let parts = resp_test_array(entry);
+            (
+                (
+                    resp_test_integer(&resp_test_array(&parts[0])[0]),
+                    resp_test_integer(&resp_test_array(&parts[0])[1]),
+                ),
+                (
+                    resp_test_integer(&resp_test_array(&parts[1])[0]),
+                    resp_test_integer(&resp_test_array(&parts[1])[1]),
+                ),
+                Some(resp_test_integer(&parts[2])),
+            )
+        })
+        .collect();
+    assert_eq!(
+        actual_matches,
+        vec![
+            ((238, 238), (239, 239), Some(1)),
+            ((236, 236), (238, 238), Some(1)),
+            ((229, 230), (236, 237), Some(2)),
+            ((224, 224), (235, 235), Some(1)),
+            ((1, 222), (13, 234), Some(222)),
+        ]
+    );
+
+    let idx_with_len_min = parse_resp_test_value(&execute_frame(
+        &processor,
+        &encode_resp(&[
+            b"LCS",
+            b"virus1{t}",
+            b"virus2{t}",
+            b"IDX",
+            b"WITHMATCHLEN",
+            b"MINMATCHLEN",
+            b"5",
+        ]),
+    ));
+    let idx_with_len_min_map = resp_test_flat_map(&idx_with_len_min);
+    let matches = resp_test_array(idx_with_len_min_map[&b"matches".to_vec()]);
+    let actual_matches: Vec<((i64, i64), (i64, i64), Option<i64>)> = matches
+        .iter()
+        .map(|entry| {
+            let parts = resp_test_array(entry);
+            (
+                (
+                    resp_test_integer(&resp_test_array(&parts[0])[0]),
+                    resp_test_integer(&resp_test_array(&parts[0])[1]),
+                ),
+                (
+                    resp_test_integer(&resp_test_array(&parts[1])[0]),
+                    resp_test_integer(&resp_test_array(&parts[1])[1]),
+                ),
+                Some(resp_test_integer(&parts[2])),
+            )
+        })
+        .collect();
+    assert_eq!(actual_matches, vec![((1, 222), (13, 234), Some(222))]);
+}
+
+#[test]
 fn sort_and_sort_ro_support_options_store_and_validation_paths() {
     let processor = RequestProcessor::new().unwrap();
 
@@ -19143,6 +19255,61 @@ fn memory_usage_accepts_samples_option() {
         usage_wrong.is_err(),
         "MEMORY USAGE with bad option should fail"
     );
+}
+
+#[test]
+fn memory_usage_string_bounds_match_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    let sizes = [
+        1usize, 5, 8, 15, 16, 17, 31, 32, 33, 63, 64, 65, 127, 128, 129, 255, 256, 257,
+    ];
+    let header_size = if cfg!(target_pointer_width = "32") {
+        12usize
+    } else {
+        16usize
+    };
+
+    for key_size in sizes {
+        let key = "k".repeat(key_size);
+
+        for value_size in sizes {
+            let value = "v".repeat(value_size);
+            execute_frame(
+                &processor,
+                &encode_resp(&[b"SET", key.as_bytes(), value.as_bytes()]),
+            );
+            let memory_used = parse_integer_response(&execute_frame(
+                &processor,
+                &encode_resp(&[b"MEMORY", b"USAGE", key.as_bytes()]),
+            ));
+            let min = i64::try_from(header_size + key_size + value_size).unwrap();
+            assert!(
+                memory_used >= min,
+                "MEMORY USAGE below Redis lower bound for key_size={key_size} value_size={value_size}: got {memory_used}, min {min}"
+            );
+            let max = if min < 32 { 64 } else { min * 2 };
+            assert!(
+                memory_used <= max,
+                "MEMORY USAGE above Redis upper bound for key_size={key_size} value_size={value_size}: got {memory_used}, max {max}"
+            );
+        }
+
+        for value in ["1", "100", "10000", "10000000"] {
+            execute_frame(
+                &processor,
+                &encode_resp(&[b"SET", key.as_bytes(), value.as_bytes()]),
+            );
+            let memory_used = parse_integer_response(&execute_frame(
+                &processor,
+                &encode_resp(&[b"MEMORY", b"USAGE", key.as_bytes()]),
+            ));
+            let min = i64::try_from(header_size + key_size).unwrap();
+            assert!(
+                memory_used >= min,
+                "MEMORY USAGE below Redis integer lower bound for key_size={key_size} value={value}: got {memory_used}, min {min}"
+            );
+        }
+    }
 }
 
 #[test]
