@@ -3919,6 +3919,347 @@ async fn stream_aof_rewrite_after_xdel_lastid_matches_external_scenario() {
 }
 
 #[tokio::test]
+async fn zrandmember_skiplist_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZRANDMEMBER count overflow"
+    // - "ZRANDMEMBER count of 0 is handled correctly - emptyarray"
+    // - "ZRANDMEMBER with <count> against non existing key - emptyarray"
+    // - "ZRANDMEMBER with <count> - skiplist"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"myzset", b"nonexisting_key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZADD", b"myzset", b"0", b"a"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ZRANDMEMBER",
+            b"myzset",
+            b"-9223372036854770000",
+            b"WITHSCORES",
+        ]),
+        b"-ERR value is out of range\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ZRANDMEMBER",
+            b"myzset",
+            b"-9223372036854775808",
+            b"WITHSCORES",
+        ]),
+        b"-ERR value is out of range\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANDMEMBER", b"myzset", b"-9223372036854775808"]),
+        b"-ERR value is out of range\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANDMEMBER", b"myzset", b"0"]),
+        b"*0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANDMEMBER", b"nonexisting_key", b"100"]),
+        b"*0\r\n",
+    )
+    .await;
+
+    let original_max_value = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"GET", b"zset-max-ziplist-value"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let original_max_value_items = resp_socket_array(&original_max_value);
+    assert_eq!(
+        resp_socket_bulk(&original_max_value_items[0]),
+        b"zset-max-ziplist-value"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"zset-max-ziplist-value", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"myzset"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let long_member =
+        b"skiplist-member-abcdefghijklmnopqrstuvwxyz-abcdefghijklmnopqrstuvwxyz-0123456789";
+    let create = vec![
+        b"ZADD".as_slice(),
+        b"myzset",
+        b"1",
+        b"a",
+        b"2",
+        b"b",
+        b"3",
+        b"c",
+        b"4",
+        b"d",
+        b"5",
+        b"e",
+        b"6",
+        b"f",
+        b"7",
+        b"g",
+        b"7",
+        b"h",
+        b"9",
+        b"i",
+        b"10",
+        long_member,
+    ];
+    send_and_expect(&mut client, &encode_resp_command(&create), b":10\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"OBJECT", b"ENCODING", b"myzset"]),
+        b"$8\r\nskiplist\r\n",
+    )
+    .await;
+
+    let members_with_scores = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"myzset", b"0", b"-1", b"WITHSCORES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let member_score_items = resp_socket_array(&members_with_scores);
+    assert_eq!(member_score_items.len(), 20);
+    let mut allowed = std::collections::BTreeMap::new();
+    for pair in member_score_items.chunks_exact(2) {
+        allowed.insert(
+            resp_socket_bulk(&pair[0]).to_vec(),
+            resp_socket_bulk(&pair[1]).to_vec(),
+        );
+    }
+
+    let negative_count = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"ZRANDMEMBER", b"myzset", b"-20"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let negative_items = resp_socket_array(&negative_count);
+    assert_eq!(negative_items.len(), 20);
+    for item in negative_items {
+        assert!(allowed.contains_key(resp_socket_bulk(item)));
+    }
+
+    let negative_with_scores = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"ZRANDMEMBER", b"myzset", b"-20", b"WITHSCORES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let negative_with_scores_items = resp_socket_array(&negative_with_scores);
+    assert_eq!(negative_with_scores_items.len(), 40);
+    for pair in negative_with_scores_items.chunks_exact(2) {
+        let member = resp_socket_bulk(&pair[0]).to_vec();
+        let score = resp_socket_bulk(&pair[1]);
+        assert_eq!(allowed.get(&member).map(Vec::as_slice), Some(score));
+    }
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn zset_regular_set_algebra_external_scenario_runs_as_tcp_integration_test() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZUNIONSTORE with weights - listpack"
+    // - "ZUNIONSTORE with a regular set and weights - listpack"
+    // - "ZINTERSTORE with weights - listpack"
+    // - "ZINTERSTORE with a regular set and weights - listpack"
+    // - "ZDIFFSTORE basics - listpack"
+    // - "ZDIFFSTORE with a regular set - listpack"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"zseta{t}", b"zsetb{t}", b"zsetc{t}", b"seta{t}"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZADD", b"zseta{t}", b"1", b"a", b"2", b"b", b"3", b"c"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZADD", b"zsetb{t}", b"1", b"b", b"2", b"c", b"3", b"d"]),
+        b":3\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ZUNIONSTORE",
+            b"zsetc{t}",
+            b"2",
+            b"zseta{t}",
+            b"zsetb{t}",
+            b"WEIGHTS",
+            b"2",
+            b"3",
+        ]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zsetc{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*8\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n7\r\n$1\r\nd\r\n$1\r\n9\r\n$1\r\nc\r\n$2\r\n12\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"seta{t}"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"seta{t}", b"a"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"seta{t}", b"b"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"seta{t}", b"c"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ZUNIONSTORE",
+            b"zsetc{t}",
+            b"2",
+            b"seta{t}",
+            b"zsetb{t}",
+            b"WEIGHTS",
+            b"2",
+            b"3",
+        ]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zsetc{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*8\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n5\r\n$1\r\nc\r\n$1\r\n8\r\n$1\r\nd\r\n$1\r\n9\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ZINTERSTORE",
+            b"zsetc{t}",
+            b"2",
+            b"zseta{t}",
+            b"zsetb{t}",
+            b"WEIGHTS",
+            b"2",
+            b"3",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zsetc{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*4\r\n$1\r\nb\r\n$1\r\n7\r\n$1\r\nc\r\n$2\r\n12\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ZINTERSTORE",
+            b"zsetc{t}",
+            b"2",
+            b"seta{t}",
+            b"zsetb{t}",
+            b"WEIGHTS",
+            b"2",
+            b"3",
+        ]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zsetc{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*4\r\n$1\r\nb\r\n$1\r\n5\r\n$1\r\nc\r\n$1\r\n8\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZDIFFSTORE", b"zsetc{t}", b"2", b"zseta{t}", b"zsetb{t}"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zsetc{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZDIFFSTORE", b"zsetc{t}", b"2", b"seta{t}", b"zsetb{t}"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zsetc{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn blocking_xread_key_deleted_external_scenario_runs_as_tcp_integration_test() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut controller = TcpStream::connect(addr).await.unwrap();

@@ -1087,6 +1087,13 @@ impl RequestProcessor {
             false
         };
 
+        if count == i64::MIN {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+        if with_scores && count.unsigned_abs() > (i64::MAX as u64 / 2) {
+            return Err(RequestExecutionError::ValueOutOfRange);
+        }
+
         let Some(zset) = zset else {
             append_array_length(response_out, 0);
             return Ok(());
@@ -1102,7 +1109,7 @@ impl RequestProcessor {
         } else {
             let requested = usize::try_from(count.unsigned_abs())
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-            select_random_zset_entries_with_replacement(self, &zset, requested)
+            select_random_zset_entries_with_replacement(self, &zset, requested)?
         };
 
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -1948,12 +1955,12 @@ fn compute_zdiff(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeMap::new());
     };
-    let mut diff = match processor.load_zset_object(first_key)? {
+    let mut diff = match load_zset_like_object(processor, first_key)? {
         Some(zset) => zset,
         None => return Ok(BTreeMap::new()),
     };
     for key in remaining_keys {
-        let Some(other) = processor.load_zset_object(key)? else {
+        let Some(other) = load_zset_like_object(processor, key)? else {
             continue;
         };
         diff.retain(|member, _score| !other.contains_key(member));
@@ -1973,7 +1980,7 @@ fn compute_zinter(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeMap::new());
     };
-    let Some(first_set) = processor.load_zset_object(first_key)? else {
+    let Some(first_set) = load_zset_like_object(processor, first_key)? else {
         return Ok(BTreeMap::new());
     };
     let mut inter: BTreeMap<Vec<u8>, f64> = first_set
@@ -1982,7 +1989,7 @@ fn compute_zinter(
         .collect();
 
     for (index, key) in remaining_keys.iter().enumerate() {
-        let Some(other) = processor.load_zset_object(key)? else {
+        let Some(other) = load_zset_like_object(processor, key)? else {
             return Ok(BTreeMap::new());
         };
         let weight = weights[index + 1];
@@ -2009,7 +2016,7 @@ fn compute_zunion(
 ) -> Result<BTreeMap<Vec<u8>, f64>, RequestExecutionError> {
     let mut union = BTreeMap::new();
     for (index, key) in keys.iter().enumerate() {
-        let Some(zset) = processor.load_zset_object(key)? else {
+        let Some(zset) = load_zset_like_object(processor, key)? else {
             continue;
         };
         let weight = weights[index];
@@ -2351,13 +2358,13 @@ fn compute_zinter_cardinality(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(0);
     };
-    let mut intersection: BTreeSet<Vec<u8>> = match processor.load_zset_object(first_key)? {
+    let mut intersection: BTreeSet<Vec<u8>> = match load_zset_like_object(processor, first_key)? {
         Some(zset) => zset.keys().cloned().collect(),
         None => return Ok(0),
     };
 
     for key in remaining_keys {
-        let Some(other_zset) = processor.load_zset_object(key)? else {
+        let Some(other_zset) = load_zset_like_object(processor, key)? else {
             return Ok(0);
         };
         intersection.retain(|member| other_zset.contains_key(member));
@@ -2452,15 +2459,35 @@ fn select_random_zset_entries_with_replacement(
     processor: &RequestProcessor,
     zset: &BTreeMap<Vec<u8>, f64>,
     count: usize,
-) -> Vec<(Vec<u8>, f64)> {
+) -> Result<Vec<(Vec<u8>, f64)>, RequestExecutionError> {
     let entries = zset_entries_snapshot(zset);
     if entries.is_empty() || count == 0 {
-        return Vec::new();
+        return Ok(Vec::new());
     }
-    let mut sampled = Vec::with_capacity(count);
+    let mut sampled = Vec::new();
+    sampled
+        .try_reserve(count)
+        .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
     for _ in 0..count {
         let index = (processor.next_random_u64() as usize) % entries.len();
         sampled.push(entries[index].clone());
     }
-    sampled
+    Ok(sampled)
+}
+
+fn load_zset_like_object(
+    processor: &RequestProcessor,
+    key: &[u8],
+) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
+    match processor.load_zset_object(key) {
+        Ok(zset) => Ok(zset),
+        Err(RequestExecutionError::WrongType) => {
+            let Some(set) = processor.load_set_object(key)? else {
+                return Ok(None);
+            };
+            let zset = set.into_iter().map(|member| (member, 1.0)).collect();
+            Ok(Some(zset))
+        }
+        Err(error) => Err(error),
+    }
 }

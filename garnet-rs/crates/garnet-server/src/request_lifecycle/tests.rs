@@ -6060,6 +6060,112 @@ fn zset_nan_inf_and_zpop_count_edge_cases_match_external_scenarios() {
 }
 
 #[test]
+fn zset_regular_set_algebra_matches_external_scenarios() {
+    for configured_value in ["64", "0"] {
+        let processor = RequestProcessor::new().unwrap();
+        assert_command_response(
+            &processor,
+            &format!("CONFIG SET zset-max-ziplist-value {configured_value}"),
+            b"+OK\r\n",
+        );
+
+        assert_command_response(&processor, "SADD seta a b c", b":3\r\n");
+        assert_command_response(&processor, "ZADD zsetb 1 b 2 c 3 d", b":3\r\n");
+        // Redis tests/unit/type/zset.tcl:
+        // - "ZUNIONSTORE with a regular set and weights - listpack|skiplist"
+        // - "ZINTERSTORE with a regular set and weights - listpack|skiplist"
+        // - "ZDIFFSTORE with a regular set - listpack|skiplist"
+        assert_command_response(
+            &processor,
+            "ZUNIONSTORE zsetc 2 seta zsetb WEIGHTS 2 3",
+            b":4\r\n",
+        );
+        assert_command_response(
+            &processor,
+            "ZRANGE zsetc 0 -1 WITHSCORES",
+            b"*8\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n5\r\n$1\r\nc\r\n$1\r\n8\r\n$1\r\nd\r\n$1\r\n9\r\n",
+        );
+        assert_command_response(
+            &processor,
+            "ZINTERSTORE zsetc 2 seta zsetb WEIGHTS 2 3",
+            b":2\r\n",
+        );
+        assert_command_response(
+            &processor,
+            "ZRANGE zsetc 0 -1 WITHSCORES",
+            b"*4\r\n$1\r\nb\r\n$1\r\n5\r\n$1\r\nc\r\n$1\r\n8\r\n",
+        );
+        assert_command_response(&processor, "ZDIFFSTORE zsetc 2 seta zsetb", b":1\r\n");
+        assert_command_response(
+            &processor,
+            "ZRANGE zsetc 0 -1 WITHSCORES",
+            b"*2\r\n$1\r\na\r\n$1\r\n1\r\n",
+        );
+
+        // Redis tests/unit/type/zset.tcl:
+        // - "ZINTERSTORE regression with two sets, intset+hashtable"
+        // - "ZINTERSTORE #516 regression, mixed sets and ziplist zsets"
+        assert_command_response(&processor, "SADD set1 a", b":1\r\n");
+        assert_command_response(&processor, "SADD set2 10", b":1\r\n");
+        assert_command_response(&processor, "ZINTERSTORE set3 2 set1 set2", b":0\r\n");
+
+        assert_command_response(&processor, "SADD one 100 101 102 103", b":4\r\n");
+        assert_command_response(&processor, "SADD two 100 200 201 202", b":4\r\n");
+        assert_command_response(
+            &processor,
+            "ZADD three 1 500 1 501 1 502 1 503 1 100",
+            b":5\r\n",
+        );
+        assert_command_response(
+            &processor,
+            "ZINTERSTORE to_here 3 one two three WEIGHTS 0 0 1",
+            b":1\r\n",
+        );
+        assert_command_response(&processor, "ZRANGE to_here 0 -1", b"*1\r\n$3\r\n100\r\n");
+    }
+}
+
+#[test]
+fn zrandmember_overflow_and_emptyarray_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZRANDMEMBER count overflow"
+    // - "ZRANDMEMBER count of 0 is handled correctly - emptyarray"
+    // - "ZRANDMEMBER with <count> against non existing key - emptyarray"
+    assert_command_response(&processor, "ZADD myzset 0 a", b":1\r\n");
+    assert_command_error(
+        &processor,
+        "ZRANDMEMBER myzset -9223372036854770000 WITHSCORES",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANDMEMBER myzset -9223372036854775808 WITHSCORES",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANDMEMBER myzset -9223372036854775808",
+        b"-ERR value is out of range\r\n",
+    );
+    assert_command_response(&processor, "ZRANDMEMBER myzset 0", b"*0\r\n");
+    assert_command_response(&processor, "ZRANDMEMBER nonexisting_key 100", b"*0\r\n");
+
+    // Keep serving requests after the out-of-range errors.
+    let after = execute_command_line(&processor, "ZRANDMEMBER myzset -3").unwrap();
+    let members = parse_bulk_array_payloads(&after);
+    assert_eq!(members.len(), 3);
+    assert!(members.iter().all(|member| member.as_slice() == b"a"));
+
+    assert_command_response(
+        &processor,
+        "CONFIG GET zset-max-ziplist-value",
+        b"*2\r\n$22\r\nzset-max-ziplist-value\r\n$2\r\n64\r\n",
+    );
+}
+
+#[test]
 fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];
