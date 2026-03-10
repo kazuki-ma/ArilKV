@@ -5927,6 +5927,119 @@ async fn sync_replication_stream_rewrites_bzmpop_as_zpop_commands_like_redis_ext
 }
 
 #[tokio::test]
+async fn sync_replication_stream_preserves_nested_blmove_unblock_order_like_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter1 = TcpStream::connect(addr).await.unwrap();
+    let mut waiter2 = TcpStream::connect(addr).await.unwrap();
+    let mut producer = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"DEL", b"src{t}", b"dst{t}", b"key1{t}", b"key2{t}", b"key3{t}",
+        ]),
+        b":0\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    waiter1
+        .write_all(&encode_resp_command(&[
+            b"BLMOVE", b"src{t}", b"dst{t}", b"LEFT", b"RIGHT", b"0",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    waiter2
+        .write_all(&encode_resp_command(&[
+            b"BLMOVE", b"dst{t}", b"src{t}", b"RIGHT", b"LEFT", b"0",
+        ]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+
+    let mut pipeline = Vec::new();
+    pipeline.extend_from_slice(&encode_resp_command(&[b"SET", b"key1{t}", b"value1"]));
+    pipeline.extend_from_slice(&encode_resp_command(&[b"LPUSH", b"src{t}", b"dummy"]));
+    pipeline.extend_from_slice(&encode_resp_command(&[b"SET", b"key2{t}", b"value2"]));
+    producer.write_all(&pipeline).await.unwrap();
+
+    let mut expected_pipeline_responses = Vec::new();
+    expected_pipeline_responses.extend_from_slice(b"+OK\r\n");
+    expected_pipeline_responses.extend_from_slice(b":1\r\n");
+    expected_pipeline_responses.extend_from_slice(b"+OK\r\n");
+    let pipeline_responses = read_exact_with_timeout(
+        &mut producer,
+        expected_pipeline_responses.len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(pipeline_responses, expected_pipeline_responses);
+
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let dummy_bulk = b"$5\r\ndummy\r\n";
+    let waiter1_response =
+        read_exact_with_timeout(&mut waiter1, dummy_bulk.len(), Duration::from_secs(1)).await;
+    let waiter2_response =
+        read_exact_with_timeout(&mut waiter2, dummy_bulk.len(), Duration::from_secs(1)).await;
+    assert_eq!(waiter1_response, dummy_bulk);
+    assert_eq!(waiter2_response, dummy_bulk);
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"SET", b"key3{t}", b"value3"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"key1{t}", b"value1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"LPUSH", b"src{t}", b"dummy"]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"LMOVE", b"src{t}", b"dst{t}", b"LEFT", b"RIGHT",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[
+        b"LMOVE", b"dst{t}", b"src{t}", b"RIGHT", b"LEFT",
+    ]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"key2{t}", b"value2"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"key3{t}", b"value3"]));
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_rewrites_hgetdel_as_hdel_like_redis_external_scenario() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
