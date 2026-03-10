@@ -1799,16 +1799,21 @@ impl RequestProcessor {
             require_exact_arity(args, 4, "DEBUG", "DEBUG REPLYBUFFER <subcommand> <value>")?;
             let rb_sub = args[2];
             if ascii_eq_ignore_case(rb_sub, b"PEAK-RESET-TIME") {
-                // Accepts "never", "reset", or a numeric millisecond value.
-                // garnet-rs does not yet implement reply-buffer peak tracking,
-                // so this is a compatibility stub that accepts all valid inputs.
                 let value = args[3];
-                if !ascii_eq_ignore_case(value, b"NEVER") && !ascii_eq_ignore_case(value, b"RESET")
-                {
-                    // Validate that the value is a valid integer.
-                    let _millis =
-                        parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                if ascii_eq_ignore_case(value, b"NEVER") {
+                    self.set_debug_reply_buffer_peak_reset_time_millis(None);
+                    append_simple_string(response_out, b"OK");
+                    return Ok(());
                 }
+                if ascii_eq_ignore_case(value, b"RESET") {
+                    self.reset_debug_reply_buffer_peak_reset_time();
+                    append_simple_string(response_out, b"OK");
+                    return Ok(());
+                }
+                let millis =
+                    parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                let millis = u64::try_from(millis).ok();
+                self.set_debug_reply_buffer_peak_reset_time_millis(millis);
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
@@ -1817,7 +1822,7 @@ impl RequestProcessor {
                 if flag != b"0" && flag != b"1" {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // Compatibility stub: garnet-rs does not yet resize reply buffers.
+                self.set_debug_reply_buffer_resizing_enabled(flag == b"1");
                 append_simple_string(response_out, b"OK");
                 return Ok(());
             }
@@ -1829,7 +1834,7 @@ impl RequestProcessor {
             if flag != b"0" && flag != b"1" {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            // Compatibility stub: garnet-rs does not use copy-avoidance for replies.
+            self.set_debug_reply_copy_avoidance_enabled(flag == b"1");
             append_simple_string(response_out, b"OK");
             return Ok(());
         }

@@ -89,6 +89,7 @@ use std::net::SocketAddr;
 use std::sync::Mutex;
 use std::sync::atomic::AtomicU64;
 use std::sync::atomic::Ordering;
+use std::time::Duration;
 use std::time::Instant;
 use tokio::sync::broadcast;
 
@@ -161,6 +162,7 @@ pub struct ServerMetrics {
     bytes_received: AtomicU64,
     next_client_id: AtomicU64,
     clients: Mutex<BTreeMap<ClientId, ClientRuntimeInfo>>,
+    reply_buffer_settings: Mutex<ReplyBufferSettings>,
     acl_users: Mutex<HashSet<Vec<u8>>>,
     monitor_broadcast: broadcast::Sender<Vec<u8>>,
 }
@@ -187,7 +189,36 @@ struct ClientRuntimeInfo {
     query_buffer_free: usize,
     /// Allocated size of the client's read buffer.
     read_buffer_size: usize,
+    /// Logical reply buffer size surfaced through CLIENT LIST rbs=.
+    reply_buffer_size: usize,
+    /// Peak reply bytes seen since the last reset window.
+    reply_buffer_peak: usize,
+    /// Last time the reply buffer peak window was reset.
+    reply_buffer_peak_last_reset: Instant,
     selected_db: DbName,
+}
+
+const REPLY_BUFFER_MIN_BYTES: usize = 1024;
+const REPLY_BUFFER_CHUNK_BYTES: usize = 16 * 1024;
+const REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME_MILLIS: u64 = 5_000;
+
+#[derive(Debug, Clone, Copy)]
+struct ReplyBufferSettings {
+    peak_reset_time: Option<Duration>,
+    resizing_enabled: bool,
+    copy_avoidance_enabled: bool,
+}
+
+impl Default for ReplyBufferSettings {
+    fn default() -> Self {
+        Self {
+            peak_reset_time: Some(Duration::from_millis(
+                REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME_MILLIS,
+            )),
+            resizing_enabled: true,
+            copy_avoidance_enabled: true,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -250,8 +281,68 @@ impl ClientRuntimeInfo {
             query_buffer_used: 0,
             query_buffer_free: 0,
             read_buffer_size: 0,
+            reply_buffer_size: REPLY_BUFFER_CHUNK_BYTES,
+            reply_buffer_peak: 0,
+            reply_buffer_peak_last_reset: now,
             selected_db: DbName::default(),
         }
+    }
+
+    fn observe_reply_bytes(&mut self, bytes: usize, settings: ReplyBufferSettings, now: Instant) {
+        if bytes == 0 {
+            return;
+        }
+
+        let observed_bytes = bytes.max(1);
+        self.reply_buffer_peak = self.reply_buffer_peak.max(observed_bytes);
+        if !settings.resizing_enabled {
+            return;
+        }
+
+        while self.reply_buffer_size < REPLY_BUFFER_CHUNK_BYTES
+            && self.reply_buffer_peak >= self.reply_buffer_size
+        {
+            let next_size = self
+                .reply_buffer_size
+                .saturating_mul(2)
+                .min(REPLY_BUFFER_CHUNK_BYTES);
+            if next_size == self.reply_buffer_size {
+                break;
+            }
+            self.reply_buffer_size = next_size;
+        }
+
+        self.reply_buffer_peak_last_reset = now;
+    }
+
+    fn apply_reply_buffer_housekeeping(
+        &mut self,
+        settings: ReplyBufferSettings,
+        now: Instant,
+    ) -> usize {
+        if !settings.copy_avoidance_enabled {
+            // Garnet always accounts copied replies; the flag only exists for
+            // compatibility and does not change the logical rbs model.
+        }
+
+        if let Some(reset_interval) = settings.peak_reset_time
+            && now.duration_since(self.reply_buffer_peak_last_reset) >= reset_interval
+        {
+            self.reply_buffer_peak = 0;
+            self.reply_buffer_peak_last_reset = now;
+        }
+
+        if settings.resizing_enabled {
+            let target_shrink_size = self.reply_buffer_size / 2;
+            if target_shrink_size >= REPLY_BUFFER_MIN_BYTES
+                && self.reply_buffer_peak < target_shrink_size
+            {
+                self.reply_buffer_size =
+                    REPLY_BUFFER_MIN_BYTES.max(self.reply_buffer_peak.saturating_add(1));
+            }
+        }
+
+        self.reply_buffer_size.max(REPLY_BUFFER_MIN_BYTES)
     }
 }
 
@@ -266,6 +357,7 @@ impl Default for ServerMetrics {
             bytes_received: AtomicU64::new(0),
             next_client_id: AtomicU64::new(0),
             clients: Mutex::new(BTreeMap::new()),
+            reply_buffer_settings: Mutex::new(ReplyBufferSettings::default()),
             acl_users: Mutex::new(acl_users),
             monitor_broadcast: broadcast::channel(4096).0,
         }
@@ -424,11 +516,14 @@ impl ServerMetrics {
     }
 
     pub fn add_client_output_bytes(&self, client_id: ClientId, bytes: u64) {
+        let now = Instant::now();
+        let settings = self.reply_buffer_settings_snapshot();
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
         {
             client.total_output_bytes = client.total_output_bytes.saturating_add(bytes);
-            client.last_activity = Instant::now();
+            client.last_activity = now;
+            client.observe_reply_bytes(bytes as usize, settings, now);
         }
     }
 
@@ -563,29 +658,33 @@ impl ServerMetrics {
     }
 
     pub fn render_client_info_payload(&self, client_id: ClientId) -> Option<Vec<u8>> {
-        let Ok(clients) = self.clients.lock() else {
+        let Ok(mut clients) = self.clients.lock() else {
             return None;
         };
         let now = Instant::now();
-        let (_, client) = clients.get_key_value(&client_id)?;
+        let settings = self.reply_buffer_settings_snapshot();
+        let client = clients.get_mut(&client_id)?;
         if client.killed {
             return None;
         }
+        let reply_buffer_size = client.apply_reply_buffer_housekeeping(settings, now);
         Some(render_client_line(
             client_id,
             client,
             now,
             client.selected_db,
+            reply_buffer_size,
         ))
     }
 
     pub fn render_client_list_payload(&self, filter_id: Option<ClientId>) -> Vec<u8> {
-        let Ok(clients) = self.clients.lock() else {
+        let Ok(mut clients) = self.clients.lock() else {
             return Vec::new();
         };
         let mut out = Vec::new();
         let now = Instant::now();
-        for (id, client) in clients.iter() {
+        let settings = self.reply_buffer_settings_snapshot();
+        for (id, client) in clients.iter_mut() {
             if client.killed {
                 continue;
             }
@@ -597,9 +696,47 @@ impl ServerMetrics {
             if !out.is_empty() {
                 out.extend_from_slice(b"\r\n");
             }
-            out.extend_from_slice(&render_client_line(*id, client, now, client.selected_db));
+            let reply_buffer_size = client.apply_reply_buffer_housekeeping(settings, now);
+            out.extend_from_slice(&render_client_line(
+                *id,
+                client,
+                now,
+                client.selected_db,
+                reply_buffer_size,
+            ));
         }
         out
+    }
+
+    pub fn set_reply_buffer_peak_reset_time_millis(&self, millis: Option<u64>) {
+        if let Ok(mut settings) = self.reply_buffer_settings.lock() {
+            settings.peak_reset_time = millis.map(Duration::from_millis);
+        }
+    }
+
+    pub fn reset_reply_buffer_peak_reset_time(&self) {
+        self.set_reply_buffer_peak_reset_time_millis(Some(
+            REPLY_BUFFER_DEFAULT_PEAK_RESET_TIME_MILLIS,
+        ));
+    }
+
+    pub fn set_reply_buffer_resizing_enabled(&self, enabled: bool) {
+        if let Ok(mut settings) = self.reply_buffer_settings.lock() {
+            settings.resizing_enabled = enabled;
+        }
+    }
+
+    pub fn set_reply_copy_avoidance_enabled(&self, enabled: bool) {
+        if let Ok(mut settings) = self.reply_buffer_settings.lock() {
+            settings.copy_avoidance_enabled = enabled;
+        }
+    }
+
+    fn reply_buffer_settings_snapshot(&self) -> ReplyBufferSettings {
+        self.reply_buffer_settings
+            .lock()
+            .map(|settings| *settings)
+            .unwrap_or_default()
     }
 }
 
@@ -608,6 +745,7 @@ fn render_client_line(
     client: &ClientRuntimeInfo,
     now: Instant,
     selected_db: DbName,
+    reply_buffer_size: usize,
 ) -> Vec<u8> {
     let age_seconds = now.duration_since(client.connect_time).as_secs();
     let idle_seconds = now.duration_since(client.last_activity).as_secs();
@@ -631,14 +769,9 @@ fn render_client_line(
         .unwrap_or_default();
     let qbuf = client.query_buffer_used;
     let qbuf_free = client.query_buffer_free;
-    let rbs = if client.read_buffer_size > 0 {
-        client.read_buffer_size
-    } else {
-        1024
-    };
     // Approximate total client memory: query buffer allocation + read buffer + base overhead.
     let query_buffer_alloc = qbuf + qbuf_free;
-    let tot_mem = query_buffer_alloc + rbs + 20480;
+    let tot_mem = query_buffer_alloc + reply_buffer_size + 20480;
     format!(
         "id={} addr={} laddr={} fd=8 name={} age={} idle={} flags={} db={} sub=0 psub=0 ssub=0 multi=-1 watch=0 qbuf={} qbuf-free={} argv-mem=0 multi-mem=0 rbs={} rbp=0 obl=0 oll=0 omem=0 tot-mem={} events=r cmd={} user={} redir=-1 resp=3 lib-name={} lib-ver={} io-thread=0 tot-net-in={} tot-net-out={} tot-cmds={}",
         u64::from(client_id),
@@ -651,7 +784,7 @@ fn render_client_line(
         usize::from(selected_db),
         qbuf,
         qbuf_free,
-        rbs,
+        reply_buffer_size,
         tot_mem,
         command,
         user,

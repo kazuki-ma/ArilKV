@@ -4377,6 +4377,30 @@ impl RequestProcessor {
         self.debug_pause_cron.store(paused, Ordering::Release);
     }
 
+    pub(super) fn set_debug_reply_buffer_peak_reset_time_millis(&self, millis: Option<u64>) {
+        if let Some(metrics) = self.server_metrics.get() {
+            metrics.set_reply_buffer_peak_reset_time_millis(millis);
+        }
+    }
+
+    pub(super) fn reset_debug_reply_buffer_peak_reset_time(&self) {
+        if let Some(metrics) = self.server_metrics.get() {
+            metrics.reset_reply_buffer_peak_reset_time();
+        }
+    }
+
+    pub(super) fn set_debug_reply_buffer_resizing_enabled(&self, enabled: bool) {
+        if let Some(metrics) = self.server_metrics.get() {
+            metrics.set_reply_buffer_resizing_enabled(enabled);
+        }
+    }
+
+    pub(super) fn set_debug_reply_copy_avoidance_enabled(&self, enabled: bool) {
+        if let Some(metrics) = self.server_metrics.get() {
+            metrics.set_reply_copy_avoidance_enabled(enabled);
+        }
+    }
+
     pub(super) fn debug_disable_deny_scripts(&self) -> bool {
         self.debug_disable_deny_scripts.load(Ordering::Acquire)
     }

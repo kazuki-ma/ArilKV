@@ -1087,6 +1087,95 @@ async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
 }
 
 #[tokio::test]
+async fn reply_buffer_limits_match_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut test_client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"REPLYBUFFER", b"PEAK-RESET-TIME", b"100"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"REPLY-COPY-AVOIDANCE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut test_client,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"test_client"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut idle_reply_buffer_size = 0usize;
+    let idle_deadline = Instant::now() + Duration::from_secs(1);
+    let mut idle_ok = false;
+    while Instant::now() < idle_deadline {
+        idle_reply_buffer_size =
+            reply_buffer_size_for_named_client(&mut inspector, "test_client").await;
+        if (1024..2046).contains(&idle_reply_buffer_size) {
+            idle_ok = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        idle_ok,
+        "reply buffer of idle client is {idle_reply_buffer_size} after 1 seconds"
+    );
+
+    let big_value = vec![b'x'; 32_768];
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"SET", b"bigval", big_value.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"REPLYBUFFER", b"PEAK-RESET-TIME", b"never"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let get_big_value = encode_resp_command(&[b"GET", b"bigval"]);
+    let mut busy_reply_buffer_size = 0usize;
+    let busy_deadline = Instant::now() + Duration::from_secs(1);
+    let mut busy_ok = false;
+    while Instant::now() < busy_deadline {
+        let payload =
+            send_and_read_bulk_payload(&mut test_client, &get_big_value, Duration::from_secs(2))
+                .await;
+        assert_eq!(payload.len(), big_value.len());
+        busy_reply_buffer_size =
+            reply_buffer_size_for_named_client(&mut inspector, "test_client").await;
+        if (16_384..32_768).contains(&busy_reply_buffer_size) {
+            busy_ok = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        busy_ok,
+        "reply buffer of busy client is {busy_reply_buffer_size} after 1 seconds"
+    );
+
+    send_and_expect(
+        &mut inspector,
+        &encode_resp_command(&[b"DEBUG", b"REPLYBUFFER", b"PEAK-RESET-TIME", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_key_expiring_after_watch_aborts_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -10834,6 +10923,40 @@ async fn send_and_read_bulk_payload(
 ) -> Vec<u8> {
     client.write_all(request).await.unwrap();
     read_bulk_payload_with_timeout(client, timeout).await
+}
+
+async fn reply_buffer_size_for_named_client(client: &mut TcpStream, name: &str) -> usize {
+    let payload = send_and_read_bulk_payload(
+        client,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let text = std::str::from_utf8(&payload).unwrap();
+    for line in text.split("\r\n") {
+        let Some(line_name) = client_list_field_value(line, "name") else {
+            continue;
+        };
+        if line_name != name {
+            continue;
+        }
+        let reply_buffer_size = client_list_field_value(line, "rbs")
+            .unwrap_or_else(|| panic!("rbs field not found in {line}"));
+        return reply_buffer_size.parse::<usize>().unwrap();
+    }
+    panic!(
+        "client named `{name}` not found in CLIENT LIST payload: {}",
+        String::from_utf8_lossy(&payload)
+    );
+}
+
+fn client_list_field_value<'a>(line: &'a str, field: &str) -> Option<&'a str> {
+    for part in line.split(' ') {
+        if let Some(value) = part.strip_prefix(field) {
+            return value.strip_prefix('=');
+        }
+    }
+    None
 }
 
 async fn read_bulk_array_payloads_with_timeout(
