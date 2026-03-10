@@ -35,6 +35,8 @@ RUNTEXT_SKIP_SCRIPTING_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_IN_FULL:-1}"
 RUNTEXT_RUN_SCRIPTING_ISOLATED="${RUNTEXT_RUN_SCRIPTING_ISOLATED:-1}"
 RUNTEXT_SKIP_OTHER_IN_FULL="${RUNTEXT_SKIP_OTHER_IN_FULL:-1}"
 RUNTEXT_RUN_OTHER_ISOLATED="${RUNTEXT_RUN_OTHER_ISOLATED:-1}"
+RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS="${RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS:-180}"
+RUNTEXT_RUN_ONLY_ISOLATED_UNIT="${RUNTEXT_RUN_ONLY_ISOLATED_UNIT:-}"
 
 if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" && "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
     # Keep full external probes from stalling for the runtest default (20 minutes)
@@ -511,6 +513,7 @@ run_full_runtest_case() {
 run_isolated_unit_case() {
     local case_name="$1"
     local unit="$2"
+    local timeout_override="${3:-}"
     local log_file="${RESULT_DIR}/${case_name}.log"
     local failed_tests_file="${RESULT_DIR}/${case_name}.failed-tests.txt"
     local cmd=(
@@ -523,8 +526,13 @@ run_isolated_unit_case() {
         --single "${unit}"
     )
 
-    if [[ -n "${RUNTEXT_TIMEOUT_SECONDS}" ]]; then
-        cmd+=(--timeout "${RUNTEXT_TIMEOUT_SECONDS}")
+    local effective_timeout="${RUNTEXT_TIMEOUT_SECONDS}"
+    if [[ -n "${timeout_override}" ]]; then
+        effective_timeout="${timeout_override}"
+    fi
+
+    if [[ -n "${effective_timeout}" ]]; then
+        cmd+=(--timeout "${effective_timeout}")
     fi
     if [[ -n "${RUNTEXT_CLIENTS}" ]]; then
         cmd+=(--clients "${RUNTEXT_CLIENTS}")
@@ -609,7 +617,7 @@ run_isolated_unit_case() {
     fi
 
     local details
-    details="mode=full; isolated_unit=${unit}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
+    details="mode=full; isolated_unit=${unit}; timeout_seconds=${effective_timeout:-default}; exit_code=${exit_code}; exit_reason=${exit_reason}; wall_timeout_seconds=${RUNTEXT_WALL_TIMEOUT_SECONDS}; ok=${ok_count}; err=${err_count}; timeout=${timeout_count}; ignore=${ignore_count}; failed_tests=${failed_tests_count}"
     record_result "${case_name}" "${status}" "${details}"
 }
 
@@ -755,8 +763,22 @@ fi
 
 case "${REDIS_RUNTEXT_MODE}" in
     full)
-        run_full_runtest_case "redis_runtest_full_external"
-        if [[ "${RUNTEXT_RUN_SCRIPTING_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
+        if [[ -n "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" ]]; then
+            if ! restart_garnet_server; then
+                echo "warning: failed to restart server before isolated ${RUNTEXT_RUN_ONLY_ISOLATED_UNIT} run" >&2
+            fi
+            reset_expiration_debug_state
+            isolated_timeout_override=""
+            if [[ "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" == "unit/other" ]]; then
+                isolated_timeout_override="${RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS}"
+            fi
+            isolated_case_name="redis_runtest_${RUNTEXT_RUN_ONLY_ISOLATED_UNIT//\//_}_external"
+            run_isolated_unit_case "${isolated_case_name}" "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" "${isolated_timeout_override}"
+            reset_expiration_debug_state
+        else
+            run_full_runtest_case "redis_runtest_full_external"
+        fi
+        if [[ -z "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" && "${RUNTEXT_RUN_SCRIPTING_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
             if ! restart_garnet_server; then
                 echo "warning: failed to restart server before isolated scripting run" >&2
             fi
@@ -764,7 +786,7 @@ case "${REDIS_RUNTEXT_MODE}" in
             run_isolated_unit_case "redis_runtest_unit_scripting_external" "unit/scripting"
             reset_expiration_debug_state
         fi
-        if [[ "${RUNTEXT_RUN_QUERYBUF_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
+        if [[ -z "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" && "${RUNTEXT_RUN_QUERYBUF_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
             # Keep querybuf coverage in a separate run, with explicit debug-state reset,
             # so querybuf failures cannot stall later suites in the main full probe.
             if ! restart_garnet_server; then
@@ -774,12 +796,12 @@ case "${REDIS_RUNTEXT_MODE}" in
             run_isolated_unit_case "redis_runtest_unit_querybuf_external" "unit/querybuf"
             reset_expiration_debug_state
         fi
-        if [[ "${RUNTEXT_RUN_OTHER_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
+        if [[ -z "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" && "${RUNTEXT_RUN_OTHER_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
             if ! restart_garnet_server; then
                 echo "warning: failed to restart server before isolated unit/other run" >&2
             fi
             reset_expiration_debug_state
-            run_isolated_unit_case "redis_runtest_unit_other_external" "unit/other"
+            run_isolated_unit_case "redis_runtest_unit_other_external" "unit/other" "${RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS}"
             reset_expiration_debug_state
         fi
         ;;

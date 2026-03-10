@@ -61,8 +61,14 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
       (`RUNTEXT_RUN_SCRIPTING_ISOLATED=1`)
     - full mode runs `unit/other` in a separate isolated case by default
       (`RUNTEXT_RUN_OTHER_ISOLATED=1`)
+    - isolated `unit/other` uses a longer per-unit timeout by default
+      (`RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS=180`) because the inline
+      `PIPELINING stresser` is slower under Tcl external mode than the Rust
+      exact regression
     - isolated `unit/querybuf` runs after a server restart, and post-runtest probes also
       auto-restart if reset cannot recover a healthy `PING`
+    - developer shortcut: `RUNTEXT_RUN_ONLY_ISOLATED_UNIT=<unit/path>` runs just one isolated
+      unit path through the same restart/probe wrapper
     - optional compatibility-smoke mode: `REDIS_RUNTEXT_MODE=subset`
   - Validates runtest stdout counts in all modes:
     - parses `[ok]` / `[err]` / `[ignore]` counts from log
@@ -166,6 +172,8 @@ Recommended add-on checks:
 - `redis_runtest_external_subset.sh` is a focused subset, not full Redis compatibility.
   - default mode is full external runtest; subset mode is optional for faster smoke checks.
   - full mode defaults `RUNTEXT_TIMEOUT_SECONDS=120` to prevent indefinite single-test stalls.
+  - isolated `unit/other` has its own longer timeout budget because the Tcl
+    pipelining stress test needs more than the generic 120s in some environments.
   - keep feature-level unit tests in `garnet-server` as the primary correctness gate.
 - `build_command_status_matrix.sh` updates canonical status files under `docs/compatibility/`.
   - run it whenever `CommandId`/`COMMAND` surface changes.
