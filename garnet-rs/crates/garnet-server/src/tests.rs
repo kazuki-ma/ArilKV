@@ -12166,6 +12166,108 @@ async fn unsubscribe_inside_multi_then_publish_to_self_external_pubsub_scenario(
 }
 
 #[tokio::test]
+async fn subscribed_mode_resp2_after_hello2_rejects_regular_commands_like_external_redis_cli_scenario()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_hello_and_drain(&mut client, b"3").await;
+
+    let first_subscribe = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"SUBSCRIBE", b"ch1", b"ch2", b"ch3"]),
+        timeout,
+    )
+    .await;
+    let first_subscribe_items = resp_socket_array(&first_subscribe);
+    assert_eq!(resp_socket_bulk(&first_subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&first_subscribe_items[1]), b"ch1");
+    assert_eq!(resp_socket_integer(&first_subscribe_items[2]), 1);
+
+    let second_subscribe = read_resp_value_with_timeout(&mut client, timeout).await;
+    let second_subscribe_items = resp_socket_array(&second_subscribe);
+    assert_eq!(resp_socket_bulk(&second_subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&second_subscribe_items[1]), b"ch2");
+    assert_eq!(resp_socket_integer(&second_subscribe_items[2]), 2);
+
+    let third_subscribe = read_resp_value_with_timeout(&mut client, timeout).await;
+    let third_subscribe_items = resp_socket_array(&third_subscribe);
+    assert_eq!(resp_socket_bulk(&third_subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&third_subscribe_items[1]), b"ch3");
+    assert_eq!(resp_socket_integer(&third_subscribe_items[2]), 3);
+
+    let publish_count = send_and_read_integer(
+        &mut client,
+        &encode_resp_command(&[b"PUBLISH", b"ch2", b"hello"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(publish_count, 1);
+
+    let published_message = read_resp_value_with_timeout(&mut client, timeout).await;
+    let published_message_items = resp_socket_array(&published_message);
+    assert_eq!(resp_socket_bulk(&published_message_items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&published_message_items[1]), b"ch2");
+    assert_eq!(resp_socket_bulk(&published_message_items[2]), b"hello");
+
+    let first_unsubscribe = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"UNSUBSCRIBE", b"ch1", b"ch2"]),
+        timeout,
+    )
+    .await;
+    let first_unsubscribe_items = resp_socket_array(&first_unsubscribe);
+    assert_eq!(
+        resp_socket_bulk(&first_unsubscribe_items[0]),
+        b"unsubscribe"
+    );
+    assert_eq!(resp_socket_bulk(&first_unsubscribe_items[1]), b"ch1");
+    assert_eq!(resp_socket_integer(&first_unsubscribe_items[2]), 2);
+
+    let second_unsubscribe = read_resp_value_with_timeout(&mut client, timeout).await;
+    let second_unsubscribe_items = resp_socket_array(&second_unsubscribe);
+    assert_eq!(
+        resp_socket_bulk(&second_unsubscribe_items[0]),
+        b"unsubscribe"
+    );
+    assert_eq!(resp_socket_bulk(&second_unsubscribe_items[1]), b"ch2");
+    assert_eq!(resp_socket_integer(&second_unsubscribe_items[2]), 1);
+
+    send_hello_and_drain(&mut client, b"2").await;
+    client
+        .write_all(&encode_resp_command(&[b"get", b"k"]))
+        .await
+        .unwrap();
+    let get_error = read_resp_line_with_timeout(&mut client, timeout).await;
+    assert_eq!(
+        get_error,
+        b"-ERR Can't execute 'get': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context",
+    );
+
+    let ping_in_subscribed_resp2 =
+        send_and_read_resp_value(&mut client, &encode_resp_command(&[b"PING"]), timeout).await;
+    let ping_in_subscribed_resp2_items = resp_socket_array(&ping_in_subscribed_resp2);
+    assert_eq!(ping_in_subscribed_resp2_items.len(), 2);
+    assert_eq!(
+        resp_socket_bulk(&ping_in_subscribed_resp2_items[0]),
+        b"pong"
+    );
+    assert_eq!(resp_socket_bulk(&ping_in_subscribed_resp2_items[1]), b"");
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"RESET"]),
+        b"+RESET\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();

@@ -1,0 +1,18 @@
+Running 0e4e98332a benchmark gate...
+Running worktree-11.444 benchmark gate...
+binary_ab_comparison
+base_label=0e4e98332a
+new_label=worktree-11.444
+0e4e98332a.median_set_ops=66283.000
+0e4e98332a.median_get_ops=65228.000
+0e4e98332a.median_set_p99_ms=0.11100
+0e4e98332a.median_get_p99_ms=0.16700
+worktree-11.444.median_set_ops=66214.000
+worktree-11.444.median_get_ops=64104.000
+worktree-11.444.median_set_p99_ms=0.11900
+worktree-11.444.median_get_p99_ms=0.18300
+delta.set_ops_pct=-0.10
+delta.get_ops_pct=-1.72
+delta.set_p99_ms_pct=7.21
+delta.get_p99_ms_pct=9.58
+comparison_path=/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/experiments/2026-03-11/11.444-resp2-subscribed-gate/artifacts/comparison.txt

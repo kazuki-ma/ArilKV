@@ -1322,6 +1322,28 @@ pub(crate) async fn handle_connection(
                 break;
             }
 
+            if !client_state.resp_protocol_version.is_resp3()
+                && processor.pubsub_subscription_count(client_id) > 0
+                && !command_allowed_in_resp2_subscribed_context(command)
+            {
+                append_resp2_subscribed_context_error(&mut responses, command_name);
+                disconnect_after_write |= finalize_client_command(
+                    &metrics,
+                    client_id,
+                    &mut responses,
+                    response_mark,
+                    &mut client_state,
+                    command,
+                    command_outcome,
+                    commands_processed,
+                );
+                consumed += frame_bytes_consumed;
+                if disconnect_after_write {
+                    break;
+                }
+                continue;
+            }
+
             if command == CommandId::Auth {
                 let maybe_user = if argument_count == 2 {
                     Some(b"default".to_vec())
@@ -5017,6 +5039,31 @@ fn command_forces_reply_when_client_reply_off(command: CommandId) -> bool {
             | CommandId::Punsubscribe
             | CommandId::Sunsubscribe
     )
+}
+
+fn command_allowed_in_resp2_subscribed_context(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Subscribe
+            | CommandId::Psubscribe
+            | CommandId::Ssubscribe
+            | CommandId::Unsubscribe
+            | CommandId::Punsubscribe
+            | CommandId::Sunsubscribe
+            | CommandId::Ping
+            | CommandId::Quit
+            | CommandId::Reset
+    )
+}
+
+fn append_resp2_subscribed_context_error(responses: &mut Vec<u8>, command_name: &[u8]) {
+    let mut message = Vec::with_capacity(command_name.len() + 101);
+    message.extend_from_slice(b"ERR Can't execute '");
+    message.extend_from_slice(command_name);
+    message.extend_from_slice(
+        b"': only (P|S)SUBSCRIBE / (P|S)UNSUBSCRIBE / PING / QUIT / RESET are allowed in this context",
+    );
+    append_error_line(responses, &message);
 }
 
 fn command_execution_delta(processor: &RequestProcessor, before: u64, command: CommandId) -> u64 {
