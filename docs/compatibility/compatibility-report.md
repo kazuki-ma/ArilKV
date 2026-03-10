@@ -24,62 +24,25 @@
 
 - Probe script exit code: `0`
 - Cases: `6`
-- PASS: `3`
+- PASS: `2`
 - PASS_WITH_KNOWN_GAPS: `0`
-- FAIL: `3`
+- FAIL: `4`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2170; err=37; timeout=1; ignore=306; failed_tests=38; expected_failed_tests=0; unexpected_failed_tests=38  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2207; err=0; timeout=1; ignore=306; failed_tests=1; expected_failed_tests=0; unexpected_failed_tests=1  |
 | `redis_runtest_unit_scripting_external` | `FAIL` | mode=full; isolated_unit=unit/scripting; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=216; err=94; timeout=0; ignore=26; failed_tests=94  |
 | `redis_runtest_unit_querybuf_external` | `FAIL` | mode=full; isolated_unit=unit/querybuf; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=0; err=4; timeout=0; ignore=0; failed_tests=4  |
-| `redis_runtest_unit_other_external` | `PASS` | mode=full; isolated_unit=unit/other; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=25; err=0; timeout=0; ignore=6; failed_tests=0  |
+| `redis_runtest_unit_other_external` | `FAIL` | mode=full; isolated_unit=unit/other; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=13; err=0; timeout=1; ignore=1; failed_tests=1  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `38`
+- Failed tests extracted from runtest log: `1`
 
 | Test |
 |---|
-| `verify reply buffer limits in tests/unit/replybufsize.tcl` |
-| `{standalone} SCAN regression test for issue #4906 in tests/unit/scan.tcl` |
-| `SLOWLOG - only logs commands taking more time than specified in tests/unit/slowlog.tcl` |
-| `SLOWLOG - max entries is correctly handled in tests/unit/slowlog.tcl` |
-| `SLOWLOG - GET optional argument to limit output len works in tests/unit/slowlog.tcl` |
-| `SLOWLOG - logged entry sanity check in tests/unit/slowlog.tcl` |
-| `SLOWLOG - Certain commands are omitted that contain sensitive information in tests/unit/slowlog.tcl` |
-| `SLOWLOG - Some commands can redact sensitive fields in tests/unit/slowlog.tcl` |
-| `SLOWLOG - Rewritten commands are logged as their original command in tests/unit/slowlog.tcl` |
-| `SLOWLOG - commands with too many arguments are trimmed in tests/unit/slowlog.tcl` |
-| `SLOWLOG - too long arguments are trimmed in tests/unit/slowlog.tcl` |
-| `SLOWLOG - EXEC is not logged, just executed commands in tests/unit/slowlog.tcl` |
-| `SLOWLOG - can clean older entries in tests/unit/slowlog.tcl` |
-| `SLOWLOG - can be disabled in tests/unit/slowlog.tcl` |
-| `SLOWLOG - get all slow logs in tests/unit/slowlog.tcl` |
-| `SLOWLOG - blocking command is reported only after unblocked in tests/unit/slowlog.tcl` |
-| `SORT STORE quicklist with the right options in tests/unit/sort.tcl` |
-| `Error message consistency and validation (listpackex) in tests/unit/type/hash-field-expire.tcl` |
-| `Error message consistency and validation (hashtable) in tests/unit/type/hash-field-expire.tcl` |
-| `Multiple condition flags error handling (listpackex) in tests/unit/type/hash-field-expire.tcl` |
-| `Multiple FIELDS keywords error handling (listpackex) in tests/unit/type/hash-field-expire.tcl` |
-| `Multiple condition flags error handling (hashtable) in tests/unit/type/hash-field-expire.tcl` |
-| `Multiple FIELDS keywords error handling (hashtable) in tests/unit/type/hash-field-expire.tcl` |
-| `Stress test - complex scenarios with all features (listpackex) in tests/unit/type/hash-field-expire.tcl` |
-| `Backward compatibility verification (listpackex) in tests/unit/type/hash-field-expire.tcl` |
-| `Stress test - complex scenarios with all features (hashtable) in tests/unit/type/hash-field-expire.tcl` |
-| `Backward compatibility verification (hashtable) in tests/unit/type/hash-field-expire.tcl` |
-| `HINCRBYFLOAT over hash-max-listpack-value encoded with a listpack in tests/unit/type/hash.tcl` |
-| `Hash ziplist of various encodings in tests/unit/type/hash.tcl` |
-| `Hash ziplist of various encodings - sanitize dump in tests/unit/type/hash.tcl` |
-| `KEYS command return expired keys when allow_access_expired is 1 in tests/unit/type/hash.tcl` |
-| `ziplist implementation: value encoding and backlink in tests/unit/type/list-3.tcl` |
-| `List quicklist -> listpack encoding conversion in tests/unit/type/list.tcl` |
-| `LCS indexes in tests/unit/type/string.tcl` |
-| `LCS indexes with match len in tests/unit/type/string.tcl` |
-| `LCS indexes with match len and minimum match len in tests/unit/type/string.tcl` |
-| `MEMORY USAGE - STRINGS in tests/unit/type/string.tcl` |
 | `Interactive CLI: should find first search result` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
