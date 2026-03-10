@@ -4262,6 +4262,17 @@ impl RequestProcessor {
             .unwrap_or(100)
     }
 
+    pub(super) fn list_compress_depth(&self) -> i64 {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 0;
+        };
+        values
+            .get(b"list-compress-depth".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(0)
+    }
+
     pub(super) fn ensure_string_length_within_limit(
         &self,
         string_len: usize,

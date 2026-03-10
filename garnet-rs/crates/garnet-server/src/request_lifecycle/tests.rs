@@ -14199,6 +14199,55 @@ fn debug_htstats_key_rejects_non_hashtable_values() {
 }
 
 #[test]
+fn sort_store_quicklist_debug_object_matches_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "DEL lst{t} lst_dst{t}", b":0\r\n");
+    assert_command_response(
+        &processor,
+        "CONFIG SET list-max-listpack-size -1",
+        b"+OK\r\n",
+    );
+    assert_command_response(&processor, "CONFIG SET list-compress-depth 12", b"+OK\r\n");
+
+    let mut lpush_parts = Vec::with_capacity(6002);
+    lpush_parts.push(b"LPUSH".to_vec());
+    lpush_parts.push(b"lst{t}".to_vec());
+    for _ in 0..6000 {
+        lpush_parts.push(b"1".to_vec());
+    }
+    let lpush_slices = lpush_parts.iter().map(Vec::as_slice).collect::<Vec<_>>();
+    let lpush_frame = encode_resp(&lpush_slices);
+    let mut lpush_args = vec![ArgSlice::EMPTY; lpush_slices.len()];
+    let lpush_meta = parse_resp_command_arg_slices(&lpush_frame, &mut lpush_args).unwrap();
+    let mut lpush_response = Vec::new();
+    processor
+        .execute(
+            &lpush_args[..lpush_meta.argument_count],
+            &mut lpush_response,
+        )
+        .unwrap();
+    assert_eq!(lpush_response, b":6000\r\n");
+
+    assert_command_response(&processor, "SORT lst{t} STORE lst_dst{t}", b":6000\r\n");
+    assert_command_response(
+        &processor,
+        "OBJECT ENCODING lst_dst{t}",
+        b"$9\r\nquicklist\r\n",
+    );
+
+    let debug_object = parse_bulk_payload(&execute_frame(
+        &processor,
+        &encode_resp(&[b"DEBUG", b"OBJECT", b"lst_dst{t}"]),
+    ))
+    .expect("debug object bulk payload");
+    let debug_text = std::str::from_utf8(&debug_object).expect("utf-8 debug payload");
+    assert!(
+        debug_text.contains("ql_listpack_max:-1 ql_compressed:1"),
+        "expected quicklist metadata in DEBUG OBJECT: {debug_text}"
+    );
+}
+
+#[test]
 fn debug_htstats_key_reports_synthetic_set_hash_table_stats() {
     let processor = RequestProcessor::new().unwrap();
     assert_command_response(

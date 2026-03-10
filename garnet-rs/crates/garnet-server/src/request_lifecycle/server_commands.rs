@@ -1701,6 +1701,15 @@ impl RequestProcessor {
             if !self.key_exists_any(&key)? {
                 return Err(RequestExecutionError::NoSuchKey);
             }
+            let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
+            let list_compress_depth = self.list_compress_depth();
+            let quicklist_debug_suffix = |encoding: &str| -> String {
+                if encoding != "quicklist" {
+                    return String::new();
+                }
+                let ql_compressed = if list_compress_depth > 0 { 1 } else { 0 };
+                format!(" ql_listpack_max:{list_max} ql_compressed:{ql_compressed}")
+            };
             let (encoding, serialized_len) = if let Some(value) = self.read_string_value(&key)? {
                 let enc = String::from_utf8_lossy(string_encoding_name(
                     &value,
@@ -1718,8 +1727,10 @@ impl RequestProcessor {
                     let len = object.payload.len();
                     let lru = self.key_lru_millis(&key).unwrap_or(0);
                     let idle = self.key_idle_seconds(&key).unwrap_or(0);
+                    let encoding = "quicklist";
                     let payload = format!(
-                        "Value at:0x0 refcount:1 encoding:quicklist serializedlength:{len} lru:{lru} lru_seconds_idle:{idle}"
+                        "Value at:0x0 refcount:1 encoding:{encoding} serializedlength:{len} lru:{lru} lru_seconds_idle:{idle}{}",
+                        quicklist_debug_suffix(encoding)
                     );
                     if self.resp_protocol_version().is_resp3() {
                         append_verbatim_string(response_out, b"txt", payload.as_bytes());
@@ -1765,8 +1776,9 @@ impl RequestProcessor {
             };
             let lru = self.key_lru_millis(&key).unwrap_or(0);
             let idle = self.key_idle_seconds(&key).unwrap_or(0);
+            let quicklist_metadata = quicklist_debug_suffix(&encoding);
             let payload = format!(
-                "Value at:0x0 refcount:1 encoding:{encoding} serializedlength:{serialized_len} lru:{lru} lru_seconds_idle:{idle}"
+                "Value at:0x0 refcount:1 encoding:{encoding} serializedlength:{serialized_len} lru:{lru} lru_seconds_idle:{idle}{quicklist_metadata}"
             );
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", payload.as_bytes());
