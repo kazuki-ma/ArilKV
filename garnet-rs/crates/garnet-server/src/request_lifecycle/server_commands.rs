@@ -2945,26 +2945,46 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"LEN") {
             require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG LEN")?;
-            append_integer(response_out, 0);
+            append_integer(response_out, self.slowlog_len() as i64);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"RESET") {
             require_exact_arity(args, 2, "SLOWLOG", "SLOWLOG RESET")?;
+            self.reset_slowlog();
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GET") {
             ensure_ranged_arity(args, 2, 3, "SLOWLOG", "SLOWLOG GET [count]")?;
+            let mut count = 10usize;
             if args.len() == 3 {
-                let count =
+                let requested =
                     parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-                if count < -1 {
+                if requested < -1 {
                     return Err(
                         RequestExecutionError::SlowlogCountMustBeGreaterThanOrEqualToMinusOne,
                     );
                 }
+                if requested == -1 {
+                    count = self.slowlog_len();
+                } else {
+                    count = usize::try_from(requested).unwrap_or(usize::MAX);
+                }
             }
-            append_array_length(response_out, 0);
+            let entries = self.slowlog_entries(Some(count));
+            append_array_length(response_out, entries.len());
+            for entry in entries {
+                append_array_length(response_out, 6);
+                append_integer(response_out, entry.id as i64);
+                append_integer(response_out, entry.unix_time_seconds);
+                append_integer(response_out, entry.duration_micros);
+                append_array_length(response_out, entry.args.len());
+                for argument in entry.args {
+                    append_bulk_string(response_out, &argument);
+                }
+                append_bulk_string(response_out, &entry.peer_id);
+                append_bulk_string(response_out, &entry.client_name);
+            }
             return Ok(());
         }
         Err(RequestExecutionError::UnknownSubcommand)

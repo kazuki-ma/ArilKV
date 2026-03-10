@@ -29,6 +29,7 @@ use std::process::Command;
 use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::sync::OnceLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicU8;
@@ -1559,6 +1560,164 @@ fn parse_canonical_i64_set_member(member: &[u8]) -> Option<i64> {
     Some(value)
 }
 
+const SLOWLOG_ENTRY_MAX_ARGC: usize = 32;
+const SLOWLOG_ENTRY_MAX_STRING: usize = 128;
+
+#[derive(Debug, Clone)]
+pub(crate) struct SlowlogEntry {
+    pub(crate) id: u64,
+    pub(crate) unix_time_seconds: i64,
+    pub(crate) duration_micros: i64,
+    pub(crate) args: Vec<Vec<u8>>,
+    pub(crate) peer_id: Vec<u8>,
+    pub(crate) client_name: Vec<u8>,
+}
+
+fn should_skip_slowlog_for_command(command: CommandId, args: &[&[u8]]) -> bool {
+    if command == CommandId::Exec {
+        return true;
+    }
+    if command == CommandId::Slowlog {
+        return args
+            .get(1)
+            .is_none_or(|subcommand| !subcommand.eq_ignore_ascii_case(b"RESET"));
+    }
+    false
+}
+
+fn is_slowlog_blocking_command(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Blpop
+            | CommandId::Brpop
+            | CommandId::Brpoplpush
+            | CommandId::Blmove
+            | CommandId::Bzpopmin
+            | CommandId::Bzpopmax
+            | CommandId::Bzmpop
+            | CommandId::Blmpop
+            | CommandId::Xread
+            | CommandId::Xreadgroup
+    )
+}
+
+fn slowlog_arguments_for_command(args: &[&[u8]]) -> Vec<Vec<u8>> {
+    let redacted = redact_slowlog_arguments(args);
+    let mut trimmed = Vec::with_capacity(redacted.len().min(SLOWLOG_ENTRY_MAX_ARGC));
+    let max_args = redacted.len().min(SLOWLOG_ENTRY_MAX_ARGC);
+    for index in 0..max_args {
+        if redacted.len() > SLOWLOG_ENTRY_MAX_ARGC && index + 1 == SLOWLOG_ENTRY_MAX_ARGC {
+            trimmed.push(
+                format!(
+                    "... ({} more arguments)",
+                    redacted.len() - SLOWLOG_ENTRY_MAX_ARGC + 1
+                )
+                .into_bytes(),
+            );
+            break;
+        }
+        trimmed.push(trim_slowlog_argument(&redacted[index]));
+    }
+    trimmed
+}
+
+fn redact_slowlog_arguments(args: &[&[u8]]) -> Vec<Vec<u8>> {
+    let normalized = args
+        .iter()
+        .map(|arg| {
+            arg.iter()
+                .map(|byte| byte.to_ascii_lowercase())
+                .collect::<Vec<u8>>()
+        })
+        .collect::<Vec<_>>();
+
+    if normalized.first().is_some_and(|command| command == b"acl")
+        && let Some(subcommand) = normalized.get(1)
+    {
+        if subcommand == b"setuser" {
+            return vec![
+                b"acl".to_vec(),
+                b"setuser".to_vec(),
+                b"(redacted)".to_vec(),
+                b"(redacted)".to_vec(),
+                b"(redacted)".to_vec(),
+            ];
+        }
+        if subcommand == b"getuser" {
+            return vec![b"acl".to_vec(), b"getuser".to_vec(), b"(redacted)".to_vec()];
+        }
+        if subcommand == b"deluser" {
+            let mut redacted = vec![b"acl".to_vec(), b"deluser".to_vec()];
+            for _ in args.iter().skip(2) {
+                redacted.push(b"(redacted)".to_vec());
+            }
+            return redacted;
+        }
+    }
+
+    if normalized
+        .first()
+        .is_some_and(|command| command == b"config")
+        && normalized
+            .get(1)
+            .is_some_and(|subcommand| subcommand == b"set")
+        && normalized.len() >= 4
+    {
+        let mut redacted = args.iter().map(|arg| (*arg).to_vec()).collect::<Vec<_>>();
+        if matches!(
+            normalized[2].as_slice(),
+            b"masteruser"
+                | b"masterauth"
+                | b"requirepass"
+                | b"tls-key-file-pass"
+                | b"tls-client-key-file-pass"
+        ) {
+            redacted[3] = b"(redacted)".to_vec();
+        }
+        return redacted;
+    }
+
+    if normalized
+        .first()
+        .is_some_and(|command| command == b"migrate")
+    {
+        let mut redacted = args.iter().map(|arg| (*arg).to_vec()).collect::<Vec<_>>();
+        let mut index = 6usize;
+        while index < normalized.len() {
+            if normalized[index] == b"auth" && index + 1 < redacted.len() {
+                redacted[index + 1] = b"(redacted)".to_vec();
+                index += 2;
+                continue;
+            }
+            if normalized[index] == b"auth2" && index + 2 < redacted.len() {
+                redacted[index + 1] = b"(redacted)".to_vec();
+                redacted[index + 2] = b"(redacted)".to_vec();
+                index += 3;
+                continue;
+            }
+            index += 1;
+        }
+        return redacted;
+    }
+
+    args.iter().map(|arg| (*arg).to_vec()).collect()
+}
+
+fn trim_slowlog_argument(argument: &[u8]) -> Vec<u8> {
+    if argument.len() <= SLOWLOG_ENTRY_MAX_STRING {
+        return argument.to_vec();
+    }
+    let mut trimmed = argument[..SLOWLOG_ENTRY_MAX_STRING].to_vec();
+    trimmed.extend_from_slice(
+        format!(
+            "... ({} more bytes)",
+            argument.len() - SLOWLOG_ENTRY_MAX_STRING
+        )
+        .as_bytes(),
+    );
+    trimmed
+}
+
 pub struct RequestProcessor {
     string_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
     object_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
@@ -1602,6 +1761,8 @@ pub struct RequestProcessor {
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     error_reply_counts: Mutex<HashMap<Vec<u8>, u64>>,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
+    slowlog_entries: Mutex<VecDeque<SlowlogEntry>>,
+    slowlog_next_id: AtomicU64,
     pubsub_state: Mutex<PubSubState>,
     tracking_state: Mutex<TrackingState>,
     tracking_table_max_keys: AtomicU64,
@@ -1654,6 +1815,7 @@ pub struct RequestProcessor {
     client_lib_name: Mutex<Vec<u8>>,
     /// CLIENT SETINFO LIB-VER value (empty = not set).
     client_lib_ver: Mutex<Vec<u8>>,
+    server_metrics: OnceLock<Arc<crate::ServerMetrics>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -1877,6 +2039,8 @@ impl RequestProcessor {
             command_failed_calls: Mutex::new(HashMap::new()),
             error_reply_counts: Mutex::new(HashMap::new()),
             latency_events: Mutex::new(HashMap::new()),
+            slowlog_entries: Mutex::new(VecDeque::new()),
+            slowlog_next_id: AtomicU64::new(0),
             pubsub_state: Mutex::new(PubSubState::default()),
             tracking_state: Mutex::new(TrackingState::default()),
             tracking_table_max_keys: AtomicU64::new(1_000_000),
@@ -1920,6 +2084,7 @@ impl RequestProcessor {
             client_reply_mode: AtomicU8::new(CLIENT_REPLY_ON),
             client_lib_name: Mutex::new(Vec::new()),
             client_lib_ver: Mutex::new(Vec::new()),
+            server_metrics: OnceLock::new(),
         })
     }
 
@@ -2951,6 +3116,118 @@ impl RequestProcessor {
             .lock()
             .map(|values| values.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
             .unwrap_or_default()
+    }
+
+    pub(crate) fn attach_metrics(&self, metrics: Arc<crate::ServerMetrics>) {
+        let _ = self.server_metrics.set(metrics);
+    }
+
+    pub(crate) fn slowlog_len(&self) -> usize {
+        self.slowlog_entries
+            .lock()
+            .map(|entries| entries.len())
+            .unwrap_or(0)
+    }
+
+    pub(crate) fn reset_slowlog(&self) {
+        if let Ok(mut entries) = self.slowlog_entries.lock() {
+            entries.clear();
+        }
+    }
+
+    pub(crate) fn slowlog_entries(&self, count: Option<usize>) -> Vec<SlowlogEntry> {
+        let Ok(entries) = self.slowlog_entries.lock() else {
+            return Vec::new();
+        };
+        let take_count = count.unwrap_or(10).min(entries.len());
+        entries.iter().take(take_count).cloned().collect()
+    }
+
+    pub(crate) fn record_slowlog_command(
+        &self,
+        args: &[&[u8]],
+        command: CommandId,
+        duration: Duration,
+        client_id: Option<ClientId>,
+    ) {
+        if should_skip_slowlog_for_command(command, args) {
+            return;
+        }
+        let threshold_micros = self.slowlog_threshold_micros();
+        if threshold_micros < 0 {
+            return;
+        }
+        let max_len = self.slowlog_max_len();
+        if max_len == 0 {
+            return;
+        }
+        let duration_micros = duration.as_micros().min(i64::MAX as u128) as i64;
+        if duration_micros < threshold_micros {
+            return;
+        }
+
+        let logged_args = slowlog_arguments_for_command(args);
+        let (peer_id, client_name) = self.slowlog_client_metadata(client_id);
+        let unix_time_seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|elapsed| elapsed.as_secs().min(i64::MAX as u64) as i64)
+            .unwrap_or(0);
+        let entry = SlowlogEntry {
+            id: self.slowlog_next_id.fetch_add(1, Ordering::Relaxed),
+            unix_time_seconds,
+            duration_micros,
+            args: logged_args,
+            peer_id,
+            client_name,
+        };
+        let Ok(mut entries) = self.slowlog_entries.lock() else {
+            return;
+        };
+        entries.push_front(entry);
+        while entries.len() > max_len {
+            entries.pop_back();
+        }
+    }
+
+    fn slowlog_threshold_micros(&self) -> i64 {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 10_000;
+        };
+        values
+            .get(b"slowlog-log-slower-than".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<i64>().ok())
+            .unwrap_or(10_000)
+    }
+
+    fn slowlog_max_len(&self) -> usize {
+        let Ok(values) = self.config_overrides.lock() else {
+            return 128;
+        };
+        values
+            .get(b"slowlog-max-len".as_slice())
+            .and_then(|value| std::str::from_utf8(value).ok())
+            .and_then(|value| value.parse::<usize>().ok())
+            .unwrap_or(128)
+    }
+
+    fn slowlog_client_metadata(&self, client_id: Option<ClientId>) -> (Vec<u8>, Vec<u8>) {
+        if let Some(client_id) = client_id
+            && let Some(metrics) = self.server_metrics.get()
+        {
+            let peer_id = metrics
+                .client_peer_id(client_id)
+                .unwrap_or_else(|| b"127.0.0.1:0".to_vec());
+            let client_name = metrics.client_name(client_id).unwrap_or_default();
+            return (peer_id, client_name);
+        }
+
+        let client_name = self
+            .client_name
+            .lock()
+            .map(|name| name.clone())
+            .unwrap_or_default();
+        (b"127.0.0.1:0".to_vec(), client_name)
     }
 
     pub(crate) fn lazyfree_lazy_server_del_enabled(&self) -> bool {
@@ -4308,6 +4585,7 @@ impl RequestProcessor {
         let command = dispatch_command_name(args[0]);
         let subcommand = args.get(1).copied();
         let command_mutating = command_is_effectively_mutating(command, subcommand);
+        let slowlog_started_at = Instant::now();
         if self.command_rejected_while_script_busy(command, subcommand)? {
             return Err(RequestExecutionError::BusyScript);
         }
@@ -4601,6 +4879,14 @@ impl RequestProcessor {
         self.clear_client_tracking_caching_override_for_current_client();
         if execution_result.is_ok() && !invalidated_keys.is_empty() {
             self.emit_tracking_invalidations_for_keys(&invalidated_keys);
+        }
+        if !is_slowlog_blocking_command(command) {
+            self.record_slowlog_command(
+                args,
+                command,
+                slowlog_started_at.elapsed(),
+                current_request_client_id(),
+            );
         }
         execution_result
     }

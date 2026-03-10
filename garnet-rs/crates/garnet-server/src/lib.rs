@@ -328,6 +328,13 @@ impl ServerMetrics {
         })
     }
 
+    pub fn client_peer_id(&self, client_id: ClientId) -> Option<Vec<u8>> {
+        self.clients
+            .lock()
+            .ok()
+            .and_then(|clients| clients.get(&client_id).map(|client| client.addr.clone()))
+    }
+
     pub fn set_client_last_command(
         &self,
         client_id: ClientId,

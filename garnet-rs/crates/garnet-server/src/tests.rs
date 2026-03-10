@@ -10200,6 +10200,550 @@ async fn unsubscribe_inside_multi_then_publish_to_self_external_pubsub_scenario(
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"100000"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"ping"]), b"+PONG\r\n").await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"slowlog", b"len"]),
+            timeout,
+        )
+        .await,
+        0
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"debug", b"sleep", b"0.2"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"slowlog", b"len"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"client", b"setname", b"foobar"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"debug", b"sleep", b"0.2"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let entries = send_and_read_slowlog_entries(&mut client, b"-1", timeout).await;
+    assert_eq!(
+        slowlog_entry_argument_words(&entries[0]),
+        vec!["debug", "sleep", "0.2"]
+    );
+    assert_eq!(resp_socket_array(&entries[0]).len(), 6);
+    assert!(resp_socket_integer(&resp_socket_array(&entries[0])[2]) > 100_000);
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&entries[0])[5]),
+        b"foobar"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn slowlog_sensitive_redaction_matches_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+    let port_text = addr.port().to_string();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-max-len", b"100"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    client
+        .write_all(&encode_resp_command(&[
+            b"acl",
+            b"setuser",
+            b"slowlog test user",
+            b"+get",
+            b"+set",
+        ]))
+        .await
+        .unwrap();
+    let _ = read_resp_line_with_timeout(&mut client, timeout).await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"masteruser", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"masterauth", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"requirepass", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"tls-key-file-pass", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"tls-client-key-file-pass", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"acl", b"setuser", b"slowlog-test-user", b"+get", b"+set"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"acl", b"getuser", b"slowlog-test-user"]),
+        timeout,
+    )
+    .await;
+    let _ = send_and_read_integer(
+        &mut client,
+        &encode_resp_command(&[
+            b"acl",
+            b"deluser",
+            b"slowlog-test-user",
+            b"non-existing-user",
+        ]),
+        timeout,
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"-1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let sensitive_entries = send_and_read_slowlog_entries(&mut client, b"-1", timeout).await;
+    assert_eq!(
+        slowlog_entry_texts(&sensitive_entries),
+        vec![
+            "config set slowlog-log-slower-than 0",
+            "acl deluser (redacted) (redacted)",
+            "acl getuser (redacted)",
+            "acl setuser (redacted) (redacted) (redacted)",
+            "config set tls-client-key-file-pass (redacted)",
+            "config set tls-key-file-pass (redacted)",
+            "config set requirepass (redacted)",
+            "config set masterauth (redacted)",
+            "config set masteruser (redacted)",
+            "acl setuser (redacted) (redacted) (redacted)",
+            "slowlog reset",
+        ]
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let migrate_base = [
+        b"migrate".as_slice(),
+        b"127.0.0.1".as_slice(),
+        port_text.as_bytes(),
+        b"key".as_slice(),
+        b"9".as_slice(),
+        b"5000".as_slice(),
+    ];
+    client
+        .write_all(&encode_resp_command(&migrate_base))
+        .await
+        .unwrap();
+    let _ = read_resp_line_with_timeout(&mut client, timeout).await;
+    client
+        .write_all(&encode_resp_command(&[
+            migrate_base[0],
+            migrate_base[1],
+            migrate_base[2],
+            migrate_base[3],
+            migrate_base[4],
+            migrate_base[5],
+            b"AUTH",
+            b"user",
+        ]))
+        .await
+        .unwrap();
+    let _ = read_resp_line_with_timeout(&mut client, timeout).await;
+    client
+        .write_all(&encode_resp_command(&[
+            migrate_base[0],
+            migrate_base[1],
+            migrate_base[2],
+            migrate_base[3],
+            migrate_base[4],
+            migrate_base[5],
+            b"AUTH2",
+            b"user",
+            b"password",
+        ]))
+        .await
+        .unwrap();
+    let _ = read_resp_line_with_timeout(&mut client, timeout).await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"-1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let migrate_entries = send_and_read_slowlog_entries(&mut client, b"-1", timeout).await;
+    assert_eq!(
+        slowlog_entry_texts(&migrate_entries),
+        vec![
+            format!(
+                "migrate 127.0.0.1 {} key 9 5000 AUTH2 (redacted) (redacted)",
+                port_text
+            ),
+            format!("migrate 127.0.0.1 {} key 9 5000 AUTH (redacted)", port_text),
+            format!("migrate 127.0.0.1 {} key 9 5000", port_text),
+            "slowlog reset".to_string(),
+        ]
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn slowlog_argument_trimming_matches_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"sadd", b"set", b"3", b"4", b"5", b"6", b"7", b"8", b"9", b"10", b"11", b"12", b"13",
+            b"14", b"15", b"16", b"17", b"18", b"19", b"20", b"21", b"22", b"23", b"24", b"25",
+            b"26", b"27", b"28", b"29", b"30", b"31", b"32", b"33",
+        ]),
+        b":31\r\n",
+    )
+    .await;
+    let entries = send_and_read_slowlog_entries(&mut client, b"-1", timeout).await;
+    assert_eq!(
+        slowlog_entry_argument_words(&entries[0]),
+        vec![
+            "sadd",
+            "set",
+            "3",
+            "4",
+            "5",
+            "6",
+            "7",
+            "8",
+            "9",
+            "10",
+            "11",
+            "12",
+            "13",
+            "14",
+            "15",
+            "16",
+            "17",
+            "18",
+            "19",
+            "20",
+            "21",
+            "22",
+            "23",
+            "24",
+            "25",
+            "26",
+            "27",
+            "28",
+            "29",
+            "30",
+            "31",
+            "... (2 more arguments)",
+        ]
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let long_argument = vec![b'A'; 129];
+    client
+        .write_all(&encode_resp_command(&[
+            b"sadd",
+            b"set",
+            b"foo",
+            long_argument.as_slice(),
+        ]))
+        .await
+        .unwrap();
+    let _ = read_resp_line_with_timeout(&mut client, timeout).await;
+    let entries = send_and_read_slowlog_entries(&mut client, b"-1", timeout).await;
+    assert_eq!(
+        slowlog_entry_argument_words(&entries[0]),
+        vec![
+            "sadd",
+            "set",
+            "foo",
+            "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA... (1 more bytes)",
+        ]
+    );
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn slowlog_rewritten_and_blocking_commands_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut waiter = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut blocked = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"config", b"set", b"slowlog-log-slower-than", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"sadd", b"set", b"a", b"b", b"c", b"d", b"e"]),
+        b":5\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let spop = send_and_read_resp_value(
+        &mut controller,
+        &encode_resp_command(&[b"spop", b"set", b"10"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_array(&spop).len(), 5);
+    let entries = send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await;
+    assert_eq!(slowlog_entry_text(&entries[0]), "spop set 10");
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"geoadd",
+            b"cool-cities",
+            b"-122.33207",
+            b"47.60621",
+            b"Seattle",
+        ]),
+        b":1\r\n",
+    )
+    .await;
+    let entries = send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await;
+    assert_eq!(
+        slowlog_entry_text(&entries[0]),
+        "geoadd cool-cities -122.33207 47.60621 Seattle"
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"set", b"A", b"5"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"getset", b"a", b"5"]),
+        b"$-1\r\n",
+    )
+    .await;
+    let entries = send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await;
+    assert_eq!(slowlog_entry_text(&entries[0]), "getset a 5");
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"set", b"A", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = send_and_read_resp_value(
+        &mut controller,
+        &encode_resp_command(&[b"INCRBYFLOAT", b"A", b"1.0"]),
+        timeout,
+    )
+    .await;
+    let entries = send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await;
+    assert_eq!(slowlog_entry_text(&entries[0]), "INCRBYFLOAT A 1.0");
+
+    waiter
+        .write_all(&encode_resp_command(&[b"blpop", b"l", b"0"]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"multi"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"lpush", b"l", b"foo"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    let exec =
+        send_and_read_resp_value(&mut controller, &encode_resp_command(&[b"exec"]), timeout).await;
+    assert_eq!(resp_socket_array(&exec).len(), 2);
+    let waiter_reply = read_resp_value_with_timeout(&mut waiter, timeout).await;
+    assert_eq!(resp_socket_array(&waiter_reply).len(), 2);
+    let entries = send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await;
+    assert_eq!(slowlog_entry_text(&entries[0]), "blpop l 0");
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"del", b"mylist"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"slowlog", b"reset"]),
+        b"+OK\r\n",
+    )
+    .await;
+    blocked
+        .write_all(&encode_resp_command(&[b"BLPOP", b"mylist", b"0"]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+    assert!(
+        !slowlog_entry_texts(&send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await)
+            .iter()
+            .any(|entry| entry == "BLPOP mylist 0")
+    );
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"lpush", b"mylist", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+    let blocked_reply = read_resp_value_with_timeout(&mut blocked, timeout).await;
+    assert_eq!(resp_socket_array(&blocked_reply).len(), 2);
+    assert!(
+        slowlog_entry_texts(&send_and_read_slowlog_entries(&mut controller, b"-1", timeout).await)
+            .iter()
+            .filter(|entry| *entry == "BLPOP mylist 0")
+            .count()
+            == 1
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
 async fn wait_until<P>(mut predicate: P, timeout: Duration)
 where
     P: FnMut() -> bool,
@@ -10420,6 +10964,36 @@ fn resp_socket_integer_array(value: &RespSocketValue) -> Vec<i64> {
         .iter()
         .map(resp_socket_integer)
         .collect()
+}
+
+async fn send_and_read_slowlog_entries(
+    client: &mut TcpStream,
+    count: &[u8],
+    timeout: Duration,
+) -> Vec<RespSocketValue> {
+    let response = send_and_read_resp_value(
+        client,
+        &encode_resp_command(&[b"SLOWLOG", b"GET", count]),
+        timeout,
+    )
+    .await;
+    resp_socket_array(&response).to_vec()
+}
+
+fn slowlog_entry_argument_words(entry: &RespSocketValue) -> Vec<String> {
+    let items = resp_socket_array(entry);
+    resp_socket_array(&items[3])
+        .iter()
+        .map(|value| String::from_utf8_lossy(resp_socket_bulk(value)).into_owned())
+        .collect()
+}
+
+fn slowlog_entry_text(entry: &RespSocketValue) -> String {
+    slowlog_entry_argument_words(entry).join(" ")
+}
+
+fn slowlog_entry_texts(entries: &[RespSocketValue]) -> Vec<String> {
+    entries.iter().map(slowlog_entry_text).collect()
 }
 
 fn resp_socket_flat_map<'a>(

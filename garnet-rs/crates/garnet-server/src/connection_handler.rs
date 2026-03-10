@@ -986,6 +986,7 @@ pub(crate) async fn handle_connection(
     let remote_addr = stream.peer_addr().ok();
     let local_addr = stream.local_addr().ok();
     let client_id = metrics.register_client(remote_addr, local_addr);
+    processor.attach_metrics(Arc::clone(&metrics));
     processor.set_connected_clients(metrics.connected_client_count());
     let _lifecycle = ConnectionLifecycle {
         metrics: &metrics,
@@ -1203,6 +1204,7 @@ pub(crate) async fn handle_connection(
             let mut command_outcome = ClientCommandOutcome::default();
             let mut commands_processed = 1u64;
             let execution_count_before = processor.executed_command_count();
+            let command_started_at = Instant::now();
 
             if command == CommandId::Client && !transaction.in_multi {
                 command_outcome = handle_client_command(
@@ -1293,32 +1295,6 @@ pub(crate) async fn handle_connection(
                 } else {
                     append_wrong_arity_error_for_command(&mut responses, CommandId::Auth);
                 }
-                disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
-                    &mut responses,
-                    response_mark,
-                    &mut client_state,
-                    command,
-                    command_outcome,
-                    commands_processed,
-                );
-                consumed += frame_bytes_consumed;
-                if disconnect_after_write {
-                    break;
-                }
-                continue;
-            }
-
-            if command == CommandId::Acl
-                && argument_count >= 3
-                && ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"SETUSER")
-            {
-                let user = arg_slice_bytes(&args[2]);
-                if !user.is_empty() {
-                    metrics.register_acl_user(user);
-                }
-                append_simple_string(&mut responses, b"OK");
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
                     client_id,
@@ -1510,6 +1486,16 @@ pub(crate) async fn handle_connection(
             }
 
             if command == CommandId::Migrate {
+                let slowlog_args = args[..argument_count]
+                    .iter()
+                    .map(arg_slice_bytes)
+                    .collect::<Vec<_>>();
+                processor.record_slowlog_command(
+                    &slowlog_args,
+                    command,
+                    command_started_at.elapsed(),
+                    Some(client_id),
+                );
                 append_simple_string(&mut responses, b"NOKEY");
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
@@ -2220,6 +2206,7 @@ pub(crate) async fn handle_connection(
                             } else {
                                 None
                             };
+                        let blocking_slowlog_started_at = Instant::now();
                         let blocking_outcome = loop {
                             let execution = execute_blocking_frame_on_owner_thread(
                                 &processor,
@@ -2261,6 +2248,18 @@ pub(crate) async fn handle_connection(
                         };
                         match blocking_outcome {
                             Ok(blocking_outcome) => {
+                                if blocking_request {
+                                    let slowlog_args = args[..argument_count]
+                                        .iter()
+                                        .map(arg_slice_bytes)
+                                        .collect::<Vec<_>>();
+                                    processor.record_slowlog_command(
+                                        &slowlog_args,
+                                        command,
+                                        blocking_slowlog_started_at.elapsed(),
+                                        Some(client_id),
+                                    );
+                                }
                                 wait_for_blocking_progress = blocked_before > 0
                                     && command_may_wake_blocking_waiters(
                                         command,
@@ -2275,6 +2274,12 @@ pub(crate) async fn handle_connection(
                                     &processor,
                                     client_id,
                                 );
+                                maybe_apply_acl_setuser_side_effects(
+                                    command,
+                                    &args[..argument_count],
+                                    &blocking_outcome.frame_response,
+                                    &metrics,
+                                );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);
                                 if blocking_outcome.should_replicate {
                                     replication_frame = replication_frame_for_command(
@@ -2287,6 +2292,18 @@ pub(crate) async fn handle_connection(
                                 }
                             }
                             Err(OwnerThreadExecutionError::Request(error)) => {
+                                if blocking_request {
+                                    let slowlog_args = args[..argument_count]
+                                        .iter()
+                                        .map(arg_slice_bytes)
+                                        .collect::<Vec<_>>();
+                                    processor.record_slowlog_command(
+                                        &slowlog_args,
+                                        command,
+                                        blocking_slowlog_started_at.elapsed(),
+                                        Some(client_id),
+                                    );
+                                }
                                 processor.record_command_failure(&command_call_name);
                                 processor.record_error_reply(error.info_error_name());
                                 error.append_resp_error(&mut responses);
@@ -4645,6 +4662,25 @@ fn maybe_apply_hello_side_effects(
             idx += 1;
         }
     }
+}
+
+fn maybe_apply_acl_setuser_side_effects(
+    command: CommandId,
+    args: &[ArgSlice],
+    frame_response: &[u8],
+    metrics: &ServerMetrics,
+) {
+    if command != CommandId::Acl || frame_response != b"+OK\r\n" || args.len() < 3 {
+        return;
+    }
+    if !ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"SETUSER") {
+        return;
+    }
+    let user = arg_slice_bytes(&args[2]);
+    if user.is_empty() {
+        return;
+    }
+    metrics.register_acl_user(user);
 }
 
 #[allow(clippy::too_many_arguments)]
