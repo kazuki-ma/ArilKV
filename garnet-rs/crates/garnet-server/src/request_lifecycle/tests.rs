@@ -6119,7 +6119,7 @@ fn info_supports_section_filters_and_multi_section_arguments() {
     let info_default = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
         .expect("INFO returns bulk payload");
     let info_default_text = String::from_utf8_lossy(&info_default);
-    assert!(info_default_text.contains("redis_version:garnet-rs"));
+    assert!(info_default_text.contains("redis_version:8.4.0"));
     assert!(info_default_text.contains("redis_git_sha1:"));
     assert!(info_default_text.contains("process_id:"));
     assert!(info_default_text.contains("used_cpu_user:"));
@@ -9268,7 +9268,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap();
     assert!(response.starts_with(b"$"));
-    assert!(response.windows(21).any(|w| w == b"Redis ver. garnet-rs\n"));
+    assert!(response.windows(17).any(|w| w == b"Redis ver. 8.4.0\n"));
 
     response.clear();
     let lolwut_bad_version = b"*3\r\n$6\r\nLOLWUT\r\n$7\r\nVERSION\r\n$3\r\nbad\r\n";
@@ -14789,7 +14789,7 @@ fn lolwut_returns_bulk_with_version_info() {
         String::from_utf8_lossy(&response)
     );
     assert!(
-        String::from_utf8_lossy(&response).contains("garnet-rs"),
+        String::from_utf8_lossy(&response).contains("8.4.0"),
         "LOLWUT should contain version info, got: {:?}",
         String::from_utf8_lossy(&response)
     );
@@ -15571,11 +15571,12 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
         "CONFIG REWRITE should mention config file"
     );
 
-    // COMMAND DOCS returns empty map/array
-    let docs = execute_command_line(&processor, "COMMAND DOCS").unwrap();
-    assert_eq!(
-        docs, b"*0\r\n",
-        "COMMAND DOCS should return empty array in RESP2"
+    // COMMAND DOCS currently returns an error so redis-cli can fall back to
+    // bundled command metadata instead of trusting an empty docs table.
+    assert_command_error(
+        &processor,
+        "COMMAND DOCS",
+        b"-ERR unknown subcommand\r\n",
     );
 
     // RESP3: CLIENT INFO returns verbatim string
@@ -15586,11 +15587,11 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
         "RESP3 CLIENT INFO should return verbatim string"
     );
 
-    // RESP3: COMMAND DOCS returns empty map
-    let docs_resp3 = execute_command_line(&processor, "COMMAND DOCS").unwrap();
-    assert_eq!(
-        docs_resp3, b"%0\r\n",
-        "RESP3 COMMAND DOCS should return empty map"
+    // RESP3 keeps the same error shape.
+    assert_command_error(
+        &processor,
+        "COMMAND DOCS",
+        b"-ERR unknown subcommand\r\n",
     );
 }
 

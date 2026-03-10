@@ -1,0 +1,331 @@
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
+index 4d378195e8..92eadd3162 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/server_commands.rs
+@@ -9,6 +9,7 @@ use crate::command_spec::command_key_access_pattern;
+ use crate::command_spec::command_names_for_command_response;
+ 
+ static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
++const COMPATIBLE_REDIS_VERSION: &str = "8.4.0";
+ const MODULE_HELP_LINES: [&[u8]; 11] = [
+     b"MODULE <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
+     b"LIST",
+@@ -556,7 +557,7 @@ impl RequestProcessor {
+         append_bulk_string(response_out, b"server");
+         append_bulk_string(response_out, b"redis");
+         append_bulk_string(response_out, b"version");
+-        append_bulk_string(response_out, b"garnet-rs");
++        append_bulk_string(response_out, COMPATIBLE_REDIS_VERSION.as_bytes());
+         append_bulk_string(response_out, b"proto");
+         append_integer(response_out, if resp3 { 3 } else { 2 });
+         append_bulk_string(response_out, b"id");
+@@ -614,7 +615,8 @@ impl RequestProcessor {
+                 InfoSection::Server => {
+                     payload.push_str(
+                         format!(
+-                            "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\nprocess_id:{process_id}\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
++                            "# Server\r\nredis_version:{redis_version}\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\nprocess_id:{process_id}\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
++                            redis_version = COMPATIBLE_REDIS_VERSION,
+                         )
+                         .as_str(),
+                     );
+@@ -1363,7 +1365,8 @@ impl RequestProcessor {
+                 parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+             }
+         }
+-        append_bulk_string(response_out, b"Redis ver. garnet-rs\n");
++        let version_banner = format!("Redis ver. {COMPATIBLE_REDIS_VERSION}\n");
++        append_bulk_string(response_out, version_banner.as_bytes());
+         Ok(())
+     }
+ 
+@@ -2311,13 +2314,10 @@ impl RequestProcessor {
+             return self.handle_command_info(args, response_out);
+         }
+         if ascii_eq_ignore_case(args[1], b"DOCS") {
+-            // Stub: return empty map for COMMAND DOCS compatibility.
+-            if self.resp_protocol_version().is_resp3() {
+-                append_map_length(response_out, 0);
+-            } else {
+-                append_array_length(response_out, 0);
+-            }
+-            return Ok(());
++            // An empty COMMAND DOCS table is treated as authoritative by redis-cli
++            // and breaks command-line hinting. Until real docs are emitted, return
++            // an error so clients can fall back to their bundled command metadata.
++            return Err(RequestExecutionError::UnknownSubcommand);
+         }
+         if ascii_eq_ignore_case(args[1], b"GETKEYS") {
+             return self.handle_command_getkeys(args, response_out);
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+index c4dc790702..8cc2d7dbea 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle/tests.rs
+@@ -6119,7 +6119,7 @@ fn info_supports_section_filters_and_multi_section_arguments() {
+     let info_default = parse_bulk_payload(&execute_frame(&processor, &encode_resp(&[b"INFO"])))
+         .expect("INFO returns bulk payload");
+     let info_default_text = String::from_utf8_lossy(&info_default);
+-    assert!(info_default_text.contains("redis_version:garnet-rs"));
++    assert!(info_default_text.contains("redis_version:8.4.0"));
+     assert!(info_default_text.contains("redis_git_sha1:"));
+     assert!(info_default_text.contains("process_id:"));
+     assert!(info_default_text.contains("used_cpu_user:"));
+@@ -9268,7 +9268,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
+         .execute(&args[..meta.argument_count], &mut response)
+         .unwrap();
+     assert!(response.starts_with(b"$"));
+-    assert!(response.windows(21).any(|w| w == b"Redis ver. garnet-rs\n"));
++    assert!(response.windows(17).any(|w| w == b"Redis ver. 8.4.0\n"));
+ 
+     response.clear();
+     let lolwut_bad_version = b"*3\r\n$6\r\nLOLWUT\r\n$7\r\nVERSION\r\n$3\r\nbad\r\n";
+@@ -14789,7 +14789,7 @@ fn lolwut_returns_bulk_with_version_info() {
+         String::from_utf8_lossy(&response)
+     );
+     assert!(
+-        String::from_utf8_lossy(&response).contains("garnet-rs"),
++        String::from_utf8_lossy(&response).contains("8.4.0"),
+         "LOLWUT should contain version info, got: {:?}",
+         String::from_utf8_lossy(&response)
+     );
+@@ -15571,11 +15571,12 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
+         "CONFIG REWRITE should mention config file"
+     );
+ 
+-    // COMMAND DOCS returns empty map/array
+-    let docs = execute_command_line(&processor, "COMMAND DOCS").unwrap();
+-    assert_eq!(
+-        docs, b"*0\r\n",
+-        "COMMAND DOCS should return empty array in RESP2"
++    // COMMAND DOCS currently returns an error so redis-cli can fall back to
++    // bundled command metadata instead of trusting an empty docs table.
++    assert_command_error(
++        &processor,
++        "COMMAND DOCS",
++        b"-ERR unknown subcommand\r\n",
+     );
+ 
+     // RESP3: CLIENT INFO returns verbatim string
+@@ -15586,11 +15587,11 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
+         "RESP3 CLIENT INFO should return verbatim string"
+     );
+ 
+-    // RESP3: COMMAND DOCS returns empty map
+-    let docs_resp3 = execute_command_line(&processor, "COMMAND DOCS").unwrap();
+-    assert_eq!(
+-        docs_resp3, b"%0\r\n",
+-        "RESP3 COMMAND DOCS should return empty map"
++    // RESP3 keeps the same error shape.
++    assert_command_error(
++        &processor,
++        "COMMAND DOCS",
++        b"-ERR unknown subcommand\r\n",
+     );
+ }
+ 
+diff --git a/garnet-rs/crates/garnet-server/src/tests.rs b/garnet-rs/crates/garnet-server/src/tests.rs
+index 3e96aa5313..b2bfb12722 100644
+--- a/garnet-rs/crates/garnet-server/src/tests.rs
++++ b/garnet-rs/crates/garnet-server/src/tests.rs
+@@ -21,8 +21,12 @@ use garnet_cluster::SlotState;
+ use garnet_cluster::Worker;
+ use garnet_cluster::WorkerRole;
+ use garnet_cluster::redis_hash_slot;
++use std::path::PathBuf;
++use std::process::Command;
++use std::process::Output;
+ use tokio::io::AsyncReadExt;
+ use tokio::io::AsyncWriteExt;
++use tokio::process::Command as TokioCommand;
+ use tokio::sync::oneshot;
+ use tokio::time::Duration;
+ use tokio::time::Instant;
+@@ -37,6 +41,60 @@ async fn lock_scripting_test_serial() -> tokio::sync::MutexGuard<'static, ()> {
+     scripting_test_mutex().lock().await
+ }
+ 
++fn redis_repo_root() -> PathBuf {
++    std::env::var_os("REDIS_REPO_ROOT")
++        .map(PathBuf::from)
++        .unwrap_or_else(|| PathBuf::from("/Users/kazuki-matsuda/dev/src/github.com/redis/redis"))
++}
++
++fn runnable_repo_redis_cli() -> Option<PathBuf> {
++    let cli = redis_repo_root().join("src/redis-cli");
++    if !cli.is_file() {
++        return None;
++    }
++    let output = Command::new(&cli).arg("--version").output().ok()?;
++    if !output.status.success() {
++        return None;
++    }
++    Some(cli)
++}
++
++fn redis_cli_hint_suite_path() -> Option<PathBuf> {
++    let hint_suite = redis_repo_root().join("tests/assets/test_cli_hint_suite.txt");
++    if hint_suite.is_file() {
++        Some(hint_suite)
++    } else {
++        None
++    }
++}
++
++async fn run_redis_cli_hint_suite(
++    redis_cli: &std::path::Path,
++    hint_suite: &std::path::Path,
++    args: &[&str],
++) -> Output {
++    TokioCommand::new(redis_cli)
++        .args(args)
++        .arg("--test_hint_file")
++        .arg(hint_suite)
++        .output()
++        .await
++        .unwrap()
++}
++
++fn assert_redis_cli_hint_suite_success(output: &Output, context: &str) {
++    let stdout = String::from_utf8_lossy(&output.stdout);
++    let stderr = String::from_utf8_lossy(&output.stderr);
++    assert!(
++        output.status.success(),
++        "{context} exited unsuccessfully\nstdout:\n{stdout}\nstderr:\n{stderr}"
++    );
++    assert!(
++        stdout.contains("SUCCESS: 69/69 passed"),
++        "{context} did not report full hint-suite success\nstdout:\n{stdout}\nstderr:\n{stderr}"
++    );
++}
++
+ #[tokio::test]
+ async fn accept_loop_spawns_connection_handlers() {
+     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+@@ -12267,6 +12325,76 @@ async fn subscribed_mode_resp2_after_hello2_rejects_regular_commands_like_extern
+     server.await.unwrap();
+ }
+ 
++#[tokio::test]
++async fn redis_cli_hint_suite_matches_external_scenarios_when_repo_cli_is_available() {
++    let Some(redis_cli) = runnable_repo_redis_cli() else {
++        return;
++    };
++    let Some(hint_suite) = redis_cli_hint_suite_path() else {
++        return;
++    };
++
++    let (addr, shutdown_tx, server) = start_test_server().await;
++    wait_for_server_ping(addr).await;
++    let host = "127.0.0.1".to_string();
++    let port = addr.port().to_string();
++
++    let latest_server =
++        run_redis_cli_hint_suite(&redis_cli, &hint_suite, &["-h", &host, "-p", &port]).await;
++    assert_redis_cli_hint_suite_success(&latest_server, "latest server hint suite");
++
++    let no_server = run_redis_cli_hint_suite(&redis_cli, &hint_suite, &["-p", "123"]).await;
++    assert_redis_cli_hint_suite_success(&no_server, "no server hint suite");
++
++    let mut admin = TcpStream::connect(addr).await.unwrap();
++    send_and_expect(
++        &mut admin,
++        &encode_resp_command(&[
++            b"ACL",
++            b"SETUSER",
++            b"clitest",
++            b"on",
++            b"nopass",
++            b"+@all",
++            b"-command|docs",
++        ]),
++        b"+OK\r\n",
++    )
++    .await;
++
++    let old_server = run_redis_cli_hint_suite(
++        &redis_cli,
++        &hint_suite,
++        &[
++            "-h",
++            &host,
++            "-p",
++            &port,
++            "--user",
++            "clitest",
++            "-a",
++            "nopass",
++            "--no-auth-warning",
++        ],
++    )
++    .await;
++    assert_redis_cli_hint_suite_success(&old_server, "old server hint suite");
++
++    let deleted_users = send_and_read_integer(
++        &mut admin,
++        &encode_resp_command(&[b"ACL", b"DELUSER", b"clitest"]),
++        Duration::from_secs(5),
++    )
++    .await;
++    assert!(
++        deleted_users == 0 || deleted_users == 1,
++        "ACL DELUSER cleanup should return 0 or 1, got {deleted_users}"
++    );
++
++    let _ = shutdown_tx.send(());
++    server.await.unwrap();
++}
++
+ #[tokio::test]
+ async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
+     let (addr, shutdown_tx, server) = start_test_server().await;
+@@ -13596,6 +13724,29 @@ async fn start_test_server() -> (
+     (addr, shutdown_tx, server)
+ }
+ 
++async fn wait_for_server_ping(addr: std::net::SocketAddr) {
++    let deadline = Instant::now() + Duration::from_secs(5);
++    loop {
++        if let Ok(mut probe) = TcpStream::connect(addr).await {
++            probe
++                .write_all(&encode_resp_command(&[b"PING"]))
++                .await
++                .unwrap();
++            let mut response = [0u8; 7];
++            if let Ok(Ok(_)) =
++                tokio::time::timeout(Duration::from_millis(200), probe.read_exact(&mut response))
++                    .await
++            {
++                if response == *b"+PONG\r\n" {
++                    return;
++                }
++            }
++        }
++        assert!(Instant::now() < deadline, "server did not become ready");
++        sleep(Duration::from_millis(10)).await;
++    }
++}
++
+ fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {
+     let mut args = [ArgSlice::EMPTY; 64];
+     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
+diff --git a/garnet-rs/tests/interop/redis_runtest_external_subset.sh b/garnet-rs/tests/interop/redis_runtest_external_subset.sh
+index b3194accc7..8f5537d742 100755
+--- a/garnet-rs/tests/interop/redis_runtest_external_subset.sh
++++ b/garnet-rs/tests/interop/redis_runtest_external_subset.sh
+@@ -141,6 +141,16 @@ resolve_redis_cli_override_bin() {
+         return 0
+     fi
+ 
++    if [[ -d "${REDIS_REPO_ROOT}" ]]; then
++        local build_log="${RESULT_DIR}/redis-cli-build.log"
++        if make -C "${REDIS_REPO_ROOT}" redis-cli -j4 >"${build_log}" 2>&1; then
++            if [[ -x "${repo_cli}" ]] && "${repo_cli}" --version >/dev/null 2>&1; then
++                echo "${repo_cli}"
++                return 0
++            fi
++        fi
++    fi
++
+     local native_cli=""
+     native_cli="$(command -v redis-cli || true)"
+     if [[ -n "${native_cli}" ]] && "${native_cli}" --version >/dev/null 2>&1; then

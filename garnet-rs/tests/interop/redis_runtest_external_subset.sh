@@ -141,6 +141,16 @@ resolve_redis_cli_override_bin() {
         return 0
     fi
 
+    if [[ -d "${REDIS_REPO_ROOT}" ]]; then
+        local build_log="${RESULT_DIR}/redis-cli-build.log"
+        if make -C "${REDIS_REPO_ROOT}" redis-cli -j4 >"${build_log}" 2>&1; then
+            if [[ -x "${repo_cli}" ]] && "${repo_cli}" --version >/dev/null 2>&1; then
+                echo "${repo_cli}"
+                return 0
+            fi
+        fi
+    fi
+
     local native_cli=""
     native_cli="$(command -v redis-cli || true)"
     if [[ -n "${native_cli}" ]] && "${native_cli}" --version >/dev/null 2>&1; then

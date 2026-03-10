@@ -21,8 +21,12 @@ use garnet_cluster::SlotState;
 use garnet_cluster::Worker;
 use garnet_cluster::WorkerRole;
 use garnet_cluster::redis_hash_slot;
+use std::path::PathBuf;
+use std::process::Command;
+use std::process::Output;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::process::Command as TokioCommand;
 use tokio::sync::oneshot;
 use tokio::time::Duration;
 use tokio::time::Instant;
@@ -35,6 +39,60 @@ fn scripting_test_mutex() -> &'static tokio::sync::Mutex<()> {
 
 async fn lock_scripting_test_serial() -> tokio::sync::MutexGuard<'static, ()> {
     scripting_test_mutex().lock().await
+}
+
+fn redis_repo_root() -> PathBuf {
+    std::env::var_os("REDIS_REPO_ROOT")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("/Users/kazuki-matsuda/dev/src/github.com/redis/redis"))
+}
+
+fn runnable_repo_redis_cli() -> Option<PathBuf> {
+    let cli = redis_repo_root().join("src/redis-cli");
+    if !cli.is_file() {
+        return None;
+    }
+    let output = Command::new(&cli).arg("--version").output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(cli)
+}
+
+fn redis_cli_hint_suite_path() -> Option<PathBuf> {
+    let hint_suite = redis_repo_root().join("tests/assets/test_cli_hint_suite.txt");
+    if hint_suite.is_file() {
+        Some(hint_suite)
+    } else {
+        None
+    }
+}
+
+async fn run_redis_cli_hint_suite(
+    redis_cli: &std::path::Path,
+    hint_suite: &std::path::Path,
+    args: &[&str],
+) -> Output {
+    TokioCommand::new(redis_cli)
+        .args(args)
+        .arg("--test_hint_file")
+        .arg(hint_suite)
+        .output()
+        .await
+        .unwrap()
+}
+
+fn assert_redis_cli_hint_suite_success(output: &Output, context: &str) {
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "{context} exited unsuccessfully\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("SUCCESS: 69/69 passed"),
+        "{context} did not report full hint-suite success\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
 }
 
 #[tokio::test]
@@ -12268,6 +12326,76 @@ async fn subscribed_mode_resp2_after_hello2_rejects_regular_commands_like_extern
 }
 
 #[tokio::test]
+async fn redis_cli_hint_suite_matches_external_scenarios_when_repo_cli_is_available() {
+    let Some(redis_cli) = runnable_repo_redis_cli() else {
+        return;
+    };
+    let Some(hint_suite) = redis_cli_hint_suite_path() else {
+        return;
+    };
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+    let host = "127.0.0.1".to_string();
+    let port = addr.port().to_string();
+
+    let latest_server =
+        run_redis_cli_hint_suite(&redis_cli, &hint_suite, &["-h", &host, "-p", &port]).await;
+    assert_redis_cli_hint_suite_success(&latest_server, "latest server hint suite");
+
+    let no_server = run_redis_cli_hint_suite(&redis_cli, &hint_suite, &["-p", "123"]).await;
+    assert_redis_cli_hint_suite_success(&no_server, "no server hint suite");
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"clitest",
+            b"on",
+            b"nopass",
+            b"+@all",
+            b"-command|docs",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let old_server = run_redis_cli_hint_suite(
+        &redis_cli,
+        &hint_suite,
+        &[
+            "-h",
+            &host,
+            "-p",
+            &port,
+            "--user",
+            "clitest",
+            "-a",
+            "nopass",
+            "--no-auth-warning",
+        ],
+    )
+    .await;
+    assert_redis_cli_hint_suite_success(&old_server, "old server hint suite");
+
+    let deleted_users = send_and_read_integer(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"DELUSER", b"clitest"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        deleted_users == 0 || deleted_users == 1,
+        "ACL DELUSER cleanup should return 0 or 1, got {deleted_users}"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
@@ -13594,6 +13722,29 @@ async fn start_test_server() -> (
     });
 
     (addr, shutdown_tx, server)
+}
+
+async fn wait_for_server_ping(addr: std::net::SocketAddr) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if let Ok(mut probe) = TcpStream::connect(addr).await {
+            probe
+                .write_all(&encode_resp_command(&[b"PING"]))
+                .await
+                .unwrap();
+            let mut response = [0u8; 7];
+            if let Ok(Ok(_)) =
+                tokio::time::timeout(Duration::from_millis(200), probe.read_exact(&mut response))
+                    .await
+            {
+                if response == *b"+PONG\r\n" {
+                    return;
+                }
+            }
+        }
+        assert!(Instant::now() < deadline, "server did not become ready");
+        sleep(Duration::from_millis(10)).await;
+    }
 }
 
 fn owned_args_from_frame(frame: &[u8]) -> Vec<Vec<u8>> {

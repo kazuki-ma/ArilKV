@@ -9,6 +9,7 @@ use crate::command_spec::command_key_access_pattern;
 use crate::command_spec::command_names_for_command_response;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
+const COMPATIBLE_REDIS_VERSION: &str = "8.4.0";
 const MODULE_HELP_LINES: [&[u8]; 11] = [
     b"MODULE <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"LIST",
@@ -556,7 +557,7 @@ impl RequestProcessor {
         append_bulk_string(response_out, b"server");
         append_bulk_string(response_out, b"redis");
         append_bulk_string(response_out, b"version");
-        append_bulk_string(response_out, b"garnet-rs");
+        append_bulk_string(response_out, COMPATIBLE_REDIS_VERSION.as_bytes());
         append_bulk_string(response_out, b"proto");
         append_integer(response_out, if resp3 { 3 } else { 2 });
         append_bulk_string(response_out, b"id");
@@ -614,7 +615,8 @@ impl RequestProcessor {
                 InfoSection::Server => {
                     payload.push_str(
                         format!(
-                            "# Server\r\nredis_version:garnet-rs\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\nprocess_id:{process_id}\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
+                            "# Server\r\nredis_version:{redis_version}\r\nredis_git_sha1:garnet-rs\r\nredis_mode:standalone\r\nos:Linux\r\nprocess_id:{process_id}\r\ntcp_port:6379\r\nuptime_in_seconds:0\r\nuptime_in_days:0\r\nhz:10\r\nconfigured_hz:10\r\n",
+                            redis_version = COMPATIBLE_REDIS_VERSION,
                         )
                         .as_str(),
                     );
@@ -1363,7 +1365,8 @@ impl RequestProcessor {
                 parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             }
         }
-        append_bulk_string(response_out, b"Redis ver. garnet-rs\n");
+        let version_banner = format!("Redis ver. {COMPATIBLE_REDIS_VERSION}\n");
+        append_bulk_string(response_out, version_banner.as_bytes());
         Ok(())
     }
 
@@ -2311,13 +2314,10 @@ impl RequestProcessor {
             return self.handle_command_info(args, response_out);
         }
         if ascii_eq_ignore_case(args[1], b"DOCS") {
-            // Stub: return empty map for COMMAND DOCS compatibility.
-            if self.resp_protocol_version().is_resp3() {
-                append_map_length(response_out, 0);
-            } else {
-                append_array_length(response_out, 0);
-            }
-            return Ok(());
+            // An empty COMMAND DOCS table is treated as authoritative by redis-cli
+            // and breaks command-line hinting. Until real docs are emitted, return
+            // an error so clients can fall back to their bundled command metadata.
+            return Err(RequestExecutionError::UnknownSubcommand);
         }
         if ascii_eq_ignore_case(args[1], b"GETKEYS") {
             return self.handle_command_getkeys(args, response_out);
