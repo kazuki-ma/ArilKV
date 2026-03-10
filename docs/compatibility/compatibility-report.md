@@ -30,7 +30,7 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2137; err=66; timeout=0; ignore=306; failed_tests=66; expected_failed_tests=0; unexpected_failed_tests=66  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2170; err=37; timeout=1; ignore=306; failed_tests=38; expected_failed_tests=0; unexpected_failed_tests=38  |
 | `redis_runtest_unit_scripting_external` | `FAIL` | mode=full; isolated_unit=unit/scripting; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=216; err=94; timeout=0; ignore=26; failed_tests=94  |
 | `redis_runtest_unit_querybuf_external` | `FAIL` | mode=full; isolated_unit=unit/querybuf; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=0; err=4; timeout=0; ignore=0; failed_tests=4  |
 | `redis_runtest_unit_other_external` | `PASS` | mode=full; isolated_unit=unit/other; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=25; err=0; timeout=0; ignore=6; failed_tests=0  |
@@ -39,7 +39,7 @@
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `66`
+- Failed tests extracted from runtest log: `38`
 
 | Test |
 |---|
@@ -80,35 +80,7 @@
 | `LCS indexes with match len in tests/unit/type/string.tcl` |
 | `LCS indexes with match len and minimum match len in tests/unit/type/string.tcl` |
 | `MEMORY USAGE - STRINGS in tests/unit/type/string.tcl` |
-| `ZINCRBY accepts hexadecimal inputs - listpack in tests/unit/type/zset.tcl` |
-| `ZRANGEBYLEX with invalid lex range specifiers - listpack in tests/unit/type/zset.tcl` |
-| `ZUNIONSTORE with a regular set and weights - listpack in tests/unit/type/zset.tcl` |
-| `ZINTERCARD with illegal arguments in tests/unit/type/zset.tcl` |
-| `ZINTERSTORE with a regular set and weights - listpack in tests/unit/type/zset.tcl` |
-| `ZUNIONSTORE with NaN weights - listpack in tests/unit/type/zset.tcl` |
-| `ZINTERSTORE with NaN weights - listpack in tests/unit/type/zset.tcl` |
-| `ZDIFFSTORE with a regular set - listpack in tests/unit/type/zset.tcl` |
-| `ZINCRBY accepts hexadecimal inputs - skiplist in tests/unit/type/zset.tcl` |
-| `ZRANGEBYLEX with invalid lex range specifiers - skiplist in tests/unit/type/zset.tcl` |
-| `ZUNIONSTORE with a regular set and weights - skiplist in tests/unit/type/zset.tcl` |
-| `ZINTERCARD with illegal arguments in tests/unit/type/zset.tcl` |
-| `ZINTERSTORE with a regular set and weights - skiplist in tests/unit/type/zset.tcl` |
-| `ZUNIONSTORE with NaN weights - skiplist in tests/unit/type/zset.tcl` |
-| `ZINTERSTORE with NaN weights - skiplist in tests/unit/type/zset.tcl` |
-| `ZDIFFSTORE with a regular set - skiplist in tests/unit/type/zset.tcl` |
-| `ZINTERSTORE regression with two sets, intset+hashtable in tests/unit/type/zset.tcl` |
-| `ZINTERSTORE #516 regression, mixed sets and ziplist zsets in tests/unit/type/zset.tcl` |
-| `zunionInterDiffGenericCommand at least 1 input key in tests/unit/type/zset.tcl` |
-| `ZRANGE BYSCORE REV LIMIT in tests/unit/type/zset.tcl` |
-| `ZRANGE BYLEX in tests/unit/type/zset.tcl` |
-| `ZRANGESTORE invalid syntax in tests/unit/type/zset.tcl` |
-| `ZRANGE invalid syntax in tests/unit/type/zset.tcl` |
-| `ZRANDMEMBER count overflow in tests/unit/type/zset.tcl` |
-| `ZRANDMEMBER count of 0 is handled correctly - emptyarray in tests/unit/type/zset.tcl` |
-| `ZRANDMEMBER with <count> against non existing key - emptyarray in tests/unit/type/zset.tcl` |
-| `ZRANDMEMBER with <count> - skiplist in tests/unit/type/zset.tcl` |
-| `routing execution failed` |
-| `Executing test client: ERR owner routing execution failed.` |
+| `Interactive CLI: should find first search result` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

@@ -132,7 +132,89 @@ pub(super) fn parse_f64_ascii_allow_non_finite(input: &[u8]) -> Option<f64> {
         return None;
     }
     let text = core::str::from_utf8(input).ok()?;
+    if let Some(parsed) = parse_hex_f64_ascii(text) {
+        return Some(parsed);
+    }
     text.parse::<f64>().ok()
+}
+
+fn parse_hex_f64_ascii(text: &str) -> Option<f64> {
+    let bytes = text.as_bytes();
+    let mut index = 0usize;
+    let mut sign = 1.0f64;
+    if bytes.first() == Some(&b'+') {
+        index += 1;
+    } else if bytes.first() == Some(&b'-') {
+        sign = -1.0;
+        index += 1;
+    }
+
+    let remaining = bytes.get(index..)?;
+    if remaining.len() < 3 || remaining[0] != b'0' || !matches!(remaining[1], b'x' | b'X') {
+        return None;
+    }
+    index += 2;
+
+    let mut significand = 0.0f64;
+    let mut saw_digit = false;
+    while let Some(digit) = bytes.get(index).and_then(hex_digit_value) {
+        significand = significand * 16.0 + f64::from(digit);
+        saw_digit = true;
+        index += 1;
+    }
+
+    let mut fractional_nibbles = 0i32;
+    if bytes.get(index) == Some(&b'.') {
+        index += 1;
+        while let Some(digit) = bytes.get(index).and_then(hex_digit_value) {
+            significand = significand * 16.0 + f64::from(digit);
+            fractional_nibbles += 1;
+            saw_digit = true;
+            index += 1;
+        }
+    }
+
+    if !saw_digit {
+        return None;
+    }
+
+    let exponent_marker = *bytes.get(index)?;
+    if !matches!(exponent_marker, b'p' | b'P') {
+        return None;
+    }
+    index += 1;
+
+    let mut exponent_sign = 1i32;
+    if bytes.get(index) == Some(&b'+') {
+        index += 1;
+    } else if bytes.get(index) == Some(&b'-') {
+        exponent_sign = -1;
+        index += 1;
+    }
+
+    let exponent_bytes = bytes.get(index..)?;
+    if exponent_bytes.is_empty() {
+        return None;
+    }
+    let exponent_text = core::str::from_utf8(exponent_bytes).ok()?;
+    let exponent_value = exponent_text.parse::<i32>().ok()?;
+    let adjusted_exponent = exponent_sign
+        .checked_mul(exponent_value)?
+        .checked_sub(fractional_nibbles.checked_mul(4)?)?;
+    let parsed = sign * significand * 2.0f64.powi(adjusted_exponent);
+    if parsed.is_nan() || !parsed.is_finite() {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn hex_digit_value(byte: &u8) -> Option<u8> {
+    match *byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
 }
 
 pub(super) fn decode_stored_value(stored: &[u8]) -> DecodedStoredValue<'_> {

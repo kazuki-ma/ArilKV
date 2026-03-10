@@ -50,6 +50,8 @@ pub enum RequestExecutionError {
     ValueNotInteger,
     TimeoutNotIntegerOrOutOfRange,
     ValueNotFloat,
+    MinOrMaxNotFloat,
+    MinOrMaxNotValidStringRangeItem,
     WeightValueNotFloat,
     HashMandatoryFieldsArgumentMissing,
     HashNumfieldsParameterMustMatchArguments,
@@ -258,6 +260,10 @@ impl RequestExecutionError {
                 "ERR timeout is not an integer or out of range",
             ),
             Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
+            Self::MinOrMaxNotFloat => append_error(response_out, "ERR min or max is not a float"),
+            Self::MinOrMaxNotValidStringRangeItem => {
+                append_error(response_out, "ERR min or max not valid string range item")
+            }
             Self::WeightValueNotFloat => {
                 append_error(response_out, "ERR weight value is not a float")
             }

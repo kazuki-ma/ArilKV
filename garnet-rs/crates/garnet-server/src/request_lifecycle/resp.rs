@@ -55,6 +55,56 @@ pub(super) fn append_bulk_string(response_out: &mut Vec<u8>, value: &[u8]) {
     response_out.extend_from_slice(b"\r\n");
 }
 
+pub(super) fn format_resp_double(value: f64) -> String {
+    if value == f64::INFINITY {
+        return "inf".to_string();
+    }
+    if value == f64::NEG_INFINITY {
+        return "-inf".to_string();
+    }
+    if value == 0.0 {
+        if value.is_sign_negative() {
+            return "-0".to_string();
+        }
+        return "0".to_string();
+    }
+    if let Some(integer) = exact_i64_from_double(value) {
+        return integer.to_string();
+    }
+
+    let mut buffer = ryu::Buffer::new();
+    let formatted = buffer.format_finite(value);
+    if let Some(exponent_index) = formatted.find('e') {
+        let exponent = &formatted[exponent_index + 1..];
+        if !exponent.starts_with('+') && !exponent.starts_with('-') {
+            let mut result = String::with_capacity(formatted.len() + 1);
+            result.push_str(&formatted[..=exponent_index]);
+            result.push('+');
+            result.push_str(exponent);
+            return result;
+        }
+    }
+    formatted.to_string()
+}
+
+pub(super) fn append_bulk_double(response_out: &mut Vec<u8>, value: f64) {
+    let formatted = format_resp_double(value);
+    append_bulk_string(response_out, formatted.as_bytes());
+}
+
+fn exact_i64_from_double(value: f64) -> Option<i64> {
+    const MIN_SAFE_I64_AS_F64: f64 = -(i64::MAX as f64) / 2.0;
+    const MAX_SAFE_I64_AS_F64: f64 = (i64::MAX as f64) / 2.0;
+    if !(MIN_SAFE_I64_AS_F64..=MAX_SAFE_I64_AS_F64).contains(&value) {
+        return None;
+    }
+    let integer = value as i64;
+    if integer as f64 == value {
+        return Some(integer);
+    }
+    None
+}
+
 pub(super) fn append_bulk_array(response_out: &mut Vec<u8>, items: &[&[u8]]) {
     response_out.push(b'*');
     append_usize_ascii(response_out, items.len());
@@ -87,13 +137,8 @@ pub(super) fn append_set_length(response_out: &mut Vec<u8>, len: usize) {
 /// Emit RESP3 double value: `,<value>\r\n`.
 pub(super) fn append_double(response_out: &mut Vec<u8>, value: f64) {
     response_out.push(b',');
-    if value == f64::INFINITY {
-        response_out.extend_from_slice(b"inf");
-    } else if value == f64::NEG_INFINITY {
-        response_out.extend_from_slice(b"-inf");
-    } else {
-        response_out.extend_from_slice(value.to_string().as_bytes());
-    }
+    let formatted = format_resp_double(value);
+    response_out.extend_from_slice(formatted.as_bytes());
     response_out.extend_from_slice(b"\r\n");
 }
 

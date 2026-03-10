@@ -6277,6 +6277,109 @@ fn zset_combine_validation_matches_external_scenarios() {
 }
 
 #[test]
+fn zset_range_parser_and_hex_float_match_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZINCRBY accepts hexadecimal inputs - listpack|skiplist"
+    assert_command_integer(&processor, "ZADD zhexa 0x0p+0 zero 0x1p+0 one", 2);
+    assert_command_response(&processor, "ZINCRBY zhexa 0x0p+0 zero", b"$1\r\n0\r\n");
+    assert_command_response(&processor, "ZINCRBY zhexa 0x1p+0 one", b"$1\r\n2\r\n");
+    assert_command_response(&processor, "ZSCORE zhexa zero", b"$1\r\n0\r\n");
+    assert_command_response(&processor, "ZSCORE zhexa one", b"$1\r\n2\r\n");
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZRANGEBYLEX with invalid lex range specifiers - listpack|skiplist"
+    assert_command_error(
+        &processor,
+        "ZRANGEBYLEX fooz foo bar",
+        b"-ERR min or max not valid string range item\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGEBYLEX fooz [foo bar",
+        b"-ERR min or max not valid string range item\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGEBYLEX fooz foo [bar",
+        b"-ERR min or max not valid string range item\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGEBYLEX fooz +x [bar",
+        b"-ERR min or max not valid string range item\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGEBYLEX fooz -x [bar",
+        b"-ERR min or max not valid string range item\r\n",
+    );
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZRANGE BYSCORE REV LIMIT"
+    // - "ZRANGE BYLEX"
+    // - "ZRANGESTORE invalid syntax"
+    // - "ZRANGE invalid syntax"
+    assert_command_integer(&processor, "ZADD z1 1 a 2 b 3 c 4 d", 4);
+    assert_command_response(
+        &processor,
+        "ZRANGE z1 5 0 BYSCORE REV LIMIT 0 2 WITHSCORES",
+        b"*4\r\n$1\r\nd\r\n$1\r\n4\r\n$1\r\nc\r\n$1\r\n3\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "ZRANGE z1 [b [c BYLEX",
+        b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGESTORE z2 z1 0 -1 LIMIT 1 2",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGESTORE z2 z1 0 -1 WITHSCORES",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGE z1 0 -1 LIMIT 1 2",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGE z1 0 -1 BYLEX WITHSCORES",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZREVRANGE z1 0 -1 BYSCORE",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZRANGEBYSCORE z1 0 -1 REV",
+        b"-ERR syntax error\r\n",
+    );
+}
+
+#[test]
+fn zset_score_double_range_matches_external_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    let dblmax = "179769313486231570814527423731704356798070567525844996598917476803157260780028538760589558632766878171540458953514382464234321326889464182768467546703537516986049910576551282076245490090389328944075868508455133942304583236903222948165808559332123348274797826204144723168738177180919299881250404026184124858368.00000000000000000";
+    assert_command_response(&processor, "DEL zz", b":0\r\n");
+    assert_command_integer(&processor, &format!("ZADD zz {dblmax} dblmax"), 1);
+    assert_command_response(&processor, "OBJECT ENCODING zz", b"$8\r\nlistpack\r\n");
+    assert_command_response(
+        &processor,
+        "ZSCORE zz dblmax",
+        b"$23\r\n1.7976931348623157e+308\r\n",
+    );
+}
+
+#[test]
 fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

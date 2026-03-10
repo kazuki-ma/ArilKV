@@ -1,3 +1,4 @@
+use super::resp::append_bulk_double;
 use super::*;
 
 impl RequestProcessor {
@@ -97,7 +98,7 @@ impl RequestProcessor {
             if self.resp_protocol_version().is_resp3() {
                 append_double(response_out, score);
             } else {
-                append_bulk_string(response_out, score.to_string().as_bytes());
+                append_bulk_double(response_out, score);
             }
             return Ok(());
         }
@@ -149,19 +150,16 @@ impl RequestProcessor {
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        ensure_ranged_arity(args, 4, 5, "ZRANGE", "ZRANGE key start stop [WITHSCORES]")?;
-        let with_scores = if args.len() == 5 {
-            if !ascii_eq_ignore_case(args[4], b"WITHSCORES") {
-                return Err(RequestExecutionError::SyntaxError);
-            }
-            true
-        } else {
-            false
-        };
-
+        ensure_min_arity(
+            args,
+            4,
+            "ZRANGE",
+            "ZRANGE key min max [BYSCORE|BYLEX] [REV] [WITHSCORES] [LIMIT offset count]",
+        )?;
         let key = RedisKey::from(args[1]);
-        let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let left = args[2];
+        let right = args[3];
+        let options = parse_zrange_options(args, 4, true)?;
         let zset = match self.load_zset_object(&key)? {
             Some(zset) => zset,
             None => {
@@ -170,17 +168,11 @@ impl RequestProcessor {
             }
         };
 
-        let entries = sorted_zset_entries_by_score(&zset);
-        let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
-            append_array_length(response_out, 0);
-            return Ok(());
-        };
-
-        let selected = &entries[range.start..=range.end_inclusive];
-        append_zrange_score_entries(
+        let selected = collect_zrange_entries(&zset, left, right, options)?;
+        append_owned_zrange_score_entries(
             response_out,
-            selected,
-            with_scores,
+            &selected,
+            options.with_scores,
             self.emit_resp3_zset_pairs(),
             self.resp_protocol_version().is_resp3(),
         );
@@ -281,7 +273,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_double(response_out, *score);
                 } else {
-                    append_bulk_string(response_out, score.to_string().as_bytes());
+                    append_bulk_double(response_out, *score);
                 }
             }
             None => {
@@ -695,10 +687,10 @@ impl RequestProcessor {
         let source = RedisKey::from(args[2]);
         let left = args[3];
         let right = args[4];
-        let options = parse_zrangestore_options(args, 5)?;
+        let options = parse_zrange_options(args, 5, false)?;
 
         let selected = match self.load_zset_object(&source)? {
-            Some(zset) => collect_zrangestore_entries(&zset, left, right, options)?,
+            Some(zset) => collect_zrange_entries(&zset, left, right, options)?,
             None => Vec::new(),
         };
         let result = zset_map_from_entries(selected);
@@ -787,7 +779,7 @@ impl RequestProcessor {
         if self.resp_protocol_version().is_resp3() {
             append_double(response_out, updated);
         } else {
-            append_bulk_string(response_out, updated.to_string().as_bytes());
+            append_bulk_double(response_out, updated);
         }
         Ok(())
     }
@@ -895,9 +887,10 @@ impl RequestProcessor {
         )?;
 
         let key = RedisKey::from(args[1]);
-        let left_bound = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
+        let left_bound =
+            parse_zscore_bound(args[2]).ok_or(RequestExecutionError::MinOrMaxNotFloat)?;
         let right_bound =
-            parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
+            parse_zscore_bound(args[3]).ok_or(RequestExecutionError::MinOrMaxNotFloat)?;
         let options = parse_zrange_by_score_options(args, 4)?;
 
         let zset = match self.load_zset_object(&key)? {
@@ -962,8 +955,10 @@ impl RequestProcessor {
         )?;
 
         let key = RedisKey::from(args[1]);
-        let left_bound = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
-        let right_bound = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
+        let left_bound = parse_zlex_bound(args[2])
+            .ok_or(RequestExecutionError::MinOrMaxNotValidStringRangeItem)?;
+        let right_bound = parse_zlex_bound(args[3])
+            .ok_or(RequestExecutionError::MinOrMaxNotValidStringRangeItem)?;
         let limit = parse_zrangebylex_limit(args, 4)?;
         let (min_bound, max_bound) = if reverse {
             (right_bound, left_bound)
@@ -1029,7 +1024,7 @@ impl RequestProcessor {
                     if resp3 {
                         append_double(response_out, *score);
                     } else {
-                        append_bulk_string(response_out, score.to_string().as_bytes());
+                        append_bulk_double(response_out, *score);
                     }
                 }
                 None => {
@@ -1134,7 +1129,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_double(response_out, score);
                 } else {
-                    append_bulk_string(response_out, score.to_string().as_bytes());
+                    append_bulk_double(response_out, score);
                 }
                 continue;
             }
@@ -1144,7 +1139,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_double(response_out, score);
                 } else {
-                    append_bulk_string(response_out, score.to_string().as_bytes());
+                    append_bulk_double(response_out, score);
                 }
             }
         }
@@ -1251,7 +1246,7 @@ impl RequestProcessor {
             if resp3 {
                 append_double(response_out, score);
             } else {
-                append_bulk_string(response_out, score.to_string().as_bytes());
+                append_bulk_double(response_out, score);
             }
             return Ok(());
         }
@@ -1313,7 +1308,7 @@ impl RequestProcessor {
                 if resp3 {
                     append_double(response_out, score);
                 } else {
-                    append_bulk_string(response_out, score.to_string().as_bytes());
+                    append_bulk_double(response_out, score);
                 }
                 continue;
             }
@@ -1321,7 +1316,7 @@ impl RequestProcessor {
             if resp3 {
                 append_double(response_out, score);
             } else {
-                append_bulk_string(response_out, score.to_string().as_bytes());
+                append_bulk_double(response_out, score);
             }
         }
         Ok(())
@@ -1462,7 +1457,7 @@ struct ZsetCombineOptions {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ZrangeStoreMode {
+enum ZrangeMode {
     Rank,
     Score,
     Lex,
@@ -1475,10 +1470,11 @@ struct ZsetLimit {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct ZrangeStoreOptions {
-    mode: ZrangeStoreMode,
+struct ZrangeOptions {
+    mode: ZrangeMode,
     reverse: bool,
     limit: Option<ZsetLimit>,
+    with_scores: bool,
 }
 
 fn sorted_zset_entries_by_score(zset: &BTreeMap<Vec<u8>, f64>) -> Vec<(&Vec<u8>, f64)> {
@@ -1528,7 +1524,7 @@ fn append_zset_scan_response(
         if resp3 {
             append_double(response_out, *score);
         } else {
-            append_bulk_string(response_out, score.to_string().as_bytes());
+            append_bulk_double(response_out, *score);
         }
     }
 }
@@ -1594,7 +1590,7 @@ fn append_zrange_score_entries(
             if resp3_double {
                 append_double(response_out, *score);
             } else {
-                append_bulk_string(response_out, score.to_string().as_bytes());
+                append_bulk_double(response_out, *score);
             }
         }
         return;
@@ -1612,7 +1608,46 @@ fn append_zrange_score_entries(
             if resp3_double {
                 append_double(response_out, *score);
             } else {
-                append_bulk_string(response_out, score.to_string().as_bytes());
+                append_bulk_double(response_out, *score);
+            }
+        }
+    }
+}
+
+fn append_owned_zrange_score_entries(
+    response_out: &mut Vec<u8>,
+    entries: &[(Vec<u8>, f64)],
+    with_scores: bool,
+    emit_pair_array: bool,
+    resp3_double: bool,
+) {
+    if with_scores && emit_pair_array {
+        append_array_length(response_out, entries.len());
+        for (member, score) in entries {
+            append_array_length(response_out, 2);
+            append_bulk_string(response_out, member);
+            if resp3_double {
+                append_double(response_out, *score);
+            } else {
+                append_bulk_double(response_out, *score);
+            }
+        }
+        return;
+    }
+
+    let item_count = if with_scores {
+        entries.len() * 2
+    } else {
+        entries.len()
+    };
+    append_array_length(response_out, item_count);
+    for (member, score) in entries {
+        append_bulk_string(response_out, member);
+        if with_scores {
+            if resp3_double {
+                append_double(response_out, *score);
+            } else {
+                append_bulk_double(response_out, *score);
             }
         }
     }
@@ -2073,7 +2108,7 @@ fn append_zmpop_response(
         if resp3 {
             append_double(response_out, *score);
         } else {
-            append_bulk_string(response_out, score.to_string().as_bytes());
+            append_bulk_double(response_out, *score);
         }
     }
 }
@@ -2090,7 +2125,7 @@ fn append_bzpop_response(
     if resp3 {
         append_double(response_out, entry.1);
     } else {
-        append_bulk_string(response_out, entry.1.to_string().as_bytes());
+        append_bulk_double(response_out, entry.1);
     }
 }
 
@@ -2193,29 +2228,31 @@ struct ParsedZmpopOptions {
     count: usize,
 }
 
-fn parse_zrangestore_options(
+fn parse_zrange_options(
     args: &[&[u8]],
     start_index: usize,
-) -> Result<ZrangeStoreOptions, RequestExecutionError> {
-    let mut mode = ZrangeStoreMode::Rank;
+    allow_with_scores: bool,
+) -> Result<ZrangeOptions, RequestExecutionError> {
+    let mut mode = ZrangeMode::Rank;
     let mut reverse = false;
     let mut limit = None;
+    let mut with_scores = false;
     let mut index = start_index;
     while index < args.len() {
         let token = args[index];
         if ascii_eq_ignore_case(token, b"BYSCORE") {
-            if mode != ZrangeStoreMode::Rank {
+            if mode != ZrangeMode::Rank {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            mode = ZrangeStoreMode::Score;
+            mode = ZrangeMode::Score;
             index += 1;
             continue;
         }
         if ascii_eq_ignore_case(token, b"BYLEX") {
-            if mode != ZrangeStoreMode::Rank {
+            if mode != ZrangeMode::Rank {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            mode = ZrangeStoreMode::Lex;
+            mode = ZrangeMode::Lex;
             index += 1;
             continue;
         }
@@ -2231,23 +2268,42 @@ fn parse_zrangestore_options(
             if limit.is_some() || index + 2 >= args.len() {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let offset =
-                parse_u64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let raw_offset =
+                parse_i64_ascii(args[index + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
             let count =
                 parse_u64_ascii(args[index + 2]).ok_or(RequestExecutionError::ValueNotInteger)?;
             limit = Some(ZsetLimit {
-                offset: usize::try_from(offset).unwrap_or(usize::MAX),
+                offset: if raw_offset < 0 {
+                    usize::MAX
+                } else {
+                    usize::try_from(raw_offset).unwrap_or(usize::MAX)
+                },
                 count: usize::try_from(count).unwrap_or(usize::MAX),
             });
             index += 3;
             continue;
         }
+        if allow_with_scores && ascii_eq_ignore_case(token, b"WITHSCORES") {
+            if with_scores {
+                return Err(RequestExecutionError::SyntaxError);
+            }
+            with_scores = true;
+            index += 1;
+            continue;
+        }
         return Err(RequestExecutionError::SyntaxError);
     }
-    Ok(ZrangeStoreOptions {
+    if limit.is_some() && mode == ZrangeMode::Rank {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    if with_scores && mode == ZrangeMode::Lex {
+        return Err(RequestExecutionError::SyntaxError);
+    }
+    Ok(ZrangeOptions {
         mode,
         reverse,
         limit,
+        with_scores,
     })
 }
 
@@ -2265,14 +2321,14 @@ fn apply_optional_limit(
     }
 }
 
-fn collect_zrangestore_entries(
+fn collect_zrange_entries(
     zset: &BTreeMap<Vec<u8>, f64>,
     left: &[u8],
     right: &[u8],
-    options: ZrangeStoreOptions,
+    options: ZrangeOptions,
 ) -> Result<Vec<(Vec<u8>, f64)>, RequestExecutionError> {
     let selected = match options.mode {
-        ZrangeStoreMode::Rank => {
+        ZrangeMode::Rank => {
             let start = parse_i64_ascii(left).ok_or(RequestExecutionError::ValueNotInteger)?;
             let stop = parse_i64_ascii(right).ok_or(RequestExecutionError::ValueNotInteger)?;
             let mut entries = sorted_zset_entries_by_score(zset);
@@ -2287,11 +2343,11 @@ fn collect_zrangestore_entries(
                 .map(|(member, score)| ((*member).clone(), *score))
                 .collect::<Vec<_>>()
         }
-        ZrangeStoreMode::Score => {
+        ZrangeMode::Score => {
             let left_bound =
-                parse_zscore_bound(left).ok_or(RequestExecutionError::ValueNotFloat)?;
+                parse_zscore_bound(left).ok_or(RequestExecutionError::MinOrMaxNotFloat)?;
             let right_bound =
-                parse_zscore_bound(right).ok_or(RequestExecutionError::ValueNotFloat)?;
+                parse_zscore_bound(right).ok_or(RequestExecutionError::MinOrMaxNotFloat)?;
             let (min_bound, max_bound) = if options.reverse {
                 (right_bound, left_bound)
             } else {
@@ -2307,9 +2363,11 @@ fn collect_zrangestore_entries(
             }
             entries
         }
-        ZrangeStoreMode::Lex => {
-            let left_bound = parse_zlex_bound(left).ok_or(RequestExecutionError::SyntaxError)?;
-            let right_bound = parse_zlex_bound(right).ok_or(RequestExecutionError::SyntaxError)?;
+        ZrangeMode::Lex => {
+            let left_bound = parse_zlex_bound(left)
+                .ok_or(RequestExecutionError::MinOrMaxNotValidStringRangeItem)?;
+            let right_bound = parse_zlex_bound(right)
+                .ok_or(RequestExecutionError::MinOrMaxNotValidStringRangeItem)?;
             let (min_bound, max_bound) = if options.reverse {
                 (right_bound, left_bound)
             } else {
