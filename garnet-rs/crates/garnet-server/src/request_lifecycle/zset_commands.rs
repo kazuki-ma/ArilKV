@@ -426,7 +426,9 @@ impl RequestProcessor {
         )?;
         let num_keys = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
-            return Err(RequestExecutionError::SyntaxError);
+            return Err(RequestExecutionError::AtLeastOneInputKey {
+                command: "zintercard",
+            });
         }
         let num_keys =
             usize::try_from(num_keys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -445,8 +447,11 @@ impl RequestProcessor {
             if !ascii_eq_ignore_case(option, b"LIMIT") {
                 return Err(RequestExecutionError::SyntaxError);
             }
-            let parsed_limit =
-                parse_u64_ascii(args[key_end + 1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+            let parsed_limit = parse_i64_ascii(args[key_end + 1])
+                .ok_or(RequestExecutionError::LimitCantBeNegative)?;
+            if parsed_limit < 0 {
+                return Err(RequestExecutionError::LimitCantBeNegative);
+            }
             limit = usize::try_from(parsed_limit)
                 .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         }
@@ -469,7 +474,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZDIFF", "ZDIFF numkeys key [key ...] [WITHSCORES]")?;
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 1)?;
+        let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zdiff")?;
         let with_scores = parse_zdiff_withscores(args, parsed_keys.option_start)?;
         let diff = compute_zdiff(self, &parsed_keys.keys)?;
         append_zset_combine_response(
@@ -494,7 +499,7 @@ impl RequestProcessor {
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
         let destination = RedisKey::from(args[1]);
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 2)?;
+        let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zdiffstore")?;
         if parsed_keys.option_start != args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
@@ -515,7 +520,7 @@ impl RequestProcessor {
             "ZINTER",
             "ZINTER numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 1)?;
+        let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zinter")?;
         let combine_options = parse_zset_combine_options(
             args,
             parsed_keys.option_start,
@@ -550,7 +555,7 @@ impl RequestProcessor {
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
         let destination = RedisKey::from(args[1]);
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 2)?;
+        let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zinterstore")?;
         let combine_options = parse_zset_combine_options(
             args,
             parsed_keys.option_start,
@@ -579,7 +584,7 @@ impl RequestProcessor {
             "ZUNION",
             "ZUNION numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 1)?;
+        let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zunion")?;
         let combine_options = parse_zset_combine_options(
             args,
             parsed_keys.option_start,
@@ -614,7 +619,7 @@ impl RequestProcessor {
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
         let destination = RedisKey::from(args[1]);
-        let parsed_keys = parse_zset_numkeys_and_keys(args, 2)?;
+        let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zunionstore")?;
         let combine_options = parse_zset_combine_options(
             args,
             parsed_keys.option_start,
@@ -1784,6 +1789,7 @@ fn parse_zrangebylex_limit(
 fn parse_zset_numkeys_and_keys(
     args: &[&[u8]],
     numkeys_index: usize,
+    command: &'static str,
 ) -> Result<ParsedZsetKeys, RequestExecutionError> {
     if numkeys_index >= args.len() {
         return Err(RequestExecutionError::SyntaxError);
@@ -1791,7 +1797,7 @@ fn parse_zset_numkeys_and_keys(
     let numkeys =
         parse_u64_ascii(args[numkeys_index]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if numkeys == 0 {
-        return Err(RequestExecutionError::SyntaxError);
+        return Err(RequestExecutionError::AtLeastOneInputKey { command });
     }
     let numkeys = usize::try_from(numkeys).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
     let key_start = numkeys_index + 1;
@@ -1888,7 +1894,7 @@ fn parse_zset_combine_options(
                 args[index + 1..index + 1 + num_keys].iter().enumerate()
             {
                 let parsed = parse_zset_score_value(weight_arg)
-                    .ok_or(RequestExecutionError::ValueNotFloat)?;
+                    .ok_or(RequestExecutionError::WeightValueNotFloat)?;
                 weights[weight_index] = parsed;
             }
             seen_weights = true;

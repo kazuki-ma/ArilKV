@@ -6166,6 +6166,117 @@ fn zrandmember_overflow_and_emptyarray_match_external_scenarios() {
 }
 
 #[test]
+fn zset_combine_validation_matches_external_scenarios() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZINTERCARD with illegal arguments"
+    assert_command_response(&processor, "ZADD zseta 1 a 2 b 3 c", b":3\r\n");
+    assert_command_response(&processor, "ZADD zsetb 1 b 2 c 3 d", b":3\r\n");
+    assert_command_error(
+        &processor,
+        "ZINTERCARD 1 zseta zseta",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZINTERCARD 1 zseta bar_arg",
+        b"-ERR syntax error\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZINTERCARD 1 zseta LIMIT",
+        b"-ERR syntax error\r\n",
+    );
+    let negative_limit = match execute_command_line(&processor, "ZINTERCARD 1 zseta LIMIT -1") {
+        Ok(response) => panic!(
+            "command unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&response)
+        ),
+        Err(CommandHarnessError::Request(error)) => {
+            let mut response = Vec::new();
+            error.append_resp_error(&mut response);
+            response
+        }
+        Err(error) => panic!("unexpected harness error: {error}"),
+    };
+    assert!(
+        negative_limit.starts_with(b"-ERR LIMIT"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&negative_limit)
+    );
+    let invalid_limit = match execute_command_line(&processor, "ZINTERCARD 1 zseta LIMIT a") {
+        Ok(response) => panic!(
+            "command unexpectedly succeeded: {}",
+            String::from_utf8_lossy(&response)
+        ),
+        Err(CommandHarnessError::Request(error)) => {
+            let mut response = Vec::new();
+            error.append_resp_error(&mut response);
+            response
+        }
+        Err(error) => panic!("unexpected harness error: {error}"),
+    };
+    assert!(
+        invalid_limit.starts_with(b"-ERR LIMIT"),
+        "unexpected response: {}",
+        String::from_utf8_lossy(&invalid_limit)
+    );
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "ZUNIONSTORE with NaN weights - listpack|skiplist"
+    // - "ZINTERSTORE with NaN weights - listpack|skiplist"
+    assert_command_error(
+        &processor,
+        "ZUNIONSTORE out 2 zseta zsetb WEIGHTS nan nan",
+        b"-ERR weight value is not a float\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZINTERSTORE out 2 zseta zsetb WEIGHTS nan nan",
+        b"-ERR weight value is not a float\r\n",
+    );
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "zunionInterDiffGenericCommand at least 1 input key"
+    assert_command_error(
+        &processor,
+        "ZUNION 0 key",
+        b"-ERR at least 1 input key is needed for 'zunion' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZUNIONSTORE dst_key 0 key",
+        b"-ERR at least 1 input key is needed for 'zunionstore' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZINTER 0 key",
+        b"-ERR at least 1 input key is needed for 'zinter' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZINTERSTORE dst_key 0 key",
+        b"-ERR at least 1 input key is needed for 'zinterstore' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZDIFF 0 key",
+        b"-ERR at least 1 input key is needed for 'zdiff' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZDIFFSTORE dst_key 0 key",
+        b"-ERR at least 1 input key is needed for 'zdiffstore' command\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "ZINTERCARD 0 key",
+        b"-ERR at least 1 input key is needed for 'zintercard' command\r\n",
+    );
+}
+
+#[test]
 fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

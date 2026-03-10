@@ -50,6 +50,7 @@ pub enum RequestExecutionError {
     ValueNotInteger,
     TimeoutNotIntegerOrOutOfRange,
     ValueNotFloat,
+    WeightValueNotFloat,
     HashMandatoryFieldsArgumentMissing,
     HashNumfieldsParameterMustMatchArguments,
     HashNumberOfFieldsMustBePositiveInteger,
@@ -92,6 +93,9 @@ pub enum RequestExecutionError {
     IncrementWouldProduceNanOrInfinity,
     ValueIsNanOrInfinity,
     NegativeKeyCount,
+    AtLeastOneInputKey {
+        command: &'static str,
+    },
     NumberOfKeysCantBeGreaterThanArgs,
     LimitCantBeNegative,
     InvalidStreamId,
@@ -254,6 +258,9 @@ impl RequestExecutionError {
                 "ERR timeout is not an integer or out of range",
             ),
             Self::ValueNotFloat => append_error(response_out, "ERR value is not a valid float"),
+            Self::WeightValueNotFloat => {
+                append_error(response_out, "ERR weight value is not a float")
+            }
             Self::NumkeysMustBeGreaterThanZero => {
                 append_error(response_out, "ERR numkeys should be greater than 0")
             }
@@ -351,6 +358,10 @@ impl RequestExecutionError {
             Self::NegativeKeyCount => {
                 append_error(response_out, "ERR Number of keys can't be negative")
             }
+            Self::AtLeastOneInputKey { command } => append_error(
+                response_out,
+                &format!("ERR at least 1 input key is needed for '{command}' command"),
+            ),
             Self::NumberOfKeysCantBeGreaterThanArgs => append_error(
                 response_out,
                 "ERR Number of keys can't be greater than number of args",
