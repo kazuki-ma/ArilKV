@@ -29,6 +29,7 @@ RUNTEXT_WALL_TIMEOUT_SECONDS="${RUNTEXT_WALL_TIMEOUT_SECONDS:-1800}"
 RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
 RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
 EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-${SCRIPT_DIR}/known-failed-tests-singledb.txt}"
+REDIS_CLI_OVERRIDE_BIN="${REDIS_CLI_OVERRIDE_BIN:-}"
 RUNTEXT_SKIP_QUERYBUF_IN_FULL="${RUNTEXT_SKIP_QUERYBUF_IN_FULL:-1}"
 RUNTEXT_RUN_QUERYBUF_ISOLATED="${RUNTEXT_RUN_QUERYBUF_ISOLATED:-1}"
 RUNTEXT_SKIP_SCRIPTING_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_IN_FULL:-1}"
@@ -122,6 +123,110 @@ restore_redis_external_pid_patch() {
         cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
         REDIS_SERVER_TCL_BACKUP=""
     fi
+}
+
+resolve_redis_cli_override_bin() {
+    if [[ -n "${REDIS_CLI_OVERRIDE_BIN}" ]]; then
+        if "${REDIS_CLI_OVERRIDE_BIN}" --version >/dev/null 2>&1; then
+            echo "${REDIS_CLI_OVERRIDE_BIN}"
+            return 0
+        fi
+        echo "configured REDIS_CLI_OVERRIDE_BIN is not runnable: ${REDIS_CLI_OVERRIDE_BIN}" >&2
+        return 1
+    fi
+
+    local repo_cli="${REDIS_REPO_ROOT}/src/redis-cli"
+    if [[ -x "${repo_cli}" ]] && "${repo_cli}" --version >/dev/null 2>&1; then
+        echo "${repo_cli}"
+        return 0
+    fi
+
+    local native_cli=""
+    native_cli="$(command -v redis-cli || true)"
+    if [[ -n "${native_cli}" ]] && "${native_cli}" --version >/dev/null 2>&1; then
+        echo "${native_cli}"
+        return 0
+    fi
+
+    echo "failed to find a runnable redis-cli binary" >&2
+    return 1
+}
+
+install_redis_cli_override_patch() {
+    local cli_tcl="${REDIS_REPO_ROOT}/tests/support/cli.tcl"
+    local patch_marker="# garnet-rs external redis-cli override"
+
+    if ! REDIS_CLI_OVERRIDE_RESOLVED_BIN="$(resolve_redis_cli_override_bin)"; then
+        return 1
+    fi
+    export REDIS_CLI_OVERRIDE_RESOLVED_BIN
+
+    if grep -Fq "${patch_marker}" "${cli_tcl}"; then
+        return 0
+    fi
+
+    REDIS_CLI_TCL_BACKUP="${RESULT_DIR}/cli.tcl.before-garnet-redis-cli-override-patch"
+    cp "${cli_tcl}" "${REDIS_CLI_TCL_BACKUP}"
+
+    CLI_TCL_PATH="${cli_tcl}" python3 <<'PY'
+from pathlib import Path
+import os
+
+path = Path(os.environ["CLI_TCL_PATH"])
+text = path.read_text()
+old = """proc rediscli {host port {opts {}}} {
+    set cmd [list src/redis-cli -h $host -p $port]
+    lappend cmd {*}[rediscli_tls_config "tests"]
+    lappend cmd {*}$opts
+    return $cmd
+}
+
+# Returns command line for executing redis-cli with a unix socket address
+proc rediscli_unixsocket {unixsocket {opts {}}} {
+    return [list src/redis-cli -s $unixsocket {*}$opts]
+}
+"""
+new = """proc rediscli_binary {} {
+    # garnet-rs external redis-cli override
+    if {[info exists ::env(REDIS_CLI_OVERRIDE_RESOLVED_BIN)] && $::env(REDIS_CLI_OVERRIDE_RESOLVED_BIN) ne ""} {
+        return $::env(REDIS_CLI_OVERRIDE_RESOLVED_BIN)
+    }
+    return src/redis-cli
+}
+
+proc rediscli {host port {opts {}}} {
+    set cmd [list [rediscli_binary] -h $host -p $port]
+    lappend cmd {*}[rediscli_tls_config "tests"]
+    lappend cmd {*}$opts
+    return $cmd
+}
+
+# Returns command line for executing redis-cli with a unix socket address
+proc rediscli_unixsocket {unixsocket {opts {}}} {
+    return [list [rediscli_binary] -s $unixsocket {*}$opts]
+}
+"""
+if old not in text:
+    raise SystemExit(f"expected cli.tcl block not found in {path}")
+path.write_text(text.replace(old, new, 1))
+PY
+
+    if ! grep -Fq "${patch_marker}" "${cli_tcl}"; then
+        cp "${REDIS_CLI_TCL_BACKUP}" "${cli_tcl}"
+        echo "failed to install Redis cli override patch into ${cli_tcl}" >&2
+        return 1
+    fi
+
+    return 0
+}
+
+restore_redis_cli_override_patch() {
+    local cli_tcl="${REDIS_REPO_ROOT}/tests/support/cli.tcl"
+    if [[ -n "${REDIS_CLI_TCL_BACKUP:-}" && -f "${REDIS_CLI_TCL_BACKUP}" ]]; then
+        cp "${REDIS_CLI_TCL_BACKUP}" "${cli_tcl}"
+        REDIS_CLI_TCL_BACKUP=""
+    fi
+    unset REDIS_CLI_OVERRIDE_RESOLVED_BIN || true
 }
 
 start_garnet_server() {
@@ -736,6 +841,7 @@ require_cmd redis-cli
 require_cmd cargo
 require_cmd pgrep
 require_cmd perl
+require_cmd python3
 require_cmd "${RUNTEXT_BIN}"
 
 if [[ ! -x "${RUNTEXT_BIN}" ]]; then
@@ -745,7 +851,9 @@ fi
 
 GARNET_PID=""
 REDIS_SERVER_TCL_BACKUP=""
+REDIS_CLI_TCL_BACKUP=""
 cleanup() {
+    restore_redis_cli_override_patch
     restore_redis_external_pid_patch
     stop_garnet_server
 }
@@ -754,6 +862,10 @@ trap cleanup EXIT
 : > "${GARNET_LOG_FILE}"
 
 if ! install_redis_external_pid_patch; then
+    exit 1
+fi
+
+if ! install_redis_cli_override_patch; then
     exit 1
 fi
 
