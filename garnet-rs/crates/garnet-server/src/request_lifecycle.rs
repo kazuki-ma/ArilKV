@@ -1477,7 +1477,11 @@ impl DecodedSetObjectPayload {
 
     fn ordered_members(&self) -> Vec<Vec<u8>> {
         match self {
-            Self::Members(set) => set.iter().cloned().collect(),
+            Self::Members(set) => {
+                let mut members = set.iter().cloned().collect::<Vec<_>>();
+                members.sort_by(|left, right| compare_ordered_set_members(left, right));
+                members
+            }
             Self::ContiguousI64Range(range) => materialize_contiguous_i64_range_set(*range)
                 .into_iter()
                 .collect(),
@@ -1550,6 +1554,17 @@ impl DecodedSetObjectPayload {
                 removed
             }
         }
+    }
+}
+
+fn compare_ordered_set_members(left: &[u8], right: &[u8]) -> std::cmp::Ordering {
+    let left_integer = parse_canonical_i64_set_member(left);
+    let right_integer = parse_canonical_i64_set_member(right);
+    match (left_integer, right_integer) {
+        (Some(left_value), Some(right_value)) => left_value.cmp(&right_value),
+        (Some(_), None) => std::cmp::Ordering::Less,
+        (None, Some(_)) => std::cmp::Ordering::Greater,
+        (None, None) => left.cmp(right),
     }
 }
 

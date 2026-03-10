@@ -1176,6 +1176,103 @@ async fn reply_buffer_limits_match_external_scenario() {
 }
 
 #[tokio::test]
+async fn sscan_shrink_regression_issue_4906_matches_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    for iteration_seed in 0..100usize {
+        let _ = send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"DEL", b"set"]),
+            Duration::from_secs(5),
+        )
+        .await;
+        assert_eq!(
+            send_and_read_integer(
+                &mut client,
+                &encode_resp_command(&[b"SADD", b"set", b"x"]),
+                Duration::from_secs(5),
+            )
+            .await,
+            1
+        );
+
+        let numele = 101 + ((iteration_seed * 37) % 1000);
+        let mut to_remove = Vec::new();
+        for value in 0..numele {
+            let member = value.to_string();
+            assert_eq!(
+                send_and_read_integer(
+                    &mut client,
+                    &encode_resp_command(&[b"SADD", b"set", member.as_bytes()]),
+                    Duration::from_secs(5),
+                )
+                .await,
+                1
+            );
+            if value >= 100 {
+                to_remove.push(member.into_bytes());
+            }
+        }
+
+        let mut found = std::collections::BTreeSet::<Vec<u8>>::new();
+        let mut cursor = 0u64;
+        let mut scan_iteration = 0usize;
+        let delete_iteration = iteration_seed % 10;
+
+        loop {
+            let cursor_text = cursor.to_string();
+            let (next_cursor, items) = send_and_read_scan_cursor_and_members(
+                &mut client,
+                &encode_resp_command(&[b"SSCAN", b"set", cursor_text.as_bytes()]),
+                Duration::from_secs(5),
+            )
+            .await;
+            for item in items {
+                found.insert(item);
+            }
+
+            scan_iteration += 1;
+            if scan_iteration == delete_iteration && !to_remove.is_empty() {
+                let mut parts = Vec::with_capacity(to_remove.len() + 2);
+                parts.push(b"SREM".as_slice());
+                parts.push(b"set".as_slice());
+                for member in &to_remove {
+                    parts.push(member.as_slice());
+                }
+                let removed = send_and_read_integer(
+                    &mut client,
+                    &encode_resp_command(&parts),
+                    Duration::from_secs(5),
+                )
+                .await;
+                assert_eq!(removed, to_remove.len() as i64);
+            }
+
+            if next_cursor == 0 {
+                break;
+            }
+            cursor = next_cursor;
+        }
+
+        for expected in 0..100usize {
+            let member = expected.to_string().into_bytes();
+            assert!(
+                found.contains(&member),
+                "SSCAN element missing {} for seed {} (numele={}, delete_iteration={})",
+                expected,
+                iteration_seed,
+                numele,
+                delete_iteration
+            );
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_key_expiring_after_watch_aborts_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
