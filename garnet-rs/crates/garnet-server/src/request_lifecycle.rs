@@ -354,7 +354,7 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"appendonly".to_vec(), b"no".to_vec());
     values.insert(b"save".to_vec(), b"".to_vec());
     values.insert(b"dbfilename".to_vec(), b"dump.rdb".to_vec());
-    values.insert(b"dir".to_vec(), b".".to_vec());
+    values.insert(b"dir".to_vec(), default_config_dir_value());
     values.insert(b"repl-backlog-size".to_vec(), b"1048576".to_vec());
     values.insert(b"min-replicas-to-write".to_vec(), b"0".to_vec());
     values.insert(b"min-slaves-to-write".to_vec(), b"0".to_vec());
@@ -437,6 +437,14 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"repl-min-slaves-to-write".to_vec(), b"0".to_vec());
     values.insert(b"repl-min-slaves-max-lag".to_vec(), b"10".to_vec());
     values
+}
+
+fn default_config_dir_value() -> Vec<u8> {
+    std::env::current_dir()
+        .unwrap_or_else(|_| std::path::PathBuf::from("."))
+        .to_string_lossy()
+        .into_owned()
+        .into_bytes()
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -1812,6 +1820,7 @@ pub struct RequestProcessor {
     total_error_replies: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
     rdb_changes_since_last_save: AtomicU64,
+    saved_rdb_snapshot: Mutex<Option<Vec<u8>>>,
     resp_protocol_version: AtomicU8,
     interop_force_resp3_zset_pairs: bool,
     blocked_clients: AtomicU64,
@@ -2107,6 +2116,7 @@ impl RequestProcessor {
             total_error_replies: AtomicU64::new(0),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
             rdb_changes_since_last_save: AtomicU64::new(0),
+            saved_rdb_snapshot: Mutex::new(None),
             resp_protocol_version: AtomicU8::new(RespProtocolVersion::Resp2.as_u8()),
             interop_force_resp3_zset_pairs: interop_force_resp3_zset_pairs_from_env(),
             blocked_clients: AtomicU64::new(0),
@@ -4507,6 +4517,19 @@ impl RequestProcessor {
 
     pub(super) fn reset_rdb_changes_since_last_save(&self) {
         self.rdb_changes_since_last_save.store(0, Ordering::Relaxed);
+    }
+
+    pub(crate) fn saved_rdb_snapshot(&self) -> Option<Vec<u8>> {
+        self.saved_rdb_snapshot
+            .lock()
+            .ok()
+            .and_then(|snapshot| snapshot.clone())
+    }
+
+    pub(crate) fn set_saved_rdb_snapshot(&self, snapshot: Vec<u8>) {
+        if let Ok(mut current) = self.saved_rdb_snapshot.lock() {
+            *current = Some(snapshot);
+        }
     }
 
     pub(super) fn total_error_replies(&self) -> u64 {

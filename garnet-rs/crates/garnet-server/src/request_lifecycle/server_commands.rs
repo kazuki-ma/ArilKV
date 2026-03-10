@@ -311,6 +311,11 @@ const DEBUG_PROTOCOL_VERBATIM_VALUE: &[u8] = b"This is a verbatim\nstring";
 const DEBUG_PROTOCOL_ATTRIBUTE_NAME: &[u8] = b"key-popularity";
 const DEBUG_PROTOCOL_ATTRIBUTE_KEY: &[u8] = b"key:123";
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
+const DEBUG_RELOAD_SNAPSHOT_MAGIC_V1: &[u8] = b"GRSNAP1";
+const DEBUG_RELOAD_SNAPSHOT_MAGIC_V2: &[u8] = b"GRSNAP2";
+const DEBUG_RELOAD_SNAPSHOT_NO_EXPIRATION: u64 = u64::MAX;
+const DEBUG_RELOAD_SNAPSHOT_ENCODING_RAW: u8 = 0;
+const DEBUG_RELOAD_SNAPSHOT_ENCODING_ZERO_RUN: u8 = 1;
 const MIGRATE_USAGE: &str = "MIGRATE host port key destination-db timeout [COPY] [REPLACE] [AUTH password] [AUTH2 username password] [KEYS key [key ...]]";
 const COMMAND_LIST_EXTRA_NAMES: [&[u8]; 8] = [
     b"client|help",
@@ -1308,6 +1313,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "SAVE", "SAVE")?;
+        let snapshot = self.build_debug_reload_snapshot(false)?;
+        self.set_saved_rdb_snapshot(snapshot);
         self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"OK");
         Ok(())
@@ -1600,10 +1607,14 @@ impl RequestProcessor {
                 );
                 return Ok(());
             }
-            // Compatibility path: in-memory test mode has no real RDB reload boundary.
-            // Our list encoding model uses forced flags to emulate quicklist state that
-            // would normally be recalculated on load, so clear them here to mimic the
-            // reload-time re-encoding boundary Redis exposes to tests.
+            if !noflush && !merge {
+                if self.reload_debug_snapshot_source()? {
+                    append_simple_string(response_out, b"OK");
+                    return Ok(());
+                }
+            }
+            // Compatibility path fallback: when no snapshot source exists, keep the
+            // historical in-memory reload boundary behavior used by existing tests.
             self.clear_all_forced_list_quicklist_encodings();
             append_simple_string(response_out, b"OK");
             return Ok(());
@@ -3984,6 +3995,11 @@ impl RequestProcessor {
                         return Ok(());
                     }
                 }
+                if parameter == b"dir" {
+                    pending.push((parameter, normalize_config_dir_value(&value)));
+                    index += 2;
+                    continue;
+                }
                 pending.push((parameter, value));
                 index += 2;
             }
@@ -4674,27 +4690,7 @@ fn restore_from_dump_blob(
         )
     };
 
-    match value {
-        MigrationValue::String(raw) => {
-            processor.upsert_string_value_for_migration(
-                &key,
-                raw.as_slice(),
-                expiration_unix_millis,
-            )?;
-            let _ = processor.object_delete(&key)?;
-        }
-        MigrationValue::Object {
-            object_type,
-            payload,
-        } => {
-            processor.delete_string_key_for_migration(&key)?;
-            processor.object_upsert(&key, object_type, &payload)?;
-            processor.set_string_expiration_deadline(
-                &key,
-                expiration_unix_millis.and_then(instant_from_unix_millis),
-            );
-        }
-    }
+    restore_migration_value(processor, &key, value, expiration_unix_millis)?;
 
     if let Some(idle_time_seconds) = options.idle_time_seconds {
         processor.set_key_idle_seconds(&key, idle_time_seconds);
@@ -4714,6 +4710,139 @@ fn restore_from_dump_blob(
 
     append_simple_string(response_out, b"OK");
     Ok(())
+}
+
+fn restore_migration_value(
+    processor: &RequestProcessor,
+    key: &[u8],
+    value: MigrationValue,
+    expiration_unix_millis: Option<u64>,
+) -> Result<(), RequestExecutionError> {
+    match value {
+        MigrationValue::String(raw) => {
+            processor.upsert_string_value_for_migration(
+                key,
+                raw.as_slice(),
+                expiration_unix_millis,
+            )?;
+            let _ = processor.object_delete(key)?;
+        }
+        MigrationValue::Object {
+            object_type,
+            payload,
+        } => {
+            processor.delete_string_key_for_migration(key)?;
+            processor.object_upsert(key, object_type, &payload)?;
+            processor.set_string_expiration_deadline(
+                key,
+                expiration_unix_millis.and_then(instant_from_unix_millis),
+            );
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct DebugReloadSnapshotEntry {
+    key: Vec<u8>,
+    expiration_unix_millis: Option<u64>,
+    dump_blob: Vec<u8>,
+}
+
+impl RequestProcessor {
+    pub(crate) fn build_debug_reload_snapshot(
+        &self,
+        functions_only: bool,
+    ) -> Result<Vec<u8>, RequestExecutionError> {
+        let entries = if functions_only {
+            Vec::new()
+        } else {
+            self.collect_debug_reload_snapshot_entries()?
+        };
+        let function_payload = self.dump_function_registry()?;
+        Ok(encode_debug_reload_snapshot(&entries, &function_payload))
+    }
+
+    pub(crate) fn reload_debug_snapshot_source(&self) -> Result<bool, RequestExecutionError> {
+        let snapshot_bytes = match self.read_debug_reload_snapshot_source()? {
+            Some(snapshot_bytes) => snapshot_bytes,
+            None => return Ok(false),
+        };
+        let Some(decoded) = decode_debug_reload_snapshot(&snapshot_bytes) else {
+            return Ok(false);
+        };
+
+        self.flush_all_keys()?;
+        self.clear_function_registry(false);
+        self.clear_all_forced_list_quicklist_encodings();
+
+        for entry in decoded.entries {
+            let value = decode_dump_blob(&entry.dump_blob)
+                .ok_or(RequestExecutionError::InvalidDumpPayload)?;
+            restore_migration_value(
+                self,
+                entry.key.as_slice(),
+                value,
+                entry.expiration_unix_millis,
+            )?;
+        }
+        self.restore_function_registry_from_snapshot(&decoded.function_payload)?;
+        self.set_saved_rdb_snapshot(snapshot_bytes);
+        Ok(true)
+    }
+
+    fn collect_debug_reload_snapshot_entries(
+        &self,
+    ) -> Result<Vec<DebugReloadSnapshotEntry>, RequestExecutionError> {
+        let mut keys = std::collections::BTreeSet::new();
+        keys.extend(self.string_keys_snapshot());
+        keys.extend(self.object_keys_snapshot());
+
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            self.expire_key_if_needed(key.as_slice())?;
+
+            if let Some(stored_value) = self.read_string_value(key.as_slice())? {
+                let decoded = decode_stored_value(stored_value.as_slice());
+                let dump_blob =
+                    encode_dump_blob(MigrationValue::String(decoded.user_value.to_vec().into()));
+                entries.push(DebugReloadSnapshotEntry {
+                    key: key.to_vec(),
+                    expiration_unix_millis: decoded.expiration_unix_millis,
+                    dump_blob,
+                });
+                continue;
+            }
+
+            if let Some(object) = self.object_read(key.as_slice())? {
+                let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+                let dump_blob = encode_dump_blob(MigrationValue::Object {
+                    object_type: object.object_type,
+                    payload: object.payload,
+                });
+                entries.push(DebugReloadSnapshotEntry {
+                    key: key.to_vec(),
+                    expiration_unix_millis,
+                    dump_blob,
+                });
+            }
+        }
+        Ok(entries)
+    }
+
+    fn read_debug_reload_snapshot_source(&self) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        let snapshot_path = configured_dump_snapshot_path(&self.config_items_snapshot());
+        match std::fs::read(&snapshot_path) {
+            Ok(bytes) => Ok(Some(bytes)),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                Ok(self.saved_rdb_snapshot())
+            }
+            Err(_) => Err(storage_failure(
+                "debug.reload.snapshot",
+                "failed to read configured dump snapshot",
+            )),
+        }
+    }
 }
 
 fn parse_restore_options(
@@ -4796,6 +4925,256 @@ fn encode_dump_blob(value: MigrationValue) -> Vec<u8> {
         }
     }
     encoded
+}
+
+#[derive(Debug)]
+struct DecodedDebugReloadSnapshot {
+    entries: Vec<DebugReloadSnapshotEntry>,
+    function_payload: Vec<u8>,
+}
+
+fn encode_debug_reload_snapshot(
+    entries: &[DebugReloadSnapshotEntry],
+    function_payload: &[u8],
+) -> Vec<u8> {
+    let raw = encode_debug_reload_snapshot_body(entries, function_payload);
+    let raw_len = u32::try_from(raw.len()).unwrap_or(u32::MAX);
+    let compressed = encode_debug_reload_snapshot_zero_run(raw.as_slice());
+    let (encoding, payload) = if compressed.len() < raw.len() {
+        (DEBUG_RELOAD_SNAPSHOT_ENCODING_ZERO_RUN, compressed)
+    } else {
+        (DEBUG_RELOAD_SNAPSHOT_ENCODING_RAW, raw)
+    };
+
+    let mut encoded =
+        Vec::with_capacity(DEBUG_RELOAD_SNAPSHOT_MAGIC_V2.len() + 1 + 4 + 4 + payload.len());
+    encoded.extend_from_slice(DEBUG_RELOAD_SNAPSHOT_MAGIC_V2);
+    encoded.push(encoding);
+    encoded.extend_from_slice(&raw_len.to_le_bytes());
+    append_snapshot_len_prefixed_bytes(&mut encoded, payload.as_slice());
+    encoded
+}
+
+fn raw_len_for_snapshot_payload(
+    entries: &[DebugReloadSnapshotEntry],
+    function_payload: &[u8],
+) -> usize {
+    let mut total = 4usize;
+    for entry in entries {
+        total = total
+            .saturating_add(4)
+            .saturating_add(entry.key.len())
+            .saturating_add(8)
+            .saturating_add(4)
+            .saturating_add(entry.dump_blob.len());
+    }
+    total
+        .saturating_add(4)
+        .saturating_add(function_payload.len())
+}
+
+fn encode_debug_reload_snapshot_body(
+    entries: &[DebugReloadSnapshotEntry],
+    function_payload: &[u8],
+) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(raw_len_for_snapshot_payload(entries, function_payload));
+    encoded.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for entry in entries {
+        append_snapshot_len_prefixed_bytes(&mut encoded, entry.key.as_slice());
+        encoded.extend_from_slice(
+            &entry
+                .expiration_unix_millis
+                .unwrap_or(DEBUG_RELOAD_SNAPSHOT_NO_EXPIRATION)
+                .to_le_bytes(),
+        );
+        append_snapshot_len_prefixed_bytes(&mut encoded, entry.dump_blob.as_slice());
+    }
+    append_snapshot_len_prefixed_bytes(&mut encoded, function_payload);
+    encoded
+}
+
+fn decode_debug_reload_snapshot(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+    if encoded.starts_with(DEBUG_RELOAD_SNAPSHOT_MAGIC_V2) {
+        return decode_debug_reload_snapshot_v2(encoded);
+    }
+    if encoded.starts_with(DEBUG_RELOAD_SNAPSHOT_MAGIC_V1) {
+        return decode_debug_reload_snapshot_v1(encoded);
+    }
+    None
+}
+
+fn decode_debug_reload_snapshot_v1(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+    let body = encoded.get(DEBUG_RELOAD_SNAPSHOT_MAGIC_V1.len()..)?;
+    decode_debug_reload_snapshot_body(body)
+}
+
+fn decode_debug_reload_snapshot_v2(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+    let mut index = DEBUG_RELOAD_SNAPSHOT_MAGIC_V2.len();
+    let encoding = *encoded.get(index)?;
+    index += 1;
+    let expected_raw_len =
+        u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
+    index += 4;
+    let payload = read_snapshot_len_prefixed_bytes(encoded, &mut index)?;
+    if index != encoded.len() {
+        return None;
+    }
+
+    let raw = match encoding {
+        DEBUG_RELOAD_SNAPSHOT_ENCODING_RAW => payload.to_vec(),
+        DEBUG_RELOAD_SNAPSHOT_ENCODING_ZERO_RUN => {
+            decode_debug_reload_snapshot_zero_run(payload, expected_raw_len)?
+        }
+        _ => return None,
+    };
+    if raw.len() != expected_raw_len {
+        return None;
+    }
+    decode_debug_reload_snapshot_body(raw.as_slice())
+}
+
+fn decode_debug_reload_snapshot_body(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+    let mut index = 0usize;
+    let entry_count = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
+    index += 4;
+
+    let mut entries = Vec::with_capacity(entry_count);
+    for _ in 0..entry_count {
+        let key = read_snapshot_len_prefixed_bytes(encoded, &mut index)?.to_vec();
+        let expiration_raw = u64::from_le_bytes(encoded.get(index..index + 8)?.try_into().ok()?);
+        index += 8;
+        let dump_blob = read_snapshot_len_prefixed_bytes(encoded, &mut index)?.to_vec();
+        let expiration_unix_millis = if expiration_raw == DEBUG_RELOAD_SNAPSHOT_NO_EXPIRATION {
+            None
+        } else {
+            Some(expiration_raw)
+        };
+        entries.push(DebugReloadSnapshotEntry {
+            key,
+            expiration_unix_millis,
+            dump_blob,
+        });
+    }
+
+    let function_payload = read_snapshot_len_prefixed_bytes(encoded, &mut index)?.to_vec();
+    if index != encoded.len() {
+        return None;
+    }
+
+    Some(DecodedDebugReloadSnapshot {
+        entries,
+        function_payload,
+    })
+}
+
+fn append_snapshot_len_prefixed_bytes(target: &mut Vec<u8>, bytes: &[u8]) {
+    let len = u32::try_from(bytes.len()).unwrap_or(u32::MAX);
+    target.extend_from_slice(&len.to_le_bytes());
+    target.extend_from_slice(bytes);
+}
+
+fn read_snapshot_len_prefixed_bytes<'a>(encoded: &'a [u8], index: &mut usize) -> Option<&'a [u8]> {
+    let len = u32::from_le_bytes(encoded.get(*index..*index + 4)?.try_into().ok()?) as usize;
+    *index += 4;
+    let bytes = encoded.get(*index..*index + len)?;
+    *index += len;
+    Some(bytes)
+}
+
+fn encode_debug_reload_snapshot_zero_run(raw: &[u8]) -> Vec<u8> {
+    let mut encoded = Vec::with_capacity(raw.len());
+    let mut index = 0usize;
+    while index < raw.len() {
+        let zero_run = count_snapshot_zero_run(raw, index);
+        if zero_run >= 4 {
+            let mut remaining = zero_run;
+            while remaining > 0 {
+                let chunk_len = remaining.min(127);
+                encoded.push(0x80 | (chunk_len as u8));
+                remaining -= chunk_len;
+            }
+            index += zero_run;
+            continue;
+        }
+
+        let literal_start = index;
+        let mut literal_len = 0usize;
+        while index < raw.len() && literal_len < 127 {
+            let next_zero_run = count_snapshot_zero_run(raw, index);
+            if next_zero_run >= 4 {
+                break;
+            }
+            let advance = next_zero_run.max(1);
+            if literal_len + advance > 127 {
+                break;
+            }
+            index += advance;
+            literal_len += advance;
+        }
+        encoded.push(literal_len as u8);
+        encoded.extend_from_slice(&raw[literal_start..literal_start + literal_len]);
+    }
+    encoded
+}
+
+fn decode_debug_reload_snapshot_zero_run(
+    encoded: &[u8],
+    expected_raw_len: usize,
+) -> Option<Vec<u8>> {
+    let mut decoded = Vec::with_capacity(expected_raw_len);
+    let mut index = 0usize;
+    while index < encoded.len() {
+        let control = *encoded.get(index)?;
+        index += 1;
+        let chunk_len = usize::from(control & 0x7f);
+        if chunk_len == 0 {
+            return None;
+        }
+        if (control & 0x80) != 0 {
+            decoded.resize(decoded.len().checked_add(chunk_len)?, 0);
+            continue;
+        }
+        let literal = encoded.get(index..index + chunk_len)?;
+        decoded.extend_from_slice(literal);
+        index += chunk_len;
+    }
+    Some(decoded)
+}
+
+fn count_snapshot_zero_run(raw: &[u8], start: usize) -> usize {
+    raw.get(start..)
+        .unwrap_or_default()
+        .iter()
+        .take_while(|byte| **byte == 0)
+        .count()
+}
+
+fn configured_dump_snapshot_path(config_items: &[(Vec<u8>, Vec<u8>)]) -> std::path::PathBuf {
+    let mut dir = b".".to_vec();
+    let mut dbfilename = b"dump.rdb".to_vec();
+    for (key, value) in config_items {
+        if key == b"dir" {
+            dir = value.clone();
+        } else if key == b"dbfilename" {
+            dbfilename = value.clone();
+        }
+    }
+
+    let mut path = std::path::PathBuf::from(String::from_utf8_lossy(&dir).into_owned());
+    path.push(String::from_utf8_lossy(&dbfilename).into_owned());
+    path
+}
+
+fn normalize_config_dir_value(value: &[u8]) -> Vec<u8> {
+    let path = std::path::PathBuf::from(String::from_utf8_lossy(value).into_owned());
+    let absolute = if path.is_absolute() {
+        path
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .join(path)
+    };
+    absolute.to_string_lossy().into_owned().into_bytes()
 }
 
 fn decode_dump_blob(encoded: &[u8]) -> Option<MigrationValue> {

@@ -769,7 +769,7 @@ impl RequestProcessor {
         Ok(())
     }
 
-    fn clear_function_registry(&self, async_flush: bool) {
+    pub(crate) fn clear_function_registry(&self, async_flush: bool) {
         if let Ok(mut registry) = self.function_registry.lock() {
             let library_count = registry.library_sources.len() as u64;
             registry.functions.clear();
@@ -881,7 +881,7 @@ impl RequestProcessor {
         Ok(ScriptKillOutcome::Killed)
     }
 
-    fn dump_function_registry(&self) -> Result<Vec<u8>, RequestExecutionError> {
+    pub(crate) fn dump_function_registry(&self) -> Result<Vec<u8>, RequestExecutionError> {
         let Ok(registry) = self.function_registry.lock() else {
             return Err(storage_failure(
                 "function.registry",
@@ -963,6 +963,20 @@ impl RequestProcessor {
                 .map_err(FunctionRestoreError::Request)?;
         }
         Ok(())
+    }
+
+    pub(crate) fn restore_function_registry_from_snapshot(
+        &self,
+        serialized_payload: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        self.restore_function_registry(serialized_payload, FunctionRestoreMode::Flush)
+            .map_err(|error| match error {
+                FunctionRestoreError::Request(error) => error,
+                FunctionRestoreError::LibraryAlreadyExists(_)
+                | FunctionRestoreError::FunctionAlreadyExists(_) => {
+                    RequestExecutionError::InvalidDumpPayload
+                }
+            })
     }
 
     fn append_function_list_response(

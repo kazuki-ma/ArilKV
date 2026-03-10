@@ -4,6 +4,7 @@
 
 mod protocol;
 
+use crate::RequestExecutionError;
 use crate::RequestProcessor;
 use crate::ServerMetrics;
 use crate::ShardOwnerThreadPool;
@@ -11,7 +12,6 @@ use crate::command_spec::command_is_effectively_mutating;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
 use crate::connection_owner_routing::execute_frame_on_owner_thread;
 use crate::dispatch_from_arg_slices;
-use crate::redis_replication::protocol::decode_hex_bytes;
 use crate::redis_replication::protocol::discard_bulk_payload;
 use crate::redis_replication::protocol::generate_repl_id;
 use crate::redis_replication::protocol::parse_bulk_length;
@@ -40,8 +40,6 @@ use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
 
-// Empty Redis 7.x RDB payload (binary-safe) for FULLRESYNC responses.
-const EMPTY_RDB_HEX: &str = "524544495330303131fa0972656469732d76657205372e322e30fa0a72656469732d62697473c040fa056374696d65c26d08bc65fa08757365642d6d656dc2b0c41000fa08616f662d62617365c000fff06e3bfec0ff5aa2";
 const DOWNSTREAM_BROADCAST_CAPACITY: usize = 4096;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
 const DEFAULT_MAX_RESP_ARGUMENTS: usize = 1_048_576;
@@ -77,7 +75,6 @@ struct ReplicationInner {
     downstream_ack_offsets: Mutex<HashMap<u64, u64>>,
     downstream_ack_notify: Notify,
     repl_id: String,
-    empty_rdb_payload: Vec<u8>,
 }
 
 #[derive(Clone)]
@@ -107,7 +104,6 @@ impl RedisReplicationCoordinator {
             downstream_ack_offsets: Mutex::new(HashMap::new()),
             downstream_ack_notify: Notify::new(),
             repl_id: generate_repl_id(),
-            empty_rdb_payload: decode_hex_bytes(EMPTY_RDB_HEX),
         };
         Self {
             inner: Arc::new(inner),
@@ -297,22 +293,32 @@ impl RedisReplicationCoordinator {
         self.inner.downstream_tx.subscribe()
     }
 
-    pub(crate) fn build_fullresync_payload(&self) -> Vec<u8> {
+    pub(crate) fn build_fullresync_payload(
+        &self,
+        functions_only: bool,
+    ) -> Result<Vec<u8>, RequestExecutionError> {
         let repl_offset = self.inner.master_repl_offset.load(Ordering::Relaxed);
-        let mut response = Vec::with_capacity(256 + self.inner.empty_rdb_payload.len());
+        let sync_payload = self.build_sync_payload(functions_only)?;
+        let mut response = Vec::with_capacity(256 + sync_payload.len());
         response.extend_from_slice(
             format!("+FULLRESYNC {} {}\r\n", self.inner.repl_id, repl_offset).as_bytes(),
         );
-        response.extend_from_slice(self.build_sync_payload().as_slice());
-        response
+        response.extend_from_slice(sync_payload.as_slice());
+        Ok(response)
     }
 
-    pub(crate) fn build_sync_payload(&self) -> Vec<u8> {
-        let mut response = Vec::with_capacity(64 + self.inner.empty_rdb_payload.len());
-        response
-            .extend_from_slice(format!("${}\r\n", self.inner.empty_rdb_payload.len()).as_bytes());
-        response.extend_from_slice(&self.inner.empty_rdb_payload);
-        response
+    pub(crate) fn build_sync_payload(
+        &self,
+        functions_only: bool,
+    ) -> Result<Vec<u8>, RequestExecutionError> {
+        let snapshot = self
+            .inner
+            .processor
+            .build_debug_reload_snapshot(functions_only)?;
+        let mut response = Vec::with_capacity(64 + snapshot.len());
+        response.extend_from_slice(format!("${}\r\n", snapshot.len()).as_bytes());
+        response.extend_from_slice(&snapshot);
+        Ok(response)
     }
 
     pub(crate) async fn serve_downstream_replica(&self, stream: TcpStream) -> io::Result<()> {

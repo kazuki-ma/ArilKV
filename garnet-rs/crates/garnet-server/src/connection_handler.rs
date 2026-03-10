@@ -1054,6 +1054,7 @@ pub(crate) async fn handle_connection(
     let mut disconnect_after_write = false;
     let mut monitor_receiver: Option<broadcast::Receiver<Vec<u8>>> = None;
     let mut wait_target_offset_for_connection = 0u64;
+    let mut replica_rdb_functions_only = false;
 
     loop {
         processor.set_connected_clients(metrics.connected_client_count());
@@ -1630,6 +1631,15 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"REPLCONF") {
+                let mut index = 1usize;
+                while index + 1 < argument_count {
+                    let option = arg_slice_bytes(&args[index]);
+                    let value = arg_slice_bytes(&args[index + 1]);
+                    if ascii_eq_ignore_case(option, b"RDB-FILTER-ONLY") {
+                        replica_rdb_functions_only = ascii_eq_ignore_case(value, b"FUNCTIONS");
+                    }
+                    index += 2;
+                }
                 append_simple_string(&mut responses, b"OK");
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
@@ -1649,9 +1659,17 @@ pub(crate) async fn handle_connection(
             }
 
             if ascii_eq_ignore_case(command_name, b"PSYNC") {
-                metrics.set_client_type(client_id, ClientTypeFilter::Replica);
-                replica_subscriber = Some(replication.subscribe_downstream());
-                responses.extend_from_slice(&replication.build_fullresync_payload());
+                match replication.build_fullresync_payload(replica_rdb_functions_only) {
+                    Ok(payload) => {
+                        metrics.set_client_type(client_id, ClientTypeFilter::Replica);
+                        replica_subscriber = Some(replication.subscribe_downstream());
+                        responses.extend_from_slice(&payload);
+                        switch_to_replica_stream = true;
+                    }
+                    Err(error) => {
+                        error.append_resp_error(&mut responses);
+                    }
+                }
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
                     client_id,
@@ -1663,14 +1681,21 @@ pub(crate) async fn handle_connection(
                     commands_processed,
                 );
                 consumed += frame_bytes_consumed;
-                switch_to_replica_stream = true;
                 break;
             }
 
             if ascii_eq_ignore_case(command_name, b"SYNC") {
-                metrics.set_client_type(client_id, ClientTypeFilter::Replica);
-                replica_subscriber = Some(replication.subscribe_downstream());
-                responses.extend_from_slice(&replication.build_sync_payload());
+                match replication.build_sync_payload(replica_rdb_functions_only) {
+                    Ok(payload) => {
+                        metrics.set_client_type(client_id, ClientTypeFilter::Replica);
+                        replica_subscriber = Some(replication.subscribe_downstream());
+                        responses.extend_from_slice(&payload);
+                        switch_to_replica_stream = true;
+                    }
+                    Err(error) => {
+                        error.append_resp_error(&mut responses);
+                    }
+                }
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
                     client_id,
@@ -1682,7 +1707,6 @@ pub(crate) async fn handle_connection(
                     commands_processed,
                 );
                 consumed += frame_bytes_consumed;
-                switch_to_replica_stream = true;
                 break;
             }
 

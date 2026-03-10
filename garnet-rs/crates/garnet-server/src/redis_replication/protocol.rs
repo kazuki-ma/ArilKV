@@ -81,28 +81,6 @@ fn find_crlf(buffer: &[u8]) -> Option<usize> {
     buffer.windows(2).position(|window| window == b"\r\n")
 }
 
-pub(super) fn decode_hex_bytes(value: &str) -> Vec<u8> {
-    let mut out = Vec::with_capacity(value.len() / 2);
-    let bytes = value.as_bytes();
-    let mut index = 0usize;
-    while index + 1 < bytes.len() {
-        let hi = decode_hex_nibble(bytes[index]);
-        let lo = decode_hex_nibble(bytes[index + 1]);
-        out.push((hi << 4) | lo);
-        index += 2;
-    }
-    out
-}
-
-fn decode_hex_nibble(byte: u8) -> u8 {
-    match byte {
-        b'0'..=b'9' => byte - b'0',
-        b'a'..=b'f' => byte - b'a' + 10,
-        b'A'..=b'F' => byte - b'A' + 10,
-        _ => 0,
-    }
-}
-
 pub(super) fn starts_with_ascii_no_case(input: &[u8], expected_upper_prefix: &[u8]) -> bool {
     if input.len() < expected_upper_prefix.len() {
         return false;

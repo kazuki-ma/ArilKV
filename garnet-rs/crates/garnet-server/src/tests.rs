@@ -12639,6 +12639,380 @@ async fn debug_populate_matches_external_redis_cli_rdb_dump_precondition() {
 }
 
 #[tokio::test]
+async fn config_get_dir_returns_absolute_path_for_external_redis_cli_rdb_dump_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let response = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"GET", b"dir"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    let RespSocketValue::Array(items) = response else {
+        panic!("expected CONFIG GET dir array response");
+    };
+    assert_eq!(items.len(), 2, "expected key/value pair for CONFIG GET dir");
+    assert_eq!(resp_socket_bulk(&items[0]), b"dir");
+    let dir_value = resp_socket_bulk(&items[1]);
+    let dir_text = String::from_utf8_lossy(dir_value).into_owned();
+    assert!(
+        std::path::Path::new(dir_text.as_str()).is_absolute(),
+        "CONFIG GET dir must return an absolute path, got {:?}",
+        dir_text
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+async fn run_sync_rdb_dump_and_debug_reload_scenario(populate_count: u64, value_size: usize) {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
+    wait_for_server_ping(addr).await;
+
+    let timeout = Duration::from_secs(120);
+    let temp_dir = unique_test_temp_dir("redis-cli-rdb-dump-full");
+    let dump_path = temp_dir.join("dump.rdb");
+    let cli_dump_path = temp_dir.join("cli.rdb");
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut sync_client = TcpStream::connect(addr).await.unwrap();
+
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"CONFIG",
+                    b"SET",
+                    b"dir",
+                    temp_dir.to_string_lossy().as_bytes()
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(&mut client, &encode_resp_command(&[b"FLUSHDB"]), timeout,)
+                .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"FUNCTION", b"FLUSH"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"DEBUG",
+                    b"POPULATE",
+                    populate_count.to_string().as_bytes(),
+                    b"key",
+                    value_size.to_string().as_bytes(),
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"FUNCTION",
+                    b"LOAD",
+                    b"#!lua name=lib1\nredis.register_function('func1', function() return 123 end)",
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"lib1"
+    );
+
+    sync_client.write_all(b"SYNC\r\n").await.unwrap();
+    let snapshot_payload = read_sync_snapshot_payload_with_timeout(&mut sync_client, timeout).await;
+    std::fs::write(&cli_dump_path, &snapshot_payload).unwrap();
+    std::fs::rename(&cli_dump_path, &dump_path).unwrap();
+
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"SET", b"should-not-exist", b"1"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"FUNCTION",
+                    b"LOAD",
+                    b"#!lua name=should_not_exist_func\nredis.register_function('should_not_exist_func', function() return 456 end)",
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"should_not_exist_func"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"DEBUG", b"RELOAD", b"NOSAVE"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+
+    assert!(matches!(
+        send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[b"GET", b"should-not-exist"]),
+            timeout,
+        )
+        .await,
+        RespSocketValue::Null
+    ));
+    let function_list = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"FUNCTION", b"LIST"]),
+        timeout,
+    )
+    .await;
+    assert!(resp_socket_contains_bulk(&function_list, b"lib1"));
+    assert!(!resp_socket_contains_bulk(
+        &function_list,
+        b"should_not_exist_func"
+    ));
+    assert_eq!(
+        resp_socket_integer(
+            &send_and_read_resp_value(&mut client, &encode_resp_command(&[b"DBSIZE"]), timeout,)
+                .await
+        ),
+        i64::try_from(populate_count).unwrap()
+    );
+
+    let _ = std::fs::remove_file(&dump_path);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_rdb_dump_and_debug_reload_round_trip_smoke() {
+    run_sync_rdb_dump_and_debug_reload_scenario(1_000, 128).await;
+}
+
+#[tokio::test]
+#[ignore = "exact external redis-cli dump scenario; run targeted"]
+async fn sync_rdb_dump_and_debug_reload_match_external_redis_cli_scenario() {
+    run_sync_rdb_dump_and_debug_reload_scenario(100_000, 1_000).await;
+}
+
+async fn run_sync_functions_rdb_dump_and_debug_reload_scenario(
+    populate_count: u64,
+    value_size: usize,
+) {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
+    wait_for_server_ping(addr).await;
+
+    let timeout = Duration::from_secs(120);
+    let temp_dir = unique_test_temp_dir("redis-cli-rdb-dump-functions");
+    let dump_path = temp_dir.join("dump.rdb");
+    let cli_dump_path = temp_dir.join("cli.rdb");
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut sync_client = TcpStream::connect(addr).await.unwrap();
+
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"CONFIG",
+                    b"SET",
+                    b"dir",
+                    temp_dir.to_string_lossy().as_bytes()
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(&mut client, &encode_resp_command(&[b"FLUSHDB"]), timeout,)
+                .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"FUNCTION", b"FLUSH"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"DEBUG",
+                    b"POPULATE",
+                    populate_count.to_string().as_bytes(),
+                    b"key",
+                    value_size.to_string().as_bytes(),
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"FUNCTION",
+                    b"LOAD",
+                    b"#!lua name=lib1\nredis.register_function('func1', function() return 123 end)",
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"lib1"
+    );
+
+    send_and_expect(
+        &mut sync_client,
+        &encode_resp_command(&[b"REPLCONF", b"rdb-filter-only", b"functions"]),
+        b"+OK\r\n",
+    )
+    .await;
+    sync_client.write_all(b"SYNC\r\n").await.unwrap();
+    let snapshot_payload = read_sync_snapshot_payload_with_timeout(&mut sync_client, timeout).await;
+    std::fs::write(&cli_dump_path, &snapshot_payload).unwrap();
+    std::fs::rename(&cli_dump_path, &dump_path).unwrap();
+
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"SET", b"should-not-exist", b"1"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[
+                    b"FUNCTION",
+                    b"LOAD",
+                    b"#!lua name=should_not_exist_func\nredis.register_function('should_not_exist_func', function() return 456 end)",
+                ]),
+                timeout,
+            )
+            .await
+        ),
+        b"should_not_exist_func"
+    );
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"DEBUG", b"RELOAD", b"NOSAVE"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+
+    assert!(matches!(
+        send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[b"GET", b"should-not-exist"]),
+            timeout,
+        )
+        .await,
+        RespSocketValue::Null
+    ));
+    let function_list = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"FUNCTION", b"LIST"]),
+        timeout,
+    )
+    .await;
+    assert!(resp_socket_contains_bulk(&function_list, b"lib1"));
+    assert!(!resp_socket_contains_bulk(
+        &function_list,
+        b"should_not_exist_func"
+    ));
+    assert_eq!(
+        resp_socket_integer(
+            &send_and_read_resp_value(&mut client, &encode_resp_command(&[b"DBSIZE"]), timeout,)
+                .await
+        ),
+        0
+    );
+
+    let _ = std::fs::remove_file(&dump_path);
+    let _ = std::fs::remove_dir_all(&temp_dir);
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_functions_rdb_dump_and_debug_reload_round_trip_smoke() {
+    run_sync_functions_rdb_dump_and_debug_reload_scenario(1_000, 128).await;
+}
+
+#[tokio::test]
+#[ignore = "exact external redis-cli dump scenario; run targeted"]
+async fn sync_functions_rdb_dump_and_debug_reload_match_external_redis_cli_scenario() {
+    run_sync_functions_rdb_dump_and_debug_reload_scenario(100_000, 1_000).await;
+}
+
+#[tokio::test]
 async fn slowlog_threshold_and_entry_shape_match_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
@@ -13265,6 +13639,19 @@ async fn read_bulk_payload_with_timeout(client: &mut TcpStream, timeout: Duratio
     payload
 }
 
+async fn read_sync_snapshot_payload_with_timeout(
+    client: &mut TcpStream,
+    timeout: Duration,
+) -> Vec<u8> {
+    let header = read_resp_line_with_timeout(client, timeout).await;
+    assert!(header.starts_with(b"$"));
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    read_exact_with_timeout(client, payload_len, timeout).await
+}
+
 async fn send_and_read_bulk_payload(
     client: &mut TcpStream,
     request: &[u8],
@@ -13396,6 +13783,7 @@ enum RespSocketValue {
     Integer(i64),
     Bulk(Vec<u8>),
     Simple(Vec<u8>),
+    Error(Vec<u8>),
     Array(Vec<RespSocketValue>),
     Map(Vec<(RespSocketValue, RespSocketValue)>),
     Set(Vec<RespSocketValue>),
@@ -13420,6 +13808,7 @@ fn read_resp_value_with_timeout<'a>(
                     .unwrap(),
             ),
             b'+' => RespSocketValue::Simple(header[1..].to_vec()),
+            b'-' => RespSocketValue::Error(header[1..].to_vec()),
             b'$' => {
                 if header == b"$-1" {
                     return RespSocketValue::Null;
@@ -13528,7 +13917,26 @@ fn resp_socket_bulk(value: &RespSocketValue) -> &[u8] {
     match value {
         RespSocketValue::Bulk(payload) => payload,
         RespSocketValue::Simple(payload) => payload,
+        RespSocketValue::Error(payload) => payload,
         other => panic!("expected RESP bulk/simple string, got {other:?}"),
+    }
+}
+
+fn resp_socket_contains_bulk(value: &RespSocketValue, needle: &[u8]) -> bool {
+    match value {
+        RespSocketValue::Bulk(payload)
+        | RespSocketValue::Simple(payload)
+        | RespSocketValue::Error(payload)
+        | RespSocketValue::Double(payload)
+        | RespSocketValue::BigNumber(payload) => payload == needle,
+        RespSocketValue::Verbatim { format, value } => format == needle || value == needle,
+        RespSocketValue::Array(items) | RespSocketValue::Set(items) => items
+            .iter()
+            .any(|item| resp_socket_contains_bulk(item, needle)),
+        RespSocketValue::Map(items) => items.iter().any(|(key, value)| {
+            resp_socket_contains_bulk(key, needle) || resp_socket_contains_bulk(value, needle)
+        }),
+        RespSocketValue::Integer(_) | RespSocketValue::Boolean(_) | RespSocketValue::Null => false,
     }
 }
 
@@ -13965,6 +14373,47 @@ async fn start_test_server() -> (
     });
 
     (addr, shutdown_tx, server)
+}
+
+async fn start_test_server_with_scripting_enabled() -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    (addr, shutdown_tx, server)
+}
+
+fn unique_test_temp_dir(prefix: &str) -> PathBuf {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let dir = std::env::temp_dir().join(format!("garnet-{prefix}-{nanos}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
 }
 
 async fn wait_for_server_ping(addr: std::net::SocketAddr) {
