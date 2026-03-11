@@ -1240,6 +1240,7 @@ struct RunningScriptState {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScriptReplicationEffect {
+    pub(crate) selected_db: DbName,
     pub(crate) command: CommandId,
     pub(crate) frame: Vec<u8>,
     pub(crate) response: Vec<u8>,
@@ -3613,6 +3614,7 @@ impl RequestProcessor {
             return;
         };
         pending.push(ScriptReplicationEffect {
+            selected_db: current_request_selected_db(),
             command,
             frame,
             response,
@@ -4261,6 +4263,93 @@ impl RequestProcessor {
         stream_has_entry_after_id(&stream, group_state.last_delivered_id)
     }
 
+    fn blocking_wait_object_without_expiring(
+        &self,
+        wait_key: &BlockingWaitKey,
+    ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
+        self.with_selected_db(wait_key.db(), || {
+            if self
+                .expiration_unix_millis_for_key(wait_key.key().as_slice())
+                .is_some_and(|expiration_unix_millis| {
+                    current_unix_time_millis()
+                        .is_some_and(|now_unix_millis| expiration_unix_millis <= now_unix_millis)
+                })
+            {
+                return Ok(None);
+            }
+            self.object_read(wait_key.key().as_slice())
+        })
+    }
+
+    fn blocking_wait_key_ready(
+        &self,
+        client_id: ClientId,
+        wait_key: &BlockingWaitKey,
+        blocked_stream_wait_states: &HashMap<ClientId, BlockingStreamWaitState>,
+    ) -> Result<bool, RequestExecutionError> {
+        let object = self.blocking_wait_object_without_expiring(wait_key)?;
+        match wait_key.class() {
+            BlockingWaitClass::List => {
+                let Some(object) = object.as_ref() else {
+                    return Ok(false);
+                };
+                if object.object_type != LIST_OBJECT_TYPE_TAG {
+                    return Ok(false);
+                }
+                let Some(list) = deserialize_list_object_payload(&object.payload) else {
+                    return Ok(true);
+                };
+                Ok(!list.is_empty())
+            }
+            BlockingWaitClass::Zset => {
+                let Some(object) = object.as_ref() else {
+                    return Ok(false);
+                };
+                if object.object_type != ZSET_OBJECT_TYPE_TAG {
+                    return Ok(false);
+                }
+                let Some(zset) = deserialize_zset_object_payload(&object.payload) else {
+                    return Ok(true);
+                };
+                Ok(!zset.is_empty())
+            }
+            BlockingWaitClass::Stream => {
+                let Some(stream_wait_state) = blocked_stream_wait_states.get(&client_id) else {
+                    return Ok(false);
+                };
+                // TLA+ : ProducerAckWaitReady
+                let ready = match stream_wait_state {
+                    BlockingStreamWaitState::Xread(waits) => {
+                        self.xread_waiter_is_ready(wait_key, object.as_ref(), waits)
+                    }
+                    BlockingStreamWaitState::Xreadgroup(wait) => {
+                        self.xreadgroup_waiter_is_ready(wait_key, object.as_ref(), wait)
+                    }
+                };
+                Ok(ready)
+            }
+        }
+    }
+
+    pub(crate) fn blocking_wait_keys_ready(
+        &self,
+        client_id: ClientId,
+        blocking_keys: &[BlockingWaitKey],
+    ) -> bool {
+        let blocked_stream_wait_states = match self.blocked_stream_wait_states.lock() {
+            Ok(states) => states.clone(),
+            Err(_) => return false,
+        };
+        for wait_key in blocking_keys {
+            match self.blocking_wait_key_ready(client_id, wait_key, &blocked_stream_wait_states) {
+                Ok(true) => return true,
+                Ok(false) => continue,
+                Err(_) => return true,
+            }
+        }
+        false
+    }
+
     pub(crate) fn has_ready_blocking_waiters(&self) -> bool {
         let queue_fronts = match self.blocking_wait_queues.lock() {
             Ok(queues) => queues
@@ -4279,67 +4368,14 @@ impl RequestProcessor {
             Err(_) => return false,
         };
         for (wait_key, front_client_id) in queue_fronts {
-            let wait_object = self.with_selected_db(wait_key.db(), || {
-                if self
-                    .expire_key_if_needed(wait_key.key().as_slice())
-                    .is_err()
-                {
-                    return None;
-                }
-                self.object_read(wait_key.key().as_slice()).ok()
-            });
-            let Some(object) = wait_object else {
-                return true;
-            };
-            match wait_key.class() {
-                BlockingWaitClass::List => {
-                    let Some(object) = object.as_ref() else {
-                        continue;
-                    };
-                    if object.object_type != LIST_OBJECT_TYPE_TAG {
-                        continue;
-                    }
-                    if let Some(list) = deserialize_list_object_payload(&object.payload) {
-                        if !list.is_empty() {
-                            return true;
-                        }
-                    } else {
-                        return true;
-                    }
-                }
-                BlockingWaitClass::Zset => {
-                    let Some(object) = object.as_ref() else {
-                        continue;
-                    };
-                    if object.object_type != ZSET_OBJECT_TYPE_TAG {
-                        continue;
-                    }
-                    if let Some(zset) = deserialize_zset_object_payload(&object.payload) {
-                        if !zset.is_empty() {
-                            return true;
-                        }
-                    } else {
-                        return true;
-                    }
-                }
-                BlockingWaitClass::Stream => {
-                    let Some(stream_wait_state) = blocked_stream_wait_states.get(&front_client_id)
-                    else {
-                        continue;
-                    };
-                    // TLA+ : ProducerAckWaitReady
-                    let ready = match stream_wait_state {
-                        BlockingStreamWaitState::Xread(waits) => {
-                            self.xread_waiter_is_ready(&wait_key, object.as_ref(), waits)
-                        }
-                        BlockingStreamWaitState::Xreadgroup(wait) => {
-                            self.xreadgroup_waiter_is_ready(&wait_key, object.as_ref(), wait)
-                        }
-                    };
-                    if ready {
-                        return true;
-                    }
-                }
+            match self.blocking_wait_key_ready(
+                front_client_id,
+                &wait_key,
+                &blocked_stream_wait_states,
+            ) {
+                Ok(true) => return true,
+                Ok(false) => continue,
+                Err(_) => return true,
             }
         }
         false

@@ -356,6 +356,22 @@ impl RequestProcessor {
         self.object_key_exists(key)
     }
 
+    pub(crate) fn key_exists_any_without_expiring(
+        &self,
+        key: &[u8],
+    ) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            if self.has_set_hot_entry(key) {
+                self.track_read_key_for_current_client(key);
+                return Ok(true);
+            }
+            let entry = self.auxiliary_value_snapshot(selected_db, key);
+            self.track_read_key_for_current_client(key);
+            return Ok(entry.and_then(|entry| entry.value).is_some());
+        }
+        self.key_exists_any(key)
+    }
+
     pub(super) fn delete_string_value_in_current_db(
         &self,
         key: &[u8],

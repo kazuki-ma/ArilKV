@@ -2423,6 +2423,7 @@ pub(crate) async fn handle_connection(
                                 } else if blocking_outcome.should_replicate {
                                     if let Some(replication_frame) = replication_frame_for_command(
                                         &processor,
+                                        client_state.selected_db,
                                         command,
                                         &args[..argument_count],
                                         &blocking_outcome.frame_response,
@@ -2823,6 +2824,46 @@ async fn execute_blocking_frame_on_owner_thread(
                     BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL,
                 ))
                 .await;
+            } else {
+                sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
+            }
+            continue;
+        }
+
+        if blocked
+            && blocking_request
+            && !blocking_keys.is_empty()
+            && !processor.blocking_wait_keys_ready(client_id, &blocking_keys)
+        {
+            if let Some(deadline_time) = deadline {
+                let now = Instant::now();
+                if now >= deadline_time {
+                    clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
+                    if pause_blocked_marker_active {
+                        processor.unregister_pause_blocked_blocking_client(client_id);
+                    }
+                    return Ok(BlockingExecutionOutcome {
+                        frame_response: blocking_empty_response_for_command(command).to_vec(),
+                        should_replicate: false,
+                    });
+                }
+
+                let remaining = deadline_time.duration_since(now);
+                if blocking_empty_retry_should_sleep(command) {
+                    sleep(std::cmp::min(
+                        remaining,
+                        BLOCKING_STREAM_EMPTY_POLL_INTERVAL,
+                    ))
+                    .await;
+                } else {
+                    sleep(std::cmp::min(
+                        remaining,
+                        BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL,
+                    ))
+                    .await;
+                }
+            } else if blocking_empty_retry_should_sleep(command) {
+                sleep(BLOCKING_STREAM_EMPTY_POLL_INTERVAL).await;
             } else {
                 sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
             }
@@ -3420,6 +3461,7 @@ fn publish_transaction_replication_frames(
         }
         let Some(replication_frame) = replication_frame_for_command(
             processor,
+            item.selected_db,
             command,
             &args[..meta.argument_count],
             &item.response,
@@ -3573,6 +3615,7 @@ fn take_script_effect_replication_frames(
 
         let Some(replication_frame) = script_effect_replication_frame_for_command(
             processor,
+            effect.selected_db,
             effect.command,
             &args[..meta.argument_count],
             &effect.response,
@@ -3587,6 +3630,7 @@ fn take_script_effect_replication_frames(
 
 fn script_effect_replication_frame_for_command(
     processor: &RequestProcessor,
+    selected_db: DbName,
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
@@ -3597,14 +3641,24 @@ fn script_effect_replication_frame_for_command(
             rewrite_script_spop_replication_frame(args, frame_response, original_frame)
         }
         CommandId::Expire | CommandId::Pexpire | CommandId::Expireat | CommandId::Pexpireat => {
-            rewrite_script_expire_family_replication_frame(processor, args, frame_response)
+            rewrite_script_expire_family_replication_frame(
+                processor,
+                selected_db,
+                args,
+                frame_response,
+            )
         }
         CommandId::Incrbyfloat => {
             rewrite_script_incrbyfloat_replication_frame(args, frame_response, original_frame)
         }
-        _ => {
-            replication_frame_for_command(processor, command, args, frame_response, original_frame)
-        }
+        _ => replication_frame_for_command(
+            processor,
+            selected_db,
+            command,
+            args,
+            frame_response,
+            original_frame,
+        ),
     }
 }
 
@@ -5132,6 +5186,7 @@ fn command_execution_delta(processor: &RequestProcessor, before: u64, command: C
 
 fn replication_frame_for_command(
     processor: &RequestProcessor,
+    selected_db: DbName,
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
@@ -5163,6 +5218,7 @@ fn replication_frame_for_command(
     ) {
         return rewrite_set_family_replication_frame(
             processor,
+            selected_db,
             command,
             args,
             frame_response,
@@ -5174,11 +5230,22 @@ fn replication_frame_for_command(
         command,
         CommandId::Expire | CommandId::Pexpire | CommandId::Expireat | CommandId::Pexpireat
     ) {
-        return rewrite_expire_family_replication_frame(processor, args, frame_response);
+        return rewrite_expire_family_replication_frame(
+            processor,
+            selected_db,
+            args,
+            frame_response,
+        );
     }
 
     if command == CommandId::Getex {
-        return rewrite_getex_replication_frame(processor, args, frame_response, original_frame);
+        return rewrite_getex_replication_frame(
+            processor,
+            selected_db,
+            args,
+            frame_response,
+            original_frame,
+        );
     }
 
     if command == CommandId::Incrbyfloat {
@@ -5211,7 +5278,13 @@ fn replication_frame_for_command(
     }
 
     if matches!(command, CommandId::Restore | CommandId::RestoreAsking) {
-        return rewrite_restore_replication_frame(processor, args, frame_response, original_frame);
+        return rewrite_restore_replication_frame(
+            processor,
+            selected_db,
+            args,
+            frame_response,
+            original_frame,
+        );
     }
 
     if command == CommandId::Hgetdel {
@@ -5219,7 +5292,13 @@ fn replication_frame_for_command(
     }
 
     if command == CommandId::Spop {
-        return rewrite_spop_replication_frame(processor, args, frame_response, original_frame);
+        return rewrite_spop_replication_frame(
+            processor,
+            selected_db,
+            args,
+            frame_response,
+            original_frame,
+        );
     }
 
     if command == CommandId::Blmove {
@@ -5269,6 +5348,7 @@ fn replication_frame_for_command(
 
 fn rewrite_set_family_replication_frame(
     processor: &RequestProcessor,
+    selected_db: DbName,
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
@@ -5332,7 +5412,9 @@ fn rewrite_set_family_replication_frame(
         _ => return Some(original_frame.to_vec()),
     };
 
-    if let Some(expiration_unix_millis) = processor.expiration_unix_millis_for_key(key) {
+    if let Some(expiration_unix_millis) =
+        selected_db_expiration_unix_millis_for_key(processor, selected_db, key)
+    {
         let pxat = pxat_token
             .filter(|token| !token.is_empty())
             .unwrap_or(b"PXAT");
@@ -5343,7 +5425,7 @@ fn rewrite_set_family_replication_frame(
         ]));
     }
 
-    match processor.key_exists_any(key) {
+    match selected_db_key_exists_any(processor, selected_db, key) {
         Ok(true) => Some(original_frame.to_vec()),
         Ok(false) => Some(encode_resp_frame_slices(&[b"DEL", key])),
         Err(_) => Some(original_frame.to_vec()),
@@ -5352,6 +5434,7 @@ fn rewrite_set_family_replication_frame(
 
 fn rewrite_expire_family_replication_frame(
     processor: &RequestProcessor,
+    selected_db: DbName,
     args: &[ArgSlice],
     frame_response: &[u8],
 ) -> Option<Vec<u8>> {
@@ -5360,21 +5443,22 @@ fn rewrite_expire_family_replication_frame(
     }
     let key = args.get(1).map(arg_slice_bytes)?;
 
-    match processor.key_exists_any(key) {
+    match selected_db_key_exists_any(processor, selected_db, key) {
         Ok(false) => Some(encode_resp_frame_slices(&[b"DEL", key])),
-        Ok(true) => processor
-            .expiration_unix_millis_for_key(key)
-            .map(|expiration_unix_millis| {
+        Ok(true) => selected_db_expiration_unix_millis_for_key(processor, selected_db, key).map(
+            |expiration_unix_millis| {
                 let mut expiration_digits = [0u8; 20];
                 let expiration = u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
                 encode_resp_frame_slices(&[b"PEXPIREAT", key, expiration])
-            }),
+            },
+        ),
         Err(_) => None,
     }
 }
 
 fn rewrite_getex_replication_frame(
     processor: &RequestProcessor,
+    selected_db: DbName,
     args: &[ArgSlice],
     frame_response: &[u8],
     original_frame: &[u8],
@@ -5398,18 +5482,15 @@ fn rewrite_getex_replication_frame(
         || ascii_eq_ignore_case(option, b"EXAT")
         || ascii_eq_ignore_case(option, b"PXAT")
     {
-        return match processor.key_exists_any(key) {
+        return match selected_db_key_exists_any(processor, selected_db, key) {
             Ok(false) => Some(encode_resp_frame_slices(&[b"DEL", key])),
-            Ok(true) => {
-                processor
-                    .expiration_unix_millis_for_key(key)
-                    .map(|expiration_unix_millis| {
-                        let mut expiration_digits = [0u8; 20];
-                        let expiration =
-                            u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
-                        encode_resp_frame_slices(&[b"PEXPIREAT", key, expiration])
-                    })
-            }
+            Ok(true) => selected_db_expiration_unix_millis_for_key(processor, selected_db, key)
+                .map(|expiration_unix_millis| {
+                    let mut expiration_digits = [0u8; 20];
+                    let expiration =
+                        u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
+                    encode_resp_frame_slices(&[b"PEXPIREAT", key, expiration])
+                }),
             Err(_) => Some(original_frame.to_vec()),
         };
     }
@@ -5459,6 +5540,7 @@ fn rewrite_script_incrbyfloat_replication_frame(
 
 fn rewrite_script_expire_family_replication_frame(
     processor: &RequestProcessor,
+    selected_db: DbName,
     args: &[ArgSlice],
     frame_response: &[u8],
 ) -> Option<Vec<u8>> {
@@ -5467,21 +5549,22 @@ fn rewrite_script_expire_family_replication_frame(
     }
     let key = args.get(1).map(arg_slice_bytes)?;
 
-    match processor.key_exists_any(key) {
+    match selected_db_key_exists_any(processor, selected_db, key) {
         Ok(false) => Some(encode_resp_frame_slices(&[b"del", key])),
-        Ok(true) => processor
-            .expiration_unix_millis_for_key(key)
-            .map(|expiration_unix_millis| {
+        Ok(true) => selected_db_expiration_unix_millis_for_key(processor, selected_db, key).map(
+            |expiration_unix_millis| {
                 let mut expiration_digits = [0u8; 20];
                 let expiration = u64_ascii_slice(&mut expiration_digits, expiration_unix_millis);
                 encode_resp_frame_slices(&[b"pexpireat", key, expiration])
-            }),
+            },
+        ),
         Err(_) => None,
     }
 }
 
 fn rewrite_restore_replication_frame(
     processor: &RequestProcessor,
+    selected_db: DbName,
     args: &[ArgSlice],
     frame_response: &[u8],
     original_frame: &[u8],
@@ -5498,7 +5581,7 @@ fn rewrite_restore_replication_frame(
     let key = arg_slice_bytes(key_arg);
     let payload = arg_slice_bytes(payload_arg);
 
-    match processor.key_exists_any(key) {
+    match selected_db_key_exists_any(processor, selected_db, key) {
         Ok(false) => {
             let delete_command: &[u8] = if processor.lazyfree_lazy_server_del_enabled() {
                 b"UNLINK"
@@ -5511,7 +5594,9 @@ fn rewrite_restore_replication_frame(
         Err(_) => return Some(original_frame.to_vec()),
     }
 
-    let Some(expiration_unix_millis) = processor.expiration_unix_millis_for_key(key) else {
+    let Some(expiration_unix_millis) =
+        selected_db_expiration_unix_millis_for_key(processor, selected_db, key)
+    else {
         return Some(original_frame.to_vec());
     };
 
@@ -5543,6 +5628,7 @@ fn rewrite_restore_replication_frame(
 
 fn rewrite_spop_replication_frame(
     processor: &RequestProcessor,
+    selected_db: DbName,
     args: &[ArgSlice],
     frame_response: &[u8],
     original_frame: &[u8],
@@ -5559,7 +5645,7 @@ fn rewrite_spop_replication_frame(
     }
 
     let key = arg_slice_bytes(key_arg);
-    match processor.key_exists_any(key) {
+    match selected_db_key_exists_any(processor, selected_db, key) {
         Ok(false) => {
             let delete_command: &[u8] = if processor.lazyfree_lazy_server_del_enabled() {
                 b"UNLINK"
@@ -5580,6 +5666,26 @@ fn rewrite_spop_replication_frame(
         }
         Err(_) => Some(original_frame.to_vec()),
     }
+}
+
+fn selected_db_key_exists_any(
+    processor: &RequestProcessor,
+    selected_db: DbName,
+    key: &[u8],
+) -> Result<bool, RequestExecutionError> {
+    processor.with_selected_db(selected_db, || {
+        processor.key_exists_any_without_expiring(key)
+    })
+}
+
+fn selected_db_expiration_unix_millis_for_key(
+    processor: &RequestProcessor,
+    selected_db: DbName,
+    key: &[u8],
+) -> Option<u64> {
+    processor.with_selected_db(selected_db, || {
+        processor.expiration_unix_millis_for_key(key)
+    })
 }
 
 fn rewrite_script_spop_replication_frame(
@@ -6553,6 +6659,7 @@ mod tests {
             parse_resp_command_arg_slices(&evalsha_frame, &mut evalsha_args).unwrap();
         let rewritten = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Evalsha,
             &evalsha_args[..evalsha_meta.argument_count],
             b"$2\r\nv1\r\n",
@@ -6592,6 +6699,7 @@ mod tests {
             .unwrap();
         let rewritten_set = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Set,
             &set_ex_args[..set_ex_meta.argument_count],
             &set_ex_response,
@@ -6621,6 +6729,7 @@ mod tests {
             .unwrap();
         let rewritten_persist = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Getex,
             &getex_persist_args[..getex_persist_meta.argument_count],
             &getex_persist_response,
@@ -6666,6 +6775,7 @@ mod tests {
             .unwrap();
         let rewritten_del = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Getex,
             &getex_expired_args[..getex_expired_meta.argument_count],
             &getex_expired_response,
@@ -6697,6 +6807,7 @@ mod tests {
 
         let rewritten = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Lmpop,
             &lmpop_args[..lmpop_meta.argument_count],
             lmpop_response,
@@ -6732,6 +6843,7 @@ mod tests {
 
         let rewritten = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Zmpop,
             &zmpop_args[..zmpop_meta.argument_count],
             zmpop_response,
@@ -6779,6 +6891,7 @@ mod tests {
         assert_eq!(expected_members.len(), 2);
         let rewritten_srem = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Spop,
             &args[..spop_partial_meta.argument_count],
             &response,
@@ -6828,6 +6941,7 @@ mod tests {
         );
         let rewritten_resp3 = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Spop,
             &args[..spop_resp3_meta.argument_count],
             &response,
@@ -6866,6 +6980,7 @@ mod tests {
             .unwrap();
         let rewritten_del = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Spop,
             &args[..spop_del_meta.argument_count],
             &response,
@@ -6913,6 +7028,7 @@ mod tests {
             .unwrap();
         let rewritten_unlink = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Spop,
             &args[..spop_unlink_meta.argument_count],
             &response,
@@ -6963,6 +7079,7 @@ mod tests {
         assert_eq!(response, b"+OK\r\n");
         let rewritten_del = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Restore,
             &args[..restore_key1_meta.argument_count],
             &response,
@@ -7014,6 +7131,7 @@ mod tests {
         assert_eq!(response, b"+OK\r\n");
         let rewritten_unlink = replication_frame_for_command(
             &processor,
+            DbName::default(),
             CommandId::Restore,
             &args[..restore_key2_meta.argument_count],
             &response,

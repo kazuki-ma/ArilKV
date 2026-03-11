@@ -22,7 +22,7 @@ impl RequestProcessor {
                     object_type: object.object_type,
                     payload: object.payload,
                 },
-                expiration_unix_millis: None,
+                expiration_unix_millis: self.expiration_unix_millis_for_key(key),
             }));
         }
 
@@ -48,6 +48,12 @@ impl RequestProcessor {
             } => {
                 self.delete_string_key_for_migration(entry.key.as_slice())?;
                 self.object_upsert(entry.key.as_slice(), *object_type, payload)?;
+                self.set_string_expiration_deadline(
+                    entry.key.as_slice(),
+                    entry
+                        .expiration_unix_millis
+                        .and_then(instant_from_unix_millis),
+                );
             }
         }
         Ok(())
@@ -83,7 +89,48 @@ impl RequestProcessor {
 
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
-            let Some(entry) = self.export_migration_entry(key.as_slice())? else {
+            let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+            let entry = if let Some(selected_db) = self.current_auxiliary_db_name() {
+                let Some(entry) = self.auxiliary_value_snapshot(selected_db, key.as_slice()) else {
+                    continue;
+                };
+                match entry.value {
+                    Some(MigrationValue::String(value)) => Some(MigrationEntry {
+                        key: ItemKey::from(key.as_slice()),
+                        value: MigrationValue::String(value),
+                        expiration_unix_millis,
+                    }),
+                    Some(MigrationValue::Object {
+                        object_type,
+                        payload,
+                    }) => Some(MigrationEntry {
+                        key: ItemKey::from(key.as_slice()),
+                        value: MigrationValue::Object {
+                            object_type,
+                            payload,
+                        },
+                        expiration_unix_millis,
+                    }),
+                    None => None,
+                }
+            } else if let Some(value) = self.read_string_value(key.as_slice())? {
+                Some(MigrationEntry {
+                    key: ItemKey::from(key.as_slice()),
+                    value: MigrationValue::String(value.into()),
+                    expiration_unix_millis,
+                })
+            } else {
+                self.object_read(key.as_slice())?
+                    .map(|object| MigrationEntry {
+                        key: ItemKey::from(key.as_slice()),
+                        value: MigrationValue::Object {
+                            object_type: object.object_type,
+                            payload: object.payload,
+                        },
+                        expiration_unix_millis,
+                    })
+            };
+            let Some(entry) = entry else {
                 continue;
             };
             entries.push(entry);

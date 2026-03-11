@@ -9132,6 +9132,384 @@ async fn sync_replication_stream_emits_select_on_db_switch() {
 }
 
 #[tokio::test]
+async fn sync_replication_stream_swapdb_preserves_expire_then_del_for_expired_blocked_list_key() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut blocked = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    // Redis tests/unit/type/list.tcl:
+    // "SWAPDB wants to wake blocked client, but the key already expired"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"RPUSH", b"k", b"hello"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"PEXPIRE", b"k", b"100"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut blocked,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let blocked_id = send_and_read_integer(
+        &mut blocked,
+        &encode_resp_command(&[b"CLIENT", b"ID"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    blocked
+        .write_all(&encode_resp_command(&[b"BRPOP", b"k", b"1"]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    sleep(Duration::from_millis(101)).await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"SWAPDB", b"1", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let blocked_list = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST", b"ID", blocked_id.to_string().as_bytes()]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(&blocked_list).contains("flags=b"),
+        "blocked client should remain blocked after SWAPDB when the key is already expired: {}",
+        String::from_utf8_lossy(&blocked_list)
+    );
+
+    let unblock_result = send_and_read_integer(
+        &mut controller,
+        &encode_resp_command(&[b"CLIENT", b"UNBLOCK", blocked_id.to_string().as_bytes()]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(unblock_result, 1);
+    let blocked_timeout = read_exact_with_timeout(&mut blocked, 5, Duration::from_secs(1)).await;
+    assert_eq!(blocked_timeout, b"*-1\r\n");
+
+    send_and_expect(
+        &mut blocked,
+        &encode_resp_command(&[b"SET", b"somekey1", b"someval1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut blocked,
+        &encode_resp_command(&[b"EXISTS", b"k"]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"SET", b"somekey2", b"someval2"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"0".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"FLUSHALL".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"1".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"RPUSH".to_vec(), b"k".to_vec(), b"hello".to_vec()]
+    );
+    let expire_command =
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert_eq!(expire_command.len(), 3);
+    assert_eq!(expire_command[0], b"PEXPIREAT");
+    assert_eq!(expire_command[1], b"k");
+    assert!(
+        std::str::from_utf8(&expire_command[2])
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SWAPDB".to_vec(), b"1".to_vec(), b"9".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"9".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SET".to_vec(), b"somekey1".to_vec(), b"someval1".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"DEL".to_vec(), b"k".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"1".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SET".to_vec(), b"somekey2".to_vec(), b"someval2".to_vec()]
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_exec_preserves_expire_then_del_for_expired_blocked_list_key() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut blocked = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    // Redis tests/unit/type/list.tcl:
+    // "MULTI + LPUSH + EXPIRE + DEBUG SLEEP on blocked client, key already expired"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let blocked_id = send_and_read_integer(
+        &mut blocked,
+        &encode_resp_command(&[b"CLIENT", b"ID"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    blocked
+        .write_all(&encode_resp_command(&[b"BRPOP", b"k", b"0"]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"MULTI"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"RPUSH", b"k", b"hello"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"PEXPIRE", b"k", b"100"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"SLEEP", b"0.2"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    let exec_response = send_and_read_resp_value(
+        &mut controller,
+        &encode_resp_command(&[b"EXEC"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let exec_items = resp_socket_array(&exec_response);
+    assert_eq!(exec_items.len(), 3);
+    assert_eq!(resp_socket_integer(&exec_items[0]), 1);
+    assert_eq!(resp_socket_integer(&exec_items[1]), 1);
+    assert_eq!(resp_socket_bulk(&exec_items[2]), b"OK");
+
+    let blocked_list = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST", b"ID", blocked_id.to_string().as_bytes()]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(&blocked_list).contains("flags=b"),
+        "blocked client should remain blocked after EXEC when the key is already expired: {}",
+        String::from_utf8_lossy(&blocked_list)
+    );
+
+    let unblock_result = send_and_read_integer(
+        &mut controller,
+        &encode_resp_command(&[b"CLIENT", b"UNBLOCK", blocked_id.to_string().as_bytes()]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(unblock_result, 1);
+    let blocked_timeout = read_exact_with_timeout(&mut blocked, 5, Duration::from_secs(1)).await;
+    assert_eq!(blocked_timeout, b"*-1\r\n");
+    send_and_expect(
+        &mut blocked,
+        &encode_resp_command(&[b"EXISTS", b"k"]),
+        b":0\r\n",
+    )
+    .await;
+
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"SELECT".to_vec(), b"0".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"FLUSHALL".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"MULTI".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"RPUSH".to_vec(), b"k".to_vec(), b"hello".to_vec()]
+    );
+    let expire_command =
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert_eq!(expire_command.len(), 3);
+    assert_eq!(expire_command[0], b"PEXPIREAT");
+    assert_eq!(expire_command[1], b"k");
+    assert!(
+        std::str::from_utf8(&expire_command[2])
+            .unwrap()
+            .parse::<u64>()
+            .unwrap()
+            > 0
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"EXEC".to_vec()]
+    );
+    assert_eq!(
+        read_replication_command_with_timeout(&mut replica_stream, Duration::from_secs(1)).await,
+        vec![b"DEL".to_vec(), b"k".to_vec()]
+    );
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn sync_replication_stream_propagates_lazy_expire_del_from_get_without_replicating_get() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
