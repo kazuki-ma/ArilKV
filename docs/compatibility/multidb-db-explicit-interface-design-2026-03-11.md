@@ -69,6 +69,11 @@ Snapshot taken on 2026-03-11 after the sixth mechanical slice:
 - `current_request_selected_db(...)`: `368` call sites
 - `current_auxiliary_db_name(...)`: `0` call sites
 
+Snapshot taken on 2026-03-11 after the seventh mechanical slice:
+
+- `current_request_selected_db(...)`: `368` call sites
+- `current_auxiliary_db_name(...)`: `0` call sites
+
 Interpretation:
 
 - `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
@@ -122,15 +127,22 @@ Sixth mechanical slice:
 - migrated the remaining 13 helper/command branches in `migration.rs`, `server_commands.rs`, `string_commands.rs`, and `string_store.rs` to explicit boundary-local `selected_db` checks
 - storage/helper ambient-DB peeking metric is now zero; the remaining debt is boundary code that still calls `current_request_selected_db()` inside internal execution paths
 
+Seventh mechanical slice:
+
+- removed the default-DB production invoke surface by replacing `RequestProcessor::execute(...)` with explicit `execute_in_db(...)`
+- deleted the non-DB `execute_with_client_context(...)`, `execute_with_client_no_touch(...)`, and `execute_with_client_no_touch_in_transaction(...)` wrappers
+- updated AOF replay to carry `selected_db` explicitly across replayed frames and to persist `SELECT` across operations instead of re-entering DB0 for every command
+- added explicit-DB harness helpers for DB-explicit and auxiliary-db regressions so test coverage no longer relies on ambient selected-db state
+
 This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
-2. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
-3. Delete residual internal `current_request_selected_db()` peeks once boundary-owned `DbName` values exist.
+1. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
+2. Delete residual internal `current_request_selected_db()` peeks once boundary-owned `DbName` values exist.
+3. Tighten test-only harnesses that still default to DB0 when they are meant to exercise nonzero DB behavior.
 
 ## Acceptance criteria
 

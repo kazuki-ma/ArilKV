@@ -6679,7 +6679,11 @@ mod tests {
         let load_meta = parse_resp_command_arg_slices(&script_load_frame, &mut load_args).unwrap();
         let mut load_response = Vec::new();
         processor
-            .execute(&load_args[..load_meta.argument_count], &mut load_response)
+            .execute_in_db(
+                &load_args[..load_meta.argument_count],
+                &mut load_response,
+                DbName::default(),
+            )
             .unwrap();
         assert!(load_response.starts_with(b"$40\r\n"));
         let sha = load_response[5..45].to_vec();
@@ -6729,9 +6733,10 @@ mod tests {
         let set_ex_meta = parse_resp_command_arg_slices(&set_ex_frame, &mut set_ex_args).unwrap();
         let mut set_ex_response = Vec::new();
         processor
-            .execute(
+            .execute_in_db(
                 &set_ex_args[..set_ex_meta.argument_count],
                 &mut set_ex_response,
+                DbName::default(),
             )
             .unwrap();
         let rewritten_set = replication_frame_for_command(
@@ -6759,9 +6764,10 @@ mod tests {
             parse_resp_command_arg_slices(&getex_persist_frame, &mut getex_persist_args).unwrap();
         let mut getex_persist_response = Vec::new();
         processor
-            .execute(
+            .execute_in_db(
                 &getex_persist_args[..getex_persist_meta.argument_count],
                 &mut getex_persist_response,
+                DbName::default(),
             )
             .unwrap();
         let rewritten_persist = replication_frame_for_command(
@@ -6785,7 +6791,11 @@ mod tests {
         let set_meta = parse_resp_command_arg_slices(&set_frame, &mut set_args).unwrap();
         let mut set_response = Vec::new();
         processor
-            .execute(&set_args[..set_meta.argument_count], &mut set_response)
+            .execute_in_db(
+                &set_args[..set_meta.argument_count],
+                &mut set_response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(set_response, b"+OK\r\n");
 
@@ -6805,9 +6815,10 @@ mod tests {
             parse_resp_command_arg_slices(&getex_expired_frame, &mut getex_expired_args).unwrap();
         let mut getex_expired_response = Vec::new();
         processor
-            .execute(
+            .execute_in_db(
                 &getex_expired_args[..getex_expired_meta.argument_count],
                 &mut getex_expired_response,
+                DbName::default(),
             )
             .unwrap();
         let rewritten_del = replication_frame_for_command(
@@ -6913,7 +6924,11 @@ mod tests {
         ]);
         let sadd_partial_meta = parse_resp_command_arg_slices(&sadd_partial, &mut args).unwrap();
         processor
-            .execute(&args[..sadd_partial_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..sadd_partial_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b":4\r\n");
 
@@ -6921,7 +6936,11 @@ mod tests {
         let spop_partial = encode_resp_frame(&[b"SPOP".to_vec(), b"set1".to_vec(), b"2".to_vec()]);
         let spop_partial_meta = parse_resp_command_arg_slices(&spop_partial, &mut args).unwrap();
         processor
-            .execute(&args[..spop_partial_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..spop_partial_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         let expected_members =
             parse_spop_response_members(&response).expect("SPOP response should parse");
@@ -6961,7 +6980,11 @@ mod tests {
         ]);
         let sadd_resp3_meta = parse_resp_command_arg_slices(&sadd_resp3, &mut args).unwrap();
         processor
-            .execute(&args[..sadd_resp3_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..sadd_resp3_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b":3\r\n");
 
@@ -6969,7 +6992,11 @@ mod tests {
         let spop_resp3 = encode_resp_frame(&[b"SPOP".to_vec(), b"set2".to_vec(), b"2".to_vec()]);
         let spop_resp3_meta = parse_resp_command_arg_slices(&spop_resp3, &mut args).unwrap();
         processor
-            .execute(&args[..spop_resp3_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..spop_resp3_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert!(
             response.starts_with(b"~2\r\n"),
@@ -7005,7 +7032,11 @@ mod tests {
         ]);
         let sadd_del_meta = parse_resp_command_arg_slices(&sadd_del, &mut args).unwrap();
         processor
-            .execute(&args[..sadd_del_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..sadd_del_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b":5\r\n");
 
@@ -7013,7 +7044,11 @@ mod tests {
         let spop_del = encode_resp_frame(&[b"SPOP".to_vec(), b"set3".to_vec(), b"5".to_vec()]);
         let spop_del_meta = parse_resp_command_arg_slices(&spop_del, &mut args).unwrap();
         processor
-            .execute(&args[..spop_del_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..spop_del_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         let rewritten_del = replication_frame_for_command(
             &processor,
@@ -7041,7 +7076,11 @@ mod tests {
         let config_lazyfree_meta =
             parse_resp_command_arg_slices(&config_lazyfree, &mut args).unwrap();
         processor
-            .execute(&args[..config_lazyfree_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..config_lazyfree_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
 
@@ -7053,7 +7092,11 @@ mod tests {
         let sadd_unlink = encode_resp_frame(&sadd_unlink_args);
         let sadd_unlink_meta = parse_resp_command_arg_slices(&sadd_unlink, &mut args).unwrap();
         processor
-            .execute(&args[..sadd_unlink_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..sadd_unlink_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b":65\r\n");
 
@@ -7061,7 +7104,11 @@ mod tests {
         let spop_unlink = encode_resp_frame(&[b"SPOP".to_vec(), b"set4".to_vec(), b"65".to_vec()]);
         let spop_unlink_meta = parse_resp_command_arg_slices(&spop_unlink, &mut args).unwrap();
         processor
-            .execute(&args[..spop_unlink_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..spop_unlink_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         let rewritten_unlink = replication_frame_for_command(
             &processor,
@@ -7090,7 +7137,11 @@ mod tests {
         let set_key1 = encode_resp_frame(&[b"SET".to_vec(), b"key1".to_vec(), b"old".to_vec()]);
         let set_key1_meta = parse_resp_command_arg_slices(&set_key1, &mut args).unwrap();
         processor
-            .execute(&args[..set_key1_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..set_key1_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
 
@@ -7111,7 +7162,11 @@ mod tests {
         ]);
         let restore_key1_meta = parse_resp_command_arg_slices(&restore_key1, &mut args).unwrap();
         processor
-            .execute(&args[..restore_key1_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..restore_key1_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
         let rewritten_del = replication_frame_for_command(
@@ -7140,7 +7195,11 @@ mod tests {
         let config_lazyfree_meta =
             parse_resp_command_arg_slices(&config_lazyfree, &mut args).unwrap();
         processor
-            .execute(&args[..config_lazyfree_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..config_lazyfree_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
 
@@ -7148,7 +7207,11 @@ mod tests {
         let set_key2 = encode_resp_frame(&[b"SET".to_vec(), b"key2".to_vec(), b"old".to_vec()]);
         let set_key2_meta = parse_resp_command_arg_slices(&set_key2, &mut args).unwrap();
         processor
-            .execute(&args[..set_key2_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..set_key2_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
 
@@ -7163,7 +7226,11 @@ mod tests {
         ]);
         let restore_key2_meta = parse_resp_command_arg_slices(&restore_key2, &mut args).unwrap();
         processor
-            .execute(&args[..restore_key2_meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..restore_key2_meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
         let rewritten_unlink = replication_frame_for_command(

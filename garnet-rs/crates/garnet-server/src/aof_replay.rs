@@ -1,5 +1,8 @@
 //! AOF replay helpers for rebuilding in-memory state from command logs.
 
+use crate::CommandId;
+use crate::dispatch_command_name;
+use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::RequestProcessor;
 use garnet_common::ArgSlice;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
@@ -22,6 +25,7 @@ pub fn replay_aof_operations(
     let mut args = vec![ArgSlice::EMPTY; 64];
     let mut response = Vec::new();
     let mut applied = 0usize;
+    let mut selected_db = DbName::default();
 
     for operation in operations {
         response.clear();
@@ -41,17 +45,52 @@ pub fn replay_aof_operations(
         }
 
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(&args[..meta.argument_count], &mut response, selected_db)
             .map_err(|error| {
                 io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("AOF operation failed during replay: {:?}", error),
                 )
             })?;
+        if replay_command_is_select(&args[..meta.argument_count]) && response == b"+OK\r\n" {
+            selected_db = replay_selected_db(&args[..meta.argument_count])?;
+        }
         applied += 1;
     }
 
     Ok(applied)
+}
+
+fn replay_command_is_select(args: &[ArgSlice]) -> bool {
+    let Some(command) = args.first() else {
+        return false;
+    };
+    // SAFETY: replay args borrow from the current operation frame while this frame is alive.
+    dispatch_command_name(unsafe { command.as_slice() }) == CommandId::Select
+}
+
+fn replay_selected_db(args: &[ArgSlice]) -> io::Result<DbName> {
+    let Some(raw_db) = args.get(1) else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "AOF SELECT missing database index",
+        ));
+    };
+    // SAFETY: replay args borrow from the current operation frame while this frame is alive.
+    let raw_db = unsafe { raw_db.as_slice() };
+    let raw_db = std::str::from_utf8(raw_db).map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("AOF SELECT db index is not valid UTF-8: {error}"),
+        )
+    })?;
+    let index = raw_db.parse::<usize>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("AOF SELECT db index is not a valid usize: {error}"),
+        )
+    })?;
+    Ok(DbName::new(index))
 }
 
 #[cfg(test)]
@@ -110,7 +149,11 @@ mod tests {
         let get_deleted = b"*2\r\n$3\r\nGET\r\n$4\r\nkey1\r\n";
         let meta = parse_resp_command_arg_slices(get_deleted, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$-1\r\n");
 
@@ -118,7 +161,11 @@ mod tests {
         let get_existing = b"*2\r\n$3\r\nGET\r\n$4\r\nkey2\r\n";
         let meta = parse_resp_command_arg_slices(get_existing, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$6\r\nvalue2\r\n");
 
@@ -181,7 +228,11 @@ mod tests {
         let get_keya = b"*2\r\n$3\r\nGET\r\n$4\r\nkeya\r\n";
         let meta = parse_resp_command_arg_slices(get_keya, &mut args).unwrap();
         recovered_processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$-1\r\n");
 
@@ -189,7 +240,11 @@ mod tests {
         let get_keyb = b"*2\r\n$3\r\nGET\r\n$4\r\nkeyb\r\n";
         let meta = parse_resp_command_arg_slices(get_keyb, &mut args).unwrap();
         recovered_processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$3\r\nnew\r\n");
 
@@ -197,7 +252,11 @@ mod tests {
         let get_keyc = b"*2\r\n$3\r\nGET\r\n$4\r\nkeyc\r\n";
         let meta = parse_resp_command_arg_slices(get_keyc, &mut args).unwrap();
         recovered_processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$4\r\nlive\r\n");
 
@@ -242,7 +301,11 @@ mod tests {
         let get_frame = encode_resp_frame(&[b"GET", b"aof:lua:key"]);
         let meta = parse_resp_command_arg_slices(&get_frame, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$2\r\nv1\r\n");
     }
@@ -264,8 +327,72 @@ mod tests {
         let get_frame = encode_resp_frame(&[b"GET", b"aof:function:key"]);
         let meta = parse_resp_command_arg_slices(&get_frame, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert_eq!(response, b"$2\r\nv1\r\n");
+    }
+
+    #[test]
+    fn replay_aof_operations_tracks_selected_db_across_select_commands() {
+        let processor = RequestProcessor::new().unwrap();
+        let mut config_args = [ArgSlice::EMPTY; 8];
+        let config_frame = encode_resp_frame(&[b"CONFIG", b"SET", b"databases", b"4"]);
+        let meta = parse_resp_command_arg_slices(&config_frame, &mut config_args).unwrap();
+        let mut response = Vec::new();
+        processor
+            .execute_in_db(
+                &config_args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
+            .unwrap();
+        assert_eq!(response, b"+OK\r\n");
+
+        let operations = vec![
+            encode_resp_frame(&[b"SELECT", b"1"]),
+            encode_resp_frame(&[b"SET", b"db1:key", b"one"]),
+            encode_resp_frame(&[b"SELECT", b"0"]),
+            encode_resp_frame(&[b"SET", b"db0:key", b"zero"]),
+        ];
+        let applied = replay_aof_operations(&processor, &operations).unwrap();
+        assert_eq!(applied, 4);
+
+        let mut args = [ArgSlice::EMPTY; 8];
+        response.clear();
+
+        let db0_get = encode_resp_frame(&[b"GET", b"db0:key"]);
+        let meta = parse_resp_command_arg_slices(&db0_get, &mut args).unwrap();
+        processor
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
+            .unwrap();
+        assert_eq!(response, b"$4\r\nzero\r\n");
+
+        response.clear();
+        let db1_get = encode_resp_frame(&[b"GET", b"db1:key"]);
+        let meta = parse_resp_command_arg_slices(&db1_get, &mut args).unwrap();
+        processor
+            .execute_in_db(&args[..meta.argument_count], &mut response, DbName::new(1))
+            .unwrap();
+        assert_eq!(response, b"$3\r\none\r\n");
+
+        response.clear();
+        let db1_missing_from_db0 = encode_resp_frame(&[b"GET", b"db1:key"]);
+        let meta = parse_resp_command_arg_slices(&db1_missing_from_db0, &mut args).unwrap();
+        processor
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
+            .unwrap();
+        assert_eq!(response, b"$-1\r\n");
     }
 }

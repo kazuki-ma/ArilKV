@@ -16979,7 +16979,11 @@ fn execute_processor_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     response
 }

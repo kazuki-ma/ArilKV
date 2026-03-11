@@ -4,9 +4,11 @@ use crate::testkit::CommandHarnessError;
 use crate::testkit::assert_command_error;
 use crate::testkit::assert_command_integer;
 use crate::testkit::assert_command_response;
+use crate::testkit::assert_command_response_in_db;
 use crate::testkit::execute_command_line;
 use garnet_cluster::SlotNumber;
 use garnet_common::parse_resp_command_arg_slices;
+use garnet_common::parse_resp_command_arg_slices_dynamic;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -484,7 +486,11 @@ fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     response
 }
@@ -499,11 +505,13 @@ fn execute_frame_with_client(
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute_with_client_context(
+        .execute_with_client_context_in_db(
             &args[..meta.argument_count],
             &mut response,
             client_no_touch,
             Some(client_id),
+            false,
+            DbName::default(),
         )
         .unwrap();
     response
@@ -532,8 +540,8 @@ fn execute_command_line_in_db(
         .map(str::as_bytes)
         .collect::<Vec<_>>();
     let frame = encode_resp(&parts);
-    let mut args = [ArgSlice::EMPTY; 64];
-    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let mut args = Vec::new();
+    let meta = parse_resp_command_arg_slices_dynamic(&frame, &mut args, usize::MAX).unwrap();
     let mut response = Vec::new();
     processor
         .execute_with_client_context_in_db(
@@ -708,7 +716,11 @@ fn executes_set_then_get_roundtrip() {
     let meta = parse_resp_command_arg_slices(frame_set, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -716,7 +728,11 @@ fn executes_set_then_get_roundtrip() {
     let meta = parse_resp_command_arg_slices(frame_get, &mut args).unwrap();
     response.clear();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 }
@@ -904,7 +920,11 @@ fn set_and_get_supports_1kb_payload_without_storage_failure() {
     let meta = parse_resp_command_arg_slices(&frame_set, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -912,7 +932,11 @@ fn set_and_get_supports_1kb_payload_without_storage_failure() {
     let meta = parse_resp_command_arg_slices(frame_get, &mut args).unwrap();
     response.clear();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     let mut expected = format!("${}\r\n", value.len()).into_bytes();
@@ -934,7 +958,11 @@ fn set_and_get_supports_50kb_key_for_keyspace_regression() {
     let meta = parse_resp_command_arg_slices(&frame_set, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -945,7 +973,11 @@ fn set_and_get_supports_50kb_key_for_keyspace_regression() {
     let meta = parse_resp_command_arg_slices(&frame_get, &mut args).unwrap();
     response.clear();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n1\r\n");
 }
@@ -973,7 +1005,11 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nobj\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -986,7 +1022,11 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nobj\r\n$3\r\nstr\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1000,7 +1040,11 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
     response.clear();
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nstr\r\n");
 }
@@ -1015,7 +1059,11 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
     let set = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$4\r\n1000\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1032,7 +1080,11 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -1040,7 +1092,11 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let ttl = parse_integer_response(&response);
     assert!(ttl > 0);
@@ -1057,7 +1113,11 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1070,14 +1130,22 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 }
@@ -1092,7 +1160,11 @@ fn migrate_keys_to_transfers_object_value() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -1105,14 +1177,22 @@ fn migrate_keys_to_transfers_object_value() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 }
@@ -1134,7 +1214,11 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
     let set_string = encode_resp(&[b"SET", &string_key, b"value-a"]);
     let meta = parse_resp_command_arg_slices(&set_string, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1142,7 +1226,11 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
     let hset_object = encode_resp(&[b"HSET", &object_key, b"field", b"value-b"]);
     let meta = parse_resp_command_arg_slices(&hset_object, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -1150,7 +1238,11 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
     let set_other = encode_resp(&[b"SET", &other_key, b"value-c"]);
     let meta = parse_resp_command_arg_slices(&set_other, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1161,7 +1253,11 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
     let get_string = encode_resp(&[b"GET", &string_key]);
     let meta = parse_resp_command_arg_slices(&get_string, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -1169,7 +1265,11 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
     let get_other = encode_resp(&[b"GET", &other_key]);
     let meta = parse_resp_command_arg_slices(&get_other, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$7\r\nvalue-c\r\n");
 
@@ -1177,28 +1277,44 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
     let hget_object = encode_resp(&[b"HGET", &object_key, b"field"]);
     let meta = parse_resp_command_arg_slices(&hget_object, &mut args).unwrap();
     source
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(&get_string, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$7\r\nvalue-a\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(&hget_object, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$7\r\nvalue-b\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(&get_other, &mut args).unwrap();
     target
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -1212,7 +1328,11 @@ fn hash_commands_roundtrip_over_object_store() {
     let hset1 = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$6\r\nfield1\r\n$2\r\nv1\r\n";
     let meta = parse_resp_command_arg_slices(hset1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -1220,7 +1340,11 @@ fn hash_commands_roundtrip_over_object_store() {
     let hset2 = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$6\r\nfield1\r\n$2\r\nv2\r\n";
     let meta = parse_resp_command_arg_slices(hset2, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -1228,7 +1352,11 @@ fn hash_commands_roundtrip_over_object_store() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$6\r\nfield1\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$2\r\nv2\r\n");
 
@@ -1236,7 +1364,11 @@ fn hash_commands_roundtrip_over_object_store() {
     let hset3 = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$6\r\nfield2\r\n$2\r\nv3\r\n";
     let meta = parse_resp_command_arg_slices(hset3, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -1244,7 +1376,11 @@ fn hash_commands_roundtrip_over_object_store() {
     let hgetall = b"*2\r\n$7\r\nHGETALL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(hgetall, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -1255,7 +1391,11 @@ fn hash_commands_roundtrip_over_object_store() {
     let hdel = b"*4\r\n$4\r\nHDEL\r\n$3\r\nkey\r\n$6\r\nfield1\r\n$6\r\nfield9\r\n";
     let meta = parse_resp_command_arg_slices(hdel, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -1263,14 +1403,22 @@ fn hash_commands_roundtrip_over_object_store() {
     let hdel_last = b"*3\r\n$4\r\nHDEL\r\n$3\r\nkey\r\n$6\r\nfield2\r\n";
     let meta = parse_resp_command_arg_slices(hdel_last, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(hgetall, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 }
@@ -1919,7 +2067,11 @@ fn hash_hgetall_preserves_payload_order_across_restore_match_external_scenarios(
     let meta = parse_resp_command_arg_slices(&restore, &mut fields).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&fields[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &fields[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1969,7 +2121,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         b"*6\r\n$5\r\nHMSET\r\n$3\r\nkey\r\n$2\r\nf1\r\n$2\r\nv1\r\n$2\r\nf2\r\n$2\r\nv2\r\n";
     let meta = parse_resp_command_arg_slices(hmset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -1977,7 +2133,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hlen = b"*2\r\n$4\r\nHLEN\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(hlen, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -1985,7 +2145,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hmget = b"*4\r\n$5\r\nHMGET\r\n$3\r\nkey\r\n$2\r\nf1\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(hmget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$2\r\nv1\r\n$-1\r\n");
 
@@ -1993,7 +2157,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hsetnx_exists = b"*4\r\n$6\r\nHSETNX\r\n$3\r\nkey\r\n$2\r\nf1\r\n$2\r\nzz\r\n";
     let meta = parse_resp_command_arg_slices(hsetnx_exists, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -2001,7 +2169,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hsetnx_insert = b"*4\r\n$6\r\nHSETNX\r\n$3\r\nkey\r\n$2\r\nf3\r\n$2\r\nv3\r\n";
     let meta = parse_resp_command_arg_slices(hsetnx_insert, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -2009,7 +2181,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hexists = b"*3\r\n$7\r\nHEXISTS\r\n$3\r\nkey\r\n$2\r\nf3\r\n";
     let meta = parse_resp_command_arg_slices(hexists, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -2017,7 +2193,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hkeys = b"*2\r\n$5\r\nHKEYS\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(hkeys, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nf1\r\n$2\r\nf2\r\n$2\r\nf3\r\n");
 
@@ -2025,7 +2205,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hvals = b"*2\r\n$5\r\nHVALS\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(hvals, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$2\r\nv3\r\n");
 
@@ -2033,7 +2217,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hstrlen = b"*3\r\n$7\r\nHSTRLEN\r\n$3\r\nkey\r\n$2\r\nf2\r\n";
     let meta = parse_resp_command_arg_slices(hstrlen, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -2041,7 +2229,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hincrby = b"*4\r\n$7\r\nHINCRBY\r\n$3\r\nkey\r\n$1\r\nn\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(hincrby, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -2049,7 +2241,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hincrby_negative = b"*4\r\n$7\r\nHINCRBY\r\n$3\r\nkey\r\n$1\r\nn\r\n$2\r\n-5\r\n";
     let meta = parse_resp_command_arg_slices(hincrby_negative, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-3\r\n");
 
@@ -2058,7 +2254,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$7\r\novrflow\r\n$19\r\n9223372036854775807\r\n";
     let meta = parse_resp_command_arg_slices(hset_max, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -2066,7 +2266,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hincrby_overflow = b"*4\r\n$7\r\nHINCRBY\r\n$3\r\nkey\r\n$7\r\novrflow\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(hincrby_overflow, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2076,7 +2280,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hincrbyfloat = b"*4\r\n$12\r\nHINCRBYFLOAT\r\n$3\r\nkey\r\n$1\r\nf\r\n$3\r\n2.5\r\n";
     let meta = parse_resp_command_arg_slices(hincrbyfloat, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\n2.5\r\n");
 
@@ -2084,7 +2292,11 @@ fn additional_hash_commands_cover_common_redis_semantics() {
     let hincrbyfloat_again = b"*4\r\n$12\r\nHINCRBYFLOAT\r\n$3\r\nkey\r\n$1\r\nf\r\n$3\r\n3.5\r\n";
     let meta = parse_resp_command_arg_slices(hincrbyfloat_again, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n6\r\n");
 
@@ -2277,7 +2489,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     let hset = b"*8\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$2\r\nf1\r\n$1\r\n1\r\n$2\r\nf2\r\n$1\r\n2\r\n$2\r\nf3\r\n$1\r\n3\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -2285,7 +2501,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     let hrand_single = b"*2\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(hrand_single, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
 
@@ -2293,7 +2513,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     let hrand_count = b"*3\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(hrand_count, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
 
@@ -2302,7 +2526,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         b"*4\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$2\r\n-4\r\n$10\r\nWITHVALUES\r\n";
     let meta = parse_resp_command_arg_slices(hrand_withvalues, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*8\r\n"));
 
@@ -2313,7 +2541,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     let hrand_resp3 = b"*4\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n$10\r\nWITHVALUES\r\n";
     let meta = parse_resp_command_arg_slices(hrand_resp3, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n*2\r\n"));
 
@@ -2322,7 +2554,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     let hrand_resp3_no_values = b"*3\r\n$10\r\nHRANDFIELD\r\n$3\r\nkey\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(hrand_resp3_no_values, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n$"));
 
@@ -2332,7 +2568,11 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
     response.clear();
     let meta = parse_resp_command_arg_slices(hrand_resp3, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*4\r\n"));
 }
@@ -2346,7 +2586,11 @@ fn hash_commands_return_wrongtype_for_string_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -2354,7 +2598,11 @@ fn hash_commands_return_wrongtype_for_string_keys() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2367,7 +2615,11 @@ fn hash_commands_return_wrongtype_for_string_keys() {
     let lpos = b"*3\r\n$4\r\nLPOS\r\n$3\r\nkey\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(lpos, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2417,7 +2669,11 @@ fn list_commands_roundtrip_over_object_store() {
     let lpush = b"*4\r\n$5\r\nLPUSH\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -2425,7 +2681,11 @@ fn list_commands_roundtrip_over_object_store() {
     let rpush = b"*3\r\n$5\r\nRPUSH\r\n$3\r\nkey\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(rpush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -2433,7 +2693,11 @@ fn list_commands_roundtrip_over_object_store() {
     let lrange_all = b"*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(lrange_all, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n");
 
@@ -2441,7 +2705,11 @@ fn list_commands_roundtrip_over_object_store() {
     let lpop = b"*2\r\n$4\r\nLPOP\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(lpop, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\nb\r\n");
 
@@ -2449,21 +2717,33 @@ fn list_commands_roundtrip_over_object_store() {
     let rpop = b"*2\r\n$4\r\nRPOP\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(rpop, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\nc\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(lpop, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\na\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(lpop, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -2501,7 +2781,11 @@ fn lrange_supports_negative_indexes() {
     let rpush = b"*6\r\n$5\r\nRPUSH\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n";
     let meta = parse_resp_command_arg_slices(rpush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":4\r\n");
 
@@ -2509,7 +2793,11 @@ fn lrange_supports_negative_indexes() {
     let lrange = b"*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$2\r\n-3\r\n$2\r\n-2\r\n";
     let meta = parse_resp_command_arg_slices(lrange, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n");
 }
@@ -2523,7 +2811,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let rpush = b"*5\r\n$5\r\nRPUSH\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(rpush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -2531,7 +2823,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let llen = b"*2\r\n$4\r\nLLEN\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(llen, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -2539,7 +2835,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lindex_zero = b"*3\r\n$6\r\nLINDEX\r\n$3\r\nkey\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(lindex_zero, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\na\r\n");
 
@@ -2547,7 +2847,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lindex_negative = b"*3\r\n$6\r\nLINDEX\r\n$3\r\nkey\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(lindex_negative, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\nc\r\n");
 
@@ -2555,7 +2859,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lset = b"*4\r\n$4\r\nLSET\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\nz\r\n";
     let meta = parse_resp_command_arg_slices(lset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -2563,7 +2871,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let ltrim = b"*4\r\n$5\r\nLTRIM\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(ltrim, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -2571,7 +2883,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lpushx = b"*4\r\n$6\r\nLPUSHX\r\n$3\r\nkey\r\n$1\r\nx\r\n$1\r\ny\r\n";
     let meta = parse_resp_command_arg_slices(lpushx, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":4\r\n");
 
@@ -2579,7 +2895,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let rpushx_missing = b"*3\r\n$6\r\nRPUSHX\r\n$7\r\nmissing\r\n$1\r\nq\r\n";
     let meta = parse_resp_command_arg_slices(rpushx_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -2587,7 +2907,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lrem_all_x = b"*4\r\n$4\r\nLREM\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\nx\r\n";
     let meta = parse_resp_command_arg_slices(lrem_all_x, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -2595,7 +2919,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lrem_tail_c = b"*4\r\n$4\r\nLREM\r\n$3\r\nkey\r\n$2\r\n-1\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(lrem_tail_c, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -2603,7 +2931,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lrange = b"*4\r\n$6\r\nLRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(lrange, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\ny\r\n$1\r\nz\r\n");
 
@@ -2696,7 +3028,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lset_missing = b"*4\r\n$4\r\nLSET\r\n$7\r\nmissing\r\n$1\r\n0\r\n$1\r\nx\r\n";
     let meta = parse_resp_command_arg_slices(lset_missing, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2706,7 +3042,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lset_oob = b"*4\r\n$4\r\nLSET\r\n$3\r\nkey\r\n$2\r\n99\r\n$1\r\nx\r\n";
     let meta = parse_resp_command_arg_slices(lset_oob, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2716,7 +3056,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let ltrim_missing = b"*4\r\n$5\r\nLTRIM\r\n$7\r\nmissing\r\n$1\r\n0\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(ltrim_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -2796,7 +3140,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lpos_rank_zero = b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$4\r\nRANK\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(lpos_rank_zero, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2809,7 +3157,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
     let lpos_rank_min = b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$4\r\nRANK\r\n$20\r\n-9223372036854775808\r\n";
     let meta = parse_resp_command_arg_slices(lpos_rank_min, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2820,7 +3172,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
         b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$5\r\nCOUNT\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(lpos_count_negative, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2831,7 +3187,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
         b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$6\r\nMAXLEN\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(lpos_maxlen_negative, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2842,7 +3202,11 @@ fn additional_list_commands_cover_common_redis_semantics() {
         b"*5\r\n$4\r\nLPOS\r\n$4\r\nlpos\r\n$1\r\na\r\n$7\r\nUNKNOWN\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(lpos_unknown_option, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2949,7 +3313,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let lmpop_zero_count = encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT", b"COUNT", b"0"]);
     let meta = parse_resp_command_arg_slices(&lmpop_zero_count, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2960,7 +3328,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT", b"COUNT", b"abc"]);
     let meta = parse_resp_command_arg_slices(&lmpop_non_integer_count, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2970,7 +3342,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let lmpop_negative_count = encode_resp(&[b"LMPOP", b"1", b"missing", b"LEFT", b"COUNT", b"-1"]);
     let meta = parse_resp_command_arg_slices(&lmpop_negative_count, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2980,7 +3356,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let lmpop_zero_numkeys = encode_resp(&[b"LMPOP", b"0", b"missing", b"LEFT"]);
     let meta = parse_resp_command_arg_slices(&lmpop_zero_numkeys, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -2990,7 +3370,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let lmpop_non_integer_numkeys = encode_resp(&[b"LMPOP", b"a", b"missing", b"LEFT"]);
     let meta = parse_resp_command_arg_slices(&lmpop_non_integer_numkeys, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3000,7 +3384,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let lmpop_negative_numkeys = encode_resp(&[b"LMPOP", b"-1", b"missing", b"LEFT"]);
     let meta = parse_resp_command_arg_slices(&lmpop_negative_numkeys, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3010,7 +3398,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let blpop_bad_timeout = encode_resp(&[b"BLPOP", b"k1", b"not-a-float"]);
     let meta = parse_resp_command_arg_slices(&blpop_bad_timeout, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3020,7 +3412,11 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let blpop_negative_timeout = encode_resp(&[b"BLPOP", b"k1", b"-1"]);
     let meta = parse_resp_command_arg_slices(&blpop_negative_timeout, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3036,7 +3432,11 @@ fn list_commands_return_wrongtype_for_string_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -3044,7 +3444,11 @@ fn list_commands_return_wrongtype_for_string_keys() {
     let lpush = b"*3\r\n$5\r\nLPUSH\r\n$3\r\nkey\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3057,7 +3461,11 @@ fn list_commands_return_wrongtype_for_string_keys() {
     let lmove = b"*5\r\n$5\r\nLMOVE\r\n$3\r\nkey\r\n$3\r\ndst\r\n$4\r\nLEFT\r\n$4\r\nLEFT\r\n";
     let meta = parse_resp_command_arg_slices(lmove, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3076,7 +3484,11 @@ fn set_commands_roundtrip_over_object_store() {
     let sadd = b"*5\r\n$4\r\nSADD\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -3084,7 +3496,11 @@ fn set_commands_roundtrip_over_object_store() {
     let sismember_yes = b"*3\r\n$9\r\nSISMEMBER\r\n$3\r\nkey\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(sismember_yes, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3092,7 +3508,11 @@ fn set_commands_roundtrip_over_object_store() {
     let sismember_no = b"*3\r\n$9\r\nSISMEMBER\r\n$3\r\nkey\r\n$1\r\nz\r\n";
     let meta = parse_resp_command_arg_slices(sismember_no, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -3100,7 +3520,11 @@ fn set_commands_roundtrip_over_object_store() {
     let smembers = b"*2\r\n$8\r\nSMEMBERS\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(smembers, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\na\r\n$1\r\nb\r\n");
 
@@ -3108,14 +3532,22 @@ fn set_commands_roundtrip_over_object_store() {
     let srem = b"*4\r\n$4\r\nSREM\r\n$3\r\nkey\r\n$1\r\na\r\n$1\r\nx\r\n";
     let meta = parse_resp_command_arg_slices(srem, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(smembers, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*1\r\n$1\r\nb\r\n");
 
@@ -3123,14 +3555,22 @@ fn set_commands_roundtrip_over_object_store() {
     let srem_last = b"*3\r\n$4\r\nSREM\r\n$3\r\nkey\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(srem_last, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(smembers, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 }
@@ -3309,7 +3749,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let sadd_src = b"*6\r\n$4\r\nSADD\r\n$3\r\nsrc\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$1\r\nd\r\n";
     let meta = parse_resp_command_arg_slices(sadd_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":4\r\n");
 
@@ -3317,7 +3761,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let sadd_dst = b"*3\r\n$4\r\nSADD\r\n$3\r\ndst\r\n$1\r\nz\r\n";
     let meta = parse_resp_command_arg_slices(sadd_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3325,7 +3773,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let scard = b"*2\r\n$5\r\nSCARD\r\n$3\r\nsrc\r\n";
     let meta = parse_resp_command_arg_slices(scard, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":4\r\n");
 
@@ -3333,7 +3785,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let smismember = b"*5\r\n$10\r\nSMISMEMBER\r\n$3\r\nsrc\r\n$1\r\na\r\n$1\r\nx\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(smismember, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n:1\r\n:0\r\n:1\r\n");
 
@@ -3341,7 +3797,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let srandmember = b"*3\r\n$11\r\nSRANDMEMBER\r\n$3\r\nsrc\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(srandmember, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
 
@@ -3349,7 +3809,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let smove = b"*4\r\n$5\r\nSMOVE\r\n$3\r\nsrc\r\n$3\r\ndst\r\n$1\r\na\r\n";
     let meta = parse_resp_command_arg_slices(smove, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3357,7 +3821,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let sismember_dst = b"*3\r\n$9\r\nSISMEMBER\r\n$3\r\ndst\r\n$1\r\na\r\n";
     let meta = parse_resp_command_arg_slices(sismember_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3365,7 +3833,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let spop_count = b"*3\r\n$4\r\nSPOP\r\n$3\r\nsrc\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(spop_count, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
 
@@ -3373,7 +3845,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let scard_after_pop = b"*2\r\n$5\r\nSCARD\r\n$3\r\nsrc\r\n";
     let meta = parse_resp_command_arg_slices(scard_after_pop, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3381,7 +3857,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let spop_single = b"*2\r\n$4\r\nSPOP\r\n$3\r\nsrc\r\n";
     let meta = parse_resp_command_arg_slices(spop_single, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
 
@@ -3389,7 +3869,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let scard_empty = b"*2\r\n$5\r\nSCARD\r\n$3\r\nsrc\r\n";
     let meta = parse_resp_command_arg_slices(scard_empty, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -3397,7 +3881,11 @@ fn additional_set_commands_cover_common_redis_semantics() {
     let spop_negative = b"*3\r\n$4\r\nSPOP\r\n$3\r\ndst\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(spop_negative, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3413,7 +3901,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let sadd_s1 = encode_resp(&[b"SADD", b"s1", b"a", b"b", b"c"]);
     let meta = parse_resp_command_arg_slices(&sadd_s1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -3421,7 +3913,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let sadd_s2 = encode_resp(&[b"SADD", b"s2", b"b", b"c", b"d"]);
     let meta = parse_resp_command_arg_slices(&sadd_s2, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -3429,7 +3925,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let sadd_s3 = encode_resp(&[b"SADD", b"s3", b"c", b"e"]);
     let meta = parse_resp_command_arg_slices(&sadd_s3, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -3531,7 +4031,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let get_dst_string = encode_resp(&[b"GET", b"dst_string"]);
     let meta = parse_resp_command_arg_slices(&get_dst_string, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3548,7 +4052,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let sinter_wrongtype = encode_resp(&[b"SINTER", b"plain", b"s1"]);
     let meta = parse_resp_command_arg_slices(&sinter_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3563,7 +4071,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let sinter_missing_then_wrongtype = encode_resp(&[b"SINTER", b"missing", b"plain"]);
     let meta = parse_resp_command_arg_slices(&sinter_missing_then_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3576,7 +4088,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let sdiff_empty_then_wrongtype = encode_resp(&[b"SDIFF", b"s1", b"s2", b"plain"]);
     let meta = parse_resp_command_arg_slices(&sdiff_empty_then_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3591,7 +4107,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
     let meta =
         parse_resp_command_arg_slices(&sinterstore_missing_then_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3605,7 +4125,11 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         encode_resp(&[b"SDIFFSTORE", b"dst_bad", b"s1", b"s2", b"plain"]);
     let meta = parse_resp_command_arg_slices(&sdiffstore_empty_then_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3624,7 +4148,11 @@ fn set_commands_return_wrongtype_for_string_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -3632,7 +4160,11 @@ fn set_commands_return_wrongtype_for_string_keys() {
     let sadd = b"*3\r\n$4\r\nSADD\r\n$3\r\nkey\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -3651,7 +4183,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zadd = b"*6\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n2\r\n$3\r\ntwo\r\n$1\r\n1\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zadd, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -3659,7 +4195,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zscore = b"*3\r\n$6\r\nZSCORE\r\n$3\r\nkey\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zscore, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n1\r\n");
 
@@ -3667,7 +4207,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zcard = b"*2\r\n$5\r\nZCARD\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(zcard, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -3675,7 +4219,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zcount_all = encode_resp(&[b"ZCOUNT", b"key", b"-inf", b"+inf"]);
     let meta = parse_resp_command_arg_slices(&zcount_all, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -3683,7 +4231,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zcount_exclusive = encode_resp(&[b"ZCOUNT", b"key", b"(1", b"2"]);
     let meta = parse_resp_command_arg_slices(&zcount_exclusive, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3691,7 +4243,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrank_one = b"*3\r\n$5\r\nZRANK\r\n$3\r\nkey\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zrank_one, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -3699,7 +4255,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrevrank_one = b"*3\r\n$8\r\nZREVRANK\r\n$3\r\nkey\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zrevrank_one, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3707,14 +4267,22 @@ fn zset_commands_roundtrip_over_object_store() {
     let zincrby = b"*4\r\n$7\r\nZINCRBY\r\n$3\r\nkey\r\n$1\r\n2\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zincrby, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n3\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(zrank_one, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -3722,7 +4290,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrange = b"*4\r\n$6\r\nZRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(zrange, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
 
@@ -3730,7 +4302,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrange_withscores = encode_resp(&[b"ZRANGE", b"key", b"0", b"-1", b"WITHSCORES"]);
     let meta = parse_resp_command_arg_slices(&zrange_withscores, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -3741,7 +4317,11 @@ fn zset_commands_roundtrip_over_object_store() {
     response.clear();
     let meta = parse_resp_command_arg_slices(&zrange_withscores, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -3753,7 +4333,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zadd_update = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n3\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(zadd_update, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -3761,7 +4345,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrange_after_update = b"*4\r\n$6\r\nZRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(zrange_after_update, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
 
@@ -4250,7 +4838,11 @@ fn zset_commands_roundtrip_over_object_store() {
         b"*5\r\n$7\r\nZMSCORE\r\n$3\r\nkey\r\n$3\r\none\r\n$7\r\nmissing\r\n$3\r\ntwo\r\n";
     let meta = parse_resp_command_arg_slices(zmscore, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$1\r\n3\r\n$-1\r\n$1\r\n2\r\n");
 
@@ -4258,7 +4850,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrandmember = b"*2\r\n$11\r\nZRANDMEMBER\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(zrandmember, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
 
@@ -4267,7 +4863,11 @@ fn zset_commands_roundtrip_over_object_store() {
         b"*4\r\n$11\r\nZRANDMEMBER\r\n$3\r\nkey\r\n$1\r\n2\r\n$10\r\nWITHSCORES\r\n";
     let meta = parse_resp_command_arg_slices(zrandmember_withscores, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*4\r\n"));
     assert!(response.windows(9).any(|w| w == b"$3\r\none\r\n"));
@@ -4278,7 +4878,11 @@ fn zset_commands_roundtrip_over_object_store() {
         b"*8\r\n$4\r\nZADD\r\n$6\r\npopkey\r\n$1\r\n1\r\n$1\r\na\r\n$1\r\n2\r\n$1\r\nb\r\n$1\r\n3\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(zadd_popkey, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -4286,7 +4890,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zpopmin = b"*2\r\n$7\r\nZPOPMIN\r\n$6\r\npopkey\r\n";
     let meta = parse_resp_command_arg_slices(zpopmin, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\na\r\n$1\r\n1\r\n");
 
@@ -4294,7 +4902,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zpopmax = b"*3\r\n$7\r\nZPOPMAX\r\n$6\r\npopkey\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(zpopmax, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -4305,7 +4917,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zcard_popkey = b"*2\r\n$5\r\nZCARD\r\n$6\r\npopkey\r\n";
     let meta = parse_resp_command_arg_slices(zcard_popkey, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -4313,7 +4929,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let bzpopmin_bad_timeout = b"*3\r\n$8\r\nBZPOPMIN\r\n$3\r\nbz1\r\n$3\r\nbad\r\n";
     let meta = parse_resp_command_arg_slices(bzpopmin_bad_timeout, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -4324,7 +4944,11 @@ fn zset_commands_roundtrip_over_object_store() {
         b"*7\r\n$6\r\nBZMPOP\r\n$2\r\n-1\r\n$1\r\n1\r\n$3\r\nbz1\r\n$3\r\nMIN\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(bzmpop_negative_timeout, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -4334,7 +4958,11 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrem = b"*4\r\n$4\r\nZREM\r\n$3\r\nkey\r\n$3\r\none\r\n$4\r\nnone\r\n";
     let meta = parse_resp_command_arg_slices(zrem, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4342,14 +4970,22 @@ fn zset_commands_roundtrip_over_object_store() {
     let zrem_last = b"*3\r\n$4\r\nZREM\r\n$3\r\nkey\r\n$3\r\ntwo\r\n";
     let meta = parse_resp_command_arg_slices(zrem_last, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(zrange, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 }
@@ -4403,7 +5039,11 @@ fn zset_commands_return_wrongtype_for_string_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4411,7 +5051,11 @@ fn zset_commands_return_wrongtype_for_string_keys() {
     let zadd = b"*4\r\n$4\r\nZADD\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(zadd, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -4430,13 +5074,21 @@ fn executes_incr_command() {
 
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 }
@@ -4450,7 +5102,11 @@ fn incr_returns_wrongtype_for_object_key() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4458,7 +5114,11 @@ fn incr_returns_wrongtype_for_object_key() {
     let incr = b"*2\r\n$4\r\nINCR\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(incr, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -4477,7 +5137,11 @@ fn executes_incrby_and_decrby_commands() {
     let incrby = b"*3\r\n$6\r\nINCRBY\r\n$7\r\ncounter\r\n$1\r\n5\r\n";
     let meta = parse_resp_command_arg_slices(incrby, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":5\r\n");
 
@@ -4485,7 +5149,11 @@ fn executes_incrby_and_decrby_commands() {
     let decrby = b"*3\r\n$6\r\nDECRBY\r\n$7\r\ncounter\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(decrby, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -4505,7 +5173,11 @@ fn exists_counts_duplicates_and_object_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$1\r\ns\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4513,7 +5185,11 @@ fn exists_counts_duplicates_and_object_keys() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$1\r\no\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4521,7 +5197,11 @@ fn exists_counts_duplicates_and_object_keys() {
     let exists = b"*5\r\n$6\r\nEXISTS\r\n$1\r\ns\r\n$1\r\ns\r\n$1\r\no\r\n$1\r\nx\r\n";
     let meta = parse_resp_command_arg_slices(exists, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 }
@@ -4535,7 +5215,11 @@ fn type_reports_string_object_and_none() {
     let set = b"*3\r\n$3\r\nSET\r\n$1\r\ns\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4543,7 +5227,11 @@ fn type_reports_string_object_and_none() {
     let sadd = b"*4\r\n$4\r\nSADD\r\n$2\r\nst\r\n$1\r\na\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -4551,7 +5239,11 @@ fn type_reports_string_object_and_none() {
     let type_string = b"*2\r\n$4\r\nTYPE\r\n$1\r\ns\r\n";
     let meta = parse_resp_command_arg_slices(type_string, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+string\r\n");
 
@@ -4559,7 +5251,11 @@ fn type_reports_string_object_and_none() {
     let type_set = b"*2\r\n$4\r\nTYPE\r\n$2\r\nst\r\n";
     let meta = parse_resp_command_arg_slices(type_set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+set\r\n");
 
@@ -4567,7 +5263,11 @@ fn type_reports_string_object_and_none() {
     let type_none = b"*2\r\n$4\r\nTYPE\r\n$1\r\nx\r\n";
     let meta = parse_resp_command_arg_slices(type_none, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+none\r\n");
 }
@@ -4581,7 +5281,11 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
     let mset = b"*5\r\n$4\r\nMSET\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n$2\r\nv2\r\n";
     let meta = parse_resp_command_arg_slices(mset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4589,7 +5293,11 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
     let mget = b"*4\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\nk3\r\n";
     let meta = parse_resp_command_arg_slices(mget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
 
@@ -4597,7 +5305,11 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nobj\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4605,7 +5317,11 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
     let mget_obj = b"*2\r\n$4\r\nMGET\r\n$3\r\nobj\r\n";
     let meta = parse_resp_command_arg_slices(mget_obj, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*1\r\n$-1\r\n");
 
@@ -4613,7 +5329,11 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
     let mset_overwrite_obj = b"*3\r\n$4\r\nMSET\r\n$3\r\nobj\r\n$3\r\nstr\r\n";
     let meta = parse_resp_command_arg_slices(mset_overwrite_obj, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4621,7 +5341,11 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nobj\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nstr\r\n");
 }
@@ -4634,14 +5358,22 @@ fn executes_del_command() {
     let set_meta = parse_resp_command_arg_slices(set_frame, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute(&args[..set_meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..set_meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     let del_frame = b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n";
     let del_meta = parse_resp_command_arg_slices(del_frame, &mut args).unwrap();
     response.clear();
     processor
-        .execute(&args[..del_meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..del_meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 }
@@ -4675,7 +5407,11 @@ fn del_removes_object_key() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nobj\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4683,7 +5419,11 @@ fn del_removes_object_key() {
     let del = b"*2\r\n$3\r\nDEL\r\n$3\r\nobj\r\n";
     let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4691,7 +5431,11 @@ fn del_removes_object_key() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nobj\r\n$5\r\nfield\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -4705,7 +5449,11 @@ fn key_can_be_recreated_after_delete() {
     let set_first = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set_first, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4713,7 +5461,11 @@ fn key_can_be_recreated_after_delete() {
     let del = b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4721,7 +5473,11 @@ fn key_can_be_recreated_after_delete() {
     let set_second = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$7\r\nupdated\r\n";
     let meta = parse_resp_command_arg_slices(set_second, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4729,7 +5485,11 @@ fn key_can_be_recreated_after_delete() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$7\r\nupdated\r\n");
 }
@@ -4743,7 +5503,11 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
     let set_src = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4751,7 +5515,11 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
     let rename = b"*3\r\n$6\r\nRENAME\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(rename, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4759,7 +5527,11 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
     let get_dst = b"*2\r\n$3\r\nGET\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(get_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -4767,7 +5539,11 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
     let set_src_again = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$6\r\nvalue2\r\n";
     let meta = parse_resp_command_arg_slices(set_src_again, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4775,7 +5551,11 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
     let renamenx_existing = b"*3\r\n$8\r\nRENAMENX\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(renamenx_existing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -4783,7 +5563,11 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
     let get_src = b"*2\r\n$3\r\nGET\r\n$3\r\nsrc\r\n";
     let meta = parse_resp_command_arg_slices(get_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$6\r\nvalue2\r\n");
 }
@@ -4797,14 +5581,22 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
     let set_src = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let expire_src = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nsrc\r\n$3\r\n100\r\n";
     let meta = parse_resp_command_arg_slices(expire_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4812,7 +5604,11 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
     let rename = b"*3\r\n$6\r\nRENAME\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(rename, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4820,7 +5616,11 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
     let ttl_dst = b"*2\r\n$3\r\nTTL\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(ttl_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
         .unwrap()
@@ -4831,7 +5631,11 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
     response.clear();
     let rename_missing = b"*3\r\n$6\r\nRENAME\r\n$7\r\nmissing\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(rename_missing, &mut args).unwrap();
-    let error = processor.execute(&args[..meta.argument_count], &mut response);
+    let error = processor.execute_in_db(
+        &args[..meta.argument_count],
+        &mut response,
+        DbName::default(),
+    );
     assert_eq!(error, Err(RequestExecutionError::NoSuchKey));
 }
 
@@ -4844,14 +5648,22 @@ fn copy_copies_string_and_ttl_with_replace() {
     let set_src = b"*3\r\n$3\r\nSET\r\n$3\r\nsrc\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let expire_src = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nsrc\r\n$3\r\n100\r\n";
     let meta = parse_resp_command_arg_slices(expire_src, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4859,7 +5671,11 @@ fn copy_copies_string_and_ttl_with_replace() {
     let copy = b"*3\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(copy, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4867,7 +5683,11 @@ fn copy_copies_string_and_ttl_with_replace() {
     let get_dst = b"*2\r\n$3\r\nGET\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(get_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -4875,7 +5695,11 @@ fn copy_copies_string_and_ttl_with_replace() {
     let ttl_dst = b"*2\r\n$3\r\nTTL\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(ttl_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
         .unwrap()
@@ -4887,14 +5711,22 @@ fn copy_copies_string_and_ttl_with_replace() {
     let set_dst = b"*3\r\n$3\r\nSET\r\n$3\r\ndst\r\n$3\r\nold\r\n";
     let meta = parse_resp_command_arg_slices(set_dst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let copy_without_replace = b"*3\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n";
     let meta = parse_resp_command_arg_slices(copy_without_replace, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -4902,7 +5734,11 @@ fn copy_copies_string_and_ttl_with_replace() {
     let copy_with_replace = b"*4\r\n$4\r\nCOPY\r\n$3\r\nsrc\r\n$3\r\ndst\r\n$7\r\nREPLACE\r\n";
     let meta = parse_resp_command_arg_slices(copy_with_replace, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 }
@@ -4916,7 +5752,11 @@ fn set_supports_nx_and_xx_conditions() {
     let set_nx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nNX\r\n";
     let meta = parse_resp_command_arg_slices(set_nx, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4924,7 +5764,11 @@ fn set_supports_nx_and_xx_conditions() {
     let set_nx_again = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$6\r\nvalue2\r\n$2\r\nNX\r\n";
     let meta = parse_resp_command_arg_slices(set_nx_again, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -4932,7 +5776,11 @@ fn set_supports_nx_and_xx_conditions() {
     let set_xx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$7\r\nupdated\r\n$2\r\nXX\r\n";
     let meta = parse_resp_command_arg_slices(set_xx, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 }
@@ -4946,7 +5794,11 @@ fn set_nx_and_xx_respect_object_key_existence() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -4954,7 +5806,11 @@ fn set_nx_and_xx_respect_object_key_existence() {
     let set_nx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nstr\r\n$2\r\nNX\r\n";
     let meta = parse_resp_command_arg_slices(set_nx, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -4962,7 +5818,11 @@ fn set_nx_and_xx_respect_object_key_existence() {
     let set_xx = b"*4\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nstr\r\n$2\r\nXX\r\n";
     let meta = parse_resp_command_arg_slices(set_xx, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -4970,7 +5830,11 @@ fn set_nx_and_xx_respect_object_key_existence() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nstr\r\n");
 
@@ -4978,7 +5842,11 @@ fn set_nx_and_xx_respect_object_key_existence() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -4997,7 +5865,11 @@ fn set_with_px_expires_key() {
     let set_px = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(set_px, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5007,7 +5879,11 @@ fn set_with_px_expires_key() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -5021,7 +5897,11 @@ fn expiration_scan_removes_expired_keys_in_background_style() {
     let set_px = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(set_px, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5033,7 +5913,11 @@ fn expiration_scan_removes_expired_keys_in_background_style() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -5047,7 +5931,11 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5055,7 +5943,11 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
     let pexpire = b"*3\r\n$7\r\nPEXPIRE\r\n$3\r\nkey\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(pexpire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5067,7 +5959,11 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -5122,7 +6018,11 @@ fn set_returns_error_for_invalid_expire_time() {
     let invalid = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(invalid, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -5218,7 +6118,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5226,7 +6130,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
 
@@ -5234,7 +6142,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let expire = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5242,7 +6154,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let remaining = parse_integer_response(&response);
     assert!((0..=1000).contains(&remaining));
@@ -5251,7 +6167,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let pexpire_now = b"*3\r\n$7\r\nPEXPIRE\r\n$3\r\nkey\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(pexpire_now, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5259,7 +6179,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -5267,7 +6191,11 @@ fn expire_ttl_and_pexpire_commands_work() {
     let ttl_after_delete = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(ttl_after_delete, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
 }
@@ -5281,7 +6209,11 @@ fn set_after_expire_and_del_recreates_key() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nfoo\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5289,7 +6221,11 @@ fn set_after_expire_and_del_recreates_key() {
     let expire = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$3\r\n100\r\n";
     let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5297,7 +6233,11 @@ fn set_after_expire_and_del_recreates_key() {
     let del = b"*2\r\n$3\r\nDEL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5305,7 +6245,11 @@ fn set_after_expire_and_del_recreates_key() {
     let set_again = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$3\r\nbar\r\n";
     let meta = parse_resp_command_arg_slices(set_again, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5313,7 +6257,11 @@ fn set_after_expire_and_del_recreates_key() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nbar\r\n");
 }
@@ -5327,7 +6275,11 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$3\r\nkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5335,7 +6287,11 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
 
@@ -5343,7 +6299,11 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let expire = b"*3\r\n$6\r\nEXPIRE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5351,7 +6311,11 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let remaining = parse_integer_response(&response);
     assert!((0..=1000).contains(&remaining));
@@ -5360,14 +6324,22 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let persist = b"*2\r\n$7\r\nPERSIST\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(persist, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
 
@@ -5375,7 +6347,11 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let pexpire_now = b"*3\r\n$7\r\nPEXPIRE\r\n$3\r\nkey\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(pexpire_now, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5383,7 +6359,11 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
     let hget = b"*3\r\n$4\r\nHGET\r\n$3\r\nkey\r\n$5\r\nfield\r\n";
     let meta = parse_resp_command_arg_slices(hget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -5397,7 +6377,11 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
     let expire = b"*3\r\n$6\r\nEXPIRE\r\n$7\r\nmissing\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(expire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -5405,7 +6389,11 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
     let ttl = b"*2\r\n$3\r\nTTL\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
 
@@ -5413,7 +6401,11 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
     let pexpire = b"*3\r\n$7\r\nPEXPIRE\r\n$7\r\nmissing\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(pexpire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -5421,7 +6413,11 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
 }
@@ -5576,7 +6572,11 @@ fn expireat_and_expiretime_use_unix_seconds() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5587,7 +6587,11 @@ fn expireat_and_expiretime_use_unix_seconds() {
     response.clear();
     let meta = parse_resp_command_arg_slices(&expireat, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5595,7 +6599,11 @@ fn expireat_and_expiretime_use_unix_seconds() {
     let expiretime = b"*2\r\n$10\r\nEXPIRETIME\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(expiretime, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let absolute_secs = parse_integer_response(&response);
     assert!((now_secs as i64..=now_secs as i64 + 3).contains(&absolute_secs));
@@ -5610,7 +6618,11 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
     let pexpiretime_missing = b"*2\r\n$11\r\nPEXPIRETIME\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(pexpiretime_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
 
@@ -5618,7 +6630,11 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5626,7 +6642,11 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
     let pexpiretime_without_expire = b"*2\r\n$11\r\nPEXPIRETIME\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(pexpiretime_without_expire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
 
@@ -5637,14 +6657,22 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
     response.clear();
     let meta = parse_resp_command_arg_slices(&pexpireat, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(pexpiretime_without_expire, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let absolute_millis = parse_integer_response(&response);
     assert!((now_millis as i64..=now_millis as i64 + 2000).contains(&absolute_millis));
@@ -5659,7 +6687,11 @@ fn expire_with_invalid_timeout_returns_integer_error() {
     let invalid = b"*3\r\n$6\r\nEXPIRE\r\n$7\r\nmissing\r\n$3\r\nbad\r\n";
     let meta = parse_resp_command_arg_slices(invalid, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -5678,7 +6710,11 @@ fn persist_removes_existing_expiration() {
     let set_px = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$4\r\n1000\r\n";
     let meta = parse_resp_command_arg_slices(set_px, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5686,7 +6722,11 @@ fn persist_removes_existing_expiration() {
     let persist = b"*2\r\n$7\r\nPERSIST\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(persist, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5694,14 +6734,22 @@ fn persist_removes_existing_expiration() {
     let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(persist, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -5709,7 +6757,11 @@ fn persist_removes_existing_expiration() {
     let persist_missing = b"*2\r\n$7\r\nPERSIST\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(persist_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 }
@@ -5723,7 +6775,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let dump_missing = b"*2\r\n$4\r\nDUMP\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(dump_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -5731,7 +6787,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let set = b"*3\r\n$3\r\nSET\r\n$4\r\nrkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5739,7 +6799,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let dump = b"*2\r\n$4\r\nDUMP\r\n$4\r\nrkey\r\n";
     let meta = parse_resp_command_arg_slices(dump, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let dump_payload = parse_bulk_payload(&response).expect("dump payload must exist");
 
@@ -5747,7 +6811,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let del = b"*2\r\n$3\r\nDEL\r\n$4\r\nrkey\r\n";
     let meta = parse_resp_command_arg_slices(del, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5755,7 +6823,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let restore = encode_resp(&[b"RESTORE", b"rkey", b"0", &dump_payload]);
     let meta = parse_resp_command_arg_slices(&restore, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5763,7 +6835,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let get = b"*2\r\n$3\r\nGET\r\n$4\r\nrkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -5771,7 +6847,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let restore_busy = encode_resp(&[b"RESTORE", b"rkey", b"0", &dump_payload]);
     let meta = parse_resp_command_arg_slices(&restore_busy, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-BUSYKEY Target key name already exists.\r\n");
@@ -5780,7 +6860,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let restore_busy_invalid = encode_resp(&[b"RESTORE", b"rkey", b"0", b"..."]);
     let meta = parse_resp_command_arg_slices(&restore_busy_invalid, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-BUSYKEY Target key name already exists.\r\n");
@@ -5789,7 +6873,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let restore_replace = encode_resp(&[b"RESTORE", b"rkey", b"1000", &dump_payload, b"REPLACE"]);
     let meta = parse_resp_command_arg_slices(&restore_replace, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5797,7 +6885,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$4\r\nrkey\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let ttl = parse_integer_response(&response);
     assert!(ttl > 0);
@@ -5808,7 +6900,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         encode_resp(&[b"RESTORE-ASKING", b"rkey2", b"0", &dump_payload, b"REPLACE"]);
     let meta = parse_resp_command_arg_slices(&restore_asking, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5816,7 +6912,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let get_rkey2 = b"*2\r\n$3\r\nGET\r\n$5\r\nrkey2\r\n";
     let meta = parse_resp_command_arg_slices(get_rkey2, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -5834,7 +6934,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     ]);
     let meta = parse_resp_command_arg_slices(&restore_with_metadata, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
     assert_command_integer(&processor, "OBJECT FREQ rmeta", 100);
@@ -5846,7 +6950,11 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
     let restore_invalid = b"*4\r\n$7\r\nRESTORE\r\n$4\r\nbadk\r\n$1\r\n0\r\n$3\r\nbad\r\n";
     let meta = parse_resp_command_arg_slices(restore_invalid, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -5938,7 +7046,11 @@ fn dbsize_counts_string_and_object_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -5946,7 +7058,11 @@ fn dbsize_counts_string_and_object_keys() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -5954,7 +7070,11 @@ fn dbsize_counts_string_and_object_keys() {
     let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
     let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 }
@@ -6009,7 +7129,11 @@ fn flushdb_clears_string_and_object_keys() {
     let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -6017,7 +7141,11 @@ fn flushdb_clears_string_and_object_keys() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -6025,7 +7153,11 @@ fn flushdb_clears_string_and_object_keys() {
     let flushdb = b"*1\r\n$7\r\nFLUSHDB\r\n";
     let meta = parse_resp_command_arg_slices(flushdb, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -6033,7 +7165,11 @@ fn flushdb_clears_string_and_object_keys() {
     let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
     let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 }
@@ -6047,7 +7183,11 @@ fn flushall_clears_keys_across_string_and_object_store() {
     let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -6055,7 +7195,11 @@ fn flushall_clears_keys_across_string_and_object_store() {
     let sadd = b"*4\r\n$4\r\nSADD\r\n$4\r\nsset\r\n$1\r\na\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(sadd, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -6063,7 +7207,11 @@ fn flushall_clears_keys_across_string_and_object_store() {
     let flushall = b"*1\r\n$8\r\nFLUSHALL\r\n";
     let meta = parse_resp_command_arg_slices(flushall, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -6071,7 +7219,11 @@ fn flushall_clears_keys_across_string_and_object_store() {
     let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
     let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 }
@@ -6122,11 +7274,12 @@ fn flushall_default_in_transaction_context_does_not_record_lazyfree() {
     let flushall = b"*1\r\n$8\r\nFLUSHALL\r\n";
     let meta = parse_resp_command_arg_slices(flushall, &mut args).unwrap();
     processor
-        .execute_with_client_no_touch_in_transaction(
+        .execute_with_client_no_touch_in_transaction_in_db(
             &args[..meta.argument_count],
             &mut response,
             false,
             None,
+            DbName::default(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6150,14 +7303,22 @@ fn info_dbsize_and_command_responses_are_generated() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let dbsize = b"*1\r\n$6\r\nDBSIZE\r\n";
     let meta = parse_resp_command_arg_slices(dbsize, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -6165,7 +7326,11 @@ fn info_dbsize_and_command_responses_are_generated() {
     let info = b"*1\r\n$4\r\nINFO\r\n";
     let meta = parse_resp_command_arg_slices(info, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
     assert!(response.windows("dbsize:1".len()).any(|w| w == b"dbsize:1"));
@@ -6184,7 +7349,11 @@ fn info_dbsize_and_command_responses_are_generated() {
     let command = b"*1\r\n$7\r\nCOMMAND\r\n";
     let meta = parse_resp_command_arg_slices(command, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*"));
     assert!(response.windows(7).any(|w| w == b"$3\r\nGET"));
@@ -6905,7 +8074,11 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let memory_missing = b"*3\r\n$6\r\nMEMORY\r\n$5\r\nUSAGE\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(memory_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -6913,7 +8086,11 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let set = b"*3\r\n$3\r\nSET\r\n$4\r\nskey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -6921,7 +8098,11 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let memory_string = b"*3\r\n$6\r\nMEMORY\r\n$5\r\nUSAGE\r\n$4\r\nskey\r\n";
     let meta = parse_resp_command_arg_slices(memory_string, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b":"));
     assert_ne!(response, b":0\r\n");
@@ -6930,7 +8111,11 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$4\r\nhkey\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -6938,7 +8123,11 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let memory_hash = b"*3\r\n$6\r\nMEMORY\r\n$5\r\nUSAGE\r\n$4\r\nhkey\r\n";
     let meta = parse_resp_command_arg_slices(memory_hash, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b":"));
     assert_ne!(response, b":0\r\n");
@@ -6947,7 +8136,11 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
     let memory_help = b"*2\r\n$6\r\nMEMORY\r\n$4\r\nHELP\r\n";
     let meta = parse_resp_command_arg_slices(memory_help, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*13\r\n"));
     assert!(
@@ -6966,35 +8159,55 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
     let set_foo1 = b"*3\r\n$3\r\nSET\r\n$4\r\nfoo1\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(set_foo1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let set_foo2 = b"*3\r\n$3\r\nSET\r\n$4\r\nfoo2\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(set_foo2, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let set_bar = b"*3\r\n$3\r\nSET\r\n$3\r\nbar\r\n$1\r\n3\r\n";
     let meta = parse_resp_command_arg_slices(set_bar, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let hset_foo3 = b"*4\r\n$4\r\nHSET\r\n$4\r\nfoo3\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(hset_foo3, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let keys_foo = b"*2\r\n$4\r\nKEYS\r\n$4\r\nfoo*\r\n";
     let meta = parse_resp_command_arg_slices(keys_foo, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*3\r\n"));
     assert!(response.windows(10).any(|w| w == b"$4\r\nfoo1\r\n"));
@@ -7005,7 +8218,11 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
     let keys_all = b"*2\r\n$4\r\nKEYS\r\n$1\r\n*\r\n";
     let meta = parse_resp_command_arg_slices(keys_all, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*4\r\n"));
 }
@@ -7019,7 +8236,11 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
     let randomkey = b"*1\r\n$9\r\nRANDOMKEY\r\n";
     let meta = parse_resp_command_arg_slices(randomkey, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -7027,7 +8248,11 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
     let set_foo = b"*3\r\n$3\r\nSET\r\n$3\r\nfoo\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(set_foo, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -7035,7 +8260,11 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
     let hset_bar = b"*4\r\n$4\r\nHSET\r\n$3\r\nbar\r\n$1\r\nf\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(hset_bar, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -7045,7 +8274,11 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
         response.clear();
         let meta = parse_resp_command_arg_slices(randomkey, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         if response == b"$3\r\nfoo\r\n" {
             seen_foo = true;
@@ -7245,7 +8478,11 @@ fn setex_sets_value_with_expiration() {
     let setex = b"*4\r\n$5\r\nSETEX\r\n$3\r\nkey\r\n$2\r\n10\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(setex, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -7253,7 +8490,11 @@ fn setex_sets_value_with_expiration() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -7261,7 +8502,11 @@ fn setex_sets_value_with_expiration() {
     let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b":"));
     let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
@@ -7280,7 +8525,11 @@ fn setnx_sets_only_when_key_absent() {
     let setnx_first = b"*3\r\n$5\r\nSETNX\r\n$3\r\nkey\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(setnx_first, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -7288,7 +8537,11 @@ fn setnx_sets_only_when_key_absent() {
     let setnx_second = b"*3\r\n$5\r\nSETNX\r\n$3\r\nkey\r\n$3\r\ntwo\r\n";
     let meta = parse_resp_command_arg_slices(setnx_second, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7296,7 +8549,11 @@ fn setnx_sets_only_when_key_absent() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\none\r\n");
 }
@@ -7310,7 +8567,11 @@ fn strlen_returns_zero_for_missing_and_length_for_string() {
     let strlen_missing = b"*2\r\n$6\r\nSTRLEN\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(strlen_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7318,7 +8579,11 @@ fn strlen_returns_zero_for_missing_and_length_for_string() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -7326,7 +8591,11 @@ fn strlen_returns_zero_for_missing_and_length_for_string() {
     let strlen = b"*2\r\n$6\r\nSTRLEN\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(strlen, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":5\r\n");
 }
@@ -7340,7 +8609,11 @@ fn getrange_and_substr_return_expected_slices() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$10\r\n0123456789\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -7348,7 +8621,11 @@ fn getrange_and_substr_return_expected_slices() {
     let getrange = b"*4\r\n$8\r\nGETRANGE\r\n$3\r\nkey\r\n$1\r\n2\r\n$1\r\n5\r\n";
     let meta = parse_resp_command_arg_slices(getrange, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$4\r\n2345\r\n");
 
@@ -7356,7 +8633,11 @@ fn getrange_and_substr_return_expected_slices() {
     let getrange_negative = b"*4\r\n$8\r\nGETRANGE\r\n$3\r\nkey\r\n$2\r\n-3\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(getrange_negative, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\n789\r\n");
 
@@ -7364,7 +8645,11 @@ fn getrange_and_substr_return_expected_slices() {
     let substr = b"*4\r\n$6\r\nSUBSTR\r\n$3\r\nkey\r\n$1\r\n1\r\n$1\r\n3\r\n";
     let meta = parse_resp_command_arg_slices(substr, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\n123\r\n");
 }
@@ -7378,7 +8663,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let setrange = b"*4\r\n$8\r\nSETRANGE\r\n$3\r\nkey\r\n$1\r\n0\r\n$3\r\nabc\r\n";
     let meta = parse_resp_command_arg_slices(setrange, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -7386,7 +8675,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let getbit = b"*3\r\n$6\r\nGETBIT\r\n$3\r\nkey\r\n$1\r\n6\r\n";
     let meta = parse_resp_command_arg_slices(getbit, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7394,14 +8687,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let setbit = b"*4\r\n$6\r\nSETBIT\r\n$3\r\nkey\r\n$1\r\n6\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(setbit, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(getbit, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -7409,7 +8710,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\ncbc\r\n");
 
@@ -7417,7 +8722,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitcount = b"*2\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(bitcount, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":11\r\n");
 
@@ -7426,7 +8735,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         b"*5\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\n0\r\n$4\r\nBYTE\r\n";
     let meta = parse_resp_command_arg_slices(bitcount_byte, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":4\r\n");
 
@@ -7434,7 +8747,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitcount_bit = b"*5\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n$1\r\n8\r\n$2\r\n15\r\n$3\r\nBIT\r\n";
     let meta = parse_resp_command_arg_slices(bitcount_bit, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -7458,7 +8775,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let set_b1 = b"*3\r\n$3\r\nSET\r\n$2\r\nb1\r\n$1\r\nA\r\n";
     let meta = parse_resp_command_arg_slices(set_b1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -7466,7 +8787,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let set_b2 = b"*3\r\n$3\r\nSET\r\n$2\r\nb2\r\n$1\r\na\r\n";
     let meta = parse_resp_command_arg_slices(set_b2, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -7474,7 +8799,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_and = b"*5\r\n$5\r\nBITOP\r\n$3\r\nAND\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_and, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -7482,7 +8811,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let get_bdst = b"*2\r\n$3\r\nGET\r\n$4\r\nbdst\r\n";
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\nA\r\n");
 
@@ -7490,14 +8823,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_or = b"*5\r\n$5\r\nBITOP\r\n$2\r\nOR\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_or, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\na\r\n");
 
@@ -7505,14 +8846,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_xor = b"*5\r\n$5\r\nBITOP\r\n$3\r\nXOR\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_xor, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n \r\n");
 
@@ -7520,14 +8869,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_not = b"*4\r\n$5\r\nBITOP\r\n$3\r\nNOT\r\n$4\r\nbdst\r\n$2\r\nb1\r\n";
     let meta = parse_resp_command_arg_slices(bitop_not, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n\xbe\r\n");
 
@@ -7535,14 +8892,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_one = b"*5\r\n$5\r\nBITOP\r\n$3\r\nONE\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_one, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n \r\n");
 
@@ -7550,14 +8915,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_diff = b"*5\r\n$5\r\nBITOP\r\n$4\r\nDIFF\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_diff, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n\x00\r\n");
 
@@ -7565,14 +8938,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_diff1 = b"*5\r\n$5\r\nBITOP\r\n$5\r\nDIFF1\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_diff1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n \r\n");
 
@@ -7580,14 +8961,22 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitop_andor = b"*5\r\n$5\r\nBITOP\r\n$5\r\nANDOR\r\n$4\r\nbdst\r\n$2\r\nb1\r\n$2\r\nb2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_andor, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get_bdst, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\nA\r\n");
 
@@ -7596,7 +8985,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         b"*5\r\n$5\r\nBITOP\r\n$3\r\nAND\r\n$6\r\nbempty\r\n$8\r\nmissing1\r\n$8\r\nmissing2\r\n";
     let meta = parse_resp_command_arg_slices(bitop_and_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7604,7 +8997,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let exists_bempty = b"*2\r\n$6\r\nEXISTS\r\n$6\r\nbempty\r\n";
     let meta = parse_resp_command_arg_slices(exists_bempty, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7612,7 +9009,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let setrange_extend = b"*4\r\n$8\r\nSETRANGE\r\n$3\r\nkey\r\n$1\r\n5\r\n$1\r\nZ\r\n";
     let meta = parse_resp_command_arg_slices(setrange_extend, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":6\r\n");
 
@@ -7620,7 +9021,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let getbit_missing = b"*3\r\n$6\r\nGETBIT\r\n$7\r\nmissing\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(getbit_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7628,7 +9033,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitcount_missing = b"*2\r\n$8\r\nBITCOUNT\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(bitcount_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -7637,7 +9046,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         b"*5\r\n$8\r\nBITCOUNT\r\n$3\r\nkey\r\n$1\r\n0\r\n$1\r\n1\r\n$5\r\nWORDS\r\n";
     let meta = parse_resp_command_arg_slices(bitcount_invalid_mode, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -7647,7 +9060,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let set_empty = b"*3\r\n$3\r\nSET\r\n$8\r\nbitempty\r\n$0\r\n\r\n";
     let meta = parse_resp_command_arg_slices(set_empty, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
     assert_command_integer(&processor, "BITPOS bitempty 0", -1);
@@ -7657,7 +9074,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         b"*6\r\n$6\r\nBITPOS\r\n$4\r\nbpff\r\n$1\r\n0\r\n$1\r\n0\r\n$1\r\n7\r\n$5\r\nWORDS\r\n";
     let meta = parse_resp_command_arg_slices(bitpos_invalid_mode, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -7667,7 +9088,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitpos_invalid_bit = b"*3\r\n$6\r\nBITPOS\r\n$4\r\nbpff\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(bitpos_invalid_bit, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -7677,7 +9102,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let hset = b"*4\r\n$4\r\nHSET\r\n$2\r\noh\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(hset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -7686,7 +9115,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         b"*5\r\n$5\r\nBITOP\r\n$2\r\nOR\r\n$4\r\nbdst\r\n$2\r\noh\r\n$2\r\nb1\r\n";
     let meta = parse_resp_command_arg_slices(bitop_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -7699,7 +9132,11 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
     let bitpos_wrongtype = b"*3\r\n$6\r\nBITPOS\r\n$2\r\noh\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(bitpos_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .err()
         .unwrap();
     err.append_resp_error(&mut response);
@@ -8124,7 +9561,11 @@ fn psetex_sets_value_with_millisecond_expiration() {
     let psetex = b"*4\r\n$6\r\nPSETEX\r\n$3\r\nkey\r\n$3\r\n250\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(psetex, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8132,7 +9573,11 @@ fn psetex_sets_value_with_millisecond_expiration() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let ttl_millis = parse_integer_response(&response);
     assert!((0..=250).contains(&ttl_millis));
@@ -8147,7 +9592,11 @@ fn getset_returns_old_value_and_overwrites_key() {
     let getset_missing = b"*3\r\n$6\r\nGETSET\r\n$3\r\nkey\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(getset_missing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -8155,7 +9604,11 @@ fn getset_returns_old_value_and_overwrites_key() {
     let getset_existing = b"*3\r\n$6\r\nGETSET\r\n$3\r\nkey\r\n$3\r\ntwo\r\n";
     let meta = parse_resp_command_arg_slices(getset_existing, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\none\r\n");
 
@@ -8163,7 +9616,11 @@ fn getset_returns_old_value_and_overwrites_key() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\ntwo\r\n");
 }
@@ -8177,7 +9634,11 @@ fn getdel_returns_value_then_removes_key() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8185,7 +9646,11 @@ fn getdel_returns_value_then_removes_key() {
     let getdel = b"*2\r\n$6\r\nGETDEL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(getdel, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -8193,14 +9658,22 @@ fn getdel_returns_value_then_removes_key() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(getdel, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -8214,7 +9687,11 @@ fn append_and_incrbyfloat_update_string_values() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$1\r\na\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8222,7 +9699,11 @@ fn append_and_incrbyfloat_update_string_values() {
     let append = b"*3\r\n$6\r\nAPPEND\r\n$3\r\nkey\r\n$2\r\nbc\r\n";
     let meta = parse_resp_command_arg_slices(append, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -8230,7 +9711,11 @@ fn append_and_incrbyfloat_update_string_values() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nabc\r\n");
 
@@ -8238,7 +9723,11 @@ fn append_and_incrbyfloat_update_string_values() {
     let incrbyfloat = b"*3\r\n$11\r\nINCRBYFLOAT\r\n$3\r\nnum\r\n$4\r\n1.25\r\n";
     let meta = parse_resp_command_arg_slices(incrbyfloat, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$4\r\n1.25\r\n");
 
@@ -8246,7 +9735,11 @@ fn append_and_incrbyfloat_update_string_values() {
     let incrbyfloat_again = b"*3\r\n$11\r\nINCRBYFLOAT\r\n$3\r\nnum\r\n$4\r\n0.75\r\n";
     let meta = parse_resp_command_arg_slices(incrbyfloat_again, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$1\r\n2\r\n");
 
@@ -8266,7 +9759,11 @@ fn getex_updates_expiration_and_persist() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8274,7 +9771,11 @@ fn getex_updates_expiration_and_persist() {
     let getex_px = b"*4\r\n$5\r\nGETEX\r\n$3\r\nkey\r\n$2\r\nPX\r\n$3\r\n250\r\n";
     let meta = parse_resp_command_arg_slices(getex_px, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -8282,7 +9783,11 @@ fn getex_updates_expiration_and_persist() {
     let pttl = b"*2\r\n$4\r\nPTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(pttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let ttl_millis = parse_integer_response(&response);
     assert!((0..=250).contains(&ttl_millis));
@@ -8291,7 +9796,11 @@ fn getex_updates_expiration_and_persist() {
     let getex_persist = b"*3\r\n$5\r\nGETEX\r\n$3\r\nkey\r\n$7\r\nPERSIST\r\n";
     let meta = parse_resp_command_arg_slices(getex_persist, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -8299,7 +9808,11 @@ fn getex_updates_expiration_and_persist() {
     let ttl = b"*2\r\n$3\r\nTTL\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(ttl, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
 }
@@ -8313,7 +9826,11 @@ fn getex_exat_in_the_past_returns_value_and_deletes_key() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8321,7 +9838,11 @@ fn getex_exat_in_the_past_returns_value_and_deletes_key() {
     let getex_exat_past = b"*4\r\n$5\r\nGETEX\r\n$3\r\nkey\r\n$4\r\nEXAT\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(getex_exat_past, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
 
@@ -8329,7 +9850,11 @@ fn getex_exat_in_the_past_returns_value_and_deletes_key() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -8343,7 +9868,11 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
     let msetnx_first = b"*5\r\n$6\r\nMSETNX\r\n$2\r\nk1\r\n$2\r\nv1\r\n$2\r\nk2\r\n$2\r\nv2\r\n";
     let meta = parse_resp_command_arg_slices(msetnx_first, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -8351,7 +9880,11 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
     let msetnx_second = b"*5\r\n$6\r\nMSETNX\r\n$2\r\nk2\r\n$1\r\nx\r\n$2\r\nk3\r\n$1\r\ny\r\n";
     let meta = parse_resp_command_arg_slices(msetnx_second, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -8359,7 +9892,11 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
     let mget = b"*4\r\n$4\r\nMGET\r\n$2\r\nk1\r\n$2\r\nk2\r\n$2\r\nk3\r\n";
     let meta = parse_resp_command_arg_slices(mget, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
 }
@@ -8622,7 +10159,11 @@ fn touch_and_unlink_count_existing_keys() {
     let set_a = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(set_a, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8630,7 +10171,11 @@ fn touch_and_unlink_count_existing_keys() {
     let set_b = b"*3\r\n$3\r\nSET\r\n$1\r\nb\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(set_b, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8638,7 +10183,11 @@ fn touch_and_unlink_count_existing_keys() {
     let touch = b"*4\r\n$5\r\nTOUCH\r\n$1\r\na\r\n$1\r\nb\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(touch, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -8646,7 +10195,11 @@ fn touch_and_unlink_count_existing_keys() {
     let unlink = b"*4\r\n$6\r\nUNLINK\r\n$1\r\na\r\n$1\r\nb\r\n$7\r\nmissing\r\n";
     let meta = parse_resp_command_arg_slices(unlink, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -8654,7 +10207,11 @@ fn touch_and_unlink_count_existing_keys() {
     let get_a = b"*2\r\n$3\r\nGET\r\n$1\r\na\r\n";
     let meta = parse_resp_command_arg_slices(get_a, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -8668,7 +10225,11 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -8679,7 +10240,14 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute_with_client_no_touch(&args[..meta.argument_count], &mut response, true)
+        .execute_with_client_context_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            true,
+            None,
+            false,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
     let lru_after_no_touch = processor.key_lru_millis(b"key").unwrap();
@@ -8689,7 +10257,11 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
     response.clear();
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
     let lru_after_touch = processor.key_lru_millis(b"key").unwrap();
@@ -8779,9 +10351,10 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
     let getkeys_meta = parse_resp_command_arg_slices(&getkeys_frame, &mut large_args).unwrap();
     let mut getkeys_response = Vec::new();
     processor
-        .execute(
+        .execute_in_db(
             &large_args[..getkeys_meta.argument_count],
             &mut getkeys_response,
+            DbName::default(),
         )
         .unwrap();
     assert_eq!(parse_bulk_array_payloads(&getkeys_response), expected_keys);
@@ -9030,7 +10603,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfadd_empty_create = b"*2\r\n$5\r\nPFADD\r\n$8\r\nemptyhll\r\n";
     let meta = parse_resp_command_arg_slices(pfadd_empty_create, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -9038,7 +10615,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfadd_empty_noop = b"*2\r\n$5\r\nPFADD\r\n$8\r\nemptyhll\r\n";
     let meta = parse_resp_command_arg_slices(pfadd_empty_noop, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9046,7 +10627,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_empty = b"*2\r\n$7\r\nPFCOUNT\r\n$8\r\nemptyhll\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_empty, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9054,7 +10639,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfadd_first = b"*5\r\n$5\r\nPFADD\r\n$2\r\nh1\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(pfadd_first, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -9062,7 +10651,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfadd_second = b"*4\r\n$5\r\nPFADD\r\n$2\r\nh1\r\n$1\r\nb\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(pfadd_second, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9070,7 +10663,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_single = b"*2\r\n$7\r\nPFCOUNT\r\n$2\r\nh1\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_single, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -9078,7 +10675,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfadd_other = b"*4\r\n$5\r\nPFADD\r\n$2\r\nh2\r\n$1\r\nc\r\n$1\r\nd\r\n";
     let meta = parse_resp_command_arg_slices(pfadd_other, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -9086,7 +10687,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfmerge = b"*4\r\n$7\r\nPFMERGE\r\n$2\r\nhm\r\n$2\r\nh1\r\n$2\r\nh2\r\n";
     let meta = parse_resp_command_arg_slices(pfmerge, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9094,7 +10699,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_merged = b"*2\r\n$7\r\nPFCOUNT\r\n$2\r\nhm\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_merged, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":4\r\n");
 
@@ -9102,7 +10711,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfmerge_empty_dest = b"*2\r\n$7\r\nPFMERGE\r\n$6\r\ndest11\r\n";
     let meta = parse_resp_command_arg_slices(pfmerge_empty_dest, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9110,7 +10723,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_empty_dest = b"*2\r\n$7\r\nPFCOUNT\r\n$6\r\ndest11\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_empty_dest, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9119,7 +10736,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         b"*5\r\n$5\r\nPFADD\r\n$6\r\ndest22\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(pfmerge_dest_source_seed, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -9127,7 +10748,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfmerge_dest_source_only = b"*2\r\n$7\r\nPFMERGE\r\n$6\r\ndest22\r\n";
     let meta = parse_resp_command_arg_slices(pfmerge_dest_source_only, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9135,7 +10760,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_dest_source_only = b"*2\r\n$7\r\nPFCOUNT\r\n$6\r\ndest22\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_dest_source_only, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -9143,7 +10772,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfdebug_encoding = b"*3\r\n$7\r\nPFDEBUG\r\n$8\r\nENCODING\r\n$2\r\nhm\r\n";
     let meta = parse_resp_command_arg_slices(pfdebug_encoding, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$6\r\nsparse\r\n");
 
@@ -9151,7 +10784,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfdebug_getreg = b"*3\r\n$7\r\nPFDEBUG\r\n$6\r\nGETREG\r\n$2\r\nhm\r\n";
     let meta = parse_resp_command_arg_slices(pfdebug_getreg, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*16384\r\n"));
 
@@ -9159,7 +10796,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfdebug_simd_off = b"*3\r\n$7\r\nPFDEBUG\r\n$4\r\nSIMD\r\n$3\r\nOFF\r\n";
     let meta = parse_resp_command_arg_slices(pfdebug_simd_off, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9167,7 +10808,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfdebug_simd_on = b"*3\r\n$7\r\nPFDEBUG\r\n$4\r\nSIMD\r\n$2\r\nON\r\n";
     let meta = parse_resp_command_arg_slices(pfdebug_simd_on, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9175,7 +10820,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let append_corrupt_hll = b"*3\r\n$6\r\nAPPEND\r\n$2\r\nhm\r\n$5\r\nhello\r\n";
     let meta = parse_resp_command_arg_slices(append_corrupt_hll, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b":"));
 
@@ -9183,7 +10832,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_invalidobj = b"*2\r\n$7\r\nPFCOUNT\r\n$2\r\nhm\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_invalidobj, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-INVALIDOBJ Corrupted HLL object detected\r\n");
@@ -9192,7 +10845,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let set_hyll_like = b"*3\r\n$3\r\nSET\r\n$4\r\nhyll\r\n$4\r\nHYLL\r\n";
     let meta = parse_resp_command_arg_slices(set_hyll_like, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9200,7 +10857,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfdebug_getreg_invalidobj = b"*3\r\n$7\r\nPFDEBUG\r\n$6\r\nGETREG\r\n$4\r\nhyll\r\n";
     let meta = parse_resp_command_arg_slices(pfdebug_getreg_invalidobj, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-INVALIDOBJ Corrupted HLL object detected\r\n");
@@ -9209,7 +10870,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfselftest = b"*1\r\n$10\r\nPFSELFTEST\r\n";
     let meta = parse_resp_command_arg_slices(pfselftest, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9217,7 +10882,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let set_plain = b"*3\r\n$3\r\nSET\r\n$5\r\nplain\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set_plain, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9225,7 +10894,11 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
     let pfcount_wrongtype = b"*2\r\n$7\r\nPFCOUNT\r\n$5\r\nplain\r\n";
     let meta = parse_resp_command_arg_slices(pfcount_wrongtype, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9261,22 +10934,30 @@ fn hyperloglog_sparse_thresholds_match_external_scenario_in_auxiliary_db() {
 
     processor.with_selected_db(DbName::new(9), || {
         for sparse_max_bytes in [100usize, 500, 3_000] {
-            assert_command_response(
+            assert_command_response_in_db(
                 &processor,
                 &format!("CONFIG SET hll-sparse-max-bytes {sparse_max_bytes}"),
                 b"+OK\r\n",
+                DbName::new(9),
             );
-            let _ = execute_command_line(&processor, "DEL hll").unwrap();
-            assert_command_response(&processor, "PFADD hll", b":1\r\n");
+            let _ = execute_command_line_in_db(&processor, "DEL hll", DbName::new(9));
+            assert_command_response_in_db(&processor, "PFADD hll", b":1\r\n", DbName::new(9));
 
-            let mut logical_len =
-                parse_integer_response(&execute_command_line(&processor, "STRLEN hll").unwrap())
-                    as usize;
+            let mut logical_len = parse_integer_response(&execute_command_line_in_db(
+                &processor,
+                "STRLEN hll",
+                DbName::new(9),
+            )) as usize;
             let mut element_index = 0usize;
             let mut guard = 0usize;
 
             while logical_len <= sparse_max_bytes {
-                assert_command_response(&processor, "PFDEBUG ENCODING hll", b"$6\r\nsparse\r\n");
+                assert_command_response_in_db(
+                    &processor,
+                    "PFDEBUG ENCODING hll",
+                    b"$6\r\nsparse\r\n",
+                    DbName::new(9),
+                );
 
                 let mut command = String::from("PFADD hll");
                 for _ in 0..10 {
@@ -9284,15 +10965,22 @@ fn hyperloglog_sparse_thresholds_match_external_scenario_in_auxiliary_db() {
                     command.push_str(&format!("elem:{sparse_max_bytes}:{element_index}"));
                     element_index += 1;
                 }
-                let _ = execute_command_line(&processor, &command).unwrap();
-                logical_len = parse_integer_response(
-                    &execute_command_line(&processor, "STRLEN hll").unwrap(),
-                ) as usize;
+                let _ = execute_command_line_in_db(&processor, &command, DbName::new(9));
+                logical_len = parse_integer_response(&execute_command_line_in_db(
+                    &processor,
+                    "STRLEN hll",
+                    DbName::new(9),
+                )) as usize;
                 guard += 1;
                 assert!(guard < 1_000, "HLL sparse threshold test did not converge");
             }
 
-            assert_command_response(&processor, "PFDEBUG ENCODING hll", b"$5\r\ndense\r\n");
+            assert_command_response_in_db(
+                &processor,
+                "PFDEBUG ENCODING hll",
+                b"$5\r\ndense\r\n",
+                DbName::new(9),
+            );
         }
     });
 }
@@ -9302,14 +10990,15 @@ fn hyperloglog_sparse_stress_matches_external_scenario_in_auxiliary_db() {
     let processor = RequestProcessor::new().unwrap();
 
     processor.with_selected_db(DbName::new(9), || {
-        assert_command_response(
+        assert_command_response_in_db(
             &processor,
             "CONFIG SET hll-sparse-max-bytes 3000",
             b"+OK\r\n",
+            DbName::new(9),
         );
 
         for case_index in 0..128usize {
-            let _ = execute_command_line(&processor, "DEL hll1 hll2").unwrap();
+            let _ = execute_command_line_in_db(&processor, "DEL hll1 hll2", DbName::new(9));
 
             let element_count = (case_index * 37) % 100;
             let mut pfadd_hll1 = String::from("PFADD hll1");
@@ -9322,15 +11011,30 @@ fn hyperloglog_sparse_stress_matches_external_scenario_in_auxiliary_db() {
                 pfadd_hll2.push_str(&element);
             }
 
-            assert_command_response(&processor, "PFADD hll2", b":1\r\n");
-            assert_command_response(&processor, "PFDEBUG TODENSE hll2", b"+OK\r\n");
-            let _ = execute_command_line(&processor, &pfadd_hll1).unwrap();
-            let _ = execute_command_line(&processor, &pfadd_hll2).unwrap();
+            assert_command_response_in_db(&processor, "PFADD hll2", b":1\r\n", DbName::new(9));
+            assert_command_response_in_db(
+                &processor,
+                "PFDEBUG TODENSE hll2",
+                b"+OK\r\n",
+                DbName::new(9),
+            );
+            let _ = execute_command_line_in_db(&processor, &pfadd_hll1, DbName::new(9));
+            let _ = execute_command_line_in_db(&processor, &pfadd_hll2, DbName::new(9));
 
-            assert_command_response(&processor, "PFDEBUG ENCODING hll1", b"$6\r\nsparse\r\n");
-            assert_command_response(&processor, "PFDEBUG ENCODING hll2", b"$5\r\ndense\r\n");
-            let hll1_count = execute_command_line(&processor, "PFCOUNT hll1").unwrap();
-            let hll2_count = execute_command_line(&processor, "PFCOUNT hll2").unwrap();
+            assert_command_response_in_db(
+                &processor,
+                "PFDEBUG ENCODING hll1",
+                b"$6\r\nsparse\r\n",
+                DbName::new(9),
+            );
+            assert_command_response_in_db(
+                &processor,
+                "PFDEBUG ENCODING hll2",
+                b"$5\r\ndense\r\n",
+                DbName::new(9),
+            );
+            let hll1_count = execute_command_line_in_db(&processor, "PFCOUNT hll1", DbName::new(9));
+            let hll2_count = execute_command_line_in_db(&processor, "PFCOUNT hll2", DbName::new(9));
             assert_eq!(hll1_count, hll2_count);
         }
     });
@@ -9341,14 +11045,29 @@ fn hyperloglog_cache_invalidation_matches_external_scenario_in_auxiliary_db() {
     let processor = RequestProcessor::new().unwrap();
 
     processor.with_selected_db(DbName::new(9), || {
-        let _ = execute_command_line(&processor, "DEL hll").unwrap();
-        assert_command_response(&processor, "PFADD hll a b c", b":1\r\n");
-        let _ = execute_command_line(&processor, "PFCOUNT hll").unwrap();
-        assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x00\r\n");
-        assert_command_response(&processor, "PFADD hll a b c", b":0\r\n");
-        assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x00\r\n");
-        assert_command_response(&processor, "PFADD hll 1 2 3", b":1\r\n");
-        assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x80\r\n");
+        let _ = execute_command_line_in_db(&processor, "DEL hll", DbName::new(9));
+        assert_command_response_in_db(&processor, "PFADD hll a b c", b":1\r\n", DbName::new(9));
+        let _ = execute_command_line_in_db(&processor, "PFCOUNT hll", DbName::new(9));
+        assert_command_response_in_db(
+            &processor,
+            "GETRANGE hll 15 15",
+            b"$1\r\n\x00\r\n",
+            DbName::new(9),
+        );
+        assert_command_response_in_db(&processor, "PFADD hll a b c", b":0\r\n", DbName::new(9));
+        assert_command_response_in_db(
+            &processor,
+            "GETRANGE hll 15 15",
+            b"$1\r\n\x00\r\n",
+            DbName::new(9),
+        );
+        assert_command_response_in_db(&processor, "PFADD hll 1 2 3", b":1\r\n", DbName::new(9));
+        assert_command_response_in_db(
+            &processor,
+            "GETRANGE hll 15 15",
+            b"$1\r\n\x80\r\n",
+            DbName::new(9),
+        );
     });
 }
 
@@ -9358,8 +11077,13 @@ fn db_key_ref_reads_are_scoped_by_explicit_db_without_db0_fallback() {
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
     processor.with_selected_db(DbName::new(9), || {
-        assert_command_response(&processor, "SET shared db9", b"+OK\r\n");
-        assert_command_response(&processor, "HSET obj field value", b":1\r\n");
+        assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
+        assert_command_response_in_db(
+            &processor,
+            "HSET obj field value",
+            b":1\r\n",
+            DbName::new(9),
+        );
     });
 
     let db0_string = processor
@@ -9391,8 +11115,13 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
     processor.with_selected_db(DbName::new(9), || {
-        assert_command_response(&processor, "SET shared db9", b"+OK\r\n");
-        assert_command_response(&processor, "SET ttlkey value PX 5000", b"+OK\r\n");
+        assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
+        assert_command_response_in_db(
+            &processor,
+            "SET ttlkey value PX 5000",
+            b"+OK\r\n",
+            DbName::new(9),
+        );
     });
 
     processor
@@ -9449,12 +11178,45 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
 }
 
 #[test]
+fn execute_in_db_scopes_command_invocation_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*3\r\n$3\r\nSET\r\n$6\r\nshared\r\n$3\r\ndb9\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    processor
+        .execute_in_db(&args[..meta.argument_count], &mut response, DbName::new(9))
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$6\r\nshared\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    processor
+        .execute_in_db(&args[..meta.argument_count], &mut response, DbName::new(9))
+        .unwrap();
+    assert_eq!(response, b"$3\r\ndb9\r\n");
+}
+
+#[test]
 fn db_key_ref_object_mutations_are_scoped_by_explicit_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
 
     assert_command_response(&processor, "HSET obj field db0", b":1\r\n");
     processor.with_selected_db(DbName::new(9), || {
-        assert_command_response(&processor, "HSET obj field db9", b":1\r\n");
+        assert_command_response_in_db(&processor, "HSET obj field db9", b":1\r\n", DbName::new(9));
     });
 
     let mut replacement = std::collections::BTreeMap::new();
@@ -9507,7 +11269,7 @@ fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback(
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
     processor.with_selected_db(DbName::new(9), || {
-        assert_command_response(&processor, "SET shared db9", b"+OK\r\n");
+        assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
     });
 
     let deadline = current_instant() + std::time::Duration::from_secs(30);
@@ -9559,7 +11321,7 @@ fn db_key_ref_hash_field_expiration_metadata_is_scoped_by_explicit_db_without_db
 
     assert_command_response(&processor, "HSET hash field db0", b":1\r\n");
     processor.with_selected_db(DbName::new(9), || {
-        assert_command_response(&processor, "HSET hash field db9", b":1\r\n");
+        assert_command_response_in_db(&processor, "HSET hash field db9", b":1\r\n", DbName::new(9));
     });
 
     let expiration_unix_millis = current_unix_time_millis().unwrap() + 30_000;
@@ -9630,7 +11392,11 @@ fn quit_and_time_commands_return_expected_responses() {
     let quit = b"*1\r\n$4\r\nQUIT\r\n";
     let meta = parse_resp_command_arg_slices(quit, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9638,7 +11404,11 @@ fn quit_and_time_commands_return_expected_responses() {
     let time = b"*1\r\n$4\r\nTIME\r\n";
     let meta = parse_resp_command_arg_slices(time, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let tokens: Vec<&str> = std::str::from_utf8(&response)
         .unwrap()
@@ -9661,7 +11431,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let lastsave = b"*1\r\n$8\r\nLASTSAVE\r\n";
     let meta = parse_resp_command_arg_slices(lastsave, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let first_lastsave = parse_integer_response(&response);
     assert!(first_lastsave > 0);
@@ -9669,7 +11443,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     response.clear();
     let meta = parse_resp_command_arg_slices(lastsave, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(parse_integer_response(&response), first_lastsave);
 
@@ -9677,7 +11455,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let readonly = b"*1\r\n$8\r\nREADONLY\r\n";
     let meta = parse_resp_command_arg_slices(readonly, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9689,7 +11471,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let readwrite = b"*1\r\n$9\r\nREADWRITE\r\n";
     let meta = parse_resp_command_arg_slices(readwrite, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9701,7 +11487,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let hello3 = b"*2\r\n$5\r\nHELLO\r\n$1\r\n3\r\n";
     let meta = parse_resp_command_arg_slices(hello3, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     // HELLO returns a map (%7) in RESP3 with server info.
     assert!(
@@ -9717,7 +11507,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let reset = b"*1\r\n$5\r\nRESET\r\n";
     let meta = parse_resp_command_arg_slices(reset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+RESET\r\n");
     assert_eq!(
@@ -9729,7 +11523,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let lolwut = b"*1\r\n$6\r\nLOLWUT\r\n";
     let meta = parse_resp_command_arg_slices(lolwut, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
     assert!(response.windows(17).any(|w| w == b"Redis ver. 8.4.0\n"));
@@ -9738,7 +11536,11 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
     let lolwut_bad_version = b"*3\r\n$6\r\nLOLWUT\r\n$7\r\nVERSION\r\n$3\r\nbad\r\n";
     let meta = parse_resp_command_arg_slices(lolwut_bad_version, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9756,7 +11558,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let auth = b"*2\r\n$4\r\nAUTH\r\n$3\r\npwd\r\n";
     let meta = parse_resp_command_arg_slices(auth, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9768,7 +11574,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let select_zero = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(select_zero, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9776,7 +11586,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let select_out_of_range = b"*2\r\n$6\r\nSELECT\r\n$2\r\n16\r\n";
     let meta = parse_resp_command_arg_slices(select_out_of_range, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR DB index is out of range\r\n");
@@ -9785,7 +11599,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let move_same_db = b"*3\r\n$4\r\nMOVE\r\n$3\r\nkey\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(move_same_db, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9797,7 +11615,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let move_other_db = b"*3\r\n$4\r\nMOVE\r\n$3\r\nkey\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(move_other_db, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9805,7 +11627,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let swapdb_zero = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(swapdb_zero, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9813,7 +11639,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let swapdb_out_of_range = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$2\r\n16\r\n";
     let meta = parse_resp_command_arg_slices(swapdb_out_of_range, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR DB index is out of range\r\n");
@@ -9822,7 +11652,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_id = b"*2\r\n$6\r\nCLIENT\r\n$2\r\nID\r\n";
     let meta = parse_resp_command_arg_slices(client_id, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -9830,7 +11664,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_getname = b"*2\r\n$6\r\nCLIENT\r\n$7\r\nGETNAME\r\n";
     let meta = parse_resp_command_arg_slices(client_getname, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
@@ -9838,7 +11676,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_setname = b"*3\r\n$6\r\nCLIENT\r\n$7\r\nSETNAME\r\n$3\r\napp\r\n";
     let meta = parse_resp_command_arg_slices(client_setname, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9846,7 +11688,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_list = b"*2\r\n$6\r\nCLIENT\r\n$4\r\nLIST\r\n";
     let meta = parse_resp_command_arg_slices(client_list, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let response_str = String::from_utf8_lossy(&response);
     assert!(
@@ -9866,7 +11712,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_help = b"*2\r\n$6\r\nCLIENT\r\n$4\r\nHELP\r\n";
     let meta = parse_resp_command_arg_slices(client_help, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(
         String::from_utf8_lossy(&response).contains("CLIENT <subcommand>"),
@@ -9878,7 +11728,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_unblock = b"*3\r\n$6\r\nCLIENT\r\n$7\r\nUNBLOCK\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(client_unblock, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9886,7 +11740,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_pause = b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$3\r\n100\r\n$5\r\nWRITE\r\n";
     let meta = parse_resp_command_arg_slices(client_pause, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9894,7 +11752,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_unpause = b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n";
     let meta = parse_resp_command_arg_slices(client_unpause, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9902,7 +11764,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_no_touch = b"*3\r\n$6\r\nCLIENT\r\n$8\r\nNO-TOUCH\r\n$2\r\nON\r\n";
     let meta = parse_resp_command_arg_slices(client_no_touch, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9910,7 +11776,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_no_evict = b"*3\r\n$6\r\nCLIENT\r\n$8\r\nNO-EVICT\r\n$2\r\nON\r\n";
     let meta = parse_resp_command_arg_slices(client_no_evict, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9918,7 +11788,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let client_no_evict_off = b"*3\r\n$6\r\nCLIENT\r\n$8\r\nNO-EVICT\r\n$3\r\nOFF\r\n";
     let meta = parse_resp_command_arg_slices(client_no_evict_off, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9926,7 +11800,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let role = b"*1\r\n$4\r\nROLE\r\n";
     let meta = parse_resp_command_arg_slices(role, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
 
@@ -9934,7 +11812,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let wait = b"*3\r\n$4\r\nWAIT\r\n$1\r\n1\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(wait, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -9942,7 +11824,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let waitaof = b"*4\r\n$7\r\nWAITAOF\r\n$1\r\n0\r\n$1\r\n1\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(waitaof, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n:0\r\n:0\r\n");
 
@@ -9950,7 +11836,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let waitaof_err = b"*4\r\n$7\r\nWAITAOF\r\n$1\r\n1\r\n$1\r\n1\r\n$2\r\n10\r\n";
     let meta = parse_resp_command_arg_slices(waitaof_err, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -9962,7 +11852,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let save = b"*1\r\n$4\r\nSAVE\r\n";
     let meta = parse_resp_command_arg_slices(save, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -9970,7 +11864,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let bgsave = b"*1\r\n$6\r\nBGSAVE\r\n";
     let meta = parse_resp_command_arg_slices(bgsave, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+Background saving started\r\n");
 
@@ -9978,7 +11876,11 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     let bgrewriteaof = b"*1\r\n$12\r\nBGREWRITEAOF\r\n";
     let meta = parse_resp_command_arg_slices(bgrewriteaof, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -10149,7 +12051,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let module_list = b"*2\r\n$6\r\nMODULE\r\n$4\r\nLIST\r\n";
     let meta = parse_resp_command_arg_slices(module_list, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -10157,7 +12063,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let module_help = b"*2\r\n$6\r\nMODULE\r\n$4\r\nHELP\r\n";
     let meta = parse_resp_command_arg_slices(module_help, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*11\r\n"));
     let module_help_text = std::str::from_utf8(&response).unwrap();
@@ -10167,7 +12077,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_help = b"*2\r\n$7\r\nLATENCY\r\n$4\r\nHELP\r\n";
     let meta = parse_resp_command_arg_slices(latency_help, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*15\r\n"));
     let latency_help_text = std::str::from_utf8(&response).unwrap();
@@ -10177,7 +12091,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_help_extra = b"*3\r\n$7\r\nLATENCY\r\n$4\r\nHELP\r\n$3\r\nxxx\r\n";
     let meta = parse_resp_command_arg_slices(latency_help_extra, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -10189,7 +12107,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_latest = b"*2\r\n$7\r\nLATENCY\r\n$6\r\nLATEST\r\n";
     let meta = parse_resp_command_arg_slices(latency_latest, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -10197,7 +12119,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_history = b"*3\r\n$7\r\nLATENCY\r\n$7\r\nHISTORY\r\n$7\r\ncommand\r\n";
     let meta = parse_resp_command_arg_slices(latency_history, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -10205,7 +12131,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_reset = b"*2\r\n$7\r\nLATENCY\r\n$5\r\nRESET\r\n";
     let meta = parse_resp_command_arg_slices(latency_reset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -10213,7 +12143,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_doctor = b"*2\r\n$7\r\nLATENCY\r\n$6\r\nDOCTOR\r\n";
     let meta = parse_resp_command_arg_slices(latency_doctor, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
     let latency_doctor_text = std::str::from_utf8(&response).unwrap();
@@ -10223,7 +12157,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let slowlog_len = b"*2\r\n$7\r\nSLOWLOG\r\n$3\r\nLEN\r\n";
     let meta = parse_resp_command_arg_slices(slowlog_len, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -10231,7 +12169,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let slowlog_get_default = b"*2\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n";
     let meta = parse_resp_command_arg_slices(slowlog_get_default, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -10239,7 +12181,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let slowlog_get_count = b"*3\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n$1\r\n2\r\n";
     let meta = parse_resp_command_arg_slices(slowlog_get_count, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -10247,7 +12193,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let slowlog_reset = b"*2\r\n$7\r\nSLOWLOG\r\n$5\r\nRESET\r\n";
     let meta = parse_resp_command_arg_slices(slowlog_reset, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -10255,7 +12205,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let slowlog_help = b"*2\r\n$7\r\nSLOWLOG\r\n$4\r\nHELP\r\n";
     let meta = parse_resp_command_arg_slices(slowlog_help, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*12\r\n"));
 
@@ -10263,7 +12217,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let module_unknown = b"*2\r\n$6\r\nMODULE\r\n$4\r\nNOPE\r\n";
     let meta = parse_resp_command_arg_slices(module_unknown, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR unknown subcommand\r\n");
@@ -10272,7 +12230,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let latency_unknown = b"*2\r\n$7\r\nLATENCY\r\n$4\r\nNOPE\r\n";
     let meta = parse_resp_command_arg_slices(latency_unknown, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR unknown subcommand\r\n");
@@ -10281,7 +12243,11 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
     let slowlog_bad_count = b"*3\r\n$7\r\nSLOWLOG\r\n$3\r\nGET\r\n$3\r\nbad\r\n";
     let meta = parse_resp_command_arg_slices(slowlog_bad_count, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -10404,7 +12370,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let acl_whoami = b"*2\r\n$3\r\nACL\r\n$6\r\nWHOAMI\r\n";
     let meta = parse_resp_command_arg_slices(acl_whoami, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$7\r\ndefault\r\n");
 
@@ -10412,7 +12382,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let acl_users = b"*2\r\n$3\r\nACL\r\n$5\r\nUSERS\r\n";
     let meta = parse_resp_command_arg_slices(acl_users, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*1\r\n$7\r\ndefault\r\n");
 
@@ -10420,7 +12394,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let acl_setuser = b"*4\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$7\r\ndefault\r\n$2\r\non\r\n";
     let meta = parse_resp_command_arg_slices(acl_setuser, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -10428,7 +12406,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let cluster_keyslot = b"*3\r\n$7\r\nCLUSTER\r\n$7\r\nKEYSLOT\r\n$5\r\nuser1\r\n";
     let meta = parse_resp_command_arg_slices(cluster_keyslot, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let slot = SlotNumber::new(u16::try_from(parse_integer_response(&response)).unwrap());
     assert_eq!(slot, redis_hash_slot(b"user1"));
@@ -10437,7 +12419,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let cluster_info = b"*2\r\n$7\r\nCLUSTER\r\n$4\r\nINFO\r\n";
     let meta = parse_resp_command_arg_slices(cluster_info, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let cluster_info_text = std::str::from_utf8(&response).unwrap();
     assert!(cluster_info_text.contains("cluster_slots_assigned:16384"));
@@ -10446,7 +12432,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let failover = b"*1\r\n$8\r\nFAILOVER\r\n";
     let meta = parse_resp_command_arg_slices(failover, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(
@@ -10458,7 +12448,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let monitor = b"*1\r\n$7\r\nMONITOR\r\n";
     let meta = parse_resp_command_arg_slices(monitor, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -10466,7 +12460,11 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
     let shutdown = b"*2\r\n$8\r\nSHUTDOWN\r\n$6\r\nNOSAVE\r\n";
     let meta = parse_resp_command_arg_slices(shutdown, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR SHUTDOWN is disabled in this server\r\n");
@@ -11069,11 +13067,12 @@ fn pubsub_unsubscribe_inside_transaction_context_uses_client_id() {
     let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
     let mut response = Vec::new();
     processor
-        .execute_with_client_no_touch_in_transaction(
+        .execute_with_client_no_touch_in_transaction_in_db(
             &args[..meta.argument_count],
             &mut response,
             false,
             Some(client),
+            DbName::default(),
         )
         .unwrap();
     // After removing bar, 2 subscriptions remain (foo, baz).
@@ -11087,11 +13086,12 @@ fn pubsub_unsubscribe_inside_transaction_context_uses_client_id() {
     let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
     response.clear();
     processor
-        .execute_with_client_no_touch_in_transaction(
+        .execute_with_client_no_touch_in_transaction_in_db(
             &args[..meta.argument_count],
             &mut response,
             false,
             Some(client),
+            DbName::default(),
         )
         .unwrap();
     // After removing baz, 1 subscription remains (foo).
@@ -11591,7 +13591,11 @@ fn migrate_command_validates_arguments_before_disabled_response() {
     let meta = parse_resp_command_arg_slices(&empty_key_with_keys, &mut args).unwrap();
     let mut response = Vec::new();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR MIGRATE is disabled in this server\r\n");
@@ -11601,7 +13605,11 @@ fn migrate_command_validates_arguments_before_disabled_response() {
         encode_resp(&[b"MIGRATE", b"127.0.0.1", b"6379", b"", b"0", b"1000"]);
     let meta = parse_resp_command_arg_slices(&empty_key_without_keys, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR syntax error\r\n");
@@ -11622,7 +13630,11 @@ fn function_flush_returns_ok() {
     let function_flush = b"*2\r\n$8\r\nFUNCTION\r\n$5\r\nFLUSH\r\n";
     let meta = parse_resp_command_arg_slices(function_flush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 }
@@ -11637,7 +13649,11 @@ fn debug_set_active_expire_returns_ok() {
     let debug_disable = b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(debug_disable, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
     assert!(!processor.active_expire_enabled());
@@ -11646,7 +13662,11 @@ fn debug_set_active_expire_returns_ok() {
     let debug_enable = b"*3\r\n$5\r\nDEBUG\r\n$17\r\nSET-ACTIVE-EXPIRE\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(debug_enable, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
     assert!(processor.active_expire_enabled());
@@ -11749,7 +13769,11 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
 
     let meta = parse_resp_command_arg_slices(debug_attrib, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -11759,7 +13783,11 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_bignum, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -11769,49 +13797,77 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_double, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$5\r\n3.141\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_null, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_map, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*6\r\n:0\r\n:0\r\n:1\r\n:1\r\n:2\r\n:0\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*3\r\n:0\r\n:1\r\n:2\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_true, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_false, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_verbatim, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$25\r\nThis is a verbatim\nstring\r\n");
 
@@ -11820,7 +13876,11 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_attrib, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(
         response,
@@ -11830,56 +13890,88 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_bignum, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"(1234567999999999999999999999999999999\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_double, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b",3.141\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_null, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"_\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_map, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"%3\r\n:0\r\n#f\r\n:1\r\n#t\r\n:2\r\n#f\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"~3\r\n:0\r\n:1\r\n:2\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_true, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"#t\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_false, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"#f\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(debug_verbatim, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"=29\r\ntxt:This is a verbatim\nstring\r\n");
 }
@@ -11893,7 +13985,11 @@ fn object_encoding_and_refcount_report_basic_metadata() {
     let lpush = b"*5\r\n$5\r\nLPUSH\r\n$4\r\nlist\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n";
     let meta = parse_resp_command_arg_slices(lpush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":3\r\n");
 
@@ -11901,7 +13997,11 @@ fn object_encoding_and_refcount_report_basic_metadata() {
     let object_encoding = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$4\r\nlist\r\n";
     let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$8\r\nlistpack\r\n");
 
@@ -11909,7 +14009,11 @@ fn object_encoding_and_refcount_report_basic_metadata() {
     let object_refcount = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nREFCOUNT\r\n$4\r\nlist\r\n";
     let meta = parse_resp_command_arg_slices(object_refcount, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -11917,7 +14021,11 @@ fn object_encoding_and_refcount_report_basic_metadata() {
     let object_help = b"*2\r\n$6\r\nOBJECT\r\n$4\r\nHELP\r\n";
     let meta = parse_resp_command_arg_slices(object_help, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*11\r\n"));
     assert!(
@@ -11936,7 +14044,11 @@ fn object_freq_returns_zero_for_existing_key() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -11944,7 +14056,11 @@ fn object_freq_returns_zero_for_existing_key() {
     let freq = b"*3\r\n$6\r\nOBJECT\r\n$4\r\nFREQ\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(freq, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 }
@@ -11958,7 +14074,11 @@ fn object_freq_returns_null_for_missing_key() {
     let freq = b"*3\r\n$6\r\nOBJECT\r\n$4\r\nFREQ\r\n$11\r\nnonexistent\r\n";
     let meta = parse_resp_command_arg_slices(freq, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -11972,7 +14092,11 @@ fn object_idletime_returns_integer_for_existing_key() {
     let set = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -11980,7 +14104,11 @@ fn object_idletime_returns_integer_for_existing_key() {
     let idletime = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nIDLETIME\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(idletime, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     // Should return a non-negative integer in `:N\r\n` format
     let resp_str = String::from_utf8_lossy(&response);
@@ -12008,7 +14136,11 @@ fn object_idletime_returns_null_for_missing_key() {
     let idletime = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nIDLETIME\r\n$11\r\nnonexistent\r\n";
     let meta = parse_resp_command_arg_slices(idletime, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
 }
@@ -12023,7 +14155,11 @@ fn object_encoding_distinguishes_string_types() {
     let set_int = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\n12345\r\n";
     let meta = parse_resp_command_arg_slices(set_int, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12031,7 +14167,11 @@ fn object_encoding_distinguishes_string_types() {
     let enc = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$3\r\nkey\r\n";
     let meta = parse_resp_command_arg_slices(enc, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nint\r\n");
 
@@ -12040,14 +14180,22 @@ fn object_encoding_distinguishes_string_types() {
     let set_short = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nshort\r\n";
     let meta = parse_resp_command_arg_slices(set_short, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(enc, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$6\r\nembstr\r\n");
 
@@ -12056,14 +14204,22 @@ fn object_encoding_distinguishes_string_types() {
     let set_long = b"*3\r\n$3\r\nSET\r\n$3\r\nkey\r\n$50\r\naaaaaaaaaabbbbbbbbbbccccccccccddddddddddeeeeeeeeee\r\n";
     let meta = parse_resp_command_arg_slices(set_long, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(enc, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\nraw\r\n");
 }
@@ -12077,7 +14233,11 @@ fn debug_digest_value_matches_for_equal_payloads() {
     let set_a = b"*3\r\n$3\r\nSET\r\n$1\r\na\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(set_a, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12085,7 +14245,11 @@ fn debug_digest_value_matches_for_equal_payloads() {
     let copy = b"*3\r\n$4\r\nCOPY\r\n$1\r\na\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(copy, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -12093,7 +14257,11 @@ fn debug_digest_value_matches_for_equal_payloads() {
     let digest_a = b"*3\r\n$5\r\nDEBUG\r\n$12\r\nDIGEST-VALUE\r\n$1\r\na\r\n";
     let meta = parse_resp_command_arg_slices(digest_a, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let digest_a_response = response.clone();
     assert!(digest_a_response.starts_with(b"$16\r\n"));
@@ -12102,7 +14270,11 @@ fn debug_digest_value_matches_for_equal_payloads() {
     let digest_b = b"*3\r\n$5\r\nDEBUG\r\n$12\r\nDIGEST-VALUE\r\n$1\r\nb\r\n";
     let meta = parse_resp_command_arg_slices(digest_b, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, digest_a_response);
 
@@ -12110,7 +14282,11 @@ fn debug_digest_value_matches_for_equal_payloads() {
     let digest_all = b"*2\r\n$5\r\nDEBUG\r\n$6\r\nDIGEST\r\n";
     let meta = parse_resp_command_arg_slices(digest_all, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$16\r\n"));
 }
@@ -12124,7 +14300,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xadd = b"*5\r\n$4\r\nXADD\r\n$7\r\nstream1\r\n$1\r\n*\r\n$5\r\nfield\r\n$5\r\nvalue\r\n";
     let meta = parse_resp_command_arg_slices(xadd, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
 
@@ -12132,7 +14312,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xlen = b"*2\r\n$4\r\nXLEN\r\n$7\r\nstream1\r\n";
     let meta = parse_resp_command_arg_slices(xlen, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -12141,14 +14325,22 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         b"*5\r\n$4\r\nXADD\r\n$7\r\nstream1\r\n$1\r\n*\r\n$5\r\nfield\r\n$6\r\nvalue2\r\n";
     let meta = parse_resp_command_arg_slices(xadd_second, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"$"));
 
     response.clear();
     let meta = parse_resp_command_arg_slices(xlen, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":2\r\n");
 
@@ -12156,7 +14348,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xrange_all = b"*4\r\n$6\r\nXRANGE\r\n$7\r\nstream1\r\n$1\r\n-\r\n$1\r\n+\r\n";
     let meta = parse_resp_command_arg_slices(xrange_all, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
 
@@ -12165,7 +14361,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         b"*6\r\n$6\r\nXRANGE\r\n$7\r\nstream1\r\n$1\r\n-\r\n$1\r\n+\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(xrange_count_1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let xrange_head = response.clone();
     assert!(xrange_head.starts_with(b"*1\r\n"));
@@ -12174,7 +14374,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xrevrange_count_1 = b"*6\r\n$9\r\nXREVRANGE\r\n$7\r\nstream1\r\n$1\r\n+\r\n$1\r\n-\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(xrevrange_count_1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*1\r\n"));
     assert_ne!(response, xrange_head);
@@ -12184,7 +14388,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         b"*5\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$7\r\nstream1\r\n$2\r\ng1\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(xgroup_create, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12192,7 +14400,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xgroup_create_mkstream = b"*6\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$7\r\nstream3\r\n$3\r\ngmk\r\n$1\r\n$\r\n$8\r\nMKSTREAM\r\n";
     let meta = parse_resp_command_arg_slices(xgroup_create_mkstream, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12200,14 +14412,22 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xgroup_destroy = b"*4\r\n$6\r\nXGROUP\r\n$7\r\nDESTROY\r\n$7\r\nstream3\r\n$3\r\ngmk\r\n";
     let meta = parse_resp_command_arg_slices(xgroup_destroy, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(xgroup_destroy, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -12215,7 +14435,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xreadgroup = b"*9\r\n$10\r\nXREADGROUP\r\n$5\r\nGROUP\r\n$2\r\ng1\r\n$8\r\nconsumer\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n$7\r\nSTREAMS\r\n$7\r\nstream1\r\n$1\r\n>\r\n";
     let meta = parse_resp_command_arg_slices(xreadgroup, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*"));
 
@@ -12223,7 +14447,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xinfo_stream = b"*4\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$7\r\nstream1\r\n$4\r\nFULL\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_stream, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     let source_info = response.clone();
     // Redis 8+ returns a 15-field map = 30-element flat array in RESP2.
@@ -12233,7 +14461,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let copy = b"*3\r\n$4\r\nCOPY\r\n$7\r\nstream1\r\n$7\r\nstream2\r\n";
     let meta = parse_resp_command_arg_slices(copy, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":1\r\n");
 
@@ -12241,7 +14473,11 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
     let xinfo_stream_copy = b"*4\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$7\r\nstream2\r\n$4\r\nFULL\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_stream_copy, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, source_info);
 }
@@ -12262,14 +14498,22 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let xadd1 = b"*5\r\n$4\r\nXADD\r\n$4\r\nxkey\r\n$3\r\n1-0\r\n$1\r\nf\r\n$1\r\nv\r\n";
     let meta = parse_resp_command_arg_slices(xadd1, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let xadd2 = b"*5\r\n$4\r\nXADD\r\n$4\r\nxkey\r\n$3\r\n2-0\r\n$1\r\nf\r\n$2\r\nv2\r\n";
     let meta = parse_resp_command_arg_slices(xadd2, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     // Create a group.
@@ -12277,7 +14521,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let xgroup = b"*5\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$4\r\nxkey\r\n$2\r\nmg\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(xgroup, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12286,7 +14534,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let xinfo = b"*3\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$4\r\nxkey\r\n";
     let meta = parse_resp_command_arg_slices(xinfo, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*32\r\n"));
     // Verify length=2 is present after "length" label.
@@ -12307,7 +14559,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let xinfo_missing = b"*3\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$7\r\nno_such\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_missing, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert!(response.starts_with(b"-ERR no such key"));
@@ -12318,7 +14574,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         b"*6\r\n$5\r\nXINFO\r\n$6\r\nSTREAM\r\n$4\r\nxkey\r\n$4\r\nFULL\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_full_count, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     // Redis 8+ returns a 15-field FULL map = 30-element array.
     assert!(response.starts_with(b"*30\r\n"));
@@ -12335,7 +14595,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     response.clear();
     let meta = parse_resp_command_arg_slices(xinfo, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"%16\r\n"));
     processor.set_resp_protocol_version(RespProtocolVersion::Resp2);
@@ -12345,7 +14609,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let xinfo_groups = b"*3\r\n$5\r\nXINFO\r\n$6\r\nGROUPS\r\n$4\r\nxkey\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_groups, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*1\r\n*12\r\n"));
     // Verify group name "mg" is present.
@@ -12360,7 +14628,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
     let xinfo_consumers = b"*4\r\n$5\r\nXINFO\r\n$9\r\nCONSUMERS\r\n$4\r\nxkey\r\n$2\r\nmg\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_consumers, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -12370,7 +14642,11 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         b"*4\r\n$5\r\nXINFO\r\n$9\r\nCONSUMERS\r\n$4\r\nxkey\r\n$6\r\nnosuch\r\n";
     let meta = parse_resp_command_arg_slices(xinfo_consumers_bad, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert!(response.starts_with(b"-NOGROUP"));
@@ -12386,7 +14662,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         b"*5\r\n$4\r\nXADD\r\n$7\r\nstreamx\r\n$3\r\n1-0\r\n$5\r\nfield\r\n$3\r\none\r\n";
     let meta = parse_resp_command_arg_slices(xadd_first, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\n1-0\r\n");
 
@@ -12395,7 +14675,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         b"*5\r\n$4\r\nXADD\r\n$7\r\nstreamx\r\n$3\r\n2-0\r\n$5\r\nfield\r\n$3\r\ntwo\r\n";
     let meta = parse_resp_command_arg_slices(xadd_second, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$3\r\n2-0\r\n");
 
@@ -12404,7 +14688,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         b"*5\r\n$6\r\nXGROUP\r\n$6\r\nCREATE\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(xgroup_create, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12412,7 +14700,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xread = b"*6\r\n$5\r\nXREAD\r\n$5\r\nCOUNT\r\n$1\r\n1\r\n$7\r\nSTREAMS\r\n$7\r\nstreamx\r\n$3\r\n0-0\r\n";
     let meta = parse_resp_command_arg_slices(xread, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*1\r\n"));
     assert!(
@@ -12426,7 +14718,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xread_tail = b"*4\r\n$5\r\nXREAD\r\n$7\r\nSTREAMS\r\n$7\r\nstreamx\r\n$1\r\n$\r\n";
     let meta = parse_resp_command_arg_slices(xread_tail, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*-1\r\n");
 
@@ -12434,7 +14730,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xack = b"*4\r\n$4\r\nXACK\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$3\r\n1-0\r\n";
     let meta = parse_resp_command_arg_slices(xack, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b":0\r\n");
 
@@ -12442,7 +14742,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xpending_summary = b"*3\r\n$8\r\nXPENDING\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n";
     let meta = parse_resp_command_arg_slices(xpending_summary, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n");
 
@@ -12451,7 +14755,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         b"*6\r\n$8\r\nXPENDING\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$1\r\n-\r\n$1\r\n+\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(xpending_detail, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -12460,7 +14768,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         b"*7\r\n$6\r\nXCLAIM\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$2\r\nc1\r\n$1\r\n1\r\n$3\r\n1-0\r\n$6\r\nJUSTID\r\n";
     let meta = parse_resp_command_arg_slices(xclaim, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -12468,7 +14780,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xautoclaim = b"*9\r\n$10\r\nXAUTOCLAIM\r\n$7\r\nstreamx\r\n$2\r\ng1\r\n$2\r\nc1\r\n$1\r\n1\r\n$3\r\n0-0\r\n$5\r\nCOUNT\r\n$2\r\n10\r\n$6\r\nJUSTID\r\n";
     let meta = parse_resp_command_arg_slices(xautoclaim, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert!(response.starts_with(b"*3\r\n"));
     assert!(response.windows(9).any(|window| window == b"$3\r\n0-0\r\n"));
@@ -12477,7 +14793,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xsetid = b"*3\r\n$6\r\nXSETID\r\n$7\r\nstreamx\r\n$3\r\n2-0\r\n";
     let meta = parse_resp_command_arg_slices(xsetid, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12485,7 +14805,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xsetid_missing = b"*3\r\n$6\r\nXSETID\r\n$8\r\nmissing1\r\n$3\r\n1-0\r\n";
     let meta = parse_resp_command_arg_slices(xsetid_missing, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR no such key\r\n");
@@ -12494,7 +14818,11 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
     let xpending_missing = b"*3\r\n$8\r\nXPENDING\r\n$8\r\nmissing1\r\n$2\r\ng1\r\n";
     let meta = parse_resp_command_arg_slices(xpending_missing, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-NOGROUP No such key or consumer group\r\n");
@@ -12626,14 +14954,22 @@ fn xpending_accepts_idle_filter() {
     let xadd = encode_resp(&[b"XADD", b"xs1", b"*", b"f1", b"v1"]);
     let meta = parse_resp_command_arg_slices(&xadd, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
 
     response.clear();
     let xgroup = encode_resp(&[b"XGROUP", b"CREATE", b"xs1", b"g1", b"0"]);
     let meta = parse_resp_command_arg_slices(&xgroup, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -12651,7 +14987,11 @@ fn xpending_accepts_idle_filter() {
     ]);
     let meta = parse_resp_command_arg_slices(&xpending_idle, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -12670,7 +15010,11 @@ fn xpending_accepts_idle_filter() {
     ]);
     let meta = parse_resp_command_arg_slices(&xpending_idle_consumer, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -12679,7 +15023,11 @@ fn xpending_accepts_idle_filter() {
     let xpending_bad_idle = encode_resp(&[b"XPENDING", b"xs1", b"g1", b"IDLE"]);
     let meta = parse_resp_command_arg_slices(&xpending_bad_idle, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     assert!(matches!(err, RequestExecutionError::SyntaxError));
 }
@@ -12761,7 +15109,11 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
     let xtrim_bad_strategy = b"*4\r\n$5\r\nXTRIM\r\n$7\r\nstreamx\r\n$7\r\nUNKNOWN\r\n$1\r\n1\r\n";
     let meta = parse_resp_command_arg_slices(xtrim_bad_strategy, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR syntax error\r\n");
@@ -12771,7 +15123,11 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
         b"*6\r\n$5\r\nXTRIM\r\n$7\r\nstreamx\r\n$6\r\nMAXLEN\r\n$1\r\n1\r\n$5\r\nLIMIT\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(xtrim_negative_limit, &mut args).unwrap();
     let err = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     err.append_resp_error(&mut response);
     assert_eq!(response, b"-ERR value is out of range\r\n");
@@ -12867,7 +15223,11 @@ fn script_flush_returns_ok() {
     let script_flush = b"*2\r\n$6\r\nSCRIPT\r\n$5\r\nFLUSH\r\n";
     let meta = parse_resp_command_arg_slices(script_flush, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 }
@@ -12881,7 +15241,11 @@ fn script_flush_sync_returns_ok() {
     let script_flush_sync = b"*3\r\n$6\r\nSCRIPT\r\n$5\r\nFLUSH\r\n$4\r\nSYNC\r\n";
     let meta = parse_resp_command_arg_slices(script_flush_sync, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 }
@@ -13016,7 +15380,11 @@ fn script_load_exists_evalsha_and_flush_when_enabled() {
     let meta = parse_resp_command_arg_slices(&evalsha_after_flush, &mut args).unwrap();
     let mut response = Vec::new();
     let error = processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap_err();
     error.append_resp_error(&mut response);
     assert_eq!(
@@ -14241,7 +16609,11 @@ fn config_resetstat_returns_ok() {
     let config_resetstat = b"*2\r\n$6\r\nCONFIG\r\n$9\r\nRESETSTAT\r\n";
     let meta = parse_resp_command_arg_slices(config_resetstat, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -14261,7 +16633,11 @@ fn config_get_known_and_unknown_keys() {
     let config_get_appendonly = b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$10\r\nappendonly\r\n";
     let meta = parse_resp_command_arg_slices(config_get_appendonly, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n");
 
@@ -14269,7 +16645,11 @@ fn config_get_known_and_unknown_keys() {
     let config_get_unknown = b"*3\r\n$6\r\nCONFIG\r\n$3\r\nGET\r\n$7\r\nunknown\r\n";
     let meta = parse_resp_command_arg_slices(config_get_unknown, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
 
@@ -14363,7 +16743,11 @@ fn config_set_notify_keyspace_events_empty_disables() {
     let frame = b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$22\r\nnotify-keyspace-events\r\n$0\r\n\r\n";
     let meta = parse_resp_command_arg_slices(frame, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -14466,7 +16850,11 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
         b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$24\r\nzset-max-ziplist-entries\r\n$1\r\n0\r\n";
     let meta = parse_resp_command_arg_slices(config_set, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -14475,7 +16863,11 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
         let zadd = encode_resp(&[b"ZADD", b"zset", b"1", member]);
         let meta = parse_resp_command_arg_slices(&zadd, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
         assert!(response == b":1\r\n" || response == b":0\r\n");
     }
@@ -14484,7 +16876,11 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
     let object_encoding = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$4\r\nzset\r\n";
     let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$8\r\nskiplist\r\n");
 }
@@ -14499,7 +16895,11 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$21\r\nlist-max-ziplist-size\r\n$1\r\n5\r\n";
     let meta = parse_resp_command_arg_slices(config_set_small, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
@@ -14509,7 +16909,11 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         let rpush = encode_resp(&[b"RPUSH", b"list", value.as_bytes()]);
         let meta = parse_resp_command_arg_slices(&rpush, &mut args).unwrap();
         processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap();
     }
 
@@ -14517,7 +16921,11 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
     let object_encoding = b"*3\r\n$6\r\nOBJECT\r\n$8\r\nENCODING\r\n$4\r\nlist\r\n";
     let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$9\r\nquicklist\r\n");
 
@@ -14526,14 +16934,22 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         b"*4\r\n$6\r\nCONFIG\r\n$3\r\nSET\r\n$22\r\nlist-max-listpack-size\r\n$2\r\n-1\r\n";
     let meta = parse_resp_command_arg_slices(config_set_compact, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
     let meta = parse_resp_command_arg_slices(object_encoding, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"$8\r\nlistpack\r\n");
 }
@@ -14636,7 +17052,11 @@ fn config_resetstat_clears_stats_and_returns_ok() {
     let config_resetstat = b"*2\r\n$6\r\nCONFIG\r\n$9\r\nRESETSTAT\r\n";
     let meta = parse_resp_command_arg_slices(config_resetstat, &mut args).unwrap();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 }
@@ -15284,9 +17704,10 @@ fn sort_store_quicklist_debug_object_matches_external_scenario() {
     let lpush_meta = parse_resp_command_arg_slices(&lpush_frame, &mut lpush_args).unwrap();
     let mut lpush_response = Vec::new();
     processor
-        .execute(
+        .execute_in_db(
             &lpush_args[..lpush_meta.argument_count],
             &mut lpush_response,
+            DbName::default(),
         )
         .unwrap();
     assert_eq!(lpush_response, b":6000\r\n");
@@ -17698,7 +20119,11 @@ fn xadd_idmp_basic_and_auto_match_external_stream_scenarios() {
         let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
         let mut response = Vec::new();
         let err = processor
-            .execute(&args[..meta.argument_count], &mut response)
+            .execute_in_db(
+                &args[..meta.argument_count],
+                &mut response,
+                DbName::default(),
+            )
             .unwrap_err();
         err.append_resp_error(&mut response);
         response

@@ -4790,65 +4790,23 @@ impl RequestProcessor {
         self.string_store_shard_index_for_key(key)
     }
 
-    pub fn execute(
+    fn execute_in_current_context(
         &self,
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let mut arg_bytes = Vec::with_capacity(args.len());
         extend_arg_bytes_from_slices(args, &mut arg_bytes);
-        self.execute_bytes(&arg_bytes, response_out)
+        self.execute_bytes_in_current_context(&arg_bytes, response_out)
     }
 
-    #[cfg(test)]
-    pub(crate) fn execute_with_client_no_touch(
+    pub(crate) fn execute_in_db(
         &self,
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
-        client_no_touch: bool,
+        selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_in_db(
-            args,
-            response_out,
-            client_no_touch,
-            None,
-            false,
-            DbName::default(),
-        )
-    }
-
-    pub(crate) fn execute_with_client_no_touch_in_transaction(
-        &self,
-        args: &[ArgSlice],
-        response_out: &mut Vec<u8>,
-        client_no_touch: bool,
-        client_id: Option<ClientId>,
-    ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_in_db(
-            args,
-            response_out,
-            client_no_touch,
-            client_id,
-            true,
-            DbName::default(),
-        )
-    }
-
-    pub(crate) fn execute_with_client_context(
-        &self,
-        args: &[ArgSlice],
-        response_out: &mut Vec<u8>,
-        client_no_touch: bool,
-        client_id: Option<ClientId>,
-    ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_in_db(
-            args,
-            response_out,
-            client_no_touch,
-            client_id,
-            false,
-            DbName::default(),
-        )
+        self.execute_with_client_context_in_db(args, response_out, false, None, false, selected_db)
     }
 
     pub(crate) fn execute_with_client_context_in_db(
@@ -4867,7 +4825,7 @@ impl RequestProcessor {
             selected_db,
             tracking_reads_enabled: false,
         });
-        self.execute(args, response_out)
+        self.execute_in_current_context(args, response_out)
     }
 
     pub(crate) fn with_selected_db<T>(&self, selected_db: DbName, f: impl FnOnce() -> T) -> T {
@@ -4944,7 +4902,7 @@ impl RequestProcessor {
         Ok(state.thread_id != std::thread::current().id())
     }
 
-    pub(crate) fn execute_bytes(
+    fn execute_bytes_in_current_context(
         &self,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,

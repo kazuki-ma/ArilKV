@@ -187,7 +187,14 @@ pub(crate) fn execute_owned_args_via_processor(
 
     let mut response = Vec::new();
     processor
-        .execute_with_client_no_touch(&args, &mut response, false)
+        .execute_with_client_context_in_db(
+            &args,
+            &mut response,
+            false,
+            None,
+            false,
+            DbName::default(),
+        )
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }
@@ -205,7 +212,14 @@ pub(crate) fn execute_frame_via_processor(
     }
     let mut response = Vec::new();
     processor
-        .execute_with_client_no_touch(&args[..meta.argument_count], &mut response, false)
+        .execute_with_client_context_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+            false,
+            DbName::default(),
+        )
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
 }

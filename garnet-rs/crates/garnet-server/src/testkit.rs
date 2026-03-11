@@ -1,5 +1,6 @@
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
+use crate::request_lifecycle::DbName;
 use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
 
@@ -135,6 +136,14 @@ pub(crate) fn execute_resp_frame(
     processor: &RequestProcessor,
     frame: &[u8],
 ) -> Result<Vec<u8>, CommandHarnessError> {
+    execute_resp_frame_in_db(processor, frame, DbName::default())
+}
+
+pub(crate) fn execute_resp_frame_in_db(
+    processor: &RequestProcessor,
+    frame: &[u8],
+    selected_db: DbName,
+) -> Result<Vec<u8>, CommandHarnessError> {
     let mut args = Vec::new();
     let meta = parse_resp_command_arg_slices_dynamic(frame, &mut args, usize::MAX)?;
     if meta.bytes_consumed != frame.len() {
@@ -143,7 +152,7 @@ pub(crate) fn execute_resp_frame(
 
     let mut response = Vec::new();
     processor
-        .execute(&args[..meta.argument_count], &mut response)
+        .execute_in_db(&args[..meta.argument_count], &mut response, selected_db)
         .map_err(CommandHarnessError::Request)?;
     Ok(response)
 }
@@ -157,9 +166,29 @@ pub(crate) fn execute_command_line(
     execute_resp_frame(processor, &frame)
 }
 
+pub(crate) fn execute_command_line_in_db(
+    processor: &RequestProcessor,
+    line: &str,
+    selected_db: DbName,
+) -> Result<Vec<u8>, CommandHarnessError> {
+    let tokens = tokenize_command_line(line)?;
+    let frame = encode_resp_command(&tokens);
+    execute_resp_frame_in_db(processor, &frame, selected_db)
+}
+
 #[cfg(test)]
 pub(crate) fn assert_command_response(processor: &RequestProcessor, line: &str, expected: &[u8]) {
-    let response = execute_command_line(processor, line)
+    assert_command_response_in_db(processor, line, expected, DbName::default());
+}
+
+#[cfg(test)]
+pub(crate) fn assert_command_response_in_db(
+    processor: &RequestProcessor,
+    line: &str,
+    expected: &[u8],
+    selected_db: DbName,
+) {
+    let response = execute_command_line_in_db(processor, line, selected_db)
         .unwrap_or_else(|error| panic!("command failed: `{line}`: {error}"));
     assert_eq!(response, expected, "unexpected response for `{line}`");
 }

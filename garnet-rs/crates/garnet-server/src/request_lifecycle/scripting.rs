@@ -2138,7 +2138,7 @@ impl RequestProcessor {
         self.record_command_call(arg_refs[0]);
         let execution = self.with_resp_protocol_version_override(call_resp_protocol, || {
             let mut response = Vec::new();
-            let result = self.execute_bytes(&arg_refs, &mut response);
+            let result = self.execute_bytes_in_current_context(&arg_refs, &mut response);
             (result, response)
         });
         let (execution_result, response) = execution;
