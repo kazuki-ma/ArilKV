@@ -1655,7 +1655,10 @@ impl RequestProcessor {
                 None
             };
             let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
-                && self.has_hash_field_expirations_for_key(key.as_slice());
+                && self.has_hash_field_expirations_for_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
 
             let encoding = object_encoding_name(
                 object.object_type,
@@ -1852,7 +1855,10 @@ impl RequestProcessor {
                     None
                 };
                 let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
-                    && self.has_hash_field_expirations_for_key(key.as_slice());
+                    && self.has_hash_field_expirations_for_key(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ));
                 let enc = match object_encoding_name(
                     object.object_type,
                     &object.payload,
@@ -2037,7 +2043,10 @@ impl RequestProcessor {
                 None
             };
             let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
-                && self.has_hash_field_expirations_for_key(key.as_slice());
+                && self.has_hash_field_expirations_for_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             let encoding = object_encoding_name(
                 object.object_type,
                 &object.payload,
@@ -5011,7 +5020,7 @@ impl RequestProcessor {
                     })
                     .collect::<Vec<_>>();
                 self.restore_hash_field_expirations_for_key(
-                    entry.key.as_slice(),
+                    DbKeyRef::new(current_request_selected_db(), entry.key.as_slice()),
                     &hash_field_expirations,
                 );
             }
@@ -5058,15 +5067,18 @@ impl RequestProcessor {
                     key.as_slice(),
                 ));
                 let hash_field_expirations = if object.object_type == HASH_OBJECT_TYPE_TAG {
-                    self.snapshot_hash_field_expirations_for_key(key.as_slice())
-                        .into_iter()
-                        .map(
-                            |(field, expiration_unix_millis)| DebugReloadHashFieldExpiration {
-                                field: field.as_ref().to_vec(),
-                                expiration_unix_millis,
-                            },
-                        )
-                        .collect()
+                    self.snapshot_hash_field_expirations_for_key(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ))
+                    .into_iter()
+                    .map(
+                        |(field, expiration_unix_millis)| DebugReloadHashFieldExpiration {
+                            field: field.as_ref().to_vec(),
+                            expiration_unix_millis,
+                        },
+                    )
+                    .collect()
                 } else {
                     Vec::new()
                 };

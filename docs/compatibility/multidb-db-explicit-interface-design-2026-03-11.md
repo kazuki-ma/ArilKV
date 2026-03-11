@@ -59,6 +59,11 @@ Snapshot taken on 2026-03-11 after the fourth mechanical slice:
 - `current_request_selected_db(...)`: `314` call sites
 - `current_auxiliary_db_name(...)`: `20` call sites
 
+Snapshot taken on 2026-03-11 after the fifth mechanical slice:
+
+- `current_request_selected_db(...)`: `358` call sites
+- `current_auxiliary_db_name(...)`: `13` call sites
+
 Interpretation:
 
 - `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
@@ -100,17 +105,22 @@ Fourth mechanical slice:
 - string expiration metadata call sites in GETEX/PERSIST/EXPIRETIME, eviction/admin, object deletes, migration, and helper tests were migrated
 - regression added to prove explicit `DbKeyRef` expiration metadata paths do not fall back to DB0
 
+Fifth mechanical slice:
+
+- `set_hash_field_expiration_unix_millis_in_shard`, `set_hash_field_expiration_unix_millis`, `hash_field_expiration_unix_millis`, `has_hash_field_expirations_for_key`, `snapshot_hash_field_expirations_for_key`, `restore_hash_field_expirations_for_key`, `clear_hash_field_expirations_for_key_in_shard`, `remove_expired_hash_fields_for_access`, and `remove_all_expired_hash_fields_for_key` now require `DbKeyRef`
+- hash-field expiration call sites in hash commands, admin snapshot/reload, object deletes, and helper tests were migrated
+- regression added to prove explicit `DbKeyRef` hash-field expiration metadata paths do not fall back to DB0
+
 This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Convert the remaining hash-field expiration metadata/snapshot helpers to `DbKeyRef` or `DbScopedKey`.
-2. Remove the remaining `current_auxiliary_db_name()` branching from storage helpers.
-3. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
-4. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
-5. Delete obsolete implicit-selected-DB helpers once all internal callers are migrated.
+1. Remove the remaining `current_auxiliary_db_name()` branching from storage helpers and command helpers.
+2. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
+3. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
+4. Delete obsolete implicit-selected-DB helpers once all internal callers are migrated.
 
 ## Acceptance criteria
 

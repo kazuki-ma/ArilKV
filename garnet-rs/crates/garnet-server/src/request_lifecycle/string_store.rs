@@ -1010,19 +1010,19 @@ impl RequestProcessor {
 
     pub(super) fn set_hash_field_expiration_unix_millis_in_shard(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         shard_index: ShardIndex,
         field: &[u8],
         expiration_unix_millis: Option<u64>,
     ) {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        if key.db() != DbName::default() {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return;
             };
-            let Some(state) = databases.get_mut(&selected_db) else {
+            let Some(state) = databases.get_mut(&key.db()) else {
                 return;
             };
-            let Some(entry) = state.entries.get_mut(key) else {
+            let Some(entry) = state.entries.get_mut(key.key()) else {
                 return;
             };
             match expiration_unix_millis {
@@ -1051,7 +1051,7 @@ impl RequestProcessor {
                 let Some(deadline) = instant_from_unix_millis(unix_millis) else {
                     return;
                 };
-                let per_key = expirations.entry(RedisKey::from(key)).or_default();
+                let per_key = expirations.entry(RedisKey::from(key.key())).or_default();
                 per_key.insert(
                     HashField::from(field),
                     ExpirationMetadata {
@@ -1061,10 +1061,10 @@ impl RequestProcessor {
                 );
             }
             None => {
-                if let Some(per_key) = expirations.get_mut(key) {
+                if let Some(per_key) = expirations.get_mut(key.key()) {
                     per_key.remove(field);
                     if per_key.is_empty() {
-                        expirations.remove(key);
+                        expirations.remove(key.key());
                     }
                 }
             }
@@ -1073,11 +1073,11 @@ impl RequestProcessor {
 
     pub(super) fn set_hash_field_expiration_unix_millis(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         field: &[u8],
         expiration_unix_millis: Option<u64>,
     ) {
-        let shard_index = self.object_store_shard_index_for_key(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         self.set_hash_field_expiration_unix_millis_in_shard(
             key,
             shard_index,
@@ -1088,42 +1088,42 @@ impl RequestProcessor {
 
     pub(super) fn hash_field_expiration_unix_millis(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         field: &[u8],
     ) -> Option<u64> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        if key.db() != DbName::default() {
             return self
-                .auxiliary_value_snapshot(selected_db, key)
+                .auxiliary_value_snapshot(key.db(), key.key())
                 .and_then(|entry| entry.hash_field_expirations.get(field).cloned())
                 .map(|metadata| metadata.unix_millis.as_u64());
         }
 
-        let shard_index = self.object_store_shard_index_for_key(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         self.lock_hash_field_expirations_for_shard(shard_index)
-            .get(key)
+            .get(key.key())
             .and_then(|fields| fields.get(field))
             .map(|metadata| metadata.unix_millis.as_u64())
     }
 
-    pub(super) fn has_hash_field_expirations_for_key(&self, key: &[u8]) -> bool {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+    pub(super) fn has_hash_field_expirations_for_key(&self, key: DbKeyRef<'_>) -> bool {
+        if key.db() != DbName::default() {
             return self
-                .auxiliary_value_snapshot(selected_db, key)
+                .auxiliary_value_snapshot(key.db(), key.key())
                 .is_some_and(|entry| !entry.hash_field_expirations.is_empty());
         }
 
-        let shard_index = self.object_store_shard_index_for_key(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         self.lock_hash_field_expirations_for_shard(shard_index)
-            .contains_key(key)
+            .contains_key(key.key())
     }
 
     pub(super) fn snapshot_hash_field_expirations_for_key(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Vec<(HashField, u64)> {
         let now = current_instant();
-        let mut expirations = if let Some(selected_db) = self.current_auxiliary_db_name() {
-            self.auxiliary_value_snapshot(selected_db, key)
+        let mut expirations = if key.db() != DbName::default() {
+            self.auxiliary_value_snapshot(key.db(), key.key())
                 .map(|entry| {
                     entry
                         .hash_field_expirations
@@ -1138,9 +1138,9 @@ impl RequestProcessor {
                 })
                 .unwrap_or_default()
         } else {
-            let shard_index = self.object_store_shard_index_for_key(key);
+            let shard_index = self.object_store_shard_index_for_key(key.key());
             self.lock_hash_field_expirations_for_shard(shard_index)
-                .get(key)
+                .get(key.key())
                 .map(|per_key| {
                     per_key
                         .iter()
@@ -1160,10 +1160,10 @@ impl RequestProcessor {
 
     pub(super) fn restore_hash_field_expirations_for_key(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         expirations: &[(HashField, u64)],
     ) {
-        let shard_index = self.object_store_shard_index_for_key(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         self.clear_hash_field_expirations_for_key_in_shard(key, shard_index);
         for (field, expiration_unix_millis) in expirations {
             self.set_hash_field_expiration_unix_millis_in_shard(
@@ -1177,13 +1177,13 @@ impl RequestProcessor {
 
     pub(super) fn clear_hash_field_expirations_for_key_in_shard(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         shard_index: ShardIndex,
     ) {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        if key.db() != DbName::default() {
             if let Ok(mut databases) = self.auxiliary_databases.lock()
-                && let Some(state) = databases.get_mut(&selected_db)
-                && let Some(entry) = state.entries.get_mut(key)
+                && let Some(state) = databases.get_mut(&key.db())
+                && let Some(entry) = state.entries.get_mut(key.key())
             {
                 entry.hash_field_expirations.clear();
             }
@@ -1191,25 +1191,25 @@ impl RequestProcessor {
         }
 
         self.lock_hash_field_expirations_for_shard(shard_index)
-            .remove(key);
+            .remove(key.key());
     }
 
     pub(super) fn remove_expired_hash_fields_for_access(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         fields: &[&[u8]],
     ) -> Vec<HashField> {
         if fields.is_empty() {
             return Vec::new();
         }
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        if key.db() != DbName::default() {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Vec::new();
             };
-            let Some(state) = databases.get_mut(&selected_db) else {
+            let Some(state) = databases.get_mut(&key.db()) else {
                 return Vec::new();
             };
-            let Some(entry) = state.entries.get_mut(key) else {
+            let Some(entry) = state.entries.get_mut(key.key()) else {
                 return Vec::new();
             };
             let now = current_instant();
@@ -1227,10 +1227,10 @@ impl RequestProcessor {
             return expired_fields;
         }
 
-        let shard_index = self.object_store_shard_index_for_key(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         let now = current_instant();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
-        let Some(per_key) = expirations.get_mut(key) else {
+        let Some(per_key) = expirations.get_mut(key.key()) else {
             return Vec::new();
         };
 
@@ -1246,20 +1246,23 @@ impl RequestProcessor {
             per_key.remove(field.as_ref());
         }
         if per_key.is_empty() {
-            expirations.remove(key);
+            expirations.remove(key.key());
         }
         expired_fields
     }
 
-    pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<HashField> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+    pub(super) fn remove_all_expired_hash_fields_for_key(
+        &self,
+        key: DbKeyRef<'_>,
+    ) -> Vec<HashField> {
+        if key.db() != DbName::default() {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Vec::new();
             };
-            let Some(state) = databases.get_mut(&selected_db) else {
+            let Some(state) = databases.get_mut(&key.db()) else {
                 return Vec::new();
             };
-            let Some(entry) = state.entries.get_mut(key) else {
+            let Some(entry) = state.entries.get_mut(key.key()) else {
                 return Vec::new();
             };
             let now = current_instant();
@@ -1280,10 +1283,10 @@ impl RequestProcessor {
             return expired_fields;
         }
 
-        let shard_index = self.object_store_shard_index_for_key(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         let now = current_instant();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
-        let Some(per_key) = expirations.get_mut(key) else {
+        let Some(per_key) = expirations.get_mut(key.key()) else {
             return Vec::new();
         };
 
@@ -1304,7 +1307,7 @@ impl RequestProcessor {
             per_key.remove(field);
         }
         if per_key.is_empty() {
-            expirations.remove(key);
+            expirations.remove(key.key());
         }
         expired_fields.shrink_to_fit();
         expired_fields

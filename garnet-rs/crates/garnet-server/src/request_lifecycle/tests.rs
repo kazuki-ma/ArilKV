@@ -9554,6 +9554,51 @@ fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback(
 }
 
 #[test]
+fn db_key_ref_hash_field_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "HSET hash field db0", b":1\r\n");
+    processor.with_selected_db(DbName::new(9), || {
+        assert_command_response(&processor, "HSET hash field db9", b":1\r\n");
+    });
+
+    let expiration_unix_millis = current_unix_time_millis().unwrap() + 30_000;
+    processor.set_hash_field_expiration_unix_millis(
+        DbKeyRef::new(DbName::new(9), b"hash"),
+        b"field",
+        Some(expiration_unix_millis),
+    );
+
+    assert!(
+        processor
+            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::default(), b"hash"), b"field")
+            .is_none()
+    );
+    assert_eq!(
+        processor
+            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::new(9), b"hash"), b"field",),
+        Some(expiration_unix_millis)
+    );
+
+    let shard_index = processor.object_store_shard_index_for_key(b"hash");
+    processor.clear_hash_field_expirations_for_key_in_shard(
+        DbKeyRef::new(DbName::new(9), b"hash"),
+        shard_index,
+    );
+
+    assert!(
+        processor
+            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::default(), b"hash"), b"field")
+            .is_none()
+    );
+    assert!(
+        processor
+            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::new(9), b"hash"), b"field")
+            .is_none()
+    );
+}
+
+#[test]
 fn oversized_hyll_set_is_canonicalized_to_invalid_hll_marker() {
     let processor = RequestProcessor::new().unwrap();
 

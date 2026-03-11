@@ -124,7 +124,10 @@ impl RequestProcessor {
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
                 self.set_string_expiration_deadline(DbKeyRef::new(DbName::default(), &key), None);
-                self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
+                self.clear_hash_field_expirations_for_key_in_shard(
+                    DbKeyRef::new(DbName::default(), &key),
+                    shard_index,
+                );
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
                 self.clear_forced_set_encoding_floor(&key);
@@ -133,7 +136,10 @@ impl RequestProcessor {
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
-                self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
+                self.clear_hash_field_expirations_for_key_in_shard(
+                    DbKeyRef::new(DbName::default(), &key),
+                    shard_index,
+                );
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
                 self.clear_forced_set_encoding_floor(&key);
