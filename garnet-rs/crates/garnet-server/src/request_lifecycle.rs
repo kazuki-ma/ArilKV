@@ -733,6 +733,28 @@ impl From<DbName> for usize {
     }
 }
 
+pub(crate) type KeyBytes = [u8];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct DbKeyRef<'a> {
+    db: DbName,
+    key: &'a KeyBytes,
+}
+
+impl<'a> DbKeyRef<'a> {
+    pub(crate) const fn new(db: DbName, key: &'a KeyBytes) -> Self {
+        Self { db, key }
+    }
+
+    pub(crate) const fn db(self) -> DbName {
+        self.db
+    }
+
+    pub(crate) const fn key(self) -> &'a KeyBytes {
+        self.key
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct DbScopedKey {
     pub(crate) db: DbName,
@@ -2255,8 +2277,10 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<usize>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        let Some(value) = self.read_string_value(key)? else {
-            if self.object_key_exists(key)? {
+        let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+        else {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             return Ok(None);
@@ -3127,8 +3151,10 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<(bool, Option<ObjectTypeTag>), RequestExecutionError> {
-        let string_exists = self.key_exists(key)?;
-        let object_type = self.object_read(key)?.map(|object| object.object_type);
+        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), key))?;
+        let object_type = self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key))?
+            .map(|object| object.object_type);
         Ok((string_exists, object_type))
     }
 
@@ -4301,7 +4327,10 @@ impl RequestProcessor {
             {
                 return Ok(None);
             }
-            self.object_read(wait_key.key().as_slice())
+            self.object_read(DbKeyRef::new(
+                current_request_selected_db(),
+                wait_key.key().as_slice(),
+            ))
         })
     }
 

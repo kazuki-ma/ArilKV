@@ -42,11 +42,13 @@ impl RequestProcessor {
 
     fn object_read_raw(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
-            self.track_read_key_for_current_client(key);
-            let Some(entry) = self.auxiliary_value_snapshot(selected_db, key) else {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
+            self.track_read_key_for_current_client(key_bytes);
+            let Some(entry) = self.auxiliary_value_snapshot(db, key_bytes) else {
                 return Ok(None);
             };
             let Some(MigrationValue::Object {
@@ -62,22 +64,22 @@ impl RequestProcessor {
             }));
         }
 
-        let key = key.to_vec();
-        let mut store = self.lock_object_store_for_key(&key);
+        let key_vec = key_bytes.to_vec();
+        let mut store = self.lock_object_store_for_key(&key_vec);
         let mut session = store.session(&self.object_functions);
         let mut output = Vec::new();
         let status = session
-            .read(&key, &Vec::new(), &mut output, &ReadInfo::default())
+            .read(&key_vec, &Vec::new(), &mut output, &ReadInfo::default())
             .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                self.track_read_key_for_current_client(&key);
+                self.track_read_key_for_current_client(key_bytes);
                 decode_object_value(&output).map(Some).ok_or_else(|| {
                     storage_failure("object_read", "failed to decode object value payload")
                 })
             }
             ReadOperationStatus::NotFound => {
-                self.track_read_key_for_current_client(&key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(None)
             }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -200,8 +202,8 @@ impl RequestProcessor {
         Ok(())
     }
 
-    pub(super) fn has_set_hot_entry(&self, key: &[u8]) -> bool {
-        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+    pub(super) fn has_set_hot_entry(&self, key: DbKeyRef<'_>) -> bool {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         self.set_object_hot_state
             .lock()
             .map(|hot_state| hot_state.entries.contains_key(&scoped_key))
@@ -254,8 +256,8 @@ impl RequestProcessor {
         hot_state.lru.retain(|key| key.db != db);
     }
 
-    fn set_hot_payload_for_object_read(&self, key: &[u8]) -> Option<Vec<u8>> {
-        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+    fn set_hot_payload_for_object_read(&self, key: DbKeyRef<'_>) -> Option<Vec<u8>> {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
             return None;
         };
@@ -276,10 +278,11 @@ impl RequestProcessor {
 
         let mut entry = self.take_set_hot_entry(key);
         if entry.is_none() {
-            let object = match self.object_read_raw(key)? {
+            let db_key = DbKeyRef::new(current_request_selected_db(), key);
+            let object = match self.object_read_raw(db_key)? {
                 Some(object) => object,
                 None => {
-                    if self.key_exists(key)? {
+                    if self.key_exists(db_key)? {
                         return Err(RequestExecutionError::WrongType);
                     }
                     DecodedObjectValue {
@@ -343,10 +346,10 @@ impl RequestProcessor {
 
     pub(super) fn object_read(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
         if let Some(payload) = self.set_hot_payload_for_object_read(key) {
-            self.track_read_key_for_current_client(key);
+            self.track_read_key_for_current_client(key.key());
             return Ok(Some(DecodedObjectValue {
                 object_type: SET_OBJECT_TYPE_TAG,
                 payload,
@@ -371,10 +374,11 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<BTreeMap<Vec<u8>, Vec<u8>>>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        let object = match self.object_read(key)? {
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        let object = match self.object_read(db_key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(key)? {
+                if self.key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -404,10 +408,11 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<Vec<Vec<u8>>>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        let object = match self.object_read(key)? {
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        let object = match self.object_read(db_key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(key)? {
+                if self.key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -459,10 +464,11 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<DecodedSetObjectPayload>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        let object = match self.object_read(key)? {
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        let object = match self.object_read(db_key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(key)? {
+                if self.key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -520,10 +526,11 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        let object = match self.object_read(key)? {
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        let object = match self.object_read(db_key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(key)? {
+                if self.key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -553,10 +560,11 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<StreamObject>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        let object = match self.object_read(key)? {
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        let object = match self.object_read(db_key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(key)? {
+                if self.key_exists(db_key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);

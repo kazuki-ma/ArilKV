@@ -159,10 +159,14 @@ impl RequestProcessor {
         let resp3 = self.resp_protocol_version().is_resp3();
         if !self.has_hash_field_expirations_for_key(key.as_slice()) {
             self.expire_key_if_needed(&key)?;
-            let object = match self.object_read(&key)? {
+            let object = match self
+                .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 Some(object) => object,
                 None => {
-                    if self.key_exists(key.as_slice())? {
+                    if self
+                        .key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+                    {
                         return Err(RequestExecutionError::WrongType);
                     }
                     if resp3 {
@@ -1462,7 +1466,9 @@ impl RequestProcessor {
         field_values: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1470,7 +1476,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 0u32.to_le_bytes().to_vec()
@@ -1504,7 +1510,9 @@ impl RequestProcessor {
         field_values: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1512,7 +1520,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 0u32.to_le_bytes().to_vec()
@@ -1547,7 +1555,9 @@ impl RequestProcessor {
         value: &[u8],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1555,7 +1565,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 0u32.to_le_bytes().to_vec()
@@ -1584,7 +1594,9 @@ impl RequestProcessor {
         expire_options: &ParsedHashExpireOptions,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1592,7 +1604,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 0u32.to_le_bytes().to_vec()
@@ -1663,7 +1675,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let resp3 = self.resp_protocol_version().is_resp3();
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1671,7 +1685,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_array_length(response_out, fields.len());
@@ -1765,7 +1779,9 @@ impl RequestProcessor {
         fields: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1773,7 +1789,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_integer(response_out, 0);
@@ -1819,7 +1835,9 @@ impl RequestProcessor {
         field: &[u8],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1827,7 +1845,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_integer(response_out, 0);
@@ -1868,7 +1886,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let resp3 = self.resp_protocol_version().is_resp3();
-        let current_payload = match self.object_read(key.as_slice())? {
+        let current_payload = match self
+            .object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+        {
             Some(object) => {
                 if object.object_type != HASH_OBJECT_TYPE_TAG {
                     return Err(RequestExecutionError::WrongType);
@@ -1876,7 +1896,7 @@ impl RequestProcessor {
                 object.payload
             }
             None => {
-                if self.key_exists(key.as_slice())? {
+                if self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_array_length(response_out, fields.len());

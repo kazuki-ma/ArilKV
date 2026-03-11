@@ -168,12 +168,14 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
         if self.current_auxiliary_db_name().is_some() {
-            if let Some(output) = self.read_string_value(&key)? {
+            if let Some(output) =
+                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 self.record_key_access(&key, false);
                 append_bulk_string(response_out, &output);
                 return Ok(());
             }
-            if self.object_key_exists(&key)? {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             if resp3 {
@@ -201,7 +203,7 @@ impl RequestProcessor {
             }
             ReadOperationStatus::NotFound => {
                 self.track_read_key_for_current_client(&key);
-                if self.object_key_exists(&key)? {
+                if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 // TLA+ : ClientReadLenNullBulkHang
@@ -226,14 +228,16 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         if self.current_auxiliary_db_name().is_some() {
-            if let Some(output) = self.read_string_value(&key)? {
+            if let Some(output) =
+                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 append_integer(
                     response_out,
                     string_value_len_for_keysizes(self, &output) as i64,
                 );
                 return Ok(());
             }
-            if self.object_key_exists(&key)? {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             append_integer(response_out, 0);
@@ -259,7 +263,7 @@ impl RequestProcessor {
                 Ok(())
             }
             ReadOperationStatus::NotFound => {
-                if self.object_key_exists(&key)? {
+                if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_integer(response_out, 0);
@@ -302,7 +306,9 @@ impl RequestProcessor {
         let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
         if self.current_auxiliary_db_name().is_some() {
-            if let Some(output) = self.read_string_value(&key)? {
+            if let Some(output) =
+                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 if let Some(range) = normalize_string_range(output.len(), start, end) {
                     append_bulk_string(response_out, &output[range.start..=range.end_inclusive]);
                 } else {
@@ -310,7 +316,7 @@ impl RequestProcessor {
                 }
                 return Ok(());
             }
-            if self.object_key_exists(&key)? {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             append_bulk_string(response_out, b"");
@@ -337,7 +343,7 @@ impl RequestProcessor {
                 Ok(())
             }
             ReadOperationStatus::NotFound => {
-                if self.object_key_exists(&key)? {
+                if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 append_bulk_string(response_out, b"");
@@ -360,8 +366,10 @@ impl RequestProcessor {
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        let Some(value) = self.read_string_value(&key)? else {
-            if self.object_key_exists(&key)? {
+        let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             append_integer(response_out, 0);
@@ -399,15 +407,16 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
-        let mut value = match self.read_string_value(&key)? {
-            Some(value) => value,
-            None => {
-                if self.object_key_exists(&key)? {
-                    return Err(RequestExecutionError::WrongType);
+        let mut value =
+            match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(value) => value,
+                None => {
+                    if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    Vec::new()
                 }
-                Vec::new()
-            }
-        };
+            };
 
         let byte_index = offset / 8;
         let bit_index = 7usize - (offset % 8);
@@ -463,15 +472,16 @@ impl RequestProcessor {
         self.expire_key_if_needed(&key)?;
 
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
-        let mut value = match self.read_string_value(&key)? {
-            Some(value) => value,
-            None => {
-                if self.object_key_exists(&key)? {
-                    return Err(RequestExecutionError::WrongType);
+        let mut value =
+            match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(value) => value,
+                None => {
+                    if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    Vec::new()
                 }
-                Vec::new()
-            }
-        };
+            };
         if new_segment.is_empty() {
             append_integer(response_out, value.len() as i64);
             return Ok(());
@@ -530,8 +540,10 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        let Some(value) = self.read_string_value(&key)? else {
-            if self.object_key_exists(&key)? {
+        let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             append_integer(response_out, 0);
@@ -623,8 +635,10 @@ impl RequestProcessor {
         let has_explicit_end = args.len() >= 5;
 
         self.expire_key_if_needed(&key)?;
-        let Some(value) = self.read_string_value(&key)? else {
-            if self.object_key_exists(&key)? {
+        let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             let missing_result = if target_bit == 0 { 0 } else { -1 };
@@ -740,10 +754,12 @@ impl RequestProcessor {
         let mut source_values = Vec::with_capacity(source_keys.len());
         for key in &source_keys {
             self.expire_key_if_needed(key)?;
-            let value = match self.read_string_value(key)? {
+            let value = match self
+                .read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+            {
                 Some(value) => value,
                 None => {
-                    if self.object_key_exists(key)? {
+                    if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))? {
                         return Err(RequestExecutionError::WrongType);
                     }
                     Vec::new()
@@ -805,15 +821,16 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
-        let mut value = match self.read_string_value(&key)? {
-            Some(value) => value,
-            None => {
-                if self.object_key_exists(&key)? {
-                    return Err(RequestExecutionError::WrongType);
+        let mut value =
+            match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(value) => value,
+                None => {
+                    if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    Vec::new()
                 }
-                Vec::new()
-            }
-        };
+            };
 
         let mut overflow_mode = BitfieldOverflowMode::Wrap;
         let mut index = 2usize;
@@ -1043,19 +1060,27 @@ impl RequestProcessor {
 
         self.expire_key_if_needed(&left_key)?;
         self.expire_key_if_needed(&right_key)?;
-        let left = match self.read_string_value(&left_key)? {
+        let left = match self
+            .read_string_value(DbKeyRef::new(current_request_selected_db(), &left_key))?
+        {
             Some(value) => value,
             None => {
-                if self.object_key_exists(&left_key)? {
+                if self
+                    .object_key_exists(DbKeyRef::new(current_request_selected_db(), &left_key))?
+                {
                     return Err(RequestExecutionError::WrongType);
                 }
                 Vec::new()
             }
         };
-        let right = match self.read_string_value(&right_key)? {
+        let right = match self
+            .read_string_value(DbKeyRef::new(current_request_selected_db(), &right_key))?
+        {
             Some(value) => value,
             None => {
-                if self.object_key_exists(&right_key)? {
+                if self
+                    .object_key_exists(DbKeyRef::new(current_request_selected_db(), &right_key))?
+                {
                     return Err(RequestExecutionError::WrongType);
                 }
                 Vec::new()
@@ -1290,15 +1315,16 @@ impl RequestProcessor {
         self.expire_key_if_needed(&key)?;
 
         let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
-        let mut current_value = match self.read_string_value(&key)? {
-            Some(value) => value,
-            None => {
-                if self.object_key_exists(&key)? {
-                    return Err(RequestExecutionError::WrongType);
+        let mut current_value =
+            match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(value) => value,
+                None => {
+                    if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    Vec::new()
                 }
-                Vec::new()
-            }
-        };
+            };
         let new_len = current_value
             .len()
             .checked_add(append_value.len())
@@ -1334,8 +1360,10 @@ impl RequestProcessor {
         self.expire_key_if_needed(&key)?;
 
         let resp3 = self.resp_protocol_version().is_resp3();
-        let Some(value) = self.read_string_value(&key)? else {
-            if self.object_key_exists(&key)? {
+        let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
+            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
                 return Err(RequestExecutionError::WrongType);
             }
             if resp3 {
@@ -1404,18 +1432,19 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
-        let (current, expiration_unix_millis) = match self.read_string_value(&key)? {
-            Some(value) => (
-                parse_f64_ascii(&value).ok_or(RequestExecutionError::ValueNotFloat)?,
-                self.expiration_unix_millis_for_key(&key),
-            ),
-            None => {
-                if self.object_key_exists(&key)? {
-                    return Err(RequestExecutionError::WrongType);
+        let (current, expiration_unix_millis) =
+            match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(value) => (
+                    parse_f64_ascii(&value).ok_or(RequestExecutionError::ValueNotFloat)?,
+                    self.expiration_unix_millis_for_key(&key),
+                ),
+                None => {
+                    if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+                        return Err(RequestExecutionError::WrongType);
+                    }
+                    (0.0, None)
                 }
-                (0.0, None)
-            }
-        };
+            };
 
         let updated = current + increment;
         if !updated.is_finite() {
@@ -1470,9 +1499,14 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
         if let Some(selected_db) = self.current_auxiliary_db_name() {
-            let old_string_value = self.read_string_value(&key)?.unwrap_or_default();
-            let string_exists = !old_string_value.is_empty() || self.key_exists(&key)?;
-            let object_exists = self.object_read(&key)?.is_some();
+            let old_string_value = self
+                .read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+                .unwrap_or_default();
+            let string_exists = !old_string_value.is_empty()
+                || self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let object_exists = self
+                .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+                .is_some();
 
             if options.return_old_value && object_exists {
                 return Err(RequestExecutionError::WrongType);
@@ -1592,7 +1626,9 @@ impl RequestProcessor {
             ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
         };
 
-        let object_exists = self.object_read(&key)?.is_some();
+        let object_exists = self
+            .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+            .is_some();
 
         // SET GET on a non-string key returns WRONGTYPE and aborts.
         if options.return_old_value && object_exists {
@@ -1822,11 +1858,13 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if let Some(value) = self.read_string_value(&key)? {
+        if let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        {
             append_bulk_string(response_out, &string_digest_hex_bytes(&value));
             return Ok(());
         }
-        if self.object_key_exists(&key)? {
+        if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
             return Err(RequestExecutionError::WrongType);
         }
 
@@ -1858,7 +1896,9 @@ impl RequestProcessor {
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
-        if let Some(value) = self.read_string_value(&key)? {
+        if let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        {
             let condition = parse_delex_condition(args[2], args[3])?;
             if !string_write_condition_matches(Some(value.as_slice()), &condition)? {
                 append_integer(response_out, 0);
@@ -1868,7 +1908,7 @@ impl RequestProcessor {
             self.handle_del(&translated, response_out)?;
             return Ok(());
         }
-        if self.object_key_exists(&key)? {
+        if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
             return Err(RequestExecutionError::KeyShouldBeStringForConditionalDelete);
         }
 
@@ -1907,7 +1947,8 @@ impl RequestProcessor {
 
         for (key, _) in &key_value_pairs {
             self.expire_key_if_needed(key)?;
-            let exists_any = self.key_exists_any(key)?;
+            let exists_any =
+                self.key_exists_any(DbKeyRef::new(current_request_selected_db(), key))?;
             if (options.only_if_absent && exists_any) || (options.only_if_present && !exists_any) {
                 append_integer(response_out, 0);
                 return Ok(());
@@ -1975,7 +2016,7 @@ impl RequestProcessor {
         for arg in &args[1..] {
             let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
-            if self.key_exists_any(&key)? {
+            if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                 touched += 1;
                 self.record_key_access(&key, true);
             }
@@ -2026,7 +2067,8 @@ impl RequestProcessor {
     }
 
     fn unlink_object_lazyfree_weight(&self, key: &[u8]) -> Result<u64, RequestExecutionError> {
-        let Some(object) = self.object_read(key)? else {
+        let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))?
+        else {
             return Ok(0);
         };
         if object.object_type != STREAM_OBJECT_TYPE_TAG {
@@ -2089,7 +2131,9 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if only_if_absent && self.key_exists_any(&destination)? {
+        if only_if_absent
+            && self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &destination))?
+        {
             append_integer(response_out, 0);
             return Ok(());
         }
@@ -2179,7 +2223,7 @@ impl RequestProcessor {
         }
 
         let destination_exists =
-            self.with_selected_db(destination_db, || self.key_exists_any(&destination))?;
+            self.key_exists_any(DbKeyRef::new(destination_db, &destination))?;
         if !replace && destination_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -2260,18 +2304,21 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         self.expire_key_if_needed(key)?;
-        if !self.key_exists(key)? && self.object_key_exists(key)? {
+        if !self.key_exists(DbKeyRef::new(current_request_selected_db(), key))?
+            && self.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))?
+        {
             return Err(RequestExecutionError::WrongType);
         }
 
         if self.current_auxiliary_db_name().is_some() {
             let expiration_unix_millis = self.expiration_unix_millis_for_key(key);
-            let current = match self.read_string_value(key)? {
-                Some(value) => {
-                    parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?
-                }
-                None => 0,
-            };
+            let current =
+                match self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))? {
+                    Some(value) => {
+                        parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?
+                    }
+                    None => 0,
+                };
             let updated = current
                 .checked_add(delta)
                 .ok_or(RequestExecutionError::IncrementOverflow)?;
@@ -2307,7 +2354,7 @@ impl RequestProcessor {
             }
             Ok(RmwOperationStatus::RetryLater) => Err(RequestExecutionError::StorageBusy),
             Ok(RmwOperationStatus::NotFound) => {
-                if self.object_key_exists(key)? {
+                if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 let mut upsert_info = UpsertInfo::default();
@@ -2346,7 +2393,7 @@ impl RequestProcessor {
         for arg in &args[1..] {
             let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
-            if self.key_exists_any(&key)? {
+            if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                 exists += 1;
             }
         }
@@ -2364,15 +2411,16 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        if self.key_exists(&key)? {
+        if self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
             append_simple_string(response_out, b"string");
             return Ok(());
         }
 
-        let value_type = match self.object_read(&key)? {
-            Some(object) => object_type_name(object.object_type),
-            None => b"none",
-        };
+        let value_type =
+            match self.object_read(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(object) => object_type_name(object.object_type),
+                None => b"none",
+            };
         append_simple_string(response_out, value_type);
         Ok(())
     }
@@ -2389,7 +2437,9 @@ impl RequestProcessor {
         for arg in &args[1..] {
             let key = arg.to_vec();
             self.expire_key_if_needed(&key)?;
-            if let Some(value) = self.read_string_value(&key)? {
+            if let Some(value) =
+                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 append_bulk_string(response_out, &value);
             } else if resp3 {
                 append_null(response_out);
@@ -2431,7 +2481,7 @@ impl RequestProcessor {
 
         for (key, _) in &key_value_pairs {
             self.expire_key_if_needed(key)?;
-            if self.key_exists_any(key)? {
+            if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), key))? {
                 append_integer(response_out, 0);
                 return Ok(());
             }
@@ -2631,7 +2681,9 @@ impl RequestProcessor {
 
         if let Some(selected_db) = self.current_auxiliary_db_name() {
             let key_vec = RedisKey::from(key);
-            let object_exists = self.object_read(&key_vec)?.is_some();
+            let object_exists = self
+                .object_read(DbKeyRef::new(current_request_selected_db(), &key_vec))?
+                .is_some();
             if object_exists {
                 let _ = self.object_delete(&key_vec)?;
             }
@@ -2664,7 +2716,9 @@ impl RequestProcessor {
         let key_vec = key.to_vec();
         let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
-        let object_exists = self.object_read(&key_vec)?.is_some();
+        let object_exists = self
+            .object_read(DbKeyRef::new(current_request_selected_db(), &key_vec))?
+            .is_some();
 
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
@@ -2768,8 +2822,9 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(&key)?;
-        let string_exists = self.key_exists(&key)?;
-        let object_exists = self.object_key_exists(&key)?;
+        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let object_exists =
+            self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
         if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -2850,8 +2905,9 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(&key)?;
-        let string_exists = self.key_exists(&key)?;
-        let object_exists = self.object_key_exists(&key)?;
+        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let object_exists =
+            self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
         if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -2984,7 +3040,7 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
-        if !self.key_exists_any(&key)? {
+        if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
             append_integer(response_out, -2);
             return Ok(());
         }
@@ -3049,7 +3105,7 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
-        if !self.key_exists_any(&key)? {
+        if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
             append_integer(response_out, -2);
             return Ok(());
         }
@@ -3102,8 +3158,9 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        let string_exists = self.key_exists(&key)?;
-        let object_exists = self.object_key_exists(&key)?;
+        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let object_exists =
+            self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
         if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -3905,10 +3962,14 @@ fn load_sort_elements(
     key: &[u8],
 ) -> Result<Vec<Vec<u8>>, RequestExecutionError> {
     processor.expire_key_if_needed(key)?;
-    if processor.read_string_value(key)?.is_some() {
+    if processor
+        .read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+        .is_some()
+    {
         return Err(RequestExecutionError::WrongType);
     }
-    let Some(object) = processor.object_read(key)? else {
+    let Some(object) = processor.object_read(DbKeyRef::new(current_request_selected_db(), key))?
+    else {
         return Ok(Vec::new());
     };
     match object.object_type {
@@ -3966,7 +4027,7 @@ fn resolve_sort_lookup_value(
         return processor.hash_get_field_for_sort_lookup(&key, &field);
     }
 
-    processor.read_string_value(&key)
+    processor.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))
 }
 
 struct SortPatternSplit<'a> {
@@ -3979,7 +4040,7 @@ fn split_sort_pattern(pattern: &[u8]) -> SortPatternSplit<'_> {
     while index + 1 < pattern.len() {
         if pattern[index] == b'-' && pattern[index + 1] == b'>' {
             let field_part = &pattern[index + 2..];
-            // When the field part after `->` is empty (e.g. pattern "x:*->"),
+            // When the field part after `->` is empty (e.g. pattern "x:*->")),
             // Redis treats the whole pattern as a plain string key rather than
             // a hash-field dereference.  Only split when there is a non-empty
             // field component.
@@ -4064,8 +4125,10 @@ fn load_pf_set_for_key(
     key: &[u8],
 ) -> Result<Option<PfSetState>, RequestExecutionError> {
     processor.expire_key_if_needed(key)?;
-    let Some(value) = processor.read_string_value(key)? else {
-        if processor.object_key_exists(key)? {
+    let Some(value) =
+        processor.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+    else {
+        if processor.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))? {
             return Err(RequestExecutionError::WrongType);
         }
         return Ok(None);

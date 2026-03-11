@@ -786,7 +786,7 @@ impl RequestProcessor {
             return Ok(());
         };
 
-        let target_exists = self.with_selected_db(target_db, || self.key_exists_any(&key))?;
+        let target_exists = self.key_exists_any(DbKeyRef::new(target_db, &key))?;
         if target_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -1425,14 +1425,18 @@ impl RequestProcessor {
         let key = RedisKey::from(args[2]);
         self.expire_key_if_needed(&key)?;
 
-        if let Some(value) = self.read_string_value(&key)? {
+        if let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        {
             append_integer(
                 response_out,
                 estimate_string_memory_usage_bytes(key.len(), value.len()),
             );
             return Ok(());
         }
-        if let Some(object) = self.object_read(&key)? {
+        if let Some(object) =
+            self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+        {
             append_integer(
                 response_out,
                 estimate_memory_usage_bytes(key.len(), object.payload.len()),
@@ -1533,7 +1537,7 @@ impl RequestProcessor {
                 let key_name = encode_debug_populate_key_name(key_prefix, index);
                 let key = RedisKey::from(key_name.as_slice());
                 self.expire_key_if_needed(&key)?;
-                if self.key_exists_any(&key)? {
+                if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                     continue;
                 }
 
@@ -1618,10 +1622,12 @@ impl RequestProcessor {
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
 
-            let object = match self.object_read(&key)? {
+            let object = match self
+                .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 Some(object) => object,
                 None => {
-                    if self.key_exists_any(&key)? {
+                    if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                         append_error(
                             response_out,
                             b"ERR The value stored at the specified key is not represented using an hash table",
@@ -1793,12 +1799,12 @@ impl RequestProcessor {
                 format!(" ql_listpack_max:{list_max} ql_compressed:{ql_compressed}")
             };
             let string_value = with_expired_data_access(allow_expired_debug_access, || {
-                self.read_string_value(&key)
+                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))
             })?;
             let object_value = if string_value.is_some() {
                 None
             } else {
-                self.object_read(&key)?
+                self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
             };
             let (encoding, serialized_len) = if let Some(value) = string_value {
                 let enc = String::from_utf8_lossy(string_encoding_name(
@@ -1988,7 +1994,9 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
-            if let Some(value) = self.read_string_value(&key)? {
+            if let Some(value) =
+                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 let encoding = string_encoding_name(
                     &value,
                     self.string_encoding_is_forced_raw(key.as_slice()),
@@ -1996,7 +2004,9 @@ impl RequestProcessor {
                 append_bulk_string(response_out, encoding);
                 return Ok(());
             }
-            let Some(object) = self.object_read(&key)? else {
+            let Some(object) =
+                self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+            else {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -2045,7 +2055,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "OBJECT", "OBJECT REFCOUNT key")?;
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
-            if self.key_exists_any(&key)? {
+            if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                 append_integer(response_out, 1);
             } else if resp3 {
                 append_null(response_out);
@@ -2059,7 +2069,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "OBJECT", "OBJECT IDLETIME key")?;
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
-            if !self.key_exists_any(&key)? {
+            if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -2075,7 +2085,7 @@ impl RequestProcessor {
             require_exact_arity(args, 3, "OBJECT", "OBJECT FREQ key")?;
             let key = RedisKey::from(args[2]);
             self.expire_key_if_needed(&key)?;
-            if !self.key_exists_any(&key)? {
+            if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -2116,8 +2126,10 @@ impl RequestProcessor {
                 continue;
             }
 
-            let string_exists = self.key_exists(key.as_slice())?;
-            let object_exists = self.object_key_exists(key.as_slice())?;
+            let string_exists =
+                self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let object_exists = self
+                .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_exists {
                 self.untrack_string_key(key.as_slice());
             }
@@ -2161,8 +2173,10 @@ impl RequestProcessor {
             }
             self.expire_key_if_needed(key.as_slice())?;
 
-            let string_exists = self.key_exists(key.as_slice())?;
-            let object_exists = self.object_key_exists(key.as_slice())?;
+            let string_exists =
+                self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let object_exists = self
+                .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_exists {
                 self.untrack_string_key(key.as_slice());
             }
@@ -2261,8 +2275,10 @@ impl RequestProcessor {
             }
 
             self.expire_key_if_needed(key.as_slice())?;
-            let string_exists = self.key_exists(key.as_slice())?;
-            let object_exists = self.object_key_exists(key.as_slice())?;
+            let string_exists =
+                self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let object_exists = self
+                .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_exists {
                 self.untrack_string_key(key.as_slice());
             }
@@ -2309,7 +2325,8 @@ impl RequestProcessor {
         if string_exists || !object_exists {
             return Ok(false);
         }
-        let Some(object) = self.object_read(key)? else {
+        let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))?
+        else {
             self.untrack_object_key(key);
             return Ok(false);
         };
@@ -2818,14 +2835,18 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "DUMP", "DUMP key")?;
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        if let Some(value) = self.read_string_value(&key)? {
+        if let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
+        {
             append_bulk_string(
                 response_out,
                 &encode_dump_blob(MigrationValue::String(value.into())),
             );
             return Ok(());
         }
-        if let Some(object) = self.object_read(&key)? {
+        if let Some(object) =
+            self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+        {
             append_bulk_string(
                 response_out,
                 &encode_dump_blob(MigrationValue::Object {
@@ -4432,7 +4453,9 @@ impl RequestProcessor {
         keys.extend(self.object_keys_snapshot());
 
         for key in keys {
-            if let Some(value) = self.read_string_value(key.as_slice())? {
+            if let Some(value) = self
+                .read_string_value(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+            {
                 total_bytes = total_bytes.saturating_add(
                     u64::try_from(estimate_string_memory_usage_bytes(key.len(), value.len()))
                         .unwrap_or(u64::MAX),
@@ -4440,7 +4463,9 @@ impl RequestProcessor {
                 continue;
             }
 
-            if let Some(object) = self.object_read(key.as_slice())? {
+            if let Some(object) =
+                self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+            {
                 let estimated_payload_bytes = estimate_object_payload_memory_usage_bytes(&object);
                 total_bytes = total_bytes.saturating_add(
                     u64::try_from(estimate_memory_usage_bytes(
@@ -4605,7 +4630,10 @@ impl RequestProcessor {
                 self.expire_key_if_needed(key.as_slice())?;
                 self.active_expire_hash_fields_for_key(key.as_slice())?;
 
-                if let Some(value) = self.read_string_value(key.as_slice())? {
+                if let Some(value) = self.read_string_value(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ))? {
                     let length = super::string_commands::string_value_len_for_keysizes(
                         self,
                         value.as_slice(),
@@ -4615,7 +4643,9 @@ impl RequestProcessor {
                     continue;
                 }
 
-                let Some(object) = self.object_read(key.as_slice())? else {
+                let Some(object) =
+                    self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+                else {
                     continue;
                 };
                 let Some(histogram_entry) =
@@ -4642,7 +4672,7 @@ impl RequestProcessor {
                 })?;
 
                 if let Some(value) =
-                    self.with_selected_db(db_index, || self.read_string_value(key.as_slice()))?
+                    self.read_string_value(DbKeyRef::new(db_index, key.as_slice()))?
                 {
                     let length = super::string_commands::string_value_len_for_keysizes(
                         self,
@@ -4653,8 +4683,7 @@ impl RequestProcessor {
                     continue;
                 }
 
-                let Some(object) =
-                    self.with_selected_db(db_index, || self.object_read(key.as_slice()))?
+                let Some(object) = self.object_read(DbKeyRef::new(db_index, key.as_slice()))?
                 else {
                     continue;
                 };
@@ -4705,11 +4734,13 @@ impl RequestProcessor {
     }
 
     fn debug_digest_value_for_key(&self, key: &[u8]) -> Result<Vec<u8>, RequestExecutionError> {
-        if let Some(value) = self.read_string_value(key)? {
+        if let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+        {
             return Ok(fnv_hex_digest(1, &value));
         }
 
-        if let Some(object) = self.object_read(key)? {
+        if let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))? {
             let encoded = object.encode();
             return Ok(fnv_hex_digest(2, encoded.as_slice()));
         }
@@ -4727,7 +4758,7 @@ impl RequestProcessor {
         for key in keys {
             self.expire_key_if_needed(key.as_slice())?;
             self.active_expire_hash_fields_for_key(key.as_slice())?;
-            if !self.key_exists_any(key.as_slice())? {
+            if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                 continue;
             }
             let digest = self.debug_digest_value_for_key(key.as_slice())?;
@@ -4771,7 +4802,9 @@ fn restore_from_dump_blob(
     let options = parse_restore_options(args, 4, command_name)?;
 
     processor.expire_key_if_needed(&key)?;
-    if !options.replace && processor.key_exists_any(&key)? {
+    if !options.replace
+        && processor.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))?
+    {
         return Err(RequestExecutionError::BusyKey);
     }
     let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
@@ -4779,12 +4812,13 @@ fn restore_from_dump_blob(
         MigrationValue::String(_) => None,
         MigrationValue::Object { object_type, .. } => Some(*object_type),
     };
-    let previous_string_exists = processor.key_exists(&key)?;
+    let previous_string_exists =
+        processor.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
     let previous_type = if previous_string_exists {
         None
     } else {
         processor
-            .object_read(&key)?
+            .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
             .map(|object| object.object_type)
     };
     let had_previous_value = previous_string_exists || previous_type.is_some();
@@ -4968,7 +5002,9 @@ impl RequestProcessor {
         for key in keys {
             self.expire_key_if_needed(key.as_slice())?;
 
-            if let Some(stored_value) = self.read_string_value(key.as_slice())? {
+            if let Some(stored_value) = self
+                .read_string_value(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+            {
                 let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
                 let dump_blob = encode_dump_blob(MigrationValue::String(stored_value.into()));
                 entries.push(DebugReloadSnapshotEntry {
@@ -4980,7 +5016,9 @@ impl RequestProcessor {
                 continue;
             }
 
-            if let Some(object) = self.object_read(key.as_slice())? {
+            if let Some(object) =
+                self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+            {
                 let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
                 let hash_field_expirations = if object.object_type == HASH_OBJECT_TYPE_TAG {
                     self.snapshot_hash_field_expirations_for_key(key.as_slice())

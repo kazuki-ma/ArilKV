@@ -7,7 +7,9 @@ impl RequestProcessor {
     ) -> Result<Option<MigrationEntry>, RequestExecutionError> {
         self.expire_key_if_needed(key)?;
 
-        if let Some(value) = self.read_string_value(key)? {
+        if let Some(value) =
+            self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+        {
             return Ok(Some(MigrationEntry {
                 key: ItemKey::from(key),
                 value: MigrationValue::String(value.into()),
@@ -15,7 +17,7 @@ impl RequestProcessor {
             }));
         }
 
-        if let Some(object) = self.object_read(key)? {
+        if let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))? {
             return Ok(Some(MigrationEntry {
                 key: ItemKey::from(key),
                 value: MigrationValue::Object {
@@ -113,14 +115,16 @@ impl RequestProcessor {
                     }),
                     None => None,
                 }
-            } else if let Some(value) = self.read_string_value(key.as_slice())? {
+            } else if let Some(value) = self
+                .read_string_value(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
+            {
                 Some(MigrationEntry {
                     key: ItemKey::from(key.as_slice()),
                     value: MigrationValue::String(value.into()),
                     expiration_unix_millis,
                 })
             } else {
-                self.object_read(key.as_slice())?
+                self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
                     .map(|object| MigrationEntry {
                         key: ItemKey::from(key.as_slice()),
                         value: MigrationValue::Object {

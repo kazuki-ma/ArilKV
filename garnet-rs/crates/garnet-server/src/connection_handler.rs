@@ -76,6 +76,7 @@ use crate::request_lifecycle::BlockingWaitKey;
 use crate::request_lifecycle::ClientTrackingConfig;
 use crate::request_lifecycle::ClientTrackingModeSetting;
 use crate::request_lifecycle::ClientUnblockMode;
+use crate::request_lifecycle::DbKeyRef;
 use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::RespProtocolVersion;
@@ -5712,7 +5713,7 @@ fn selected_db_key_exists_any(
     key: &[u8],
 ) -> Result<bool, RequestExecutionError> {
     processor.with_selected_db(selected_db, || {
-        processor.key_exists_any_without_expiring(key)
+        processor.key_exists_any_without_expiring(DbKeyRef::new(selected_db, key))
     })
 }
 

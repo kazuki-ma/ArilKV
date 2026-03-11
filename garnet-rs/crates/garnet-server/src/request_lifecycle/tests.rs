@@ -949,7 +949,10 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
     processor
         .object_upsert(b"obj", ObjectTypeTag::Hash, b"payload")
         .unwrap();
-    let object = processor.object_read(b"obj").unwrap().unwrap();
+    let object = processor
+        .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
+        .unwrap()
+        .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Hash);
     assert_eq!(object.payload, b"payload");
 
@@ -975,7 +978,12 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
-    assert!(processor.object_read(b"obj").unwrap().is_none());
+    assert!(
+        processor
+            .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
+            .unwrap()
+            .is_none()
+    );
 
     response.clear();
     let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
@@ -3127,7 +3135,10 @@ fn sadd_uses_contiguous_range_encoding_for_canonical_integer_sequences() {
         assert_eq!(response, b":1\r\n");
     }
 
-    let object = processor.object_read(b"numbers").unwrap().unwrap();
+    let object = processor
+        .object_read(DbKeyRef::new(current_request_selected_db(), b"numbers"))
+        .unwrap()
+        .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Set);
     assert!(matches!(
         decode_set_object_payload(&object.payload),
@@ -3158,7 +3169,10 @@ fn sadd_falls_back_from_contiguous_range_encoding_for_non_canonical_members() {
         b":1\r\n"
     );
 
-    let object = processor.object_read(b"numbers").unwrap().unwrap();
+    let object = processor
+        .object_read(DbKeyRef::new(current_request_selected_db(), b"numbers"))
+        .unwrap()
+        .unwrap();
     assert!(matches!(
         decode_set_object_payload(&object.payload),
         Some(DecodedSetObjectPayload::Members(_))
@@ -9324,6 +9338,39 @@ fn hyperloglog_cache_invalidation_matches_external_scenario_in_auxiliary_db() {
         assert_command_response(&processor, "PFADD hll 1 2 3", b":1\r\n");
         assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x80\r\n");
     });
+}
+
+#[test]
+fn db_key_ref_reads_are_scoped_by_explicit_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
+    processor.with_selected_db(DbName::new(9), || {
+        assert_command_response(&processor, "SET shared db9", b"+OK\r\n");
+        assert_command_response(&processor, "HSET obj field value", b":1\r\n");
+    });
+
+    let db0_string = processor
+        .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+        .unwrap()
+        .unwrap();
+    let db9_string = processor
+        .read_string_value(DbKeyRef::new(DbName::new(9), b"shared"))
+        .unwrap()
+        .unwrap();
+    assert_eq!(db0_string, b"db0");
+    assert_eq!(db9_string, b"db9");
+
+    assert!(
+        processor
+            .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+            .unwrap()
+            .is_none()
+    );
+    let db9_object = processor
+        .object_read(DbKeyRef::new(DbName::new(9), b"obj"))
+        .unwrap();
+    assert!(db9_object.is_some());
 }
 
 #[test]

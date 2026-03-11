@@ -233,14 +233,16 @@ impl RequestProcessor {
 
     pub(super) fn read_string_value(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             if !allow_expired_data_access() {
-                self.expire_key_if_needed(key)?;
+                self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
             }
-            let entry = self.auxiliary_value_snapshot(selected_db, key);
-            self.track_read_key_for_current_client(key);
+            let entry = self.auxiliary_value_snapshot(db, key_bytes);
+            self.track_read_key_for_current_client(key_bytes);
             let Some(entry) = entry else {
                 return Ok(None);
             };
@@ -250,12 +252,12 @@ impl RequestProcessor {
             return Ok(Some(value.into_vec()));
         }
 
-        let mut store = self.lock_string_store_for_key(key);
+        let mut store = self.lock_string_store_for_key(key_bytes);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let status = session
             .read(
-                &key.to_vec(),
+                &key_bytes.to_vec(),
                 &Vec::new(),
                 &mut output,
                 &ReadInfo::default(),
@@ -263,78 +265,85 @@ impl RequestProcessor {
             .map_err(map_read_error)?;
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                self.track_read_key_for_current_client(key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(Some(output))
             }
             ReadOperationStatus::NotFound => {
-                self.track_read_key_for_current_client(key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(None)
             }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
-    pub(super) fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+    pub(super) fn key_exists(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             if !allow_expired_data_access() {
-                self.expire_key_if_needed(key)?;
+                self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
             }
-            let entry = self.auxiliary_value_snapshot(selected_db, key);
-            self.track_read_key_for_current_client(key);
+            let entry = self.auxiliary_value_snapshot(db, key_bytes);
+            self.track_read_key_for_current_client(key_bytes);
             return Ok(matches!(
                 entry.and_then(|entry| entry.value),
                 Some(MigrationValue::String(_))
             ));
         }
 
-        let mut store = self.lock_string_store_for_key(key);
+        let mut store = self.lock_string_store_for_key(key_bytes);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
-        let key_vec = key.to_vec();
+        let key_vec = key_bytes.to_vec();
         let status = session
             .read(&key_vec, &Vec::new(), &mut output, &ReadInfo::default())
             .map_err(map_read_error)?;
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                self.track_read_key_for_current_client(key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(true)
             }
             ReadOperationStatus::NotFound => {
-                self.track_read_key_for_current_client(key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(false)
             }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
-    pub(super) fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+    pub(super) fn object_key_exists(
+        &self,
+        key: DbKeyRef<'_>,
+    ) -> Result<bool, RequestExecutionError> {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             if !allow_expired_data_access() {
-                self.expire_key_if_needed(key)?;
+                self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
             }
-            if self.has_set_hot_entry(key) {
-                self.track_read_key_for_current_client(key);
+            if self.has_set_hot_entry(DbKeyRef::new(db, key_bytes)) {
+                self.track_read_key_for_current_client(key_bytes);
                 return Ok(true);
             }
-            let entry = self.auxiliary_value_snapshot(selected_db, key);
-            self.track_read_key_for_current_client(key);
+            let entry = self.auxiliary_value_snapshot(db, key_bytes);
+            self.track_read_key_for_current_client(key_bytes);
             return Ok(matches!(
                 entry.and_then(|entry| entry.value),
                 Some(MigrationValue::Object { .. })
             ));
         }
 
-        if self.has_set_hot_entry(key) {
-            self.track_read_key_for_current_client(key);
+        if self.has_set_hot_entry(DbKeyRef::new(db, key_bytes)) {
+            self.track_read_key_for_current_client(key_bytes);
             return Ok(true);
         }
-        let mut store = self.lock_object_store_for_key(key);
+        let mut store = self.lock_object_store_for_key(key_bytes);
         let mut session = store.session(&self.object_functions);
         let mut output = Vec::new();
         let status = session
             .read(
-                &key.to_vec(),
+                &key_bytes.to_vec(),
                 &Vec::new(),
                 &mut output,
                 &ReadInfo::default(),
@@ -343,18 +352,18 @@ impl RequestProcessor {
 
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
-                self.track_read_key_for_current_client(key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(true)
             }
             ReadOperationStatus::NotFound => {
-                self.track_read_key_for_current_client(key);
+                self.track_read_key_for_current_client(key_bytes);
                 Ok(false)
             }
             ReadOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
         }
     }
 
-    pub(crate) fn key_exists_any(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+    pub(crate) fn key_exists_any(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
         if self.key_exists(key)? {
             return Ok(true);
         }
@@ -363,15 +372,17 @@ impl RequestProcessor {
 
     pub(crate) fn key_exists_any_without_expiring(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
-            if self.has_set_hot_entry(key) {
-                self.track_read_key_for_current_client(key);
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
+            if self.has_set_hot_entry(DbKeyRef::new(db, key_bytes)) {
+                self.track_read_key_for_current_client(key_bytes);
                 return Ok(true);
             }
-            let entry = self.auxiliary_value_snapshot(selected_db, key);
-            self.track_read_key_for_current_client(key);
+            let entry = self.auxiliary_value_snapshot(db, key_bytes);
+            self.track_read_key_for_current_client(key_bytes);
             return Ok(entry.and_then(|entry| entry.value).is_some());
         }
         self.key_exists_any(key)
