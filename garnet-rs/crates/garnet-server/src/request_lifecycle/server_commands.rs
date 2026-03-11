@@ -795,7 +795,7 @@ impl RequestProcessor {
         entry.key = key.clone().into();
         self.with_selected_db(target_db, || self.import_migration_entry(&entry))?;
         self.delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let _ = self.object_delete(&key)?;
+        let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
 
         append_integer(response_out, 1);
         Ok(())
@@ -4274,7 +4274,8 @@ impl RequestProcessor {
                     current_request_selected_db(),
                     key.as_slice(),
                 ))?;
-                let object_deleted = self.object_delete(key.as_slice())?;
+                let object_deleted = self
+                    .object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
                 if string_deleted && !object_deleted {
                     self.bump_watch_version(key.as_slice());
                 }
@@ -4334,7 +4335,9 @@ impl RequestProcessor {
                 self.remove_string_key_metadata(key.as_slice());
             }
 
-            let object_deleted = match self.object_delete(key.as_slice()) {
+            let object_deleted = match self
+                .object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))
+            {
                 Ok(value) => value,
                 Err(error) => {
                     self.reset_lazyfree_pending_objects();
@@ -4610,7 +4613,8 @@ impl RequestProcessor {
             if string_deleted {
                 self.remove_string_key_metadata_in_shard(key.as_slice(), shard_index);
             }
-            let object_deleted = self.object_delete(key.as_slice())?;
+            let object_deleted =
+                self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_deleted && !object_deleted {
                 continue;
             }
@@ -4833,7 +4837,7 @@ fn restore_from_dump_blob(
     if options.replace {
         processor
             .delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let _ = processor.object_delete(&key)?;
+        let _ = processor.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
     }
 
     let ttl_u64 = u64::try_from(ttl_input).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -4890,7 +4894,7 @@ fn restore_migration_value(
                 raw.as_slice(),
                 expiration_unix_millis,
             )?;
-            let _ = processor.object_delete(key)?;
+            let _ = processor.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
         }
         MigrationValue::Object {
             object_type,
@@ -4900,7 +4904,11 @@ fn restore_migration_value(
                 current_request_selected_db(),
                 key,
             ))?;
-            processor.object_upsert(key, object_type, &payload)?;
+            processor.object_upsert(
+                DbKeyRef::new(current_request_selected_db(), key),
+                object_type,
+                &payload,
+            )?;
             processor.set_string_expiration_deadline(
                 key,
                 expiration_unix_millis.and_then(instant_from_unix_millis),

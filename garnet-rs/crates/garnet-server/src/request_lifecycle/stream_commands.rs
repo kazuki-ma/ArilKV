@@ -203,7 +203,7 @@ impl RequestProcessor {
         }
         if changed {
             if stream.entries.is_empty() && stream.groups.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else {
                 self.save_stream_object(&key, &stream)?;
             }
@@ -328,7 +328,7 @@ impl RequestProcessor {
                 0
             };
             if stream.entries.is_empty() && stream.groups.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else if removed == 1 {
                 self.save_stream_object(&key, &stream)?;
             }
@@ -794,7 +794,7 @@ impl RequestProcessor {
         }
         if changed {
             if stream.entries.is_empty() && stream.groups.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else {
                 self.save_stream_object(&key, &stream)?;
             }
@@ -1640,7 +1640,7 @@ impl RequestProcessor {
 
         if removed > 0 {
             if stream.entries.is_empty() && stream.groups.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else {
                 self.save_stream_object(&key, &stream)?;
             }

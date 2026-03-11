@@ -947,7 +947,11 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
     let processor = RequestProcessor::new().unwrap();
 
     processor
-        .object_upsert(b"obj", ObjectTypeTag::Hash, b"payload")
+        .object_upsert(
+            DbKeyRef::new(current_request_selected_db(), b"obj"),
+            ObjectTypeTag::Hash,
+            b"payload",
+        )
         .unwrap();
     let object = processor
         .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
@@ -9433,6 +9437,59 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
         processor
             .expiration_unix_millis(DbKeyRef::new(DbName::default(), b"ttlkey"))
             .is_none()
+    );
+}
+
+#[test]
+fn db_key_ref_object_mutations_are_scoped_by_explicit_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "HSET obj field db0", b":1\r\n");
+    processor.with_selected_db(DbName::new(9), || {
+        assert_command_response(&processor, "HSET obj field db9", b":1\r\n");
+    });
+
+    let mut replacement = std::collections::BTreeMap::new();
+    replacement.insert(b"field".to_vec(), b"db9-updated".to_vec());
+    let payload = serialize_hash_object_payload(&replacement);
+
+    processor
+        .object_upsert(
+            DbKeyRef::new(DbName::new(9), b"obj"),
+            HASH_OBJECT_TYPE_TAG,
+            &payload,
+        )
+        .unwrap();
+
+    let db0_payload = processor
+        .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+        .unwrap()
+        .unwrap();
+    let db0_hash = deserialize_hash_object_payload(&db0_payload.payload).unwrap();
+    assert_eq!(db0_hash.get(&b"field"[..]).unwrap(), b"db0");
+
+    let db9_payload = processor
+        .object_read(DbKeyRef::new(DbName::new(9), b"obj"))
+        .unwrap()
+        .unwrap();
+    let db9_hash = deserialize_hash_object_payload(&db9_payload.payload).unwrap();
+    assert_eq!(db9_hash.get(&b"field"[..]).unwrap(), b"db9-updated");
+
+    processor
+        .object_delete(DbKeyRef::new(DbName::new(9), b"obj"))
+        .unwrap();
+
+    assert!(
+        processor
+            .object_read(DbKeyRef::new(DbName::new(9), b"obj"))
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        processor
+            .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+            .unwrap()
+            .is_some()
     );
 }
 

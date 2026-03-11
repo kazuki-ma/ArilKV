@@ -9,35 +9,48 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let inserted = self.with_set_hot_entry(&key, |entry| {
-            if entry.is_none() {
-                if let Some((range, inserted_count)) = try_build_contiguous_i64_range(&args[2..]) {
-                    let mut new_entry = SetObjectHotEntry::new(
-                        DecodedSetObjectPayload::ContiguousI64Range(range),
+        let inserted = self.with_set_hot_entry(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            |entry| {
+                if entry.is_none() {
+                    if let Some((range, inserted_count)) =
+                        try_build_contiguous_i64_range(&args[2..])
+                    {
+                        let mut new_entry = SetObjectHotEntry::new(
+                            DecodedSetObjectPayload::ContiguousI64Range(range),
+                            false,
+                        );
+                        self.mark_set_hot_entry_dirty(
+                            DbKeyRef::new(current_request_selected_db(), &key),
+                            &mut new_entry,
+                            false,
+                        );
+                        *entry = Some(new_entry);
+                        return Ok(inserted_count as i64);
+                    }
+                    *entry = Some(SetObjectHotEntry::new(
+                        DecodedSetObjectPayload::Members(BTreeSet::new()),
+                        false,
+                    ));
+                }
+
+                let entry = entry.as_mut().unwrap();
+                let mut inserted = 0i64;
+                for member in &args[2..] {
+                    if entry.payload.insert_member(member) {
+                        inserted += 1;
+                    }
+                }
+                if inserted > 0 {
+                    self.mark_set_hot_entry_dirty(
+                        DbKeyRef::new(current_request_selected_db(), &key),
+                        entry,
                         false,
                     );
-                    self.mark_set_hot_entry_dirty(&key, &mut new_entry, false);
-                    *entry = Some(new_entry);
-                    return Ok(inserted_count as i64);
                 }
-                *entry = Some(SetObjectHotEntry::new(
-                    DecodedSetObjectPayload::Members(BTreeSet::new()),
-                    false,
-                ));
-            }
-
-            let entry = entry.as_mut().unwrap();
-            let mut inserted = 0i64;
-            for member in &args[2..] {
-                if entry.payload.insert_member(member) {
-                    inserted += 1;
-                }
-            }
-            if inserted > 0 {
-                self.mark_set_hot_entry_dirty(&key, entry, false);
-            }
-            Ok(inserted)
-        })?;
+                Ok(inserted)
+            },
+        )?;
 
         if inserted > 0 {
             self.notify_keyspace_event(NOTIFY_SET, b"sadd", &key);
@@ -54,35 +67,42 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let (removed, delete_key) = self.with_set_hot_entry(&key, |entry| {
-            let Some(current_entry) = entry.as_mut() else {
-                return Ok((0i64, false));
-            };
+        let (removed, delete_key) = self.with_set_hot_entry(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            |entry| {
+                let Some(current_entry) = entry.as_mut() else {
+                    return Ok((0i64, false));
+                };
 
-            let mut removed = 0i64;
-            for member in &args[2..] {
-                if current_entry.payload.remove_member(member) {
-                    removed += 1;
+                let mut removed = 0i64;
+                for member in &args[2..] {
+                    if current_entry.payload.remove_member(member) {
+                        removed += 1;
+                    }
                 }
-            }
-            if removed == 0 {
-                return Ok((0i64, false));
-            }
+                if removed == 0 {
+                    return Ok((0i64, false));
+                }
 
-            if current_entry.payload.is_empty() {
-                *entry = None;
-                return Ok((removed, true));
-            }
+                if current_entry.payload.is_empty() {
+                    *entry = None;
+                    return Ok((removed, true));
+                }
 
-            self.mark_set_hot_entry_dirty(&key, current_entry, false);
-            Ok((removed, false))
-        })?;
+                self.mark_set_hot_entry_dirty(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    current_entry,
+                    false,
+                );
+                Ok((removed, false))
+            },
+        )?;
 
         if removed > 0 {
             self.notify_keyspace_event(NOTIFY_SET, b"srem", &key);
         }
         if delete_key {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
@@ -153,11 +173,14 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "SCARD", "SCARD key")?;
 
         let key = RedisKey::from(args[1]);
-        let len = self.with_set_hot_entry(&key, |entry| {
-            Ok(entry
-                .as_ref()
-                .map_or(0, |entry| entry.payload.member_count() as i64))
-        })?;
+        let len = self.with_set_hot_entry(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            |entry| {
+                Ok(entry
+                    .as_ref()
+                    .map_or(0, |entry| entry.payload.member_count() as i64))
+            },
+        )?;
         if len > 0 {
             self.record_set_debug_ht_activity(&key, len as usize);
         }
@@ -183,21 +206,24 @@ impl RequestProcessor {
         let resp3 = self.resp_protocol_version().is_resp3();
 
         if scan_options.pattern.is_none() {
-            let (member_count, next_cursor, page) = self.with_set_hot_entry(&key, |entry| {
-                let Some(entry) = entry.as_mut() else {
-                    return Ok((0usize, 0u64, Vec::new()));
-                };
-                let values = entry.ordered_members();
-                let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
-                let start = if raw_start >= values.len() {
-                    0
-                } else {
-                    raw_start
-                };
-                let end = start.saturating_add(scan_options.count).min(values.len());
-                let next_cursor = if end >= values.len() { 0 } else { end as u64 };
-                Ok((values.len(), next_cursor, values[start..end].to_vec()))
-            })?;
+            let (member_count, next_cursor, page) = self.with_set_hot_entry(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                |entry| {
+                    let Some(entry) = entry.as_mut() else {
+                        return Ok((0usize, 0u64, Vec::new()));
+                    };
+                    let values = entry.ordered_members();
+                    let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+                    let start = if raw_start >= values.len() {
+                        0
+                    } else {
+                        raw_start
+                    };
+                    let end = start.saturating_add(scan_options.count).min(values.len());
+                    let next_cursor = if end >= values.len() { 0 } else { end as u64 };
+                    Ok((values.len(), next_cursor, values[start..end].to_vec()))
+                },
+            )?;
             if member_count > 0 {
                 self.record_set_debug_ht_activity(&key, member_count);
             }
@@ -271,17 +297,20 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
         if args.len() == 2 {
-            let sampled = self.with_set_hot_entry(&key, |entry| {
-                let Some(entry) = entry.as_mut() else {
-                    return Ok(None);
-                };
-                let members = entry.ordered_members();
-                if members.is_empty() {
-                    return Ok(None);
-                }
-                let random_index = (self.next_random_u64() as usize) % members.len();
-                Ok(Some((members.len(), members[random_index].clone())))
-            })?;
+            let sampled = self.with_set_hot_entry(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                |entry| {
+                    let Some(entry) = entry.as_mut() else {
+                        return Ok(None);
+                    };
+                    let members = entry.ordered_members();
+                    if members.is_empty() {
+                        return Ok(None);
+                    }
+                    let random_index = (self.next_random_u64() as usize) % members.len();
+                    Ok(Some((members.len(), members[random_index].clone())))
+                },
+            )?;
             let Some((member_count, member)) = sampled else {
                 if resp3 {
                     append_null(response_out);
@@ -299,37 +328,40 @@ impl RequestProcessor {
         // Positive count: distinct sampling → set type in RESP3.
         // Negative count: with-replacement → array type (may have duplicates).
         let use_set_type = resp3 && count > 0;
-        let sampled = self.with_set_hot_entry(&key, |entry| {
-            let Some(entry) = entry.as_mut() else {
-                return Ok((0usize, Vec::new()));
-            };
-            let members = entry.ordered_members();
-            if members.is_empty() || count == 0 {
-                return Ok((members.len(), Vec::new()));
-            }
-            if count > 0 {
-                let requested =
-                    usize::try_from(count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-                let sampled = if requested == 1 {
-                    let random_index = (self.next_random_u64() as usize) % members.len();
-                    vec![members[random_index].clone()]
-                } else {
-                    select_random_members_distinct_from_ordered(self, members, requested)
+        let sampled = self.with_set_hot_entry(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            |entry| {
+                let Some(entry) = entry.as_mut() else {
+                    return Ok((0usize, Vec::new()));
                 };
-                return Ok((members.len(), sampled));
-            }
+                let members = entry.ordered_members();
+                if members.is_empty() || count == 0 {
+                    return Ok((members.len(), Vec::new()));
+                }
+                if count > 0 {
+                    let requested = usize::try_from(count)
+                        .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                    let sampled = if requested == 1 {
+                        let random_index = (self.next_random_u64() as usize) % members.len();
+                        vec![members[random_index].clone()]
+                    } else {
+                        select_random_members_distinct_from_ordered(self, members, requested)
+                    };
+                    return Ok((members.len(), sampled));
+                }
 
-            let requested = count
-                .checked_abs()
-                .ok_or(RequestExecutionError::ValueOutOfRange)
-                .and_then(|value| {
-                    usize::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)
-                })?;
-            Ok((
-                members.len(),
-                sample_random_members_with_replacement_from_ordered(self, members, requested),
-            ))
-        })?;
+                let requested = count
+                    .checked_abs()
+                    .ok_or(RequestExecutionError::ValueOutOfRange)
+                    .and_then(|value| {
+                        usize::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)
+                    })?;
+                Ok((
+                    members.len(),
+                    sample_random_members_with_replacement_from_ordered(self, members, requested),
+                ))
+            },
+        )?;
         let (member_count, sampled) = sampled;
         if member_count == 0 {
             if use_set_type {
@@ -378,7 +410,7 @@ impl RequestProcessor {
                 return Ok(());
             };
             if set.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -392,7 +424,7 @@ impl RequestProcessor {
             debug_assert!(removed, "selected member must exist in set");
             self.notify_keyspace_event(NOTIFY_SET, b"spop", &key);
             if set.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             } else {
                 self.save_set_object(&key, &set)?;
@@ -431,7 +463,7 @@ impl RequestProcessor {
             self.notify_keyspace_event(NOTIFY_SET, b"spop", &key);
         }
         if set.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if !selected.is_empty() {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
@@ -487,7 +519,7 @@ impl RequestProcessor {
         let destination_changed = destination_set.insert(member);
 
         if source_set.is_empty() {
-            let _ = self.object_delete(&source)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &source))?;
             self.notify_keyspace_event(NOTIFY_SET, b"srem", &source);
             self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &source);
         } else {
@@ -861,7 +893,8 @@ fn store_set_result(
     };
 
     if result_set.is_empty() {
-        let object_deleted = processor.object_delete(destination)?;
+        let object_deleted =
+            processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
         if string_deleted && !object_deleted {
             processor.bump_watch_version(destination);
         }

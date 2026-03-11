@@ -137,7 +137,7 @@ impl RequestProcessor {
             self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
         }
         if hash.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
@@ -783,7 +783,7 @@ impl RequestProcessor {
         }
 
         if hash.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if !applied_fields.is_empty() {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
@@ -950,7 +950,7 @@ impl RequestProcessor {
         }
 
         if hash.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
@@ -1495,7 +1495,11 @@ impl RequestProcessor {
                 )
             })?;
 
-        self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &result.payload)?;
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+            HASH_OBJECT_TYPE_TAG,
+            &result.payload,
+        )?;
         for field in field_values.chunks_exact(2).map(|entry| entry[0]) {
             self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
         }
@@ -1539,7 +1543,11 @@ impl RequestProcessor {
                 )
             })?;
 
-        self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &result.payload)?;
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+            HASH_OBJECT_TYPE_TAG,
+            &result.payload,
+        )?;
         for field in field_values.chunks_exact(2).map(|entry| entry[0]) {
             self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
         }
@@ -1580,7 +1588,11 @@ impl RequestProcessor {
                 )
             })?;
 
-        self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &result.payload)?;
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+            HASH_OBJECT_TYPE_TAG,
+            &result.payload,
+        )?;
         self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
         self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
         append_integer(response_out, if result.inserted { 1 } else { 0 });
@@ -1659,9 +1671,14 @@ impl RequestProcessor {
         }
 
         if delete_key {
-            let _ = self.object_delete(key.as_slice())?;
+            let _ =
+                self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
         } else {
-            self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+            self.object_upsert(
+                DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+                HASH_OBJECT_TYPE_TAG,
+                &payload,
+            )?;
         }
         append_integer(response_out, result.inserted);
         Ok(())
@@ -1765,9 +1782,14 @@ impl RequestProcessor {
 
         if expire_options.expiration_unix_millis.is_some() {
             if delete_key {
-                let _ = self.object_delete(key.as_slice())?;
+                let _ = self
+                    .object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             } else {
-                self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                self.object_upsert(
+                    DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+                    HASH_OBJECT_TYPE_TAG,
+                    &payload,
+                )?;
             }
         }
         Ok(())
@@ -1818,10 +1840,17 @@ impl RequestProcessor {
                 }
                 self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
                 if is_empty {
-                    let _ = self.object_delete(key.as_slice())?;
+                    let _ = self.object_delete(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ))?;
                     self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key.as_slice());
                 } else {
-                    self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                    self.object_upsert(
+                        DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+                        HASH_OBJECT_TYPE_TAG,
+                        &payload,
+                    )?;
                 }
                 append_integer(response_out, removed);
             }
@@ -1868,10 +1897,17 @@ impl RequestProcessor {
                 self.set_hash_field_expiration_unix_millis(key.as_slice(), field, None);
                 self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
                 if is_empty {
-                    let _ = self.object_delete(key.as_slice())?;
+                    let _ = self.object_delete(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ))?;
                     self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key.as_slice());
                 } else {
-                    self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                    self.object_upsert(
+                        DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+                        HASH_OBJECT_TYPE_TAG,
+                        &payload,
+                    )?;
                 }
                 append_integer(response_out, 1);
             }
@@ -1963,9 +1999,16 @@ impl RequestProcessor {
                 }
 
                 if is_empty {
-                    let _ = self.object_delete(key.as_slice())?;
+                    let _ = self.object_delete(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ))?;
                 } else {
-                    self.object_upsert(key.as_slice(), HASH_OBJECT_TYPE_TAG, &payload)?;
+                    self.object_upsert(
+                        DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+                        HASH_OBJECT_TYPE_TAG,
+                        &payload,
+                    )?;
                 }
             }
         }
@@ -1995,7 +2038,7 @@ impl RequestProcessor {
         hash: &BTreeMap<Vec<u8>, Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
         if hash.is_empty() {
-            let _ = self.object_delete(key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
             self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key);
         } else {
             self.save_hash_object(key, hash)?;

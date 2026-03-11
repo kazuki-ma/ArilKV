@@ -1132,7 +1132,8 @@ fn store_geosearch_result(
     };
 
     if result_zset.is_empty() {
-        let object_deleted = processor.object_delete(destination)?;
+        let object_deleted =
+            processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
         if string_deleted && !object_deleted {
             processor.bump_watch_version(destination);
         }

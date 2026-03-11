@@ -3,30 +3,32 @@ use super::*;
 impl RequestProcessor {
     fn object_upsert_raw(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         object_type: ObjectTypeTag,
         payload: &[u8],
     ) -> Result<(), RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
-                .entry(selected_db)
+                .entry(db)
                 .or_default()
                 .entries
-                .entry(RedisKey::from(key))
+                .entry(RedisKey::from(key_bytes))
                 .or_default();
             entry.value = Some(MigrationValue::Object {
                 object_type,
                 payload: payload.to_vec(),
             });
-            self.bump_watch_version(key);
+            self.bump_watch_version(key_bytes);
             return Ok(());
         }
 
-        let shard_index = self.object_store_shard_index_for_key(key);
-        let key = key.to_vec();
+        let shard_index = self.object_store_shard_index_for_key(key_bytes);
+        let key = key_bytes.to_vec();
         let value = encode_object_value(object_type, payload);
         let mut store = self.lock_object_store_for_shard(shard_index);
         let mut session = store.session(&self.object_functions);
@@ -86,33 +88,35 @@ impl RequestProcessor {
         }
     }
 
-    fn object_delete_raw(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+    fn object_delete_raw(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            let Some(state) = databases.get_mut(&selected_db) else {
+            let Some(state) = databases.get_mut(&db) else {
                 return Ok(false);
             };
-            let Some(entry) = state.entries.get_mut(key) else {
+            let Some(entry) = state.entries.get_mut(key_bytes) else {
                 return Ok(false);
             };
             if matches!(entry.value, Some(MigrationValue::Object { .. })) {
                 entry.value = None;
                 entry.expiration = None;
                 entry.hash_field_expirations.clear();
-                let _ = state.entries.remove(key);
-                self.clear_forced_list_quicklist_encoding(key);
-                self.clear_forced_set_encoding_floor(key);
-                self.clear_set_debug_ht_state(key);
-                self.bump_watch_version(key);
+                let _ = state.entries.remove(key_bytes);
+                self.clear_forced_list_quicklist_encoding(key_bytes);
+                self.clear_forced_set_encoding_floor(key_bytes);
+                self.clear_set_debug_ht_state(key_bytes);
+                self.bump_watch_version(key_bytes);
                 return Ok(true);
             }
             return Ok(false);
         }
 
-        let shard_index = self.object_store_shard_index_for_key(key);
-        let key = key.to_vec();
+        let shard_index = self.object_store_shard_index_for_key(key_bytes);
+        let key = key_bytes.to_vec();
         let mut store = self.lock_object_store_for_shard(shard_index);
         let mut session = store.session(&self.object_functions);
         let mut info = DeleteInfo::default();
@@ -149,8 +153,8 @@ impl RequestProcessor {
         }
     }
 
-    fn take_set_hot_entry(&self, key: &[u8]) -> Option<SetObjectHotEntry> {
-        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+    fn take_set_hot_entry(&self, key: DbKeyRef<'_>) -> Option<SetObjectHotEntry> {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
             return None;
         };
@@ -166,10 +170,10 @@ impl RequestProcessor {
 
     fn upsert_set_hot_entry(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         entry: SetObjectHotEntry,
     ) -> Result<(), RequestExecutionError> {
-        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         let mut evicted = None;
         {
             let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
@@ -195,9 +199,11 @@ impl RequestProcessor {
             && oldest_entry.dirty
         {
             let payload = Self::serialize_set_hot_payload(&oldest_entry.payload);
-            self.with_selected_db(oldest_key.db, || {
-                self.object_upsert_raw(oldest_key.key.as_slice(), SET_OBJECT_TYPE_TAG, &payload)
-            })?;
+            self.object_upsert_raw(
+                DbKeyRef::new(oldest_key.db, oldest_key.key.as_slice()),
+                SET_OBJECT_TYPE_TAG,
+                &payload,
+            )?;
         }
         Ok(())
     }
@@ -241,9 +247,11 @@ impl RequestProcessor {
         }
 
         for (key, payload) in dirty_entries {
-            self.with_selected_db(key.db, || {
-                self.object_upsert_raw(key.key.as_slice(), SET_OBJECT_TYPE_TAG, &payload)
-            })?;
+            self.object_upsert_raw(
+                DbKeyRef::new(key.db, key.key.as_slice()),
+                SET_OBJECT_TYPE_TAG,
+                &payload,
+            )?;
         }
         Ok(())
     }
@@ -271,18 +279,17 @@ impl RequestProcessor {
 
     pub(super) fn with_set_hot_entry<R>(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         operation: impl FnOnce(&mut Option<SetObjectHotEntry>) -> Result<R, RequestExecutionError>,
     ) -> Result<R, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
+        self.with_selected_db(key.db(), || self.expire_key_if_needed(key.key()))?;
 
         let mut entry = self.take_set_hot_entry(key);
         if entry.is_none() {
-            let db_key = DbKeyRef::new(current_request_selected_db(), key);
-            let object = match self.object_read_raw(db_key)? {
+            let object = match self.object_read_raw(key)? {
                 Some(object) => object,
                 None => {
-                    if self.key_exists(db_key)? {
+                    if self.key_exists(key)? {
                         return Err(RequestExecutionError::WrongType);
                     }
                     DecodedObjectValue {
@@ -314,24 +321,24 @@ impl RequestProcessor {
 
     pub(super) fn mark_set_hot_entry_dirty(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         entry: &mut SetObjectHotEntry,
         replace_existing: bool,
     ) {
         entry.invalidate_ordered_members();
         entry.dirty = true;
-        self.record_set_debug_ht_activity(key, entry.payload.member_count());
+        self.record_set_debug_ht_activity(key.key(), entry.payload.member_count());
         if let DecodedSetObjectPayload::Members(set) = &entry.payload {
-            self.update_set_encoding_floor_for_members(key, set, replace_existing);
+            self.update_set_encoding_floor_for_members(key.key(), set, replace_existing);
         }
-        let shard_index = self.object_store_shard_index_for_key(key);
-        self.track_object_key_in_shard(key, shard_index);
-        self.bump_watch_version(key);
+        let shard_index = self.object_store_shard_index_for_key(key.key());
+        self.track_object_key_in_shard(key.key(), shard_index);
+        self.bump_watch_version(key.key());
     }
 
     pub(super) fn object_upsert(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         object_type: ObjectTypeTag,
         payload: &[u8],
     ) -> Result<(), RequestExecutionError> {
@@ -358,11 +365,11 @@ impl RequestProcessor {
         self.object_read_raw(key)
     }
 
-    pub(super) fn object_delete(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+    pub(super) fn object_delete(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
         let had_hot_entry = self.take_set_hot_entry(key).is_some();
         let deleted = self.object_delete_raw(key)?;
         if had_hot_entry && !deleted {
-            self.bump_watch_version(key);
+            self.bump_watch_version(key.key());
             return Ok(true);
         }
         Ok(deleted)
@@ -400,7 +407,11 @@ impl RequestProcessor {
         hash: &BTreeMap<Vec<u8>, Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_hash_object_payload(hash);
-        self.object_upsert(key, HASH_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            HASH_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 
     pub(super) fn load_list_object(
@@ -440,7 +451,11 @@ impl RequestProcessor {
             self.clear_forced_list_quicklist_encoding(key);
         }
         let payload = serialize_list_object_payload(list);
-        self.object_upsert(key, LIST_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            LIST_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 
     pub(super) fn load_set_object(
@@ -495,7 +510,11 @@ impl RequestProcessor {
         self.update_set_encoding_floor_for_members(key, set, false);
         self.record_set_debug_ht_activity(key, set.len());
         let payload = serialize_set_object_payload(set);
-        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            SET_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 
     pub(super) fn save_set_object_replacing_existing(
@@ -506,7 +525,11 @@ impl RequestProcessor {
         self.update_set_encoding_floor_for_members(key, set, true);
         self.record_set_debug_ht_activity(key, set.len());
         let payload = serialize_set_object_payload(set);
-        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            SET_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 
     pub(super) fn save_contiguous_i64_range_set_object(
@@ -518,7 +541,11 @@ impl RequestProcessor {
             .unwrap_or(usize::MAX);
         self.record_set_debug_ht_activity(key, member_count);
         let payload = serialize_contiguous_i64_range_set_payload(range);
-        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            SET_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 
     pub(super) fn load_zset_object(
@@ -552,7 +579,11 @@ impl RequestProcessor {
         zset: &BTreeMap<Vec<u8>, f64>,
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_zset_object_payload(zset);
-        self.object_upsert(key, ZSET_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            ZSET_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 
     pub(super) fn load_stream_object(
@@ -588,7 +619,11 @@ impl RequestProcessor {
         let mut stream_to_save = stream.clone();
         stream_to_save.ensure_node_sizes(self.stream_node_max_entries());
         let payload = serialize_stream_object_payload(&stream_to_save);
-        self.object_upsert(key, STREAM_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(
+            DbKeyRef::new(current_request_selected_db(), key),
+            STREAM_OBJECT_TYPE_TAG,
+            &payload,
+        )
     }
 }
 

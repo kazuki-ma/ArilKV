@@ -99,7 +99,7 @@ impl RequestProcessor {
         let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
             || !list_listpack_compatible(&list, configured_size);
         if list.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if resp3 {
                 append_null(response_out);
             } else if count.is_some() {
@@ -128,7 +128,7 @@ impl RequestProcessor {
                 self.notify_keyspace_event(NOTIFY_LIST, event_name, &key);
             }
             if list.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
                 if !popped.is_empty() {
                     self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
                 }
@@ -149,7 +149,7 @@ impl RequestProcessor {
         }
 
         let Some(value) = pop_list_side(&mut list, side) else {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if resp3 {
                 append_null(response_out);
             } else {
@@ -159,7 +159,7 @@ impl RequestProcessor {
         };
         self.notify_keyspace_event(NOTIFY_LIST, event_name, &key);
         if list.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
         } else {
             self.save_list_object(&key, &list)?;
@@ -416,7 +416,7 @@ impl RequestProcessor {
 
         let len = list.len() as i64;
         if len == 0 {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -426,7 +426,7 @@ impl RequestProcessor {
             normalized_start = 0;
         }
         if normalized_stop < 0 || normalized_start >= len || normalized_start > normalized_stop {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -440,7 +440,7 @@ impl RequestProcessor {
             || !list_listpack_compatible(&list, configured_size);
         self.notify_keyspace_event(NOTIFY_LIST, b"ltrim", &key);
         if trimmed.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
         } else {
             self.save_list_object(&key, &trimmed)?;
@@ -543,7 +543,7 @@ impl RequestProcessor {
         if removed > 0 {
             self.notify_keyspace_event(NOTIFY_LIST, b"lrem", &key);
             if list.is_empty() {
-                let _ = self.object_delete(&key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             } else {
                 self.save_list_object(&key, &list)?;
@@ -781,7 +781,7 @@ impl RequestProcessor {
         let source_was_quicklist = self.list_quicklist_encoding_is_forced(source)
             || !list_listpack_compatible(&source_list, configured_size);
         if source_list.is_empty() {
-            let _ = self.object_delete(source)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), source))?;
             if resp3 {
                 append_null(response_out);
             } else {
@@ -805,7 +805,7 @@ impl RequestProcessor {
         push_list_side(&mut destination_list, destination_side, value.clone());
 
         if source_list.is_empty() {
-            let _ = self.object_delete(source)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), source))?;
         } else {
             self.save_list_object(source, &source_list)?;
             self.maybe_preserve_quicklist_after_shrink(
@@ -876,7 +876,7 @@ impl RequestProcessor {
         let previous_was_quicklist = self.list_quicklist_encoding_is_forced(key)
             || !list_listpack_compatible(&list, configured_size);
         if list.is_empty() {
-            let _ = self.object_delete(key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
             return Ok(None);
         }
 
@@ -894,7 +894,7 @@ impl RequestProcessor {
         }
 
         if list.is_empty() {
-            let _ = self.object_delete(key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
         } else {
             self.save_list_object(key, &list)?;
             self.maybe_preserve_quicklist_after_shrink(

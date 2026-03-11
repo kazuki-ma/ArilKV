@@ -123,7 +123,8 @@ impl RequestProcessor {
             };
 
             self.remove_string_key_metadata_in_shard(key.as_slice(), shard_index);
-            let object_deleted = self.object_delete(key.as_slice())?;
+            let object_deleted =
+                self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
 
             match status {
                 DeleteOperationStatus::TombstonedInPlace
@@ -746,7 +747,7 @@ impl RequestProcessor {
         let status = session
             .delete(&key.to_vec(), &mut info)
             .map_err(map_delete_error)?;
-        let _ = self.object_delete(key)?;
+        let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
                 self.bump_watch_version_server_origin(key);

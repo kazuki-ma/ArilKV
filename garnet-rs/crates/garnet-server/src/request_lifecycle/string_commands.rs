@@ -776,9 +776,11 @@ impl RequestProcessor {
                 current_request_selected_db(),
                 &destination,
             ))?;
-            let _ = self.object_delete(&destination)?;
+            let _ =
+                self.object_delete(DbKeyRef::new(current_request_selected_db(), &destination))?;
         } else {
-            let _ = self.object_delete(&destination)?;
+            let _ =
+                self.object_delete(DbKeyRef::new(current_request_selected_db(), &destination))?;
             self.upsert_string_value_for_migration(
                 DbKeyRef::new(current_request_selected_db(), &destination),
                 &result,
@@ -1260,7 +1262,7 @@ impl RequestProcessor {
                 current_request_selected_db(),
                 store_key,
             ))?;
-            let _ = self.object_delete(store_key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), store_key))?;
             if !stored.is_empty() {
                 self.save_list_object(store_key, &stored)?;
                 self.notify_setkey_overwrite_events(
@@ -1735,7 +1737,7 @@ impl RequestProcessor {
             }
         }
         if object_exists {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         }
         // Explicit drops to end borrows before subsequent metadata locks.
         #[allow(clippy::drop_non_drop)]
@@ -2011,13 +2013,14 @@ impl RequestProcessor {
         for key in keys {
             let string_deleted =
                 self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let object_deleted = match self.object_delete(&key) {
-                Ok(value) => value,
-                Err(error) => {
-                    self.reset_lazyfree_pending_objects();
-                    return Err(error);
-                }
-            };
+            let object_deleted =
+                match self.object_delete(DbKeyRef::new(current_request_selected_db(), &key)) {
+                    Ok(value) => value,
+                    Err(error) => {
+                        self.reset_lazyfree_pending_objects();
+                        return Err(error);
+                    }
+                };
             if string_deleted || object_deleted {
                 deleted += 1;
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
@@ -2072,7 +2075,8 @@ impl RequestProcessor {
             let object_lazyfree_weight = self.unlink_object_lazyfree_weight(&key)?;
             let string_deleted =
                 self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let object_deleted = self.object_delete(&key)?;
+            let object_deleted =
+                self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if string_deleted || object_deleted {
                 deleted += 1;
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
@@ -2177,7 +2181,7 @@ impl RequestProcessor {
             current_request_selected_db(),
             &source,
         ))?;
-        let _ = self.object_delete(&source)?;
+        let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &source))?;
 
         self.notify_setkey_overwrite_events(
             &destination,
@@ -2736,7 +2740,8 @@ impl RequestProcessor {
                 .object_read(DbKeyRef::new(current_request_selected_db(), &key_vec))?
                 .is_some();
             if object_exists {
-                let _ = self.object_delete(&key_vec)?;
+                let _ =
+                    self.object_delete(DbKeyRef::new(current_request_selected_db(), &key_vec))?;
             }
 
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
@@ -2797,7 +2802,7 @@ impl RequestProcessor {
             }
         }
         if object_exists {
-            let _ = self.object_delete(&key_vec)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key_vec))?;
         }
         // Explicit drops to end borrows before subsequent metadata locks.
         #[allow(clippy::drop_non_drop)]
@@ -3039,7 +3044,7 @@ impl RequestProcessor {
         };
 
         let object_deleted = if object_exists {
-            self.object_delete(key)?
+            self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?
         } else {
             false
         };

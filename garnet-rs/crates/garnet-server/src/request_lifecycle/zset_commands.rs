@@ -134,7 +134,7 @@ impl RequestProcessor {
             self.notify_keyspace_event(NOTIFY_ZSET, b"zrem", &key);
         }
         if zset.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
             }
@@ -397,7 +397,7 @@ impl RequestProcessor {
             return Ok(());
         }
         if zset.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         } else {
             self.save_zset_object(&key, &zset)?;
         }
@@ -817,7 +817,7 @@ impl RequestProcessor {
             .count() as i64;
 
         if zset.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         } else {
             self.save_zset_object(&key, &zset)?;
         }
@@ -857,7 +857,7 @@ impl RequestProcessor {
             return Ok(());
         }
         if zset.is_empty() {
-            let _ = self.object_delete(&key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         } else {
             self.save_zset_object(&key, &zset)?;
         }
@@ -1397,7 +1397,7 @@ impl RequestProcessor {
             None => return Ok(None),
         };
         if zset.is_empty() {
-            let _ = self.object_delete(key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
             return Ok(None);
         }
 
@@ -1418,7 +1418,7 @@ impl RequestProcessor {
             zset.remove(member);
         }
         if zset.is_empty() {
-            let _ = self.object_delete(key)?;
+            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
         } else {
             self.save_zset_object(key, &zset)?;
         }
@@ -2454,7 +2454,8 @@ fn store_zset_result(
     };
 
     if result_zset.is_empty() {
-        let object_deleted = processor.object_delete(destination)?;
+        let object_deleted =
+            processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
         if string_deleted && !object_deleted {
             processor.bump_watch_version(destination);
         }

@@ -44,7 +44,10 @@ impl RequestProcessor {
                     value.as_slice(),
                     entry.expiration_unix_millis,
                 )?;
-                let _ = self.object_delete(entry.key.as_slice())?;
+                let _ = self.object_delete(DbKeyRef::new(
+                    current_request_selected_db(),
+                    entry.key.as_slice(),
+                ))?;
             }
             MigrationValue::Object {
                 object_type,
@@ -54,7 +57,11 @@ impl RequestProcessor {
                     current_request_selected_db(),
                     entry.key.as_slice(),
                 ))?;
-                self.object_upsert(entry.key.as_slice(), *object_type, payload)?;
+                self.object_upsert(
+                    DbKeyRef::new(current_request_selected_db(), entry.key.as_slice()),
+                    *object_type,
+                    payload,
+                )?;
                 self.set_string_expiration_deadline(
                     entry.key.as_slice(),
                     entry
@@ -83,7 +90,7 @@ impl RequestProcessor {
                     current_request_selected_db(),
                     key,
                 ))?;
-                let _ = self.object_delete(key)?;
+                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
             }
             moved += 1;
         }
