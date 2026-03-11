@@ -236,7 +236,9 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
-            self.expire_key_if_needed(key)?;
+            if !allow_expired_data_access() {
+                self.expire_key_if_needed(key)?;
+            }
             let entry = self.auxiliary_value_snapshot(selected_db, key);
             self.track_read_key_for_current_client(key);
             let Some(entry) = entry else {
@@ -274,7 +276,9 @@ impl RequestProcessor {
 
     pub(super) fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
-            self.expire_key_if_needed(key)?;
+            if !allow_expired_data_access() {
+                self.expire_key_if_needed(key)?;
+            }
             let entry = self.auxiliary_value_snapshot(selected_db, key);
             self.track_read_key_for_current_client(key);
             return Ok(matches!(
@@ -306,7 +310,9 @@ impl RequestProcessor {
 
     pub(super) fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
-            self.expire_key_if_needed(key)?;
+            if !allow_expired_data_access() {
+                self.expire_key_if_needed(key)?;
+            }
             if self.has_set_hot_entry(key) {
                 self.track_read_key_for_current_client(key);
                 return Ok(true);
