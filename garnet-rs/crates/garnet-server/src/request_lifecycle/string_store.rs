@@ -483,6 +483,51 @@ impl RequestProcessor {
         Ok(())
     }
 
+    pub(super) fn write_string_value_in_current_db(
+        &self,
+        key: &[u8],
+        user_value: &[u8],
+        expiration_unix_millis: Option<u64>,
+    ) -> Result<(), RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let expiration = expiration_unix_millis.and_then(|unix_millis| {
+                let deadline = instant_from_unix_millis(unix_millis)?;
+                Some(ExpirationMetadata {
+                    deadline,
+                    unix_millis: TimestampMillis::new(unix_millis),
+                })
+            });
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let entry = databases
+                .entry(selected_db)
+                .or_default()
+                .entries
+                .entry(RedisKey::from(key))
+                .or_default();
+            entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
+            entry.expiration = expiration;
+            entry.hash_field_expirations.clear();
+            return Ok(());
+        }
+
+        let mut store = self.lock_string_store_for_key(key);
+        let mut session = store.session(&self.functions);
+        let mut output = Vec::new();
+        let mut upsert_info = UpsertInfo::default();
+        if expiration_unix_millis.is_some() {
+            upsert_info
+                .user_data
+                .insert(UPSERT_USER_DATA_HAS_EXPIRATION);
+        }
+        let stored_value = encode_stored_value(user_value, expiration_unix_millis);
+        session
+            .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
+            .map_err(map_upsert_error)?;
+        Ok(())
+    }
+
     pub(super) fn delete_string_key_for_migration(
         &self,
         key: &[u8],

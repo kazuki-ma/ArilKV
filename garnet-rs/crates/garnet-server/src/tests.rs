@@ -1696,6 +1696,365 @@ async fn multidb_keyspace_sequences_match_external_scenarios_over_tcp() {
 }
 
 #[tokio::test]
+async fn multidb_string_mutations_and_persist_match_external_scenarios_over_tcp() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"bits"]),
+        b":0\r\n",
+    )
+    .await;
+    let bitfield_signed_first = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"i8", b"0", b"-100"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_signed_first), vec![0]);
+    let bitfield_signed_second = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"i8", b"0", b"101"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer_array(&bitfield_signed_second),
+        vec![-100]
+    );
+    let bitfield_signed_get = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"GET", b"i8", b"0"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_signed_get), vec![101]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"bits"]),
+        b":1\r\n",
+    )
+    .await;
+    let bitfield_unsigned_first = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"u8", b"0", b"255"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_unsigned_first), vec![0]);
+    let bitfield_unsigned_second = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"u8", b"0", b"100"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_integer_array(&bitfield_unsigned_second),
+        vec![255]
+    );
+    let bitfield_unsigned_get = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"GET", b"u8", b"0"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_unsigned_get), vec![100]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"bits"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"u8", b"#0", b"65"]),
+        timeout,
+    )
+    .await;
+    send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"u8", b"#1", b"66"]),
+        timeout,
+    )
+    .await;
+    send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"u8", b"#2", b"67"]),
+        timeout,
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"bits"]),
+        b"$3\r\nABC\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"bits"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"SET", b"u8", b"#0", b"10"]),
+        timeout,
+    )
+    .await;
+    let bitfield_incr_first = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"INCRBY", b"u8", b"#0", b"100"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_incr_first), vec![110]);
+    let bitfield_incr_second = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"bits", b"INCRBY", b"u8", b"#0", b"100"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_incr_second), vec![210]);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"foo"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SETBIT", b"foo", b"0", b"1"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"BITCOUNT", b"foo", b"0", b"4294967296"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXPIRE", b"x", b"50"]),
+        b":1\r\n",
+    )
+    .await;
+    let ttl_before_persist =
+        send_and_read_integer(&mut client, &encode_resp_command(&[b"TTL", b"x"]), timeout).await;
+    assert!(
+        (1..=50).contains(&ttl_before_persist),
+        "TTL before PERSIST should be between 1 and 50 seconds, got {ttl_before_persist}"
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PERSIST", b"x"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"TTL", b"x"]),
+        b":-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"x"]),
+        b"$3\r\nfoo\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"foo"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"APPEND", b"foo", b"bar"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo"]),
+        b"$3\r\nbar\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"APPEND", b"foo", b"100"]),
+        b":6\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo"]),
+        b"$6\r\nbar100\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"foo"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"APPEND", b"foo", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"APPEND", b"foo", b"2"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo"]),
+        b"$2\r\n12\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"APPEND", b"foo", b"2"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo"]),
+        b"$2\r\n12\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn multidb_setbit_bitfield_noop_do_not_increase_dirty_counter_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"RESETSTAT"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let info_before = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"stats"]),
+        timeout,
+    )
+    .await;
+    let dirty_before = read_info_u64(&info_before, "rdb_changes_since_last_save").unwrap_or(0);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SETBIT", b"foo{t}", b"0", b"0"]),
+        b":0\r\n",
+    )
+    .await;
+    let bitfield_create = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"foo2{t}", b"SET", b"i5", b"0", b"0"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_create), vec![0]);
+
+    let info_after_create = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"stats"]),
+        timeout,
+    )
+    .await;
+    let dirty_after_create =
+        read_info_u64(&info_after_create, "rdb_changes_since_last_save").unwrap_or(0);
+    assert_eq!(dirty_after_create.saturating_sub(dirty_before), 2);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SETBIT", b"foo{t}", b"0", b"0"]),
+        b":0\r\n",
+    )
+    .await;
+    let bitfield_noop = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"BITFIELD", b"foo2{t}", b"SET", b"i5", b"0", b"0"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&bitfield_noop), vec![0]);
+
+    let info_after_noop = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"stats"]),
+        timeout,
+    )
+    .await;
+    let dirty_after_noop =
+        read_info_u64(&info_after_noop, "rdb_changes_since_last_save").unwrap_or(0);
+    assert_eq!(dirty_after_noop, dirty_after_create);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn multidb_watch_flush_swapdb_expire_and_discard_match_external_multi_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();

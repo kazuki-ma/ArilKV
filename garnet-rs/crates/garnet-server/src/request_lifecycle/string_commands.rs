@@ -1244,20 +1244,7 @@ impl RequestProcessor {
         value: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<(), RequestExecutionError> {
-        let mut upsert_info = UpsertInfo::default();
-        if expiration_unix_millis.is_some() {
-            upsert_info
-                .user_data
-                .insert(UPSERT_USER_DATA_HAS_EXPIRATION);
-        }
-        let stored_value = encode_stored_value(value, expiration_unix_millis);
-        let mut output = Vec::new();
-        let mut store = self.lock_string_store_for_key(key);
-        let mut session = store.session(&self.functions);
-        session
-            .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
-            .map_err(map_upsert_error)?;
-        Ok(())
+        self.write_string_value_in_current_db(key, value, expiration_unix_millis)
     }
 
     pub(super) fn handle_append(
@@ -1269,40 +1256,18 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let append_value = args[2];
-        let shard_index = self.string_store_shard_index_for_key(&key);
-        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        self.expire_key_if_needed(&key)?;
 
-        let mut store = self.lock_string_store_for_shard(shard_index);
-        let mut session = store.session(&self.functions);
-        let mut object_store = self.lock_object_store_for_shard(shard_index);
-        let mut object_session = object_store.session(&self.object_functions);
-
-        let mut current_value = Vec::new();
-        let string_exists = match session
-            .read(&key, &Vec::new(), &mut current_value, &ReadInfo::default())
-            .map_err(map_read_error)?
-        {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
-            ReadOperationStatus::NotFound => false,
-            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
+        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let mut current_value = match self.read_string_value(&key)? {
+            Some(value) => value,
+            None => {
+                if self.object_key_exists(&key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                Vec::new()
+            }
         };
-
-        let mut object_output = Vec::new();
-        let object_exists = match object_session
-            .read(&key, &Vec::new(), &mut object_output, &ReadInfo::default())
-            .map_err(map_read_error)?
-        {
-            ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => true,
-            ReadOperationStatus::NotFound => false,
-            ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
-        };
-        if object_exists {
-            return Err(RequestExecutionError::WrongType);
-        }
-
-        if !string_exists {
-            current_value.clear();
-        }
         let new_len = current_value
             .len()
             .checked_add(append_value.len())
@@ -1312,29 +1277,13 @@ impl RequestProcessor {
             RequestExecutionError::StringExceedsMaximumAllowedSize,
         )?;
         current_value.extend_from_slice(append_value);
-        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
 
-        let mut upsert_info = UpsertInfo::default();
-        if expiration_unix_millis.is_some() {
-            upsert_info
-                .user_data
-                .insert(UPSERT_USER_DATA_HAS_EXPIRATION);
-        }
-        let stored_value = encode_stored_value(&current_value, expiration_unix_millis);
-        let mut upsert_output = Vec::new();
-        session
-            .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
-            .map_err(map_upsert_error)?;
-        // Explicit drops to end borrows before subsequent metadata locks.
-        #[allow(clippy::drop_non_drop)]
-        {
-            drop(object_session);
-            drop(object_store);
-            drop(session);
-            drop(store);
-        }
-
-        self.track_string_key_in_shard(&key, shard_index);
+        self.upsert_string_value_with_expiration_unix_millis(
+            &key,
+            &current_value,
+            expiration_unix_millis,
+        )?;
+        self.track_string_key(&key);
         if !append_value.is_empty() {
             self.force_raw_string_encoding(&key);
         }
@@ -3129,19 +3078,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let shard_index = self.string_store_shard_index_for_key(&key);
-        let removed_deadline = {
-            let mut expirations = self.lock_string_expirations_for_shard(shard_index);
-            let removed = expirations.remove(key.as_slice()).is_some();
-            if removed {
-                self.decrement_string_expiration_count(shard_index);
-            }
-            removed
-        };
-        if !removed_deadline {
+        if self.string_expiration_deadline(&key).is_none() {
             append_integer(response_out, 0);
             return Ok(());
         }
+        self.set_string_expiration_deadline(&key, None);
 
         if string_exists && !self.rewrite_existing_value_expiration(&key, None)? {
             append_integer(response_out, 0);

@@ -746,13 +746,16 @@ fn pre_string_len_for_mutation_detection(
     processor: &RequestProcessor,
     command: CommandId,
     args: &[ArgSlice],
+    selected_db: DbName,
 ) -> Option<usize> {
     if !matches!(command, CommandId::Setbit | CommandId::Bitfield) {
         return None;
     }
     let key = arg_slice_bytes(args.get(1)?);
     processor
-        .string_value_len_for_replication(key)
+        .with_selected_db(selected_db, || {
+            processor.string_value_len_for_replication(key)
+        })
         .ok()
         .flatten()
 }
@@ -2897,7 +2900,8 @@ async fn execute_blocking_frame_on_owner_thread(
             continue;
         }
 
-        let pre_string_len = pre_string_len_for_mutation_detection(processor, command, args);
+        let pre_string_len =
+            pre_string_len_for_mutation_detection(processor, command, args, selected_db);
         let frame_response = match execute_frame_on_owner_thread_async(
             processor,
             owner_thread_pool,
