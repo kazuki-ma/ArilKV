@@ -7200,6 +7200,24 @@ fn db_scoped_encoding_state_does_not_leak_between_databases() {
 }
 
 #[test]
+fn watch_versions_are_scoped_by_explicit_db() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+    let version0_before = processor.watch_key_version_in_db(db0, b"shared");
+    let version9_before = processor.watch_key_version_in_db(db9, b"shared");
+
+    assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", db9);
+
+    let version0_after = processor.watch_key_version_in_db(db0, b"shared");
+    let version9_after = processor.watch_key_version_in_db(db9, b"shared");
+    assert_eq!(version0_after, version0_before);
+    assert_ne!(version9_after, version9_before);
+}
+
+#[test]
 fn flushdb_clears_string_and_object_keys() {
     let processor = RequestProcessor::new().unwrap();
     let mut args = [ArgSlice::EMPTY; 8];

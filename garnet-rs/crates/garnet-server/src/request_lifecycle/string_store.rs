@@ -460,7 +460,7 @@ impl RequestProcessor {
             entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
             entry.expiration = expiration;
             entry.hash_field_expirations.clear();
-            self.bump_watch_version(key_bytes);
+            self.bump_watch_version(key);
             return Ok(());
         }
 
@@ -499,7 +499,7 @@ impl RequestProcessor {
         let shard_index = self.string_store_shard_index_for_key(key_bytes);
         self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
         self.track_string_key(key_bytes);
-        self.bump_watch_version(key_bytes);
+        self.bump_watch_version(key);
         Ok(())
     }
 
@@ -560,7 +560,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
     ) -> Result<(), RequestExecutionError> {
         if self.delete_string_value(key)? {
-            self.bump_watch_version(key.key());
+            self.bump_watch_version(key);
         }
         Ok(())
     }
@@ -1385,8 +1385,8 @@ impl RequestProcessor {
         self.enqueue_tracking_invalidation_for_key(key);
     }
 
-    pub(super) fn bump_watch_version(&self, key: &[u8]) {
-        self.bump_watch_version_in_db(current_request_selected_db(), key);
+    pub(super) fn bump_watch_version(&self, key: DbKeyRef<'_>) {
+        self.bump_watch_version_in_db(key.db(), key.key());
     }
 
     pub(super) fn bump_watch_version_server_origin_in_db(&self, db: DbName, key: &[u8]) {
@@ -1395,7 +1395,7 @@ impl RequestProcessor {
         self.enqueue_tracking_invalidation_for_key_as_server(key);
     }
 
-    pub(super) fn bump_watch_version_server_origin(&self, key: &[u8]) {
-        self.bump_watch_version_server_origin_in_db(current_request_selected_db(), key);
+    pub(super) fn bump_watch_version_server_origin(&self, key: DbKeyRef<'_>) {
+        self.bump_watch_version_server_origin_in_db(key.db(), key.key());
     }
 }

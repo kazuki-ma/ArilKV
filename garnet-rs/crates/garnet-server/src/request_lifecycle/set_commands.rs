@@ -923,7 +923,7 @@ fn store_set_result(
         let object_deleted =
             processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
         if string_deleted && !object_deleted {
-            processor.bump_watch_version(destination);
+            processor.bump_watch_version(DbKeyRef::new(current_request_selected_db(), destination));
         }
         return Ok(());
     }

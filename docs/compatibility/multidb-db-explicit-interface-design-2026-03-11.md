@@ -79,6 +79,11 @@ Snapshot taken on 2026-03-11 after the eighth mechanical slice:
 - `current_request_selected_db(...)`: `400` call sites
 - `current_auxiliary_db_name(...)`: `0` call sites
 
+Snapshot taken on 2026-03-11 after the ninth mechanical slice:
+
+- `current_request_selected_db(...)`: `426` call sites
+- `current_auxiliary_db_name(...)`: `0` call sites
+
 Interpretation:
 
 - `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
@@ -159,15 +164,28 @@ Important interpretation:
 - that is an acceptable intermediate step; the bad pattern is hidden DB lookup inside shared helpers and queued/background paths
 - the next slices should now attack the remaining helper families directly, not optimize the grep count cosmetically
 
+Ninth mechanical slice:
+
+- changed the watch invalidation helpers themselves to accept explicit DB-scoped keys:
+  - `bump_watch_version(DbKeyRef)`
+  - `bump_watch_version_server_origin(DbKeyRef)`
+- migrated object/string/server/set/zset/geo mutation paths to construct `DbKeyRef` at the command boundary and pass it into watch invalidation instead of letting the helper consult thread-local selected DB
+- added regression coverage proving same-name keys in DB0 and DB9 keep independent watch versions
+
+Interpretation:
+
+- the grep count rose again because helper-local ambient lookup was replaced with boundary-local `DbKeyRef::new(current_request_selected_db(), ...)`
+- this is still the right direction: helper semantics are now explicit, and the remaining work is to move more call sites to already-owned DB values rather than to preserve hidden helper lookups
+
 This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Convert watch-version, keyspace-notification, and blocking-readiness helpers to accept explicit DB-scoped inputs instead of reading thread-local selected DB.
+1. Convert keyspace-notification and remaining blocking-readiness helpers to accept explicit DB-scoped inputs instead of reading thread-local selected DB.
 2. Delete residual internal `current_request_selected_db()` peeks once those helper families no longer need ambient request context.
-3. Tighten any remaining test-only harnesses that still default to DB0 when they are meant to exercise nonzero DB behavior.
+3. After the next helper slice, run a benchmark milestone rather than per-iteration benchmarks: Garnet before/after plus one refreshed Dragonfly comparison.
 
 ## Acceptance criteria
 

@@ -23,7 +23,7 @@ impl RequestProcessor {
                 object_type,
                 payload: payload.to_vec(),
             });
-            self.bump_watch_version(key_bytes);
+            self.bump_watch_version(key);
             return Ok(());
         }
 
@@ -38,7 +38,7 @@ impl RequestProcessor {
             .upsert(&key, value.as_vec(), &mut output, &mut info)
             .map_err(map_upsert_error)?;
         self.track_object_key_in_shard(&key, shard_index);
-        self.bump_watch_version(&key);
+        self.bump_watch_version(DbKeyRef::new(DbName::default(), &key));
         Ok(())
     }
 
@@ -109,7 +109,7 @@ impl RequestProcessor {
                 self.clear_forced_list_quicklist_encoding(key);
                 self.clear_forced_set_encoding_floor(key);
                 self.clear_set_debug_ht_state(key);
-                self.bump_watch_version(key_bytes);
+                self.bump_watch_version(key);
                 return Ok(true);
             }
             return Ok(false);
@@ -132,7 +132,7 @@ impl RequestProcessor {
                 self.clear_forced_list_quicklist_encoding(DbKeyRef::new(DbName::default(), &key));
                 self.clear_forced_set_encoding_floor(DbKeyRef::new(DbName::default(), &key));
                 self.clear_set_debug_ht_state(DbKeyRef::new(DbName::default(), &key));
-                self.bump_watch_version(&key);
+                self.bump_watch_version(DbKeyRef::new(DbName::default(), &key));
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
@@ -339,7 +339,7 @@ impl RequestProcessor {
         }
         let shard_index = self.object_store_shard_index_for_key(key.key());
         self.track_object_key_in_shard(key.key(), shard_index);
-        self.bump_watch_version(key.key());
+        self.bump_watch_version(key);
     }
 
     pub(super) fn object_upsert(
@@ -375,7 +375,7 @@ impl RequestProcessor {
         let had_hot_entry = self.take_set_hot_entry(key).is_some();
         let deleted = self.object_delete_raw(key)?;
         if had_hot_entry && !deleted {
-            self.bump_watch_version(key.key());
+            self.bump_watch_version(key);
             return Ok(true);
         }
         Ok(deleted)

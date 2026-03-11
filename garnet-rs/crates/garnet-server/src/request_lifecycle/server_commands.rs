@@ -4311,7 +4311,10 @@ impl RequestProcessor {
                 let object_deleted = self
                     .object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
                 if string_deleted && !object_deleted {
-                    self.bump_watch_version(key.as_slice());
+                    self.bump_watch_version(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ));
                 }
                 if string_deleted || object_deleted {
                     deleted_count = deleted_count.saturating_add(1);
@@ -4382,7 +4385,10 @@ impl RequestProcessor {
                 }
             };
             if string_deleted && !object_deleted {
-                self.bump_watch_version(key.as_slice());
+                self.bump_watch_version(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if string_deleted || object_deleted {
                 deleted_count = deleted_count.saturating_add(1);
@@ -4665,7 +4671,10 @@ impl RequestProcessor {
                 continue;
             }
             if string_deleted || object_deleted {
-                self.bump_watch_version_server_origin(key.as_slice());
+                self.bump_watch_version_server_origin(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             self.notify_keyspace_event(NOTIFY_EVICTED, b"evicted", key.as_slice());
             return Ok(true);
