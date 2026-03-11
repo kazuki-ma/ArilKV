@@ -24,26 +24,27 @@
 
 - Probe script exit code: `0`
 - Cases: `6`
-- PASS: `2`
+- PASS: `4`
 - PASS_WITH_KNOWN_GAPS: `0`
-- FAIL: `4`
+- FAIL: `2`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2207; err=0; timeout=1; ignore=306; failed_tests=1; expected_failed_tests=0; unexpected_failed_tests=1  |
-| `redis_runtest_unit_scripting_external` | `FAIL` | mode=full; isolated_unit=unit/scripting; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=216; err=94; timeout=0; ignore=26; failed_tests=94  |
-| `redis_runtest_unit_querybuf_external` | `FAIL` | mode=full; isolated_unit=unit/querybuf; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=0; err=4; timeout=0; ignore=0; failed_tests=4  |
-| `redis_runtest_unit_other_external` | `FAIL` | mode=full; isolated_unit=unit/other; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=13; err=0; timeout=1; ignore=1; failed_tests=1  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2252; err=1; timeout=1; ignore=306; failed_tests=2; expected_failed_tests=0; unexpected_failed_tests=2  |
+| `redis_runtest_unit_scripting_external` | `PASS` | mode=full; isolated_unit=unit/scripting; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=309; err=0; timeout=0; ignore=26; failed_tests=0  |
+| `redis_runtest_unit_querybuf_external` | `PASS` | mode=full; isolated_unit=unit/querybuf; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=4; err=0; timeout=0; ignore=0; failed_tests=0  |
+| `redis_runtest_unit_other_external` | `FAIL` | mode=full; isolated_unit=unit/other; timeout_seconds=180; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=22; err=3; timeout=0; ignore=6; failed_tests=3  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `1`
+- Failed tests extracted from runtest log: `2`
 
 | Test |
 |---|
-| `Interactive CLI: should find first search result` |
+| `RESTORE with ABSTTL in the past in tests/unit/dump.tcl` |
+| `Piping raw protocol` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
