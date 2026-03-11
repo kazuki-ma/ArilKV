@@ -1443,6 +1443,16 @@ impl RequestProcessor {
         }
         let updated_text = updated.to_string().into_bytes();
 
+        if self.current_auxiliary_db_name().is_some() {
+            self.upsert_string_value_for_migration(&key, &updated_text, expiration_unix_millis)?;
+            self.clear_forced_raw_string_encoding(&key);
+            self.track_string_key(&key);
+            self.bump_watch_version(&key);
+            self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
+            append_bulk_string(response_out, &updated_text);
+            return Ok(());
+        }
+
         let mut upsert_info = UpsertInfo::default();
         if expiration_unix_millis.is_some() {
             upsert_info
@@ -2273,6 +2283,28 @@ impl RequestProcessor {
         if !self.key_exists(key)? && self.object_key_exists(key)? {
             return Err(RequestExecutionError::WrongType);
         }
+
+        if self.current_auxiliary_db_name().is_some() {
+            let expiration_unix_millis = self.expiration_unix_millis_for_key(key);
+            let current = match self.read_string_value(key)? {
+                Some(value) => {
+                    parse_i64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?
+                }
+                None => 0,
+            };
+            let updated = current
+                .checked_add(delta)
+                .ok_or(RequestExecutionError::IncrementOverflow)?;
+            let updated_text = updated.to_string().into_bytes();
+            self.upsert_string_value_for_migration(key, &updated_text, expiration_unix_millis)?;
+            self.clear_forced_raw_string_encoding(key);
+            self.track_string_key(key);
+            self.bump_watch_version(key);
+            self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
+            append_integer(response_out, updated);
+            return Ok(());
+        }
+
         let input = delta.to_string().into_bytes();
         let mut output = Vec::new();
         let mut info = RmwInfo::default();

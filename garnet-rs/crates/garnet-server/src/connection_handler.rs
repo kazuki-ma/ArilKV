@@ -1865,12 +1865,17 @@ pub(crate) async fn handle_connection(
                                                         &replication,
                                                         &transaction_outcome,
                                                         max_resp_arguments,
-                                                        client_state.selected_db,
                                                     )
                                                 {
                                                     wait_target_offset_for_connection =
                                                         wait_target_offset;
                                                 }
+                                                client_state.selected_db =
+                                                    transaction_outcome.selected_db_after_exec;
+                                                metrics.set_client_selected_db(
+                                                    client_id,
+                                                    client_state.selected_db,
+                                                );
                                                 if let Some(replication_transition) =
                                                     transaction_outcome
                                                         .pending_replication_transition
@@ -2173,12 +2178,15 @@ pub(crate) async fn handle_connection(
                             for key_arg in &args[1..argument_count] {
                                 // SAFETY: `args` points to the live command frame.
                                 let key = arg_slice_bytes(key_arg);
-                                if let Err(error) = processor.expire_watch_key_if_needed(key) {
+                                if let Err(error) = processor
+                                    .expire_watch_key_if_needed_in_db(client_state.selected_db, key)
+                                {
                                     watch_error = Some(error);
                                     break;
                                 }
-                                let version = processor.watch_key_version(key);
-                                transaction.watch_key(key, version);
+                                let version = processor
+                                    .watch_key_version_in_db(client_state.selected_db, key);
+                                transaction.watch_key(client_state.selected_db, key, version);
                             }
                             if let Some(error) = watch_error {
                                 transaction.clear_watches();
@@ -2454,24 +2462,19 @@ pub(crate) async fn handle_connection(
                             command,
                             command_mutating,
                         );
-                        let mut published_select = false;
                         let mut published_replication_write = false;
                         if publish_lazy_expire_deletes {
-                            if !lazy_expired_keys.is_empty() {
-                                publish_select_if_needed(&replication, client_state.selected_db);
-                                published_select = true;
-                            }
-                            for key in lazy_expired_keys {
-                                let del_frame = encode_resp_frame_slices(&[b"DEL", key.as_slice()]);
+                            for expired in &lazy_expired_keys {
+                                publish_select_if_needed(&replication, expired.db);
+                                let del_frame =
+                                    encode_resp_frame_slices(&[b"DEL", expired.key.as_slice()]);
                                 processor.record_rdb_change(1);
                                 replication.publish_write_frame(&del_frame);
                                 published_replication_write = true;
                             }
                         }
                         if !replication_frames.is_empty() {
-                            if !published_select {
-                                publish_select_if_needed(&replication, client_state.selected_db);
-                            }
+                            publish_select_if_needed(&replication, client_state.selected_db);
                             for frame_to_replicate in &replication_frames {
                                 processor.record_rdb_change(1);
                                 replication.publish_write_frame(frame_to_replicate);
@@ -3348,14 +3351,13 @@ fn publish_transaction_replication_frames(
     replication: &RedisReplicationCoordinator,
     transaction_outcome: &TransactionExecutionOutcome,
     max_resp_arguments: usize,
-    selected_db: DbName,
 ) -> Option<u64> {
     if transaction_outcome.pending_replication_transition.is_some() {
         return None;
     }
 
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
-    let mut replication_frames = Vec::new();
+    let mut replication_frames: Vec<(DbName, Vec<u8>)> = Vec::new();
     for item in &transaction_outcome.items {
         if item.frame.is_empty() || resp_is_error(&item.response) {
             continue;
@@ -3383,7 +3385,7 @@ fn publish_transaction_replication_frames(
         if command == CommandId::Xreadgroup {
             let frames =
                 xreadgroup_replication_frames(&args[..meta.argument_count], &item.response);
-            replication_frames.extend(frames);
+            replication_frames.extend(frames.into_iter().map(|frame| (item.selected_db, frame)));
             continue;
         }
         if command == CommandId::Script
@@ -3396,7 +3398,7 @@ fn publish_transaction_replication_frames(
         if let Some(eval_effect_frame) =
             script_eval_effect_replication_frame(processor, command, &args[..meta.argument_count])
         {
-            replication_frames.push(eval_effect_frame);
+            replication_frames.push((item.selected_db, eval_effect_frame));
             continue;
         }
 
@@ -3416,13 +3418,16 @@ fn publish_transaction_replication_frames(
         ) else {
             continue;
         };
-        replication_frames.push(replication_frame);
+        replication_frames.push((item.selected_db, replication_frame));
     }
 
     let lazy_expired_keys = processor.take_lazy_expired_keys_for_replication();
     if should_publish_lazy_expire_deletes(processor, CommandId::Exec, true) {
-        for key in lazy_expired_keys {
-            replication_frames.push(encode_resp_frame_slices(&[b"DEL", key.as_slice()]));
+        for expired in lazy_expired_keys {
+            replication_frames.push((
+                expired.db,
+                encode_resp_frame_slices(&[b"DEL", expired.key.as_slice()]),
+            ));
         }
     }
 
@@ -3435,9 +3440,9 @@ fn publish_transaction_replication_frames(
         processor.record_rdb_change(1);
         replication.publish_write_frame(&multi_frame);
     }
-    publish_select_if_needed(replication, selected_db);
 
-    for replication_frame in &replication_frames {
+    for (selected_db, replication_frame) in &replication_frames {
+        publish_select_if_needed(replication, *selected_db);
         processor.record_rdb_change(1);
         replication.publish_write_frame(replication_frame);
     }

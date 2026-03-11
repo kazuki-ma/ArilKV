@@ -1652,6 +1652,450 @@ async fn multidb_keyspace_sequences_match_external_scenarios_over_tcp() {
 }
 
 #[tokio::test]
+async fn multidb_watch_flush_swapdb_expire_and_discard_match_external_multi_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"5"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"30"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"5"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n+PONG\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"30"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"EXEC"]), b"*-1\r\n").await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"30"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"EXEC"]), b"*-1\r\n").await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"foo", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    sleep(Duration::from_millis(5)).await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SWAPDB", b"0", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n+PONG\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"foo", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"bar", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    sleep(Duration::from_millis(5)).await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SWAPDB", b"0", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n+PONG\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"key", b"1", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"key"]),
+        b"+OK\r\n",
+    )
+    .await;
+    sleep(Duration::from_millis(5)).await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"INCR", b"key"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"EXEC"]), b"*-1\r\n").await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"x"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"foo", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    sleep(Duration::from_millis(5)).await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"x"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n+PONG\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"x"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXPIRE", b"x", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let deadline = Instant::now() + Duration::from_secs(2);
+    loop {
+        let dbsize = send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"DBSIZE"]),
+            Duration::from_secs(1),
+        )
+        .await;
+        if dbsize == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dbsize did not reach zero after active expire"
+        );
+        sleep(Duration::from_millis(20)).await;
+    }
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PING"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"EXEC"]), b"*-1\r\n").await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"DISCARD"]), b"+OK\r\n").await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"INCR", b"x"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    let discard_exec = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let discard_exec_items = resp_socket_array(&discard_exec);
+    assert_eq!(discard_exec_items.len(), 1);
+    assert_eq!(resp_socket_integer(&discard_exec_items[0]), 11);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"WATCH", b"x"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"DISCARD"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"INCR", b"x"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    let unwatch_exec = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let unwatch_exec_items = resp_socket_array(&unwatch_exec);
+    assert_eq!(unwatch_exec_items.len(), 1);
+    assert_eq!(resp_socket_integer(&unwatch_exec_items[0]), 11);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -8978,6 +9422,133 @@ async fn sync_replication_stream_wraps_multi_exec_with_multiple_writes() {
     expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
     expected.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:multi", b"v1"]));
     expected.extend_from_slice(&encode_resp_command(&[b"SET", b"tx:multi2", b"v2"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"EXEC"]));
+
+    let replicated =
+        read_exact_with_timeout(&mut replica_stream, expected.len(), Duration::from_secs(1)).await;
+    assert_eq!(replicated, expected);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn sync_replication_stream_multi_exec_with_selects_matches_external_multi_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut replica_stream = TcpStream::connect(addr).await.unwrap();
+    replica_stream.write_all(b"SYNC\r\n").await.unwrap();
+
+    let header = read_resp_line_with_timeout(&mut replica_stream, Duration::from_secs(1)).await;
+    assert!(
+        header.starts_with(b"$"),
+        "SYNC response must start with bulk RDB length, got: {}",
+        String::from_utf8_lossy(&header)
+    );
+    let payload_len = std::str::from_utf8(&header[1..])
+        .unwrap()
+        .parse::<usize>()
+        .unwrap();
+    let _payload =
+        read_exact_with_timeout(&mut replica_stream, payload_len, Duration::from_secs(1)).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo{t}", b"bar"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo{t}"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"2"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo2{t}", b"bar2"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo2{t}"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"3"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo3{t}", b"bar3"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo3{t}"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*9\r\n+OK\r\n+OK\r\n$3\r\nbar\r\n+OK\r\n+OK\r\n$4\r\nbar2\r\n+OK\r\n+OK\r\n$4\r\nbar3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"foo3{t}"]),
+        b"$4\r\nbar3\r\n",
+    )
+    .await;
+
+    let mut expected = Vec::new();
+    expected.extend_from_slice(&encode_resp_command(&[b"MULTI"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"1"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"foo{t}", b"bar"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"2"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"foo2{t}", b"bar2"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"3"]));
+    expected.extend_from_slice(&encode_resp_command(&[b"SET", b"foo3{t}", b"bar3"]));
     expected.extend_from_slice(&encode_resp_command(&[b"EXEC"]));
 
     let replicated =

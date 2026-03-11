@@ -5937,7 +5937,7 @@ fn lazy_expire_tracks_replication_delete_keys_on_read_access() {
     let queued = processor.take_lazy_expired_keys_for_replication();
     let queued = queued
         .into_iter()
-        .map(|key| key.into_vec())
+        .map(|key| key.key.into_vec())
         .collect::<Vec<_>>();
     assert_eq!(queued, vec![b"lazy:key".to_vec()]);
     assert!(
@@ -9566,11 +9566,7 @@ fn select_respects_configured_database_limit_and_move_uses_selected_db_context()
         "SWAPDB 4 a",
         b"-ERR invalid second DB index\r\n",
     );
-    assert_command_error(
-        &processor,
-        "SWAPDB a 5",
-        b"-ERR invalid first DB index\r\n",
-    );
+    assert_command_error(&processor, "SWAPDB a 5", b"-ERR invalid first DB index\r\n");
 
     let frame = encode_resp(&[b"MOVE", b"ctx-key", b"2"]);
     let mut args = [ArgSlice::EMPTY; 8];

@@ -339,13 +339,14 @@ impl WatchVersion {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WatchedKey {
+    pub(crate) db: DbName,
     pub(crate) key: RedisKey,
     pub(crate) version: WatchVersion,
 }
 
 impl WatchedKey {
-    pub(crate) const fn new(key: RedisKey, version: WatchVersion) -> Self {
-        Self { key, version }
+    pub(crate) const fn new(db: DbName, key: RedisKey, version: WatchVersion) -> Self {
+        Self { db, key, version }
     }
 }
 
@@ -731,13 +732,13 @@ impl From<DbName> for usize {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct DbScopedKey {
-    db: DbName,
-    key: RedisKey,
+pub(crate) struct DbScopedKey {
+    pub(crate) db: DbName,
+    pub(crate) key: RedisKey,
 }
 
 impl DbScopedKey {
-    fn new(db: DbName, key: &[u8]) -> Self {
+    pub(crate) fn new(db: DbName, key: &[u8]) -> Self {
         Self {
             db,
             key: RedisKey::from(key),
@@ -1861,7 +1862,7 @@ pub struct RequestProcessor {
     key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
     key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
-    lazy_expired_keys_for_replication: Mutex<Vec<RedisKey>>,
+    lazy_expired_keys_for_replication: Mutex<Vec<DbScopedKey>>,
     script_replication_effects: Mutex<Vec<ScriptReplicationEffect>>,
     script_cache: Mutex<HashMap<String, Vec<u8>>>,
     script_cache_insertion_order: Mutex<VecDeque<String>>,
@@ -2201,7 +2202,11 @@ impl RequestProcessor {
     }
 
     pub(crate) fn watch_key_version(&self, key: &[u8]) -> WatchVersion {
-        let slot = watch_version_slot(key);
+        self.watch_key_version_in_db(current_request_selected_db(), key)
+    }
+
+    pub(crate) fn watch_key_version_in_db(&self, db: DbName, key: &[u8]) -> WatchVersion {
+        let slot = watch_version_slot(db, key);
         WatchVersion::new(self.watch_versions[slot].load(Ordering::SeqCst))
     }
 
@@ -2209,7 +2214,16 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<(), RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
+        self.expire_watch_key_if_needed_in_db(current_request_selected_db(), key)?;
+        Ok(())
+    }
+
+    pub(crate) fn expire_watch_key_if_needed_in_db(
+        &self,
+        db: DbName,
+        key: &[u8],
+    ) -> Result<(), RequestExecutionError> {
+        self.with_selected_db(db, || self.expire_key_if_needed(key))?;
         Ok(())
     }
 
@@ -2229,14 +2243,16 @@ impl RequestProcessor {
 
     pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[WatchedKey]) {
         for watched in watched_keys {
-            let _ = self.expire_key_if_needed(watched.key.as_slice());
+            let _ = self.with_selected_db(watched.db, || {
+                self.expire_key_if_needed(watched.key.as_slice())
+            });
         }
     }
 
     pub(crate) fn watch_versions_match(&self, watched_keys: &[WatchedKey]) -> bool {
-        watched_keys
-            .iter()
-            .all(|watched| self.watch_key_version(watched.key.as_slice()) == watched.version)
+        watched_keys.iter().all(|watched| {
+            self.watch_key_version_in_db(watched.db, watched.key.as_slice()) == watched.version
+        })
     }
 
     pub(super) fn set_resp_protocol_version(&self, version: RespProtocolVersion) {
@@ -3563,11 +3579,11 @@ impl RequestProcessor {
 
     pub(crate) fn enqueue_lazy_expired_key_for_replication(&self, key: &[u8]) {
         if let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() {
-            pending.push(RedisKey::from(key));
+            pending.push(DbScopedKey::new(current_request_selected_db(), key));
         }
     }
 
-    pub(crate) fn take_lazy_expired_keys_for_replication(&self) -> Vec<RedisKey> {
+    pub(crate) fn take_lazy_expired_keys_for_replication(&self) -> Vec<DbScopedKey> {
         let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() else {
             return Vec::new();
         };
@@ -5463,8 +5479,11 @@ fn fnv1a_hash64(key: &[u8]) -> u64 {
     hash
 }
 
-fn watch_version_slot(key: &[u8]) -> usize {
-    (fnv1a_hash64(key) as usize) & WATCH_VERSION_MAP_MASK
+fn watch_version_slot(db: DbName, key: &[u8]) -> usize {
+    let mut hash = fnv1a_hash64(key);
+    hash ^= usize::from(db) as u64;
+    hash = hash.wrapping_mul(0x100000001b3);
+    (hash as usize) & WATCH_VERSION_MAP_MASK
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

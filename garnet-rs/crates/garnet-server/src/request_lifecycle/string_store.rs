@@ -78,6 +78,9 @@ impl RequestProcessor {
             }
             removed += self.expire_stale_keys_in_shard(shard_index, max_keys - removed)?;
         }
+        if removed < max_keys {
+            removed += self.expire_stale_auxiliary_keys(max_keys - removed)?;
+        }
         Ok(removed)
     }
 
@@ -144,6 +147,89 @@ impl RequestProcessor {
         }
         self.record_active_expired_keys(removed as u64);
         Ok(removed)
+    }
+
+    pub fn expire_stale_auxiliary_keys(
+        &self,
+        max_keys: usize,
+    ) -> Result<usize, RequestExecutionError> {
+        if max_keys == 0 {
+            return Ok(0);
+        }
+
+        let mut removed = 0usize;
+        for shard_index in self.string_stores.indices() {
+            if removed >= max_keys {
+                break;
+            }
+            removed +=
+                self.expire_stale_auxiliary_keys_in_shard(shard_index, max_keys - removed)?;
+        }
+        Ok(removed)
+    }
+
+    pub fn expire_stale_auxiliary_keys_in_shard(
+        &self,
+        shard_index: ShardIndex,
+        max_keys: usize,
+    ) -> Result<usize, RequestExecutionError> {
+        if max_keys == 0 || !self.string_stores.contains_shard(shard_index) {
+            return Ok(0);
+        }
+
+        let now = current_instant();
+        let mut expired = Vec::new();
+        let mut empty_dbs = Vec::new();
+        {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+
+            for (db, state) in databases.iter_mut() {
+                if expired.len() >= max_keys {
+                    break;
+                }
+
+                let expired_keys = state
+                    .entries
+                    .iter()
+                    .filter_map(|(key, entry)| {
+                        let expiration = entry.expiration?;
+                        if expiration.deadline > now {
+                            return None;
+                        }
+                        if self.string_store_shard_index_for_key(key.as_slice()) != shard_index {
+                            return None;
+                        }
+                        Some(key.clone())
+                    })
+                    .take(max_keys - expired.len())
+                    .collect::<Vec<_>>();
+
+                for key in expired_keys {
+                    let _ = state.entries.remove(key.as_slice());
+                    expired.push((*db, key));
+                }
+                if state.entries.is_empty() {
+                    empty_dbs.push(*db);
+                }
+            }
+
+            for db in empty_dbs {
+                let _ = databases.remove(&db);
+            }
+        }
+
+        for (db, key) in &expired {
+            self.with_selected_db(*db, || {
+                self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
+                self.record_lazy_expired_keys(1);
+                self.enqueue_lazy_expired_key_for_replication(key.as_slice());
+                self.bump_watch_version_server_origin(key.as_slice());
+            });
+        }
+        self.record_active_expired_keys(expired.len() as u64);
+        Ok(expired.len())
     }
 
     pub(super) fn read_string_value(
@@ -1121,13 +1207,13 @@ impl RequestProcessor {
     }
 
     pub(super) fn bump_watch_version(&self, key: &[u8]) {
-        let slot = watch_version_slot(key);
+        let slot = watch_version_slot(current_request_selected_db(), key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
         self.enqueue_tracking_invalidation_for_key(key);
     }
 
     pub(super) fn bump_watch_version_server_origin(&self, key: &[u8]) {
-        let slot = watch_version_slot(key);
+        let slot = watch_version_slot(current_request_selected_db(), key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
         self.enqueue_tracking_invalidation_for_key_as_server(key);
     }

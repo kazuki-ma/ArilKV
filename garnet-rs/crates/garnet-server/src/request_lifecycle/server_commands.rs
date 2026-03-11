@@ -4214,15 +4214,45 @@ impl RequestProcessor {
     fn flush_current_db_keys(&self) -> Result<u64, RequestExecutionError> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
             self.invalidate_all_tracking_entries();
+            let keys = {
+                let Ok(databases) = self.auxiliary_databases.lock() else {
+                    return Err(RequestExecutionError::StorageBusy);
+                };
+                let Some(state) = databases.get(&selected_db) else {
+                    return Ok(0);
+                };
+                state
+                    .entries
+                    .iter()
+                    .filter_map(|(key, entry)| entry.value.as_ref().map(|_| key.clone()))
+                    .collect::<Vec<_>>()
+            };
+            self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
+
+            let mut deleted_count = 0u64;
+            for key in keys {
+                self.expire_key_if_needed(key.as_slice())?;
+                let string_deleted = self.delete_string_value_in_current_db(key.as_slice())?;
+                let object_deleted = self.object_delete(key.as_slice())?;
+                if string_deleted && !object_deleted {
+                    self.bump_watch_version(key.as_slice());
+                }
+                if string_deleted || object_deleted {
+                    deleted_count = deleted_count.saturating_add(1);
+                }
+            }
+
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            let removed = databases
-                .remove(&selected_db)
-                .map(|state| u64::try_from(state.entries.len()).unwrap_or(u64::MAX))
-                .unwrap_or(0);
+            if databases
+                .get(&selected_db)
+                .is_some_and(|state| state.entries.is_empty())
+            {
+                let _ = databases.remove(&selected_db);
+            }
             self.reset_lazyfree_pending_objects();
-            return Ok(removed);
+            return Ok(deleted_count);
         }
 
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
@@ -4289,15 +4319,24 @@ impl RequestProcessor {
     }
 
     fn flush_auxiliary_databases(&self) -> u64 {
+        let dbs = {
+            let Ok(databases) = self.auxiliary_databases.lock() else {
+                return 0;
+            };
+            databases.keys().copied().collect::<Vec<_>>()
+        };
+
+        let mut removed = 0u64;
+        for db in dbs {
+            let Ok(flushed) = self.with_selected_db(db, || self.flush_current_db_keys()) else {
+                continue;
+            };
+            removed = removed.saturating_add(flushed);
+        }
         let Ok(mut databases) = self.auxiliary_databases.lock() else {
             return 0;
         };
-        let mut removed = 0u64;
-        for state in databases.values() {
-            removed =
-                removed.saturating_add(u64::try_from(state.entries.len()).unwrap_or(u64::MAX));
-        }
-        databases.clear();
+        databases.retain(|_, state| !state.entries.is_empty());
         removed
     }
 

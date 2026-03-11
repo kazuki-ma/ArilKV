@@ -7,6 +7,7 @@ use std::sync::Arc;
 use crate::ClientId;
 use crate::RequestProcessor;
 use crate::ShardOwnerThreadPool;
+use crate::command_spec::CommandId;
 use crate::connection_protocol::ascii_eq_ignore_case;
 use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
@@ -41,17 +42,17 @@ impl ConnectionTransactionState {
         self.watched_keys.clear();
     }
 
-    pub(crate) fn watch_key(&mut self, key: &[u8], version: WatchVersion) {
+    pub(crate) fn watch_key(&mut self, db: DbName, key: &[u8], version: WatchVersion) {
         if let Some(watched) = self
             .watched_keys
             .iter_mut()
-            .find(|watched| watched.key.as_slice() == key)
+            .find(|watched| watched.db == db && watched.key.as_slice() == key)
         {
             watched.version = version;
             return;
         }
         self.watched_keys
-            .push(WatchedKey::new(RedisKey::from(key), version));
+            .push(WatchedKey::new(db, RedisKey::from(key), version));
     }
 
     pub(crate) fn set_transaction_slot_or_abort(&mut self, slot: SlotNumber) -> bool {
@@ -77,6 +78,7 @@ pub(crate) enum QueuedReplicationTransition {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ExecutedTransactionItem {
+    pub(crate) selected_db: DbName,
     pub(crate) frame: Vec<u8>,
     pub(crate) response: Vec<u8>,
 }
@@ -84,6 +86,7 @@ pub(crate) struct ExecutedTransactionItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TransactionExecutionOutcome {
     pub(crate) items: Vec<ExecutedTransactionItem>,
+    pub(crate) selected_db_after_exec: DbName,
     pub(crate) pending_replication_transition: Option<QueuedReplicationTransition>,
 }
 
@@ -110,6 +113,7 @@ pub(crate) fn execute_transaction_queue(
     let routed_processor = Arc::clone(processor);
     let TransactionExecutionOutcome {
         items,
+        selected_db_after_exec,
         pending_replication_transition,
     } = owner_thread_pool
         .execute_sync(owner_shard, move || {
@@ -125,11 +129,13 @@ pub(crate) fn execute_transaction_queue(
         .unwrap_or_else(|_| TransactionExecutionOutcome {
             items: vec![
                 ExecutedTransactionItem {
+                    selected_db,
                     frame: Vec::new(),
                     response: b"-ERR owner routing execution failed\r\n".to_vec(),
                 };
                 queued_len
             ],
+            selected_db_after_exec: selected_db,
             pending_replication_transition: None,
         });
 
@@ -142,6 +148,7 @@ pub(crate) fn execute_transaction_queue(
 
     TransactionExecutionOutcome {
         items,
+        selected_db_after_exec,
         pending_replication_transition,
     }
 }
@@ -151,20 +158,40 @@ fn transaction_owner_shard(
     queued: &[Vec<u8>],
     max_resp_arguments: usize,
 ) -> Option<ShardIndex> {
-    let frame = queued.first()?;
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
-    match parse_resp_command_arg_slices_dynamic(frame, &mut args, max_resp_arguments) {
-        Ok(meta) if meta.bytes_consumed == frame.len() => {
-            // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
-            let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-            Some(owner_shard_for_command(
-                processor,
-                &args[..meta.argument_count],
-                command,
-            ))
+    for frame in queued {
+        match parse_resp_command_arg_slices_dynamic(frame, &mut args, max_resp_arguments) {
+            Ok(meta) if meta.bytes_consumed == frame.len() => {
+                // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
+                let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                if matches!(command, CommandId::Select)
+                    || command_is_replication_passthrough(arg_slice_bytes(&args[0]))
+                {
+                    continue;
+                }
+                return Some(owner_shard_for_command(
+                    processor,
+                    &args[..meta.argument_count],
+                    command,
+                ));
+            }
+            _ => continue,
         }
-        _ => None,
     }
+    queued.first().and_then(|frame| {
+        match parse_resp_command_arg_slices_dynamic(frame, &mut args, max_resp_arguments) {
+            Ok(meta) if meta.bytes_consumed == frame.len() => {
+                // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
+                let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                Some(owner_shard_for_command(
+                    processor,
+                    &args[..meta.argument_count],
+                    command,
+                ))
+            }
+            _ => None,
+        }
+    })
 }
 
 fn execute_transaction_queue_on_owner_thread(
@@ -178,9 +205,11 @@ fn execute_transaction_queue_on_owner_thread(
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     let mut items = Vec::with_capacity(queued.len());
     let mut pending_replication_transition = None;
+    let mut transaction_selected_db = selected_db;
     processor.begin_tracking_invalidation_batch();
     for frame in queued {
         let mut item_response = Vec::new();
+        let item_selected_db = transaction_selected_db;
         match parse_resp_command_arg_slices_dynamic(&frame, &mut args, max_resp_arguments) {
             Ok(meta) if meta.bytes_consumed == frame.len() => {
                 let command_name = arg_slice_bytes(&args[0]);
@@ -203,21 +232,29 @@ fn execute_transaction_queue_on_owner_thread(
                         }
                     }
                     items.push(ExecutedTransactionItem {
+                        selected_db: item_selected_db,
                         frame,
                         response: item_response,
                     });
                     continue;
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
-                let _command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
+                let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
                 match processor.execute_with_client_no_touch_in_transaction_in_db(
                     &args[..meta.argument_count],
                     &mut item_response,
                     client_no_touch,
                     client_id,
-                    selected_db,
+                    transaction_selected_db,
                 ) {
-                    Ok(()) => {}
+                    Ok(()) => {
+                        if command == CommandId::Select
+                            && let Some(next_db) =
+                                parse_transaction_select_db(&args[..meta.argument_count], processor)
+                        {
+                            transaction_selected_db = next_db;
+                        }
+                    }
                     Err(error) => error.append_resp_error(&mut item_response),
                 }
             }
@@ -227,6 +264,7 @@ fn execute_transaction_queue_on_owner_thread(
             _ => item_response.extend_from_slice(b"-ERR protocol error\r\n"),
         }
         items.push(ExecutedTransactionItem {
+            selected_db: item_selected_db,
             frame,
             response: item_response,
         });
@@ -234,6 +272,7 @@ fn execute_transaction_queue_on_owner_thread(
     processor.finish_tracking_invalidation_batch(client_id);
     TransactionExecutionOutcome {
         items,
+        selected_db_after_exec: transaction_selected_db,
         pending_replication_transition,
     }
 }
@@ -289,4 +328,16 @@ fn parse_replication_transition(
         host: String::from_utf8_lossy(host_or_no).to_string(),
         port,
     })
+}
+
+fn parse_transaction_select_db(args: &[ArgSlice], processor: &RequestProcessor) -> Option<DbName> {
+    if args.len() != 2 {
+        return None;
+    }
+    let raw = std::str::from_utf8(arg_slice_bytes(&args[1])).ok()?;
+    let index = raw.parse::<usize>().ok()?;
+    if index >= processor.configured_databases() {
+        return None;
+    }
+    Some(DbName::new(index))
 }
