@@ -24,13 +24,13 @@
 
 - Probe script exit code: `0`
 - Cases: `6`
-- PASS: `5`
+- PASS: `6`
 - PASS_WITH_KNOWN_GAPS: `0`
-- FAIL: `1`
+- FAIL: `0`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2251; err=2; timeout=1; ignore=306; failed_tests=3; expected_failed_tests=0; unexpected_failed_tests=3  |
+| `redis_runtest_full_external` | `PASS` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=2262; err=0; timeout=0; ignore=374; failed_tests=0; expected_failed_tests=0; unexpected_failed_tests=0  |
 | `redis_runtest_unit_scripting_external` | `PASS` | mode=full; isolated_unit=unit/scripting; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=309; err=0; timeout=0; ignore=26; failed_tests=0  |
 | `redis_runtest_unit_querybuf_external` | `PASS` | mode=full; isolated_unit=unit/querybuf; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=4; err=0; timeout=0; ignore=0; failed_tests=0  |
 | `redis_runtest_unit_other_external` | `PASS` | mode=full; isolated_unit=unit/other; timeout_seconds=180; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=25; err=0; timeout=0; ignore=6; failed_tests=0  |
@@ -39,13 +39,7 @@
 
 ## External Probe Failed Tests
 
-- Failed tests extracted from runtest log: `3`
-
-| Test |
-|---|
-| `BZPOPMIN/BZPOPMAX readraw in RESP3 in tests/unit/type/zset.tcl` |
-| `BZMPOP readraw in RESP3 in tests/unit/type/zset.tcl` |
-| `Piping raw protocol` |
+- Failed tests extracted from runtest log: `0`
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 

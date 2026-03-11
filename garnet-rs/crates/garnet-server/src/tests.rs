@@ -285,6 +285,50 @@ async fn protocol_ignores_empty_and_negative_multibulk_queries() {
 }
 
 #[tokio::test]
+async fn protocol_accepts_tcl_puts_extra_lf_between_resp_commands() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut pipeline = encode_resp_command(&[b"DEL", b"test-counter"]);
+    for _ in 0..4 {
+        pipeline.push(b'\n');
+        pipeline.extend_from_slice(&encode_resp_command(&[b"INCR", b"test-counter"]));
+    }
+    pipeline.push(b'\n');
+    pipeline.extend_from_slice(&encode_resp_command(&[b"GET", b"test-counter"]));
+
+    client.write_all(&pipeline).await.unwrap();
+
+    let del_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await;
+    assert!(
+        del_reply.starts_with(b":"),
+        "expected integer DEL reply, got: {:?}",
+        String::from_utf8_lossy(&del_reply)
+    );
+    for expected in 1..=4 {
+        let incr_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await;
+        assert_eq!(incr_reply, format!(":{expected}").into_bytes());
+    }
+    let counter = read_bulk_payload_with_timeout(&mut client, Duration::from_secs(1)).await;
+    assert_eq!(counter, b"4");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn protocol_returns_redis_style_resp_parse_errors() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -2933,6 +2977,159 @@ async fn inline_pipelining_stresser_external_scenario_round_trips_all_pairs() {
     .await
     .expect("inline pipelining stresser timed out");
 
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn redis_cli_pipe_raw_protocol_external_scenario_round_trips_all_replies() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/integration/redis-cli.tcl: "Piping raw protocol"
+    const INCR_SET_PAIRS: usize = 1_000;
+    const VERY_LARGE_SET_COUNT: usize = 100;
+    let delete_counter = encode_resp_command(&[b"DEL", b"test-counter"]);
+    let incr_counter = encode_resp_command(&[b"INCR", b"test-counter"]);
+    let large_value = vec![b'x'; 20_000];
+    let set_large = encode_resp_command(&[b"SET", b"large-key", large_value.as_slice()]);
+    let very_large_value = vec![b'x'; 512_000];
+    let set_very_large =
+        encode_resp_command(&[b"SET", b"very-large-key", very_large_value.as_slice()]);
+    let echo_tag = b"pipe-sentinel-tag";
+    let echo_sentinel = encode_resp_command(&[b"ECHO", echo_tag]);
+
+    client.write_all(&delete_counter).await.unwrap();
+    for _ in 0..INCR_SET_PAIRS {
+        client.write_all(&incr_counter).await.unwrap();
+        client.write_all(&set_large).await.unwrap();
+    }
+    for _ in 0..VERY_LARGE_SET_COUNT {
+        client.write_all(&set_very_large).await.unwrap();
+    }
+    client.write_all(&echo_sentinel).await.unwrap();
+
+    tokio::time::timeout(Duration::from_secs(120), async {
+        let del_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(5)).await;
+        assert!(
+            del_reply.starts_with(b":"),
+            "expected integer DEL reply, got: {:?}",
+            String::from_utf8_lossy(&del_reply)
+        );
+
+        for expected_counter in 1..=INCR_SET_PAIRS {
+            let incr_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(5)).await;
+            let expected = expected_counter.to_string().into_bytes();
+            assert_eq!(
+                incr_reply,
+                [&b":"[..], expected.as_slice()].concat(),
+                "unexpected INCR reply at index {expected_counter}"
+            );
+
+            let set_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(5)).await;
+            assert_eq!(set_reply, b"+OK", "expected +OK for large SET");
+        }
+
+        for index in 0..VERY_LARGE_SET_COUNT {
+            let set_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(5)).await;
+            assert_eq!(
+                set_reply, b"+OK",
+                "expected +OK for very-large SET at index {index}"
+            );
+        }
+
+        let sentinel_reply =
+            read_bulk_payload_with_timeout(&mut client, Duration::from_secs(5)).await;
+        assert_eq!(sentinel_reply, echo_tag);
+    })
+    .await
+    .expect("redis-cli raw pipe scenario timed out");
+
+    let counter = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"test-counter"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(counter, b"1000");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn redis_cli_pipe_mode_matches_external_scenario_when_repo_cli_is_available() {
+    let Some(redis_cli) = runnable_repo_redis_cli() else {
+        return;
+    };
+
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let temp_dir = unique_test_temp_dir("redis-cli-pipe");
+    let cmds_path = temp_dir.join("cli_cmds");
+    {
+        let file = std::fs::File::create(&cmds_path).unwrap();
+        let mut writer = std::io::BufWriter::new(file);
+        let delete_counter = encode_resp_command(&[b"DEL", b"test-counter"]);
+        let incr_counter = encode_resp_command(&[b"INCR", b"test-counter"]);
+        let large_value = vec![b'x'; 20_000];
+        let set_large = encode_resp_command(&[b"SET", b"large-key", large_value.as_slice()]);
+        let very_large_value = vec![b'x'; 512_000];
+        let set_very_large =
+            encode_resp_command(&[b"SET", b"very-large-key", very_large_value.as_slice()]);
+
+        std::io::Write::write_all(&mut writer, &delete_counter).unwrap();
+        for _ in 0..1_000 {
+            std::io::Write::write_all(&mut writer, &incr_counter).unwrap();
+            std::io::Write::write_all(&mut writer, &set_large).unwrap();
+        }
+        for _ in 0..100 {
+            std::io::Write::write_all(&mut writer, &set_very_large).unwrap();
+        }
+        std::io::Write::flush(&mut writer).unwrap();
+    }
+
+    let host = addr.ip().to_string();
+    let port = addr.port().to_string();
+    let stdin_file = std::fs::File::open(&cmds_path).unwrap();
+    let output = tokio::time::timeout(
+        Duration::from_secs(120),
+        TokioCommand::new(&redis_cli)
+            .args(["-h", &host, "-p", &port, "--pipe"])
+            .stdin(Stdio::from(stdin_file))
+            .output(),
+    )
+    .await
+    .expect("redis-cli --pipe timed out")
+    .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "redis-cli --pipe failed\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("All data transferred") && stdout.contains("errors: 0"),
+        "redis-cli --pipe summary missing success markers\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+    assert!(
+        stdout.contains("replies: 2101"),
+        "redis-cli --pipe summary missing reply count\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    let mut verifier = TcpStream::connect(addr).await.unwrap();
+    let counter = send_and_read_bulk_payload(
+        &mut verifier,
+        &encode_resp_command(&[b"GET", b"test-counter"]),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert_eq!(counter, b"1000");
+
+    let _ = std::fs::remove_file(&cmds_path);
+    let _ = std::fs::remove_dir_all(&temp_dir);
     let _ = shutdown_tx.send(());
     server.await.unwrap();
 }

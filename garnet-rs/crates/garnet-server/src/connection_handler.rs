@@ -1100,6 +1100,13 @@ pub(crate) async fn handle_connection(
                 consumed += 2;
                 continue;
             }
+            if receive_buffer[consumed..].starts_with(b"\n") {
+                // Redis tests/support/util.tcl `formatCommand` output is commonly
+                // written with `puts`, which appends a lone LF after a fully
+                // formed RESP frame. Tolerate these empty separators as Redis does.
+                consumed += 1;
+                continue;
+            }
 
             let mut inline_frame = Vec::new();
             let (argument_count, frame_bytes_consumed) = match parse_resp_command_arg_slices_dynamic(
