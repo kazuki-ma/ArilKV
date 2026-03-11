@@ -2755,7 +2755,11 @@ async fn execute_blocking_frame_on_owner_thread(
                 processor.unregister_pause_blocked_blocking_client(client_id);
             }
             return Ok(BlockingExecutionOutcome {
-                frame_response: blocking_empty_response_for_command(command).to_vec(),
+                frame_response: blocking_empty_response_for_command(
+                    command,
+                    processor.resp_protocol_version().is_resp3(),
+                )
+                .to_vec(),
                 should_replicate: false,
             });
         }
@@ -2766,7 +2770,11 @@ async fn execute_blocking_frame_on_owner_thread(
                 processor.unregister_pause_blocked_blocking_client(client_id);
             }
             return Ok(BlockingExecutionOutcome {
-                frame_response: blocking_empty_response_for_command(command).to_vec(),
+                frame_response: blocking_empty_response_for_command(
+                    command,
+                    processor.resp_protocol_version().is_resp3(),
+                )
+                .to_vec(),
                 should_replicate: false,
             });
         }
@@ -2775,7 +2783,11 @@ async fn execute_blocking_frame_on_owner_thread(
         if blocked && let Some(unblock_mode) = processor.take_client_unblock_request(client_id) {
             clear_blocking_client_state(processor, metrics, client_id, &blocking_keys);
             let response = match unblock_mode {
-                ClientUnblockMode::Timeout => blocking_empty_response_for_command(command).to_vec(),
+                ClientUnblockMode::Timeout => blocking_empty_response_for_command(
+                    command,
+                    processor.resp_protocol_version().is_resp3(),
+                )
+                .to_vec(),
                 ClientUnblockMode::Error => {
                     b"-UNBLOCKED client unblocked via CLIENT UNBLOCK\r\n".to_vec()
                 }
@@ -2814,7 +2826,11 @@ async fn execute_blocking_frame_on_owner_thread(
                         processor.unregister_pause_blocked_blocking_client(client_id);
                     }
                     return Ok(BlockingExecutionOutcome {
-                        frame_response: blocking_empty_response_for_command(command).to_vec(),
+                        frame_response: blocking_empty_response_for_command(
+                            command,
+                            processor.resp_protocol_version().is_resp3(),
+                        )
+                        .to_vec(),
                         should_replicate: false,
                     });
                 }
@@ -2843,7 +2859,11 @@ async fn execute_blocking_frame_on_owner_thread(
                         processor.unregister_pause_blocked_blocking_client(client_id);
                     }
                     return Ok(BlockingExecutionOutcome {
-                        frame_response: blocking_empty_response_for_command(command).to_vec(),
+                        frame_response: blocking_empty_response_for_command(
+                            command,
+                            processor.resp_protocol_version().is_resp3(),
+                        )
+                        .to_vec(),
                         should_replicate: false,
                     });
                 }
@@ -2887,7 +2907,11 @@ async fn execute_blocking_frame_on_owner_thread(
             Err(OwnerThreadExecutionError::Request(RequestExecutionError::WrongType))
                 if blocked && ignore_wrongtype_while_blocked(command) =>
             {
-                blocking_empty_response_for_command(command).to_vec()
+                blocking_empty_response_for_command(
+                    command,
+                    processor.resp_protocol_version().is_resp3(),
+                )
+                .to_vec()
             }
             Err(error) => {
                 clear_blocking_request_state(
@@ -3173,7 +3197,10 @@ fn is_blocking_empty_response(frame_response: &[u8]) -> bool {
     frame_response == b"*-1\r\n" || frame_response == b"$-1\r\n" || frame_response == b"_\r\n"
 }
 
-fn blocking_empty_response_for_command(command: CommandId) -> &'static [u8] {
+fn blocking_empty_response_for_command(command: CommandId, resp3: bool) -> &'static [u8] {
+    if resp3 {
+        return b"_\r\n";
+    }
     match command {
         CommandId::Blmove | CommandId::Brpoplpush => b"$-1\r\n",
         _ => b"*-1\r\n",

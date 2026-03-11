@@ -6899,6 +6899,44 @@ async fn bzmpop_multiple_blocked_clients_external_scenario_runs_as_tcp_integrati
 }
 
 #[tokio::test]
+async fn blocking_zset_pop_timeout_returns_resp3_null_like_external_readraw_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/zset.tcl:
+    // - "BZPOPMIN/BZPOPMAX readraw in RESP3"
+    // - "BZMPOP readraw in RESP3"
+    send_hello_and_drain(&mut client, b"3").await;
+
+    client
+        .write_all(&encode_resp_command(&[b"BZPOPMIN", b"missing-bz", b"0.01"]))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await,
+        b"_"
+    );
+
+    client
+        .write_all(&encode_resp_command(&[
+            b"BZMPOP",
+            b"0.01",
+            b"1",
+            b"missing-bzm",
+            b"MIN",
+        ]))
+        .await
+        .unwrap();
+    assert_eq!(
+        read_resp_line_with_timeout(&mut client, Duration::from_secs(1)).await,
+        b"_"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn bzmpop_illegal_arguments_match_redis_external_scenario() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
