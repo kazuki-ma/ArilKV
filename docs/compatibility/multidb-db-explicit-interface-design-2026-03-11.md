@@ -44,6 +44,17 @@ Snapshot taken on 2026-03-11 after the first mechanical slice:
 - `current_request_selected_db(...)`: `161` call sites
 - `current_auxiliary_db_name(...)`: `29` call sites
 
+Snapshot taken on 2026-03-11 after the second mechanical slice:
+
+- `current_request_selected_db(...)`: `205` call sites
+- `current_auxiliary_db_name(...)`: `24` call sites
+
+Interpretation:
+
+- `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
+- `current_request_selected_db(...)` can temporarily increase while DB lookup is being pushed outward from helpers to command boundaries.
+- The goal is not a raw grep minimum by itself; the goal is to eliminate hidden DB rediscovery in memory-state helpers.
+
 High-value buckets:
 
 1. Command-layer read call sites that already know the logical DB but still fetch it indirectly.
@@ -61,14 +72,20 @@ First mechanical slice:
 - obvious `with_selected_db(... current_request_selected_db())` cases were removed in favor of directly passing the known `DbName`
 - regression added to prove explicit `DbKeyRef` reads do not fall back to DB0
 
-This is intentionally a first slice, not the end state.
+Second mechanical slice:
+
+- `write_string_value`, `delete_string_value`, `upsert_string_value_for_migration`, `delete_string_key_for_migration`, `expiration_unix_millis`, and `rewrite_existing_value_expiration` now require `DbKeyRef`
+- mutation / TTL call sites in string commands, migration, restore/debug-reload, blocking wait readiness, and replication rewrite helpers were migrated
+- regression added to prove explicit `DbKeyRef` mutation and TTL paths do not fall back to DB0
+
+This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Convert string/object write, delete, expiration, and snapshot helpers to `DbKeyRef` or `DbScopedKey`.
-2. Remove `current_auxiliary_db_name()` branching from storage helpers.
+1. Convert object mutation/deletion and expiration metadata helpers to `DbKeyRef` or `DbScopedKey`.
+2. Remove the remaining `current_auxiliary_db_name()` branching from storage helpers.
 3. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
 4. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
 5. Delete obsolete implicit-selected-DB helpers once all internal callers are migrated.

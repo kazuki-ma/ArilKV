@@ -794,7 +794,7 @@ impl RequestProcessor {
 
         entry.key = key.clone().into();
         self.with_selected_db(target_db, || self.import_migration_entry(&entry))?;
-        self.delete_string_key_for_migration(&key)?;
+        self.delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
         let _ = self.object_delete(&key)?;
 
         append_integer(response_out, 1);
@@ -1542,7 +1542,11 @@ impl RequestProcessor {
                 }
 
                 let value = encode_debug_populate_value(index, value_size);
-                self.upsert_string_value_for_migration(&key, value.as_slice(), None)?;
+                self.upsert_string_value_for_migration(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    value.as_slice(),
+                    None,
+                )?;
             }
 
             append_simple_string(response_out, b"OK");
@@ -4266,7 +4270,10 @@ impl RequestProcessor {
             let mut deleted_count = 0u64;
             for key in keys {
                 self.expire_key_if_needed(key.as_slice())?;
-                let string_deleted = self.delete_string_value_in_current_db(key.as_slice())?;
+                let string_deleted = self.delete_string_value(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ))?;
                 let object_deleted = self.object_delete(key.as_slice())?;
                 if string_deleted && !object_deleted {
                     self.bump_watch_version(key.as_slice());
@@ -4824,7 +4831,8 @@ fn restore_from_dump_blob(
     let had_previous_value = previous_string_exists || previous_type.is_some();
 
     if options.replace {
-        processor.delete_string_key_for_migration(&key)?;
+        processor
+            .delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
         let _ = processor.object_delete(&key)?;
     }
 
@@ -4878,7 +4886,7 @@ fn restore_migration_value(
     match value {
         MigrationValue::String(raw) => {
             processor.upsert_string_value_for_migration(
-                key,
+                DbKeyRef::new(current_request_selected_db(), key),
                 raw.as_slice(),
                 expiration_unix_millis,
             )?;
@@ -4888,7 +4896,10 @@ fn restore_migration_value(
             object_type,
             payload,
         } => {
-            processor.delete_string_key_for_migration(key)?;
+            processor.delete_string_key_for_migration(DbKeyRef::new(
+                current_request_selected_db(),
+                key,
+            ))?;
             processor.object_upsert(key, object_type, &payload)?;
             processor.set_string_expiration_deadline(
                 key,
@@ -5005,7 +5016,10 @@ impl RequestProcessor {
             if let Some(stored_value) = self
                 .read_string_value(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
             {
-                let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+                let expiration_unix_millis = self.expiration_unix_millis(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
                 let dump_blob = encode_dump_blob(MigrationValue::String(stored_value.into()));
                 entries.push(DebugReloadSnapshotEntry {
                     key: key.to_vec(),
@@ -5019,7 +5033,10 @@ impl RequestProcessor {
             if let Some(object) =
                 self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
             {
-                let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+                let expiration_unix_millis = self.expiration_unix_millis(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
                 let hash_field_expirations = if object.object_type == HASH_OBJECT_TYPE_TAG {
                     self.snapshot_hash_field_expirations_for_key(key.as_slice())
                         .into_iter()

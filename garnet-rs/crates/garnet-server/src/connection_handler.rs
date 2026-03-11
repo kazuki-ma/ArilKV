@@ -5722,9 +5722,7 @@ fn selected_db_expiration_unix_millis_for_key(
     selected_db: DbName,
     key: &[u8],
 ) -> Option<u64> {
-    processor.with_selected_db(selected_db, || {
-        processor.expiration_unix_millis_for_key(key)
-    })
+    processor.expiration_unix_millis(DbKeyRef::new(selected_db, key))
 }
 
 fn rewrite_script_spop_replication_frame(

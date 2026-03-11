@@ -13,7 +13,8 @@ impl RequestProcessor {
             return Ok(Some(MigrationEntry {
                 key: ItemKey::from(key),
                 value: MigrationValue::String(value.into()),
-                expiration_unix_millis: self.expiration_unix_millis_for_key(key),
+                expiration_unix_millis: self
+                    .expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key)),
             }));
         }
 
@@ -24,7 +25,8 @@ impl RequestProcessor {
                     object_type: object.object_type,
                     payload: object.payload,
                 },
-                expiration_unix_millis: self.expiration_unix_millis_for_key(key),
+                expiration_unix_millis: self
+                    .expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key)),
             }));
         }
 
@@ -38,7 +40,7 @@ impl RequestProcessor {
         match &entry.value {
             MigrationValue::String(value) => {
                 self.upsert_string_value_for_migration(
-                    entry.key.as_slice(),
+                    DbKeyRef::new(current_request_selected_db(), entry.key.as_slice()),
                     value.as_slice(),
                     entry.expiration_unix_millis,
                 )?;
@@ -48,7 +50,10 @@ impl RequestProcessor {
                 object_type,
                 payload,
             } => {
-                self.delete_string_key_for_migration(entry.key.as_slice())?;
+                self.delete_string_key_for_migration(DbKeyRef::new(
+                    current_request_selected_db(),
+                    entry.key.as_slice(),
+                ))?;
                 self.object_upsert(entry.key.as_slice(), *object_type, payload)?;
                 self.set_string_expiration_deadline(
                     entry.key.as_slice(),
@@ -74,7 +79,10 @@ impl RequestProcessor {
             };
             target.import_migration_entry(&entry)?;
             if delete_source {
-                self.delete_string_key_for_migration(key)?;
+                self.delete_string_key_for_migration(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key,
+                ))?;
                 let _ = self.object_delete(key)?;
             }
             moved += 1;
@@ -91,7 +99,10 @@ impl RequestProcessor {
 
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
-            let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+            let expiration_unix_millis = self.expiration_unix_millis(DbKeyRef::new(
+                current_request_selected_db(),
+                key.as_slice(),
+            ));
             let entry = if let Some(selected_db) = self.current_auxiliary_db_name() {
                 let Some(entry) = self.auxiliary_value_snapshot(selected_db, key.as_slice()) else {
                     continue;

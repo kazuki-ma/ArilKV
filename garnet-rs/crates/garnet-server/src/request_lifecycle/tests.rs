@@ -9374,6 +9374,69 @@ fn db_key_ref_reads_are_scoped_by_explicit_db_without_db0_fallback() {
 }
 
 #[test]
+fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
+    processor.with_selected_db(DbName::new(9), || {
+        assert_command_response(&processor, "SET shared db9", b"+OK\r\n");
+        assert_command_response(&processor, "SET ttlkey value PX 5000", b"+OK\r\n");
+    });
+
+    processor
+        .write_string_value(
+            DbKeyRef::new(DbName::new(9), b"shared"),
+            b"db9-updated",
+            None,
+        )
+        .unwrap();
+    assert_eq!(
+        processor
+            .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+            .unwrap()
+            .unwrap(),
+        b"db0"
+    );
+    assert_eq!(
+        processor
+            .read_string_value(DbKeyRef::new(DbName::new(9), b"shared"))
+            .unwrap()
+            .unwrap(),
+        b"db9-updated"
+    );
+
+    assert!(
+        processor
+            .delete_string_value(DbKeyRef::new(DbName::new(9), b"shared"))
+            .unwrap()
+    );
+    assert_eq!(
+        processor
+            .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+            .unwrap()
+            .unwrap(),
+        b"db0"
+    );
+    assert!(
+        processor
+            .read_string_value(DbKeyRef::new(DbName::new(9), b"shared"))
+            .unwrap()
+            .is_none()
+    );
+
+    assert!(
+        processor
+            .expiration_unix_millis(DbKeyRef::new(DbName::new(9), b"ttlkey"))
+            .is_some()
+    );
+    assert!(
+        processor
+            .expiration_unix_millis(DbKeyRef::new(DbName::default(), b"ttlkey"))
+            .is_none()
+    );
+}
+
+#[test]
 fn oversized_hyll_set_is_canonicalized_to_invalid_hll_marker() {
     let processor = RequestProcessor::new().unwrap();
 

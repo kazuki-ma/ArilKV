@@ -4319,7 +4319,7 @@ impl RequestProcessor {
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
         self.with_selected_db(wait_key.db(), || {
             if self
-                .expiration_unix_millis_for_key(wait_key.key().as_slice())
+                .expiration_unix_millis(DbKeyRef::new(wait_key.db(), wait_key.key().as_slice()))
                 .is_some_and(|expiration_unix_millis| {
                     current_unix_time_millis()
                         .is_some_and(|now_unix_millis| expiration_unix_millis <= now_unix_millis)

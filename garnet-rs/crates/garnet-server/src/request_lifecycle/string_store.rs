@@ -388,18 +388,20 @@ impl RequestProcessor {
         self.key_exists_any(key)
     }
 
-    pub(super) fn delete_string_value_in_current_db(
+    pub(super) fn delete_string_value(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            let Some(state) = databases.get_mut(&selected_db) else {
+            let Some(state) = databases.get_mut(&db) else {
                 return Ok(false);
             };
-            let Some(entry) = state.entries.get_mut(key) else {
+            let Some(entry) = state.entries.get_mut(key_bytes) else {
                 return Ok(false);
             };
             if !matches!(entry.value, Some(MigrationValue::String(_))) {
@@ -410,25 +412,25 @@ impl RequestProcessor {
             entry.expiration = None;
             entry.hash_field_expirations.clear();
             if entry.value.is_none() {
-                let _ = state.entries.remove(key);
+                let _ = state.entries.remove(key_bytes);
             }
             return Ok(true);
         }
 
-        let mut store = self.lock_string_store_for_key(key);
+        let mut store = self.lock_string_store_for_key(key_bytes);
         let mut session = store.session(&self.functions);
         let mut info = DeleteInfo::default();
         let status = session
-            .delete(&key.to_vec(), &mut info)
+            .delete(&key_bytes.to_vec(), &mut info)
             .map_err(map_delete_error)?;
 
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.remove_string_key_metadata(key);
+                self.remove_string_key_metadata(key_bytes);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
-                self.remove_string_key_metadata(key);
+                self.remove_string_key_metadata(key_bytes);
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -437,11 +439,13 @@ impl RequestProcessor {
 
     pub(super) fn upsert_string_value_for_migration(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         user_value: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<(), RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             let expiration = expiration_unix_millis.and_then(|unix_millis| {
                 let deadline = instant_from_unix_millis(unix_millis)?;
                 Some(ExpirationMetadata {
@@ -453,19 +457,19 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
-                .entry(selected_db)
+                .entry(db)
                 .or_default()
                 .entries
-                .entry(RedisKey::from(key))
+                .entry(RedisKey::from(key_bytes))
                 .or_default();
             entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
             entry.expiration = expiration;
             entry.hash_field_expirations.clear();
-            self.bump_watch_version(key);
+            self.bump_watch_version(key_bytes);
             return Ok(());
         }
 
-        let mut store = self.lock_string_store_for_key(key);
+        let mut store = self.lock_string_store_for_key(key_bytes);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
@@ -476,7 +480,12 @@ impl RequestProcessor {
         }
         let stored_value = encode_stored_value(user_value, expiration_unix_millis);
         session
-            .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
+            .upsert(
+                &key_bytes.to_vec(),
+                &stored_value,
+                &mut output,
+                &mut upsert_info,
+            )
             .map_err(map_upsert_error)?;
         // Explicit drops to end borrows before subsequent metadata locks.
         #[allow(clippy::drop_non_drop)]
@@ -492,20 +501,22 @@ impl RequestProcessor {
                 unix_millis: TimestampMillis::new(unix_millis),
             })
         });
-        let shard_index = self.string_store_shard_index_for_key(key);
-        self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
-        self.track_string_key(key);
-        self.bump_watch_version(key);
+        let shard_index = self.string_store_shard_index_for_key(key_bytes);
+        self.set_string_expiration_metadata_in_shard(key_bytes, shard_index, expiration);
+        self.track_string_key(key_bytes);
+        self.bump_watch_version(key_bytes);
         Ok(())
     }
 
-    pub(super) fn write_string_value_in_current_db(
+    pub(super) fn write_string_value(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         user_value: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<(), RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             let expiration = expiration_unix_millis.and_then(|unix_millis| {
                 let deadline = instant_from_unix_millis(unix_millis)?;
                 Some(ExpirationMetadata {
@@ -517,10 +528,10 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
-                .entry(selected_db)
+                .entry(db)
                 .or_default()
                 .entries
-                .entry(RedisKey::from(key))
+                .entry(RedisKey::from(key_bytes))
                 .or_default();
             entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
             entry.expiration = expiration;
@@ -528,7 +539,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let mut store = self.lock_string_store_for_key(key);
+        let mut store = self.lock_string_store_for_key(key_bytes);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
         let mut upsert_info = UpsertInfo::default();
@@ -539,44 +550,53 @@ impl RequestProcessor {
         }
         let stored_value = encode_stored_value(user_value, expiration_unix_millis);
         session
-            .upsert(&key.to_vec(), &stored_value, &mut output, &mut upsert_info)
+            .upsert(
+                &key_bytes.to_vec(),
+                &stored_value,
+                &mut output,
+                &mut upsert_info,
+            )
             .map_err(map_upsert_error)?;
         Ok(())
     }
 
     pub(super) fn delete_string_key_for_migration(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<(), RequestExecutionError> {
-        if self.delete_string_value_in_current_db(key)? {
-            self.bump_watch_version(key);
+        if self.delete_string_value(key)? {
+            self.bump_watch_version(key.key());
         }
         Ok(())
     }
 
-    pub(crate) fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+    pub(crate) fn expiration_unix_millis(&self, key: DbKeyRef<'_>) -> Option<u64> {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             return self
-                .auxiliary_value_snapshot(selected_db, key)
+                .auxiliary_value_snapshot(db, key_bytes)
                 .and_then(|entry| entry.expiration)
                 .map(|metadata| metadata.unix_millis.as_u64());
         }
 
-        let shard_index = self.string_store_shard_index_for_key(key);
+        let shard_index = self.string_store_shard_index_for_key(key_bytes);
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return None;
         }
         self.lock_string_expirations_for_shard(shard_index)
-            .get(key)
+            .get(key_bytes)
             .map(|metadata| metadata.unix_millis.as_u64())
     }
 
     pub(super) fn rewrite_existing_value_expiration(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         expiration_unix_millis: Option<u64>,
     ) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let db = key.db();
+        let key_bytes = key.key();
+        if db != DbName::default() {
             let expiration = expiration_unix_millis.and_then(|unix_millis| {
                 let deadline = instant_from_unix_millis(unix_millis)?;
                 Some(ExpirationMetadata {
@@ -587,10 +607,10 @@ impl RequestProcessor {
             let Ok(mut databases) = self.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            let Some(state) = databases.get_mut(&selected_db) else {
+            let Some(state) = databases.get_mut(&db) else {
                 return Ok(false);
             };
-            let Some(entry) = state.entries.get_mut(key) else {
+            let Some(entry) = state.entries.get_mut(key_bytes) else {
                 return Ok(false);
             };
             if !matches!(entry.value, Some(MigrationValue::String(_))) {
@@ -600,8 +620,8 @@ impl RequestProcessor {
             return Ok(true);
         }
 
-        let key_vec = key.to_vec();
-        let mut store = self.lock_string_store_for_key(key);
+        let key_vec = key_bytes.to_vec();
+        let mut store = self.lock_string_store_for_key(key_bytes);
         let mut session = store.session(&self.functions);
         let mut current = Vec::new();
         let status = session

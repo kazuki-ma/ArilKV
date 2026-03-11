@@ -406,7 +406,8 @@ impl RequestProcessor {
         };
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let expiration_unix_millis =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
         let mut value =
             match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                 Some(value) => value,
@@ -471,7 +472,8 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
 
-        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let expiration_unix_millis =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
         let mut value =
             match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                 Some(value) => value,
@@ -770,11 +772,18 @@ impl RequestProcessor {
 
         let result = apply_bitop(operation, &source_values);
         if result.is_empty() {
-            self.delete_string_key_for_migration(&destination)?;
+            self.delete_string_key_for_migration(DbKeyRef::new(
+                current_request_selected_db(),
+                &destination,
+            ))?;
             let _ = self.object_delete(&destination)?;
         } else {
             let _ = self.object_delete(&destination)?;
-            self.upsert_string_value_for_migration(&destination, &result, None)?;
+            self.upsert_string_value_for_migration(
+                DbKeyRef::new(current_request_selected_db(), &destination),
+                &result,
+                None,
+            )?;
             self.notify_setkey_overwrite_events(
                 &destination,
                 destination_had_string,
@@ -820,7 +829,8 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         self.expire_key_if_needed(&key)?;
-        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let expiration_unix_millis =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
         let mut value =
             match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                 Some(value) => value,
@@ -1246,7 +1256,10 @@ impl RequestProcessor {
                 }
             }
 
-            self.delete_string_key_for_migration(store_key)?;
+            self.delete_string_key_for_migration(DbKeyRef::new(
+                current_request_selected_db(),
+                store_key,
+            ))?;
             let _ = self.object_delete(store_key)?;
             if !stored.is_empty() {
                 self.save_list_object(store_key, &stored)?;
@@ -1300,7 +1313,11 @@ impl RequestProcessor {
         value: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<(), RequestExecutionError> {
-        self.write_string_value_in_current_db(key, value, expiration_unix_millis)
+        self.write_string_value(
+            DbKeyRef::new(current_request_selected_db(), key),
+            value,
+            expiration_unix_millis,
+        )
     }
 
     pub(super) fn handle_append(
@@ -1314,7 +1331,8 @@ impl RequestProcessor {
         let append_value = args[2];
         self.expire_key_if_needed(&key)?;
 
-        let expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let expiration_unix_millis =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
         let mut current_value =
             match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                 Some(value) => value,
@@ -1379,7 +1397,10 @@ impl RequestProcessor {
             GetExAction::Persist => {
                 if self.string_expiration_deadline(&key).is_some() {
                     self.set_string_expiration_deadline(&key, None);
-                    if !self.rewrite_existing_value_expiration(&key, None)? {
+                    if !self.rewrite_existing_value_expiration(
+                        DbKeyRef::new(current_request_selected_db(), &key),
+                        None,
+                    )? {
                         return Err(storage_failure(
                             "getex",
                             "string key disappeared while clearing expiration",
@@ -1393,7 +1414,7 @@ impl RequestProcessor {
                 let shard_index = self.string_store_shard_index_for_key(&key);
                 self.set_string_expiration_metadata_in_shard(&key, shard_index, Some(expiration));
                 if !self.rewrite_existing_value_expiration(
-                    &key,
+                    DbKeyRef::new(current_request_selected_db(), &key),
                     Some(expiration.unix_millis.as_u64()),
                 )? {
                     self.set_string_expiration_deadline(&key, None);
@@ -1406,7 +1427,7 @@ impl RequestProcessor {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
             }
             GetExAction::DeleteNow => {
-                if self.delete_string_value_in_current_db(&key)? {
+                if self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                     self.bump_watch_version(&key);
                     self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
                 }
@@ -1436,7 +1457,7 @@ impl RequestProcessor {
             match self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                 Some(value) => (
                     parse_f64_ascii(&value).ok_or(RequestExecutionError::ValueNotFloat)?,
-                    self.expiration_unix_millis_for_key(&key),
+                    self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key)),
                 ),
                 None => {
                     if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
@@ -1453,7 +1474,11 @@ impl RequestProcessor {
         let updated_text = updated.to_string().into_bytes();
 
         if self.current_auxiliary_db_name().is_some() {
-            self.upsert_string_value_for_migration(&key, &updated_text, expiration_unix_millis)?;
+            self.upsert_string_value_for_migration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                &updated_text,
+                expiration_unix_millis,
+            )?;
             self.clear_forced_raw_string_encoding(&key);
             self.track_string_key(&key);
             self.bump_watch_version(&key);
@@ -1542,7 +1567,7 @@ impl RequestProcessor {
             }
 
             let preserved_expiration = if options.keep_ttl {
-                self.expiration_unix_millis_for_key(&key)
+                self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
                     .map(|unix_millis| {
                         let deadline =
                             instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
@@ -1665,7 +1690,7 @@ impl RequestProcessor {
         }
 
         let preserved_expiration = if options.keep_ttl {
-            self.expiration_unix_millis_for_key(&key)
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
                 .map(|unix_millis| {
                     let deadline =
                         instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
@@ -1957,7 +1982,7 @@ impl RequestProcessor {
 
         for (key, value) in &key_value_pairs {
             let effective_expiration = if options.keep_ttl {
-                self.expiration_unix_millis_for_key(key)
+                self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key))
                     .and_then(expiration_metadata_from_unix_millis)
             } else {
                 options.expiration
@@ -1984,7 +2009,8 @@ impl RequestProcessor {
 
         let mut deleted = 0i64;
         for key in keys {
-            let string_deleted = self.delete_string_value_in_current_db(&key)?;
+            let string_deleted =
+                self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))?;
             let object_deleted = match self.object_delete(&key) {
                 Ok(value) => value,
                 Err(error) => {
@@ -2044,7 +2070,8 @@ impl RequestProcessor {
         let mut lazyfreed = 0u64;
         for key in keys {
             let object_lazyfree_weight = self.unlink_object_lazyfree_weight(&key)?;
-            let string_deleted = self.delete_string_value_in_current_db(&key)?;
+            let string_deleted =
+                self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))?;
             let object_deleted = self.object_delete(&key)?;
             if string_deleted || object_deleted {
                 deleted += 1;
@@ -2146,7 +2173,10 @@ impl RequestProcessor {
         };
         source_entry.key = destination.clone().into();
         self.import_migration_entry(&source_entry)?;
-        self.delete_string_key_for_migration(&source)?;
+        self.delete_string_key_for_migration(DbKeyRef::new(
+            current_request_selected_db(),
+            &source,
+        ))?;
         let _ = self.object_delete(&source)?;
 
         self.notify_setkey_overwrite_events(
@@ -2311,7 +2341,8 @@ impl RequestProcessor {
         }
 
         if self.current_auxiliary_db_name().is_some() {
-            let expiration_unix_millis = self.expiration_unix_millis_for_key(key);
+            let expiration_unix_millis =
+                self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key));
             let current =
                 match self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))? {
                     Some(value) => {
@@ -2323,7 +2354,11 @@ impl RequestProcessor {
                 .checked_add(delta)
                 .ok_or(RequestExecutionError::IncrementOverflow)?;
             let updated_text = updated.to_string().into_bytes();
-            self.upsert_string_value_for_migration(key, &updated_text, expiration_unix_millis)?;
+            self.upsert_string_value_for_migration(
+                DbKeyRef::new(current_request_selected_db(), key),
+                &updated_text,
+                expiration_unix_millis,
+            )?;
             self.clear_forced_raw_string_encoding(key);
             self.track_string_key(key);
             self.bump_watch_version(key);
@@ -2527,7 +2562,11 @@ impl RequestProcessor {
             {
                 state.encoding = HllEncoding::Dense;
             }
-            self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
+            self.upsert_string_value_for_migration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                &encode_pf_set(&state),
+                None,
+            )?;
         }
         append_integer(response_out, changed);
         Ok(())
@@ -2553,7 +2592,11 @@ impl RequestProcessor {
             }
         }
         if let Some((key, state)) = single_key_state_update {
-            self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
+            self.upsert_string_value_for_migration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                &encode_pf_set(&state),
+                None,
+            )?;
         }
         append_integer(response_out, pf_estimate_cardinality(&union_registers));
         Ok(())
@@ -2587,7 +2630,11 @@ impl RequestProcessor {
         {
             merged.encoding = HllEncoding::Dense;
         }
-        self.upsert_string_value_for_migration(&destination, &encode_pf_set(&merged), None)?;
+        self.upsert_string_value_for_migration(
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &encode_pf_set(&merged),
+            None,
+        )?;
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -2628,7 +2675,11 @@ impl RequestProcessor {
             let key = RedisKey::from(args[2]);
             let mut state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
             state.encoding = HllEncoding::Dense;
-            self.upsert_string_value_for_migration(&key, &encode_pf_set(&state), None)?;
+            self.upsert_string_value_for_migration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                &encode_pf_set(&state),
+                None,
+            )?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -2844,7 +2895,8 @@ impl RequestProcessor {
             now_unix_millis,
             overflow_error,
         )?;
-        let current_expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let current_expiration_unix_millis =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
         if !should_apply_expire_condition(
             options,
             current_expiration_unix_millis,
@@ -2874,7 +2926,12 @@ impl RequestProcessor {
                 unix_millis: TimestampMillis::new(unix_millis),
             }),
         );
-        if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
+        if string_exists
+            && !self.rewrite_existing_value_expiration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                Some(unix_millis),
+            )?
+        {
             self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
             return Ok(());
@@ -2919,7 +2976,8 @@ impl RequestProcessor {
         let target_unix_millis = compute_absolute_expire_target_unix_millis(amount, milliseconds)?;
         let now_unix_millis =
             i128::from(current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?);
-        let current_expiration_unix_millis = self.expiration_unix_millis_for_key(&key);
+        let current_expiration_unix_millis =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
         if !should_apply_expire_condition(
             options,
             current_expiration_unix_millis,
@@ -2951,7 +3009,12 @@ impl RequestProcessor {
                 unix_millis: TimestampMillis::new(unix_millis),
             }),
         );
-        if string_exists && !self.rewrite_existing_value_expiration(&key, Some(unix_millis))? {
+        if string_exists
+            && !self.rewrite_existing_value_expiration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                Some(unix_millis),
+            )?
+        {
             self.set_string_expiration_deadline(&key, None);
             append_integer(response_out, 0);
             return Ok(());
@@ -2970,7 +3033,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let string_deleted = if string_exists {
-            self.delete_string_value_in_current_db(key)?
+            self.delete_string_value(DbKeyRef::new(current_request_selected_db(), key))?
         } else {
             false
         };
@@ -3045,7 +3108,9 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if let Some(expiration_unix_millis) = self.expiration_unix_millis_for_key(&key) {
+        if let Some(expiration_unix_millis) =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
+        {
             let now_unix_millis =
                 current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?;
             if expiration_unix_millis <= now_unix_millis {
@@ -3110,7 +3175,9 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if let Some(expiration_unix_millis) = self.expiration_unix_millis_for_key(&key) {
+        if let Some(expiration_unix_millis) =
+            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
+        {
             let value = if milliseconds {
                 expiration_unix_millis.min(i64::MAX as u64) as i64
             } else {
@@ -3172,7 +3239,12 @@ impl RequestProcessor {
         }
         self.set_string_expiration_deadline(&key, None);
 
-        if string_exists && !self.rewrite_existing_value_expiration(&key, None)? {
+        if string_exists
+            && !self.rewrite_existing_value_expiration(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                None,
+            )?
+        {
             append_integer(response_out, 0);
             return Ok(());
         }
