@@ -863,6 +863,7 @@ impl RequestProcessor {
         self.invalidate_all_tracking_entries();
 
         let mut databases = self
+            .db_catalog
             .auxiliary_databases
             .lock()
             .map_err(|_| RequestExecutionError::StorageBusy)?;
@@ -880,16 +881,24 @@ impl RequestProcessor {
         drop(databases);
 
         self.swap_set_hot_state_for_auxiliary_db_pair(db1, db2);
-        self.swap_scoped_key_state(&self.forced_list_quicklist_keys, db1, db2);
-        self.swap_scoped_key_state(&self.forced_raw_string_keys, db1, db2);
-        self.swap_scoped_key_map_state(&self.forced_set_encoding_floors, db1, db2);
-        self.swap_scoped_key_map_state(&self.set_debug_ht_state, db1, db2);
+        self.swap_scoped_key_state(
+            &self.db_catalog.side_state.forced_list_quicklist_keys,
+            db1,
+            db2,
+        );
+        self.swap_scoped_key_state(&self.db_catalog.side_state.forced_raw_string_keys, db1, db2);
+        self.swap_scoped_key_map_state(
+            &self.db_catalog.side_state.forced_set_encoding_floors,
+            db1,
+            db2,
+        );
+        self.swap_scoped_key_map_state(&self.db_catalog.side_state.set_debug_ht_state, db1, db2);
 
         Ok(())
     }
 
     fn swap_set_hot_state_for_auxiliary_db_pair(&self, db1: DbName, db2: DbName) {
-        let mut hot_state = match self.set_object_hot_state.lock() {
+        let mut hot_state = match self.db_catalog.side_state.set_object_hot_state.lock() {
             Ok(state) => state,
             Err(_) => return,
         };
@@ -4409,7 +4418,7 @@ impl RequestProcessor {
             self.materialize_set_hot_entries_for_db(selected_db)?;
             self.invalidate_all_tracking_entries();
             let keys = {
-                let Ok(databases) = self.auxiliary_databases.lock() else {
+                let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
                     return Err(RequestExecutionError::StorageBusy);
                 };
                 let Some(state) = databases.get(&selected_db) else {
@@ -4444,7 +4453,7 @@ impl RequestProcessor {
                 }
             }
 
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             if databases
@@ -4521,13 +4530,19 @@ impl RequestProcessor {
             }
         }
 
-        for shard_index in self.string_expiration_counts.indices() {
+        for shard_index in self
+            .db_catalog
+            .main_db_runtime
+            .string_expiration_counts
+            .indices()
+        {
             self.lock_string_expirations_for_shard(shard_index).clear();
             self.lock_hash_field_expirations_for_shard(shard_index)
                 .clear();
             self.lock_string_key_registry_for_shard(shard_index).clear();
             self.lock_object_key_registry_for_shard(shard_index).clear();
-            self.string_expiration_counts[shard_index].store(0, Ordering::Release);
+            self.db_catalog.main_db_runtime.string_expiration_counts[shard_index]
+                .store(0, Ordering::Release);
         }
         self.clear_set_hot_entries_for_db(DbName::default());
         self.reset_lazyfree_pending_objects();
@@ -4536,7 +4551,7 @@ impl RequestProcessor {
 
     fn flush_auxiliary_databases(&self) -> u64 {
         let dbs = {
-            let Ok(databases) = self.auxiliary_databases.lock() else {
+            let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return 0;
             };
             databases.keys().copied().collect::<Vec<_>>()
@@ -4549,7 +4564,7 @@ impl RequestProcessor {
             };
             removed = removed.saturating_add(flushed);
         }
-        let Ok(mut databases) = self.auxiliary_databases.lock() else {
+        let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
             return 0;
         };
         databases.retain(|_, state| !state.entries.is_empty());
@@ -4567,7 +4582,12 @@ impl RequestProcessor {
 
     fn total_expiration_count(&self) -> usize {
         let mut total = 0usize;
-        for shard_index in self.string_expiration_counts.indices() {
+        for shard_index in self
+            .db_catalog
+            .main_db_runtime
+            .string_expiration_counts
+            .indices()
+        {
             total = total.saturating_add(self.string_expiration_count_for_shard(shard_index));
         }
         total
@@ -4586,7 +4606,7 @@ impl RequestProcessor {
             );
         }
 
-        let Ok(databases) = self.auxiliary_databases.lock() else {
+        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
             return Err(RequestExecutionError::StorageBusy);
         };
         let mut dbs = databases

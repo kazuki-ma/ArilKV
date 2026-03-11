@@ -1034,6 +1034,33 @@ struct AuxiliaryDbState {
     entries: HashMap<RedisKey, AuxiliaryDbValue>,
 }
 
+struct MainDbRuntime {
+    string_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
+    object_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
+    string_expirations: PerShard<OrderedMutex<HashMap<RedisKey, ExpirationMetadata>>>,
+    hash_field_expirations:
+        PerShard<OrderedMutex<HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>>>,
+    string_expiration_counts: PerShard<AtomicUsize>,
+    string_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
+    object_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
+}
+
+struct DbCatalog {
+    main_db_runtime: MainDbRuntime,
+    auxiliary_databases: Mutex<HashMap<DbName, AuxiliaryDbState>>,
+    side_state: DbCatalogSideState,
+}
+
+struct DbCatalogSideState {
+    forced_list_quicklist_keys: Mutex<HashSet<DbScopedKey>>,
+    forced_raw_string_keys: Mutex<HashSet<DbScopedKey>>,
+    forced_set_encoding_floors: Mutex<HashMap<DbScopedKey, SetEncodingFloor>>,
+    set_object_hot_state: Mutex<SetObjectHotState>,
+    set_debug_ht_state: Mutex<HashMap<DbScopedKey, SetDebugHtState>>,
+    key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
+    key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
+}
+
 const DEFAULT_STREAM_IDMP_DURATION_SECONDS: u64 = 100;
 const DEFAULT_STREAM_IDMP_MAXSIZE: u64 = 100;
 
@@ -1849,25 +1876,13 @@ fn trim_slowlog_argument(argument: &[u8]) -> Vec<u8> {
 }
 
 pub struct RequestProcessor {
-    string_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    object_stores: PerShard<OrderedMutex<TsavoriteKV<Vec<u8>, Vec<u8>>>>,
-    string_expirations: PerShard<OrderedMutex<HashMap<RedisKey, ExpirationMetadata>>>,
-    hash_field_expirations:
-        PerShard<OrderedMutex<HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>>>,
-    string_expiration_counts: PerShard<AtomicUsize>,
-    string_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
-    object_key_registries: PerShard<OrderedMutex<HashSet<RedisKey>>>,
+    db_catalog: DbCatalog,
     watch_versions: Vec<AtomicU64>,
     blocking_wait_queues: Mutex<HashMap<BlockingWaitKey, VecDeque<ClientId>>>,
     blocked_stream_wait_states: Mutex<HashMap<ClientId, BlockingStreamWaitState>>,
     blocked_xread_tail_ids: Mutex<HashMap<ClientId, Vec<Option<StreamId>>>>,
     pending_client_unblocks: Mutex<HashMap<ClientId, ClientUnblockMode>>,
     pause_blocked_blocking_clients: Mutex<HashSet<ClientId>>,
-    forced_list_quicklist_keys: Mutex<HashSet<DbScopedKey>>,
-    forced_raw_string_keys: Mutex<HashSet<DbScopedKey>>,
-    forced_set_encoding_floors: Mutex<HashMap<DbScopedKey, SetEncodingFloor>>,
-    set_object_hot_state: Mutex<SetObjectHotState>,
-    set_debug_ht_state: Mutex<HashMap<DbScopedKey, SetDebugHtState>>,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
     debug_pause_cron: AtomicBool,
@@ -1897,9 +1912,6 @@ pub struct RequestProcessor {
     pubsub_state: Mutex<PubSubState>,
     tracking_state: Mutex<TrackingState>,
     tracking_table_max_keys: AtomicU64,
-    auxiliary_databases: Mutex<HashMap<DbName, AuxiliaryDbState>>,
-    key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
-    key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
     lazy_expired_keys_for_replication: Mutex<Vec<DbScopedKey>>,
     script_replication_effects: Mutex<Vec<ScriptReplicationEffect>>,
@@ -2150,13 +2162,27 @@ impl RequestProcessor {
             ));
         }
         Ok(Self {
-            string_stores: string_stores.into(),
-            object_stores: object_stores.into(),
-            string_expirations: string_expirations.into(),
-            hash_field_expirations: hash_field_expirations.into(),
-            string_expiration_counts: string_expiration_counts.into(),
-            string_key_registries: string_key_registries.into(),
-            object_key_registries: object_key_registries.into(),
+            db_catalog: DbCatalog {
+                main_db_runtime: MainDbRuntime {
+                    string_stores: string_stores.into(),
+                    object_stores: object_stores.into(),
+                    string_expirations: string_expirations.into(),
+                    hash_field_expirations: hash_field_expirations.into(),
+                    string_expiration_counts: string_expiration_counts.into(),
+                    string_key_registries: string_key_registries.into(),
+                    object_key_registries: object_key_registries.into(),
+                },
+                auxiliary_databases: Mutex::new(HashMap::new()),
+                side_state: DbCatalogSideState {
+                    forced_list_quicklist_keys: Mutex::new(HashSet::new()),
+                    forced_raw_string_keys: Mutex::new(HashSet::new()),
+                    forced_set_encoding_floors: Mutex::new(HashMap::new()),
+                    set_object_hot_state: Mutex::new(SetObjectHotState::default()),
+                    set_debug_ht_state: Mutex::new(HashMap::new()),
+                    key_lru_access_millis: Mutex::new(HashMap::new()),
+                    key_lfu_frequency: Mutex::new(HashMap::new()),
+                },
+            },
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
                 .map(|_| AtomicU64::new(0))
                 .collect(),
@@ -2165,11 +2191,6 @@ impl RequestProcessor {
             blocked_xread_tail_ids: Mutex::new(HashMap::new()),
             pending_client_unblocks: Mutex::new(HashMap::new()),
             pause_blocked_blocking_clients: Mutex::new(HashSet::new()),
-            forced_list_quicklist_keys: Mutex::new(HashSet::new()),
-            forced_raw_string_keys: Mutex::new(HashSet::new()),
-            forced_set_encoding_floors: Mutex::new(HashMap::new()),
-            set_object_hot_state: Mutex::new(SetObjectHotState::default()),
-            set_debug_ht_state: Mutex::new(HashMap::new()),
             random_state: AtomicU64::new(current_unix_time_millis().unwrap_or(0x9e3779b97f4a7c15)),
             active_expire_enabled: AtomicBool::new(true),
             debug_pause_cron: AtomicBool::new(false),
@@ -2199,9 +2220,6 @@ impl RequestProcessor {
             pubsub_state: Mutex::new(PubSubState::default()),
             tracking_state: Mutex::new(TrackingState::default()),
             tracking_table_max_keys: AtomicU64::new(1_000_000),
-            auxiliary_databases: Mutex::new(HashMap::new()),
-            key_lru_access_millis: Mutex::new(HashMap::new()),
-            key_lfu_frequency: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),
             lazy_expired_keys_for_replication: Mutex::new(Vec::new()),
             script_replication_effects: Mutex::new(Vec::new()),
@@ -3744,7 +3762,7 @@ impl RequestProcessor {
             return;
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
-        if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
+        if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
             lru_state.insert(RedisKey::from(key), now_millis);
         }
     }
@@ -3753,16 +3771,16 @@ impl RequestProcessor {
         if key.is_empty() {
             return;
         }
-        if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
+        if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
             let _ = lru_state.remove(key);
         }
-        if let Ok(mut lfu_state) = self.key_lfu_frequency.lock() {
+        if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
             let _ = lfu_state.remove(key);
         }
     }
 
     pub(super) fn key_lru_millis(&self, key: &[u8]) -> Option<u64> {
-        let Ok(lru_state) = self.key_lru_access_millis.lock() else {
+        let Ok(lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() else {
             return None;
         };
         lru_state.get(key).copied()
@@ -3782,7 +3800,7 @@ impl RequestProcessor {
         let now_millis = current_unix_time_millis().unwrap_or(0);
         let idle_millis = idle_seconds.saturating_mul(1000);
         let lru_millis = now_millis.saturating_sub(idle_millis);
-        if let Ok(mut lru_state) = self.key_lru_access_millis.lock() {
+        if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
             lru_state.insert(RedisKey::from(key), lru_millis);
         }
     }
@@ -3791,13 +3809,13 @@ impl RequestProcessor {
         if key.is_empty() {
             return;
         }
-        if let Ok(mut lfu_state) = self.key_lfu_frequency.lock() {
+        if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
             lfu_state.insert(RedisKey::from(key), frequency);
         }
     }
 
     pub(super) fn key_frequency(&self, key: &[u8]) -> Option<u8> {
-        let Ok(lfu_state) = self.key_lfu_frequency.lock() else {
+        let Ok(lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() else {
             return None;
         };
         lfu_state.get(key).copied()
@@ -4430,52 +4448,58 @@ impl RequestProcessor {
     }
 
     pub(super) fn force_list_quicklist_encoding(&self, key: DbKeyRef<'_>) {
-        if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
             forced.insert(DbScopedKey::new(key.db(), key.key()));
         }
     }
 
     pub(super) fn clear_forced_list_quicklist_encoding(&self, key: DbKeyRef<'_>) {
-        if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
             let _ = forced.remove(&DbScopedKey::new(key.db(), key.key()));
         }
     }
 
     pub(super) fn clear_all_forced_list_quicklist_encodings(&self) {
-        if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
             forced.clear();
         }
     }
 
     pub(super) fn list_quicklist_encoding_is_forced(&self, key: DbKeyRef<'_>) -> bool {
-        self.forced_list_quicklist_keys
+        self.db_catalog
+            .side_state
+            .forced_list_quicklist_keys
             .lock()
             .map(|forced| forced.contains(&DbScopedKey::new(key.db(), key.key())))
             .unwrap_or(false)
     }
 
     pub(super) fn string_encoding_is_forced_raw(&self, key: DbKeyRef<'_>) -> bool {
-        self.forced_raw_string_keys
+        self.db_catalog
+            .side_state
+            .forced_raw_string_keys
             .lock()
             .map(|forced| forced.contains(&DbScopedKey::new(key.db(), key.key())))
             .unwrap_or(false)
     }
 
     pub(super) fn force_raw_string_encoding(&self, key: DbKeyRef<'_>) {
-        if let Ok(mut forced) = self.forced_raw_string_keys.lock() {
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
             forced.insert(DbScopedKey::new(key.db(), key.key()));
         }
     }
 
     pub(super) fn clear_forced_raw_string_encoding(&self, key: DbKeyRef<'_>) {
-        if let Ok(mut forced) = self.forced_raw_string_keys.lock() {
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
             let _ = forced.remove(&DbScopedKey::new(key.db(), key.key()));
         }
     }
 
     pub(super) fn set_encoding_floor(&self, key: DbKeyRef<'_>) -> Option<SetEncodingFloor> {
         let scoped_key = DbScopedKey::new(key.db(), key.key());
-        self.forced_set_encoding_floors
+        self.db_catalog
+            .side_state
+            .forced_set_encoding_floors
             .lock()
             .ok()
             .and_then(|floors| floors.get(&scoped_key).copied())
@@ -4483,7 +4507,7 @@ impl RequestProcessor {
 
     pub(super) fn clear_forced_set_encoding_floor(&self, key: DbKeyRef<'_>) {
         let scoped_key = DbScopedKey::new(key.db(), key.key());
-        if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
+        if let Ok(mut floors) = self.db_catalog.side_state.forced_set_encoding_floors.lock() {
             let _ = floors.remove(&scoped_key);
         }
     }
@@ -4555,7 +4579,7 @@ impl RequestProcessor {
     }
 
     fn clear_set_debug_ht_state(&self, key: DbKeyRef<'_>) {
-        if let Ok(mut states) = self.set_debug_ht_state.lock() {
+        if let Ok(mut states) = self.db_catalog.side_state.set_debug_ht_state.lock() {
             let _ = states.remove(&DbScopedKey::new(key.db(), key.key()));
         }
     }
@@ -4567,7 +4591,7 @@ impl RequestProcessor {
         }
 
         let bgsave_in_progress = self.rdb_bgsave_in_progress();
-        if let Ok(mut states) = self.set_debug_ht_state.lock() {
+        if let Ok(mut states) = self.db_catalog.side_state.set_debug_ht_state.lock() {
             let state = states
                 .entry(DbScopedKey::new(key.db(), key.key()))
                 .or_insert_with(|| SetDebugHtState::new(member_count));
@@ -4581,7 +4605,9 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         member_count: usize,
     ) -> SetDebugHtStatsSnapshot {
-        self.set_debug_ht_state
+        self.db_catalog
+            .side_state
+            .set_debug_ht_state
             .lock()
             .ok()
             .and_then(|states| states.get(&DbScopedKey::new(key.db(), key.key())).copied())
@@ -4605,7 +4631,7 @@ impl RequestProcessor {
             set_max_listpack_value,
         );
 
-        if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
+        if let Ok(mut floors) = self.db_catalog.side_state.forced_set_encoding_floors.lock() {
             let scoped_key = DbScopedKey::new(key.db(), key.key());
             let previous = if replace_existing {
                 None
@@ -4775,7 +4801,7 @@ impl RequestProcessor {
 
     #[inline]
     pub fn string_store_shard_count(&self) -> usize {
-        self.string_stores.len()
+        self.db_catalog.main_db_runtime.string_stores.len()
     }
 
     #[inline]

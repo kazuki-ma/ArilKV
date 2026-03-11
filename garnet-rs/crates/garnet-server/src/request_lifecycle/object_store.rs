@@ -10,7 +10,7 @@ impl RequestProcessor {
         let db = key.db();
         let key_bytes = key.key();
         if db != DbName::default() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
@@ -92,7 +92,7 @@ impl RequestProcessor {
         let db = key.db();
         let key_bytes = key.key();
         if db != DbName::default() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let Some(state) = databases.get_mut(&db) else {
@@ -161,7 +161,7 @@ impl RequestProcessor {
 
     fn take_set_hot_entry(&self, key: DbKeyRef<'_>) -> Option<SetObjectHotEntry> {
         let scoped_key = DbScopedKey::new(key.db(), key.key());
-        let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+        let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return None;
         };
         if let Some(index) = hot_state
@@ -182,7 +182,7 @@ impl RequestProcessor {
         let scoped_key = DbScopedKey::new(key.db(), key.key());
         let mut evicted = None;
         {
-            let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+            let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             hot_state.entries.insert(scoped_key.clone(), entry);
@@ -216,14 +216,16 @@ impl RequestProcessor {
 
     pub(super) fn has_set_hot_entry(&self, key: DbKeyRef<'_>) -> bool {
         let scoped_key = DbScopedKey::new(key.db(), key.key());
-        self.set_object_hot_state
+        self.db_catalog
+            .side_state
+            .set_object_hot_state
             .lock()
             .map(|hot_state| hot_state.entries.contains_key(&scoped_key))
             .unwrap_or(false)
     }
 
     pub(super) fn set_hot_keys_snapshot_for_db(&self, db: DbName) -> Vec<RedisKey> {
-        let Ok(hot_state) = self.set_object_hot_state.lock() else {
+        let Ok(hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return Vec::new();
         };
         hot_state
@@ -240,7 +242,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let mut dirty_entries = Vec::new();
         {
-            let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+            let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             for (key, entry) in hot_state.entries.iter_mut() {
@@ -263,7 +265,7 @@ impl RequestProcessor {
     }
 
     pub(super) fn clear_set_hot_entries_for_db(&self, db: DbName) {
-        let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+        let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return;
         };
         hot_state.entries.retain(|key, _| key.db != db);
@@ -272,7 +274,7 @@ impl RequestProcessor {
 
     fn set_hot_payload_for_object_read(&self, key: DbKeyRef<'_>) -> Option<Vec<u8>> {
         let scoped_key = DbScopedKey::new(key.db(), key.key());
-        let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+        let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return None;
         };
         let payload = {

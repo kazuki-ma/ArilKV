@@ -6,7 +6,7 @@ impl RequestProcessor {
         db: DbName,
         key: &[u8],
     ) -> Option<AuxiliaryDbValue> {
-        let Ok(databases) = self.auxiliary_databases.lock() else {
+        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
             return None;
         };
         databases
@@ -19,7 +19,7 @@ impl RequestProcessor {
         db: DbName,
         predicate: impl Fn(&MigrationValue) -> bool,
     ) -> Vec<RedisKey> {
-        let Ok(databases) = self.auxiliary_databases.lock() else {
+        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
             return Vec::new();
         };
         let Some(state) = databases.get(&db) else {
@@ -39,7 +39,7 @@ impl RequestProcessor {
     }
 
     pub(super) fn auxiliary_db_keys_snapshot(&self) -> BTreeMap<DbName, Vec<RedisKey>> {
-        let Ok(databases) = self.auxiliary_databases.lock() else {
+        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
             return BTreeMap::new();
         };
 
@@ -63,7 +63,7 @@ impl RequestProcessor {
         }
 
         let mut removed = 0usize;
-        for shard_index in self.string_stores.indices() {
+        for shard_index in self.db_catalog.main_db_runtime.string_stores.indices() {
             if removed >= max_keys {
                 break;
             }
@@ -83,7 +83,12 @@ impl RequestProcessor {
         if max_keys == 0 {
             return Ok(0);
         }
-        if !self.string_stores.contains_shard(shard_index) {
+        if !self
+            .db_catalog
+            .main_db_runtime
+            .string_stores
+            .contains_shard(shard_index)
+        {
             return Ok(0);
         }
         if self.string_expiration_count_for_shard(shard_index) == 0 {
@@ -163,7 +168,7 @@ impl RequestProcessor {
         }
 
         let mut removed = 0usize;
-        for shard_index in self.string_stores.indices() {
+        for shard_index in self.db_catalog.main_db_runtime.string_stores.indices() {
             if removed >= max_keys {
                 break;
             }
@@ -178,7 +183,13 @@ impl RequestProcessor {
         shard_index: ShardIndex,
         max_keys: usize,
     ) -> Result<usize, RequestExecutionError> {
-        if max_keys == 0 || !self.string_stores.contains_shard(shard_index) {
+        if max_keys == 0
+            || !self
+                .db_catalog
+                .main_db_runtime
+                .string_stores
+                .contains_shard(shard_index)
+        {
             return Ok(0);
         }
 
@@ -186,7 +197,7 @@ impl RequestProcessor {
         let mut expired = Vec::new();
         let mut empty_dbs = Vec::new();
         {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
 
@@ -400,7 +411,7 @@ impl RequestProcessor {
         let db = key.db();
         let key_bytes = key.key();
         if db != DbName::default() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let Some(state) = databases.get_mut(&db) else {
@@ -458,7 +469,7 @@ impl RequestProcessor {
                     unix_millis: TimestampMillis::new(unix_millis),
                 })
             });
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
@@ -529,7 +540,7 @@ impl RequestProcessor {
                     unix_millis: TimestampMillis::new(unix_millis),
                 })
             });
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
@@ -609,7 +620,7 @@ impl RequestProcessor {
                     unix_millis: TimestampMillis::new(unix_millis),
                 })
             });
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let Some(state) = databases.get_mut(&db) else {
@@ -673,7 +684,7 @@ impl RequestProcessor {
             }
             let now = current_instant();
             let should_expire = {
-                let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                     return Err(RequestExecutionError::StorageBusy);
                 };
                 let Some(state) = databases.get_mut(&db) else {
@@ -772,7 +783,7 @@ impl RequestProcessor {
 
     #[inline]
     pub(super) fn string_store_shard_index_for_key(&self, key: &[u8]) -> ShardIndex {
-        let shard_count = self.string_stores.len();
+        let shard_count = self.db_catalog.main_db_runtime.string_stores.len();
         debug_assert!(shard_count > 0);
         if shard_count == 1 {
             return ShardIndex::new(0);
@@ -787,20 +798,38 @@ impl RequestProcessor {
 
     #[inline]
     pub(super) fn string_expiration_count_for_shard(&self, shard_index: ShardIndex) -> usize {
-        debug_assert!(self.string_expiration_counts.contains_shard(shard_index));
-        self.string_expiration_counts[shard_index].load(Ordering::Acquire)
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .string_expiration_counts
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.string_expiration_counts[shard_index]
+            .load(Ordering::Acquire)
     }
 
     #[inline]
     pub(super) fn increment_string_expiration_count(&self, shard_index: ShardIndex) {
-        debug_assert!(self.string_expiration_counts.contains_shard(shard_index));
-        self.string_expiration_counts[shard_index].fetch_add(1, Ordering::Release);
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .string_expiration_counts
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.string_expiration_counts[shard_index]
+            .fetch_add(1, Ordering::Release);
     }
 
     #[inline]
     pub(super) fn decrement_string_expiration_count(&self, shard_index: ShardIndex) {
-        debug_assert!(self.string_expiration_counts.contains_shard(shard_index));
-        let previous = self.string_expiration_counts[shard_index].fetch_sub(1, Ordering::Release);
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .string_expiration_counts
+                .contains_shard(shard_index)
+        );
+        let previous = self.db_catalog.main_db_runtime.string_expiration_counts[shard_index]
+            .fetch_sub(1, Ordering::Release);
         debug_assert!(previous > 0, "expiration count underflow");
     }
 
@@ -809,8 +838,13 @@ impl RequestProcessor {
         &self,
         shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
-        debug_assert!(self.string_stores.contains_shard(shard_index));
-        self.string_stores[shard_index]
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .string_stores
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.string_stores[shard_index]
             .lock()
             .expect("store mutex poisoned")
     }
@@ -829,8 +863,13 @@ impl RequestProcessor {
         &self,
         shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, TsavoriteKV<Vec<u8>, Vec<u8>>> {
-        debug_assert!(self.object_stores.contains_shard(shard_index));
-        self.object_stores[shard_index]
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .object_stores
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.object_stores[shard_index]
             .lock()
             .expect("object store mutex poisoned")
     }
@@ -849,8 +888,13 @@ impl RequestProcessor {
         &self,
         shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashMap<RedisKey, ExpirationMetadata>> {
-        debug_assert!(self.string_expirations.contains_shard(shard_index));
-        self.string_expirations[shard_index]
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .string_expirations
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.string_expirations[shard_index]
             .lock()
             .expect("expiration mutex poisoned")
     }
@@ -860,8 +904,13 @@ impl RequestProcessor {
         &self,
         shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashMap<RedisKey, HashMap<HashField, ExpirationMetadata>>> {
-        debug_assert!(self.hash_field_expirations.contains_shard(shard_index));
-        self.hash_field_expirations[shard_index]
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .hash_field_expirations
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.hash_field_expirations[shard_index]
             .lock()
             .expect("hash field expiration mutex poisoned")
     }
@@ -871,8 +920,13 @@ impl RequestProcessor {
         &self,
         shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashSet<RedisKey>> {
-        debug_assert!(self.string_key_registries.contains_shard(shard_index));
-        self.string_key_registries[shard_index]
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .string_key_registries
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.string_key_registries[shard_index]
             .lock()
             .expect("key registry mutex poisoned")
     }
@@ -882,8 +936,13 @@ impl RequestProcessor {
         &self,
         shard_index: ShardIndex,
     ) -> OrderedMutexGuard<'_, HashSet<RedisKey>> {
-        debug_assert!(self.object_key_registries.contains_shard(shard_index));
-        self.object_key_registries[shard_index]
+        debug_assert!(
+            self.db_catalog
+                .main_db_runtime
+                .object_key_registries
+                .contains_shard(shard_index)
+        );
+        self.db_catalog.main_db_runtime.object_key_registries[shard_index]
             .lock()
             .expect("object key registry mutex poisoned")
     }
@@ -935,7 +994,7 @@ impl RequestProcessor {
         expiration: Option<ExpirationMetadata>,
     ) {
         if key.db() != DbName::default() {
-            if let Ok(mut databases) = self.auxiliary_databases.lock() {
+            if let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() {
                 let Some(state) = databases.get_mut(&key.db()) else {
                     return;
                 };
@@ -1019,7 +1078,7 @@ impl RequestProcessor {
         expiration_unix_millis: Option<u64>,
     ) {
         if key.db() != DbName::default() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return;
             };
             let Some(state) = databases.get_mut(&key.db()) else {
@@ -1184,7 +1243,7 @@ impl RequestProcessor {
         shard_index: ShardIndex,
     ) {
         if key.db() != DbName::default() {
-            if let Ok(mut databases) = self.auxiliary_databases.lock()
+            if let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock()
                 && let Some(state) = databases.get_mut(&key.db())
                 && let Some(entry) = state.entries.get_mut(key.key())
             {
@@ -1206,7 +1265,7 @@ impl RequestProcessor {
             return Vec::new();
         }
         if key.db() != DbName::default() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Vec::new();
             };
             let Some(state) = databases.get_mut(&key.db()) else {
@@ -1259,7 +1318,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
     ) -> Vec<HashField> {
         if key.db() != DbName::default() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Vec::new();
             };
             let Some(state) = databases.get_mut(&key.db()) else {
@@ -1346,7 +1405,9 @@ impl RequestProcessor {
             return self
                 .auxiliary_keys_snapshot(db, |value| matches!(value, MigrationValue::String(_)));
         }
-        self.string_key_registries
+        self.db_catalog
+            .main_db_runtime
+            .string_key_registries
             .iter()
             .flat_map(|registry| {
                 registry
@@ -1370,6 +1431,8 @@ impl RequestProcessor {
             return keys;
         }
         let mut keys = self
+            .db_catalog
+            .main_db_runtime
             .object_key_registries
             .iter()
             .flat_map(|registry| {

@@ -1653,7 +1653,7 @@ impl RequestProcessor {
                 RequestExecutionError::StringExceedsMaximumAllowedSize,
             )?;
 
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
@@ -2907,7 +2907,7 @@ impl RequestProcessor {
                     self.object_delete(DbKeyRef::new(current_request_selected_db(), &key_vec))?;
             }
 
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
             let entry = databases
