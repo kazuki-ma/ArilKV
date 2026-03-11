@@ -4,6 +4,8 @@ Date: 2026-03-11
 Status: In progress
 Scope: `garnet-rs` request-lifecycle / string-store / object-store MultiDB paths
 
+Note: this file is the mechanical-slice log for the DB-explicit cleanup lane. The architectural target is now captured in `docs/compatibility/multidb-db-model-and-command-boundary-redesign-2026-03-11.md`.
+
 ## Problem
 
 MultiDB bug fixes have repeatedly exposed the same structural issue:
