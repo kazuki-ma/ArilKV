@@ -2096,6 +2096,156 @@ async fn multidb_watch_flush_swapdb_expire_and_discard_match_external_multi_scen
 }
 
 #[tokio::test]
+async fn multidb_info_keysizes_swapdb_and_debug_reload_match_external_scenarios_over_tcp() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"RPUSH", b"l1", b"1", b"2", b"3", b"4"]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZADD", b"z1", b"1", b"A"]),
+        b":1\r\n",
+    )
+    .await;
+    let info_before_swap = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"KEYSIZES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let info_before_swap = String::from_utf8(info_before_swap).unwrap();
+    assert!(info_before_swap.contains("db0_distrib_lists_items:4=1\r\n"));
+    assert!(info_before_swap.contains("db1_distrib_zsets_items:1=1\r\n"));
+    assert!(!info_before_swap.contains("db0_distrib_zsets_items:1=1\r\n"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SWAPDB", b"0", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let info_after_swap = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"KEYSIZES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let info_after_swap = String::from_utf8(info_after_swap).unwrap();
+    assert!(info_after_swap.contains("db0_distrib_zsets_items:1=1\r\n"));
+    assert!(info_after_swap.contains("db1_distrib_lists_items:4=1\r\n"));
+    assert!(!info_after_swap.contains("db0_distrib_lists_items:4=1\r\n"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"RPUSH", b"l10", b"1", b"2", b"3", b"4"]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"s2", b"1234567890"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let info_before_reload = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"KEYSIZES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let info_before_reload = String::from_utf8(info_before_reload).unwrap();
+    assert!(info_before_reload.contains("db0_distrib_strings_sizes:8=1\r\n"));
+    assert!(info_before_reload.contains("db0_distrib_lists_items:4=1\r\n"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let info_after_reload = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"KEYSIZES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let info_after_reload = String::from_utf8(info_after_reload).unwrap();
+    assert!(info_after_reload.contains("db0_distrib_strings_sizes:8=1\r\n"));
+    assert!(info_after_reload.contains("db0_distrib_lists_items:4=1\r\n"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"l10"]),
+        b":1\r\n",
+    )
+    .await;
+    let info_after_delete = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"KEYSIZES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let info_after_delete = String::from_utf8(info_after_delete).unwrap();
+    assert!(info_after_delete.contains("db0_distrib_strings_sizes:8=1\r\n"));
+    assert!(!info_after_delete.contains("db0_distrib_lists_items:4=1\r\n"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let info_after_second_reload = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"KEYSIZES"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let info_after_second_reload = String::from_utf8(info_after_second_reload).unwrap();
+    assert!(info_after_second_reload.contains("db0_distrib_strings_sizes:8=1\r\n"));
+    assert!(!info_after_second_reload.contains("db0_distrib_lists_items:4=1\r\n"));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

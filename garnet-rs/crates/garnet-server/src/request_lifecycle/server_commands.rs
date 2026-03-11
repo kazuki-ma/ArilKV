@@ -4581,32 +4581,38 @@ impl RequestProcessor {
             [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT];
         let mut histograms_by_db = BTreeMap::new();
 
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        self.with_selected_db(DbName::default(), || {
+            let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
+            keys.extend(self.object_keys_snapshot());
 
-        for key in keys {
-            self.expire_key_if_needed(key.as_slice())?;
-            self.active_expire_hash_fields_for_key(key.as_slice())?;
+            for key in keys {
+                self.expire_key_if_needed(key.as_slice())?;
+                self.active_expire_hash_fields_for_key(key.as_slice())?;
 
-            if let Some(value) = self.read_string_value(key.as_slice())? {
-                let length =
-                    super::string_commands::string_value_len_for_keysizes(self, value.as_slice());
-                let bin_index = keysizes_histogram_bin_index(length);
-                histograms[0][bin_index] += 1;
-                continue;
+                if let Some(value) = self.read_string_value(key.as_slice())? {
+                    let length = super::string_commands::string_value_len_for_keysizes(
+                        self,
+                        value.as_slice(),
+                    );
+                    let bin_index = keysizes_histogram_bin_index(length);
+                    histograms[0][bin_index] += 1;
+                    continue;
+                }
+
+                let Some(object) = self.object_read(key.as_slice())? else {
+                    continue;
+                };
+                let Some(histogram_entry) =
+                    keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
+                else {
+                    continue;
+                };
+                let bin_index = keysizes_histogram_bin_index(histogram_entry.length);
+                histograms[histogram_entry.histogram_type_index][bin_index] += 1;
             }
 
-            let Some(object) = self.object_read(key.as_slice())? else {
-                continue;
-            };
-            let Some(histogram_entry) =
-                keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
-            else {
-                continue;
-            };
-            let bin_index = keysizes_histogram_bin_index(histogram_entry.length);
-            histograms[histogram_entry.histogram_type_index][bin_index] += 1;
-        }
+            Ok::<(), RequestExecutionError>(())
+        })?;
 
         histograms_by_db.insert(DbName::default(), histograms);
         for (db_index, keys) in self.auxiliary_db_keys_snapshot() {

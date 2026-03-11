@@ -6371,6 +6371,48 @@ fn move_to_nonzero_db_updates_keysizes_histograms() {
 }
 
 #[test]
+fn info_keysizes_keeps_db0_histogram_when_current_client_selected_db_is_nonzero() {
+    let processor = RequestProcessor::new().unwrap();
+    let db1 = DbName::new(1);
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "RPUSH l1 1 2 3 4", DbName::default()),
+        b":4\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZADD z1 1 A", db1),
+        b":1\r\n"
+    );
+
+    let info_before_swap = parse_bulk_payload(&execute_command_line_in_db(
+        &processor,
+        "INFO KEYSIZES",
+        db1,
+    ))
+    .expect("INFO KEYSIZES returns bulk payload");
+    let info_before_swap_text = String::from_utf8_lossy(&info_before_swap);
+    assert!(info_before_swap_text.contains("db0_distrib_lists_items:4=1"));
+    assert!(info_before_swap_text.contains("db1_distrib_zsets_items:1=1"));
+    assert!(!info_before_swap_text.contains("db0_distrib_zsets_items:1=1"));
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SWAPDB 0 1", db1),
+        b"+OK\r\n"
+    );
+
+    let info_after_swap = parse_bulk_payload(&execute_command_line_in_db(
+        &processor,
+        "INFO KEYSIZES",
+        db1,
+    ))
+    .expect("INFO KEYSIZES returns bulk payload");
+    let info_after_swap_text = String::from_utf8_lossy(&info_after_swap);
+    assert!(info_after_swap_text.contains("db0_distrib_zsets_items:1=1"));
+    assert!(info_after_swap_text.contains("db1_distrib_lists_items:4=1"));
+    assert!(!info_after_swap_text.contains("db0_distrib_lists_items:4=1"));
+}
+
+#[test]
 fn info_keysizes_uses_hyperloglog_logical_length_bins() {
     let processor = RequestProcessor::new().unwrap();
     assert_eq!(
