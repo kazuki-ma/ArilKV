@@ -30,7 +30,7 @@
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=2251; err=1; timeout=1; ignore=306; failed_tests=2; expected_failed_tests=0; unexpected_failed_tests=2  |
+| `redis_runtest_full_external` | `FAIL` | mode=full; tsavorite_pages=16384; skipunit_querybuf=1; skipunit_scripting=1; skipunit_other=1; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=1511; err=1; timeout=1; ignore=163; failed_tests=2; expected_failed_tests=0; unexpected_failed_tests=2  |
 | `redis_runtest_unit_scripting_external` | `PASS` | mode=full; isolated_unit=unit/scripting; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=309; err=0; timeout=0; ignore=26; failed_tests=0  |
 | `redis_runtest_unit_querybuf_external` | `PASS` | mode=full; isolated_unit=unit/querybuf; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=4; err=0; timeout=0; ignore=0; failed_tests=0  |
 | `redis_runtest_unit_other_external` | `FAIL` | mode=full; isolated_unit=unit/other; timeout_seconds=180; exit_code=1; exit_reason=runtest_exit_nonzero; wall_timeout_seconds=1800; ok=22; err=3; timeout=0; ignore=6; failed_tests=3  |
@@ -44,7 +44,7 @@
 | Test |
 |---|
 | `RESTORE with ABSTTL in the past in tests/unit/dump.tcl` |
-| `Connecting as a replica` |
+| `XREADGROUP CLAIM with two blocked clients` |
 
 ## Non-Full Commands (Declared Surface With Known Gaps)
 
