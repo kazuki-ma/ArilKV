@@ -223,7 +223,6 @@ impl RequestProcessor {
         for (db, key) in &expired {
             self.with_selected_db(*db, || {
                 self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
-                self.record_lazy_expired_keys(1);
                 self.enqueue_lazy_expired_key_for_replication(key.as_slice());
                 self.bump_watch_version_server_origin(key.as_slice());
             });

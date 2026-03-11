@@ -2055,6 +2055,73 @@ async fn multidb_setbit_bitfield_noop_do_not_increase_dirty_counter_like_externa
 }
 
 #[tokio::test]
+async fn multidb_active_expire_increments_expired_keys_active_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut writer_client = TcpStream::connect(addr).await.unwrap();
+    let mut stats_client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut writer_client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+    for client in [&mut writer_client, &mut stats_client] {
+        send_and_expect(client, &encode_resp_command(&[b"SELECT", b"9"]), b"+OK\r\n").await;
+    }
+    send_and_expect(
+        &mut writer_client,
+        &encode_resp_command(&[b"FLUSHDB"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer_client,
+        &encode_resp_command(&[b"CONFIG", b"RESETSTAT"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    for key in [b"foo1", b"foo2", b"foo3"] {
+        send_and_expect(
+            &mut writer_client,
+            &encode_resp_command(&[b"SET", key, b"bar", b"PX", b"1"]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let info = send_and_read_bulk_payload(
+            &mut stats_client,
+            &encode_resp_command(&[b"INFO", b"stats"]),
+            timeout,
+        )
+        .await;
+        let expired_keys = read_info_u64(&info, "expired_keys").unwrap_or(0);
+        let expired_keys_active = read_info_u64(&info, "expired_keys_active").unwrap_or(0);
+        if expired_keys == 3 {
+            assert_eq!(
+                expired_keys_active, 3,
+                "active expire reported expired_keys=3 but expired_keys_active={expired_keys_active} on db9"
+            );
+            break;
+        }
+
+        assert!(
+            Instant::now() < deadline,
+            "active expire did not reach expired_keys=3 on db9: expired_keys={expired_keys}, expired_keys_active={expired_keys_active}"
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn multidb_watch_flush_swapdb_expire_and_discard_match_external_multi_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
