@@ -1076,13 +1076,15 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
     assert_eq!(response, b"+OK\r\n");
 
     let entry = source
-        .export_migration_entry(b"key")
+        .export_migration_entry(DbName::default(), b"key")
         .unwrap()
         .expect("source key should be exportable");
     assert!(matches!(&entry.value, MigrationValue::String(value) if value.as_slice() == b"value"));
     assert!(entry.expiration_unix_millis.is_some());
 
-    target.import_migration_entry(&entry).unwrap();
+    target
+        .import_migration_entry(DbName::default(), &entry)
+        .unwrap();
 
     response.clear();
     let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
@@ -1130,7 +1132,13 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
     assert_eq!(response, b"+OK\r\n");
 
     let moved = source
-        .migrate_keys_to(&target, &[b"key".to_vec()], true)
+        .migrate_keys_to(
+            &target,
+            DbName::default(),
+            DbName::default(),
+            &[b"key".to_vec()],
+            true,
+        )
         .unwrap();
     assert_eq!(moved, 1);
 
@@ -1177,7 +1185,13 @@ fn migrate_keys_to_transfers_object_value() {
     assert_eq!(response, b":1\r\n");
 
     let moved = source
-        .migrate_keys_to(&target, &[b"key".to_vec()], true)
+        .migrate_keys_to(
+            &target,
+            DbName::default(),
+            DbName::default(),
+            &[b"key".to_vec()],
+            true,
+        )
         .unwrap();
     assert_eq!(moved, 1);
 

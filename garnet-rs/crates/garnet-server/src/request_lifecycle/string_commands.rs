@@ -2183,7 +2183,8 @@ impl RequestProcessor {
         self.expire_key_if_needed(&source)?;
         self.expire_key_if_needed(&destination)?;
 
-        let Some(mut source_entry) = self.export_migration_entry(&source)? else {
+        let selected_db = super::current_request_selected_db();
+        let Some(mut source_entry) = self.export_migration_entry(selected_db, &source)? else {
             return Err(RequestExecutionError::NoSuchKey);
         };
 
@@ -2196,29 +2197,21 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if only_if_absent
-            && self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &destination))?
-        {
+        if only_if_absent && self.key_exists_any(DbKeyRef::new(selected_db, &destination))? {
             append_integer(response_out, 0);
             return Ok(());
         }
 
-        let (destination_had_string, destination_object_type) = self
-            .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
-                current_request_selected_db(),
-                &destination,
-            ))?;
+        let (destination_had_string, destination_object_type) =
+            self.key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(selected_db, &destination))?;
         let source_type = match &source_entry.value {
             MigrationValue::String(_) => None,
             MigrationValue::Object { object_type, .. } => Some(*object_type),
         };
         source_entry.key = destination.clone().into();
-        self.import_migration_entry(&source_entry)?;
-        self.delete_string_key_for_migration(DbKeyRef::new(
-            current_request_selected_db(),
-            &source,
-        ))?;
-        let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &source))?;
+        self.import_migration_entry(selected_db, &source_entry)?;
+        self.delete_string_key_for_migration(DbKeyRef::new(selected_db, &source))?;
+        let _ = self.object_delete(DbKeyRef::new(selected_db, &source))?;
 
         self.notify_setkey_overwrite_events(
             &destination,
@@ -2281,9 +2274,14 @@ impl RequestProcessor {
         }
 
         self.expire_key_if_needed(&source)?;
-        self.with_selected_db(destination_db, || self.expire_key_if_needed(&destination))?;
+        if destination_db == super::current_request_selected_db() {
+            self.expire_key_if_needed(&destination)?;
+        } else {
+            self.with_selected_db(destination_db, || self.expire_key_if_needed(&destination))?;
+        }
 
-        let Some(mut source_entry) = self.export_migration_entry(&source)? else {
+        let source_db = super::current_request_selected_db();
+        let Some(mut source_entry) = self.export_migration_entry(source_db, &source)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
@@ -2300,21 +2298,14 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let (destination_had_string, destination_object_type) =
-            self.with_selected_db(destination_db, || {
-                self.key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
-                    current_request_selected_db(),
-                    &destination,
-                ))
-            })?;
+        let (destination_had_string, destination_object_type) = self
+            .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(destination_db, &destination))?;
         let source_type = match &source_entry.value {
             MigrationValue::String(_) => None,
             MigrationValue::Object { object_type, .. } => Some(*object_type),
         };
         source_entry.key = destination.clone().into();
-        self.with_selected_db(destination_db, || {
-            self.import_migration_entry(&source_entry)
-        })?;
+        self.import_migration_entry(destination_db, &source_entry)?;
         self.notify_setkey_overwrite_events(
             &destination,
             destination_had_string,

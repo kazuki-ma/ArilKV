@@ -781,7 +781,8 @@ impl RequestProcessor {
         self.expire_key_if_needed(&key)?;
         self.active_expire_hash_fields_for_key(&key)?;
 
-        let Some(mut entry) = self.export_migration_entry(&key)? else {
+        let Some(mut entry) = self.export_migration_entry(current_request_selected_db(), &key)?
+        else {
             append_integer(response_out, 0);
             return Ok(());
         };
@@ -793,7 +794,7 @@ impl RequestProcessor {
         }
 
         entry.key = key.clone().into();
-        self.with_selected_db(target_db, || self.import_migration_entry(&entry))?;
+        self.with_selected_db(target_db, || self.import_migration_entry(target_db, &entry))?;
         self.delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
         let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
 
@@ -821,21 +822,23 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let entries1 = self.with_selected_db(index1, || self.snapshot_current_db_entries())?;
-        let entries2 = self.with_selected_db(index2, || self.snapshot_current_db_entries())?;
+        let entries1 =
+            self.with_selected_db(index1, || self.snapshot_current_db_entries(index1))?;
+        let entries2 =
+            self.with_selected_db(index2, || self.snapshot_current_db_entries(index2))?;
 
         self.with_selected_db(index1, || self.flush_current_db_keys())?;
         self.with_selected_db(index2, || self.flush_current_db_keys())?;
 
         self.with_selected_db(index1, || {
             for entry in &entries2 {
-                self.import_migration_entry(entry)?;
+                self.import_migration_entry(index1, entry)?;
             }
             Ok::<(), RequestExecutionError>(())
         })?;
         self.with_selected_db(index2, || {
             for entry in &entries1 {
-                self.import_migration_entry(entry)?;
+                self.import_migration_entry(index2, entry)?;
             }
             Ok::<(), RequestExecutionError>(())
         })?;
