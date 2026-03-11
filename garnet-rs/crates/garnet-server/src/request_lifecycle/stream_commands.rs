@@ -529,6 +529,7 @@ impl RequestProcessor {
                         BlockingStreamWaitState::Xreadgroup(BlockingXreadgroupWait {
                             stream_keys: parsed.stream_keys.clone(),
                             group: parsed.group.to_vec(),
+                            claim_min_idle_millis: parsed.claim_min_idle_millis,
                         }),
                     );
                 }

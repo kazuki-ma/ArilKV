@@ -4,6 +4,7 @@
 //! - formal/tla/specs/BlockingDisconnectLeak.tla
 //! - formal/tla/specs/BlockingWaitClassIsolation.tla
 //! - formal/tla/specs/BlockingStreamAckGate.tla
+//! - formal/tla/specs/BlockingXreadgroupClaimWait.tla
 //! - formal/tla/specs/BlockingCountVisibility.tla
 //! - formal/tla/specs/ClientPauseUnblockRace.tla
 //! - formal/tla/specs/StreamPelOwnership.tla
@@ -1213,6 +1214,20 @@ fn stream_has_entry_after_id(stream: &StreamObject, pivot: StreamId) -> bool {
         .is_some()
 }
 
+fn stream_pending_entry_idle_millis(pending_entry: &StreamPendingEntry, now_millis: u64) -> u64 {
+    now_millis.saturating_sub(pending_entry.last_delivery_time_millis)
+}
+
+fn stream_group_has_claimable_pending_entry(
+    group_state: &StreamGroupState,
+    now_millis: u64,
+    min_idle_millis: u64,
+) -> bool {
+    group_state.pending.values().any(|pending_entry| {
+        stream_pending_entry_idle_millis(pending_entry, now_millis) >= min_idle_millis
+    })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct LoadedFunctionDescriptor {
     library_name: String,
@@ -1969,6 +1984,7 @@ pub(crate) enum BlockingXreadWaitSelection {
 pub(crate) struct BlockingXreadgroupWait {
     pub(crate) stream_keys: Vec<RedisKey>,
     pub(crate) group: Vec<u8>,
+    pub(crate) claim_min_idle_millis: Option<u64>,
 }
 
 const CLIENT_PAUSE_TYPE_NONE: u8 = 0;
@@ -4260,7 +4276,15 @@ impl RequestProcessor {
         let Some(group_state) = stream.groups.get(wait.group.as_slice()) else {
             return true;
         };
-        stream_has_entry_after_id(&stream, group_state.last_delivered_id)
+        if stream_has_entry_after_id(&stream, group_state.last_delivered_id) {
+            return true;
+        }
+        let Some(claim_min_idle_millis) = wait.claim_min_idle_millis else {
+            return false;
+        };
+        let now_millis = current_unix_time_millis().unwrap_or(0);
+        // TLA+ : ClaimWaitReady
+        stream_group_has_claimable_pending_entry(group_state, now_millis, claim_min_idle_millis)
     }
 
     fn blocking_wait_object_without_expiring(
@@ -4315,7 +4339,9 @@ impl RequestProcessor {
             }
             BlockingWaitClass::Stream => {
                 let Some(stream_wait_state) = blocked_stream_wait_states.get(&client_id) else {
-                    return Ok(false);
+                    // A same-key waiter can reach queue front before it has ever executed
+                    // once. Let that first execution populate per-client stream wait state.
+                    return Ok(true);
                 };
                 // TLA+ : ProducerAckWaitReady
                 let ready = match stream_wait_state {

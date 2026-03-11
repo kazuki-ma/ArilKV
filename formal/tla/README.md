@@ -159,6 +159,27 @@ Conservative fixed config (expected to pass):
 ./tools/tla/run_tlc.sh formal/tla/specs/LinkedBlmoveChainResidue.tla formal/tla/specs/LinkedBlmoveChainResidue_fixed.cfg
 ```
 
+## Reproduce blocked `XREADGROUP CLAIM` two-waiter readiness gap
+
+This model captures the last main-full stream-cgroups timeout:
+
+- waiter-1 blocks on `XREADGROUP ... BLOCK 0 CLAIM 100 STREAMS mystream >`
+- waiter-2 blocks on the same stream/group with a different consumer
+- a new entry wakes waiter-1 first and becomes pending
+- after the min-idle threshold passes, waiter-2 must become ready because the pending entry is now claimable
+
+Bug config (expected to fail with a counterexample):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/BlockingXreadgroupClaimWait.tla formal/tla/specs/BlockingXreadgroupClaimWait_bug.cfg
+```
+
+Fixed config (expected to pass):
+
+```bash
+./tools/tla/run_tlc.sh formal/tla/specs/BlockingXreadgroupClaimWait.tla formal/tla/specs/BlockingXreadgroupClaimWait_fixed.cfg
+```
+
 ## Reproduce `unit/multi` blocking-timeout-in-`EXEC` hang
 
 This model maps `tests/unit/multi.tcl` test `Blocking commands ignores the timeout` directly:

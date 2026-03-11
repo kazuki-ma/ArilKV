@@ -6618,6 +6618,104 @@ async fn blocking_xreadgroup_stream_ran_dry_external_scenario_runs_as_tcp_integr
 }
 
 #[tokio::test]
+async fn xreadgroup_claim_with_two_blocked_clients_external_scenario_runs_as_tcp_integration_test()
+{
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut controller = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let mut waiter1 = TcpStream::connect(addr).await.unwrap();
+    let mut waiter2 = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/type/stream-cgroups.tcl:
+    // "XREADGROUP CLAIM with two blocked clients"
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"DEL", b"mystream"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"1-0", b"f", b"v1"]),
+        b"$3\r\n1-0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XDEL", b"mystream", b"1-0"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[
+            b"XGROUP",
+            b"CREATE",
+            b"mystream",
+            b"group1",
+            b"0",
+            b"MKSTREAM",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    waiter1
+        .write_all(&encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer1",
+            b"BLOCK",
+            b"0",
+            b"CLAIM",
+            b"100",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]))
+        .await
+        .unwrap();
+    waiter2
+        .write_all(&encode_resp_command(&[
+            b"XREADGROUP",
+            b"GROUP",
+            b"group1",
+            b"consumer2",
+            b"BLOCK",
+            b"0",
+            b"CLAIM",
+            b"100",
+            b"STREAMS",
+            b"mystream",
+            b">",
+        ]))
+        .await
+        .unwrap();
+
+    wait_for_blocked_clients(&mut inspector, 2, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut controller,
+        &encode_resp_command(&[b"XADD", b"mystream", b"2-0", b"f", b"v2"]),
+        b"$3\r\n2-0\r\n",
+    )
+    .await;
+
+    let reply1 = read_resp_value_with_timeout(&mut waiter1, Duration::from_secs(2)).await;
+    let reply2 = read_resp_value_with_timeout(&mut waiter2, Duration::from_secs(2)).await;
+    assert_eq!(resp_socket_array(&reply1).len(), 1);
+    assert_eq!(resp_socket_array(&reply2).len(), 1);
+    assert!(resp_socket_contains_bulk(&reply1, b"mystream"));
+    assert!(resp_socket_contains_bulk(&reply2, b"mystream"));
+
+    wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn bzmpop_multiple_blocked_clients_external_scenario_runs_as_tcp_integration_test() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut controller = TcpStream::connect(addr).await.unwrap();
