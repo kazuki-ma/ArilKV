@@ -383,7 +383,7 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"tcp-keepalive".to_vec(), b"300".to_vec());
     values.insert(b"loglevel".to_vec(), b"notice".to_vec());
     values.insert(b"logfile".to_vec(), b"".to_vec());
-    values.insert(b"databases".to_vec(), b"1".to_vec());
+    values.insert(b"databases".to_vec(), b"16".to_vec());
     values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());
     values.insert(b"slowlog-log-slower-than".to_vec(), b"10000".to_vec());
     values.insert(b"slowlog-max-len".to_vec(), b"128".to_vec());
@@ -945,12 +945,6 @@ struct ExpirationMetadata {
     unix_millis: TimestampMillis,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct MovedKeysizesEntry {
-    histogram_type_index: usize,
-    length: usize,
-}
-
 #[derive(Debug)]
 pub enum RequestProcessorInitError {
     Tsavorite(TsavoriteKvInitError),
@@ -986,6 +980,18 @@ pub struct MigrationEntry {
     pub key: ItemKey,
     pub value: MigrationValue,
     pub expiration_unix_millis: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default)]
+struct AuxiliaryDbValue {
+    value: Option<MigrationValue>,
+    expiration: Option<ExpirationMetadata>,
+    hash_field_expirations: HashMap<HashField, ExpirationMetadata>,
+}
+
+#[derive(Debug, Default)]
+struct AuxiliaryDbState {
+    entries: HashMap<RedisKey, AuxiliaryDbValue>,
 }
 
 const DEFAULT_STREAM_IDMP_DURATION_SECONDS: u64 = 100;
@@ -1840,7 +1846,7 @@ pub struct RequestProcessor {
     pubsub_state: Mutex<PubSubState>,
     tracking_state: Mutex<TrackingState>,
     tracking_table_max_keys: AtomicU64,
-    moved_keysizes_by_db: Mutex<HashMap<DbName, HashMap<RedisKey, MovedKeysizesEntry>>>,
+    auxiliary_databases: Mutex<HashMap<DbName, AuxiliaryDbState>>,
     key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
     key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
     config_overrides: Mutex<HashMap<Vec<u8>, Vec<u8>>>,
@@ -2136,7 +2142,7 @@ impl RequestProcessor {
             pubsub_state: Mutex::new(PubSubState::default()),
             tracking_state: Mutex::new(TrackingState::default()),
             tracking_table_max_keys: AtomicU64::new(1_000_000),
-            moved_keysizes_by_db: Mutex::new(HashMap::new()),
+            auxiliary_databases: Mutex::new(HashMap::new()),
             key_lru_access_millis: Mutex::new(HashMap::new()),
             key_lfu_frequency: Mutex::new(HashMap::new()),
             config_overrides: Mutex::new(default_config_overrides()),
@@ -4734,6 +4740,24 @@ impl RequestProcessor {
             tracking_reads_enabled: false,
         });
         self.execute(args, response_out)
+    }
+
+    pub(crate) fn with_selected_db<T>(&self, selected_db: DbName, f: impl FnOnce() -> T) -> T {
+        let previous = REQUEST_EXECUTION_CONTEXT.with(|state| {
+            let mut context = state.get();
+            let previous = context;
+            context.selected_db = selected_db;
+            state.set(context);
+            previous
+        });
+        struct Reset(RequestExecutionContext);
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                REQUEST_EXECUTION_CONTEXT.with(|state| state.set(self.0));
+            }
+        }
+        let _reset = Reset(previous);
+        f()
     }
 
     pub(crate) fn execute_with_client_no_touch_in_transaction_in_db(

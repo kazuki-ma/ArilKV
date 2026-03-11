@@ -7,6 +7,24 @@ impl RequestProcessor {
         object_type: ObjectTypeTag,
         payload: &[u8],
     ) -> Result<(), RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let entry = databases
+                .entry(selected_db)
+                .or_default()
+                .entries
+                .entry(RedisKey::from(key))
+                .or_default();
+            entry.value = Some(MigrationValue::Object {
+                object_type,
+                payload: payload.to_vec(),
+            });
+            self.bump_watch_version(key);
+            return Ok(());
+        }
+
         let shard_index = self.object_store_shard_index_for_key(key);
         let key = key.to_vec();
         let value = encode_object_value(object_type, payload);
@@ -26,6 +44,24 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.track_read_key_for_current_client(key);
+            let Some(entry) = self.auxiliary_value_snapshot(selected_db, key) else {
+                return Ok(None);
+            };
+            let Some(MigrationValue::Object {
+                object_type,
+                payload,
+            }) = entry.value
+            else {
+                return Ok(None);
+            };
+            return Ok(Some(DecodedObjectValue {
+                object_type,
+                payload,
+            }));
+        }
+
         let key = key.to_vec();
         let mut store = self.lock_object_store_for_key(&key);
         let mut session = store.session(&self.object_functions);
@@ -49,6 +85,30 @@ impl RequestProcessor {
     }
 
     fn object_delete_raw(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return Ok(false);
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Ok(false);
+            };
+            if matches!(entry.value, Some(MigrationValue::Object { .. })) {
+                entry.value = None;
+                entry.expiration = None;
+                entry.hash_field_expirations.clear();
+                let _ = state.entries.remove(key);
+                self.clear_forced_list_quicklist_encoding(key);
+                self.clear_forced_set_encoding_floor(key);
+                self.clear_set_debug_ht_state(key);
+                self.bump_watch_version(key);
+                return Ok(true);
+            }
+            return Ok(false);
+        }
+
         let shard_index = self.object_store_shard_index_for_key(key);
         let key = key.to_vec();
         let mut store = self.lock_object_store_for_shard(shard_index);

@@ -167,6 +167,23 @@ impl RequestProcessor {
         }
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
+        if self.current_auxiliary_db_name().is_some() {
+            if let Some(output) = self.read_string_value(&key)? {
+                self.record_key_access(&key, false);
+                append_bulk_string(response_out, &output);
+                return Ok(());
+            }
+            if self.object_key_exists(&key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            if resp3 {
+                append_null(response_out);
+            } else {
+                append_null_bulk_string(response_out);
+            }
+            return Ok(());
+        }
+
         let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_get.after_store_lock");
         let mut session = store.session(&self.functions);
@@ -1474,6 +1491,110 @@ impl RequestProcessor {
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let old_string_value = self.read_string_value(&key)?.unwrap_or_default();
+            let string_exists = !old_string_value.is_empty() || self.key_exists(&key)?;
+            let object_exists = self.object_read(&key)?.is_some();
+
+            if options.return_old_value && object_exists {
+                return Err(RequestExecutionError::WrongType);
+            }
+
+            if let Some(condition) = &options.condition {
+                let write_allowed = match condition.kind {
+                    StringWriteConditionKind::Nx => !string_exists && !object_exists,
+                    StringWriteConditionKind::Xx => string_exists || object_exists,
+                    StringWriteConditionKind::IfEq
+                    | StringWriteConditionKind::IfNe
+                    | StringWriteConditionKind::IfDigestEq
+                    | StringWriteConditionKind::IfDigestNe => {
+                        if object_exists {
+                            return Err(RequestExecutionError::WrongType);
+                        }
+                        string_write_condition_matches(
+                            string_exists.then_some(old_string_value.as_slice()),
+                            condition,
+                        )?
+                    }
+                };
+                if !write_allowed {
+                    if options.return_old_value && string_exists {
+                        append_bulk_string(response_out, &old_string_value);
+                    } else if self.resp_protocol_version().is_resp3() {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                    return Ok(());
+                }
+            }
+
+            let preserved_expiration = if options.keep_ttl {
+                self.expiration_unix_millis_for_key(&key)
+                    .map(|unix_millis| {
+                        let deadline =
+                            instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
+                        ExpirationMetadata {
+                            deadline,
+                            unix_millis: TimestampMillis::new(unix_millis),
+                        }
+                    })
+            } else {
+                None
+            };
+            let effective_expiration = options.expiration.or(preserved_expiration);
+            let normalized_value = canonicalize_oversized_hyll_value(value);
+            self.ensure_string_length_within_limit(
+                normalized_value.len(),
+                RequestExecutionError::StringExceedsMaximumAllowedSize,
+            )?;
+
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let entry = databases
+                .entry(selected_db)
+                .or_default()
+                .entries
+                .entry(key.clone())
+                .or_default();
+            entry.value = Some(MigrationValue::String(StringValue::from(normalized_value)));
+            entry.expiration = effective_expiration;
+            entry.hash_field_expirations.clear();
+            drop(databases);
+
+            self.clear_forced_raw_string_encoding(&key);
+            self.bump_watch_version(&key);
+            self.record_key_access(&key, true);
+
+            if !string_exists && !object_exists {
+                self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+                self.notify_keyspace_event(NOTIFY_NEW, b"new", &key);
+            } else {
+                self.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+                if object_exists {
+                    self.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+                }
+                self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+            }
+            if effective_expiration.is_some() {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+            }
+
+            if options.return_old_value {
+                if string_exists {
+                    append_bulk_string(response_out, &old_string_value);
+                } else if self.resp_protocol_version().is_resp3() {
+                    append_null(response_out);
+                } else {
+                    append_null_bulk_string(response_out);
+                }
+            } else {
+                append_simple_string(response_out, b"OK");
+            }
+            return Ok(());
+        }
+
         let mut store = self.lock_string_store_for_shard(shard_index);
         crate::debug_sync_point!("request_processor.handle_set.after_store_lock");
         let mut session = store.session(&self.functions);
@@ -2072,7 +2193,7 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[2]);
 
         let mut replace = false;
-        let mut destination_db = 0u64;
+        let mut destination_db = super::current_request_selected_db();
         let mut index = 3usize;
         while index < args.len() {
             let option = args[index];
@@ -2086,20 +2207,22 @@ impl RequestProcessor {
                     return Err(RequestExecutionError::SyntaxError);
                 }
                 let db_value = args[index + 1];
-                destination_db =
-                    parse_u64_ascii(db_value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                let parsed =
+                    parse_i64_ascii(db_value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                let parsed = usize::try_from(parsed)
+                    .map_err(|_| RequestExecutionError::DbIndexOutOfRange)?;
+                if parsed >= self.configured_databases() {
+                    return Err(RequestExecutionError::DbIndexOutOfRange);
+                }
+                destination_db = DbName::new(parsed);
                 index += 2;
                 continue;
             }
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        if destination_db != 0 {
-            return Err(RequestExecutionError::ValueNotInteger);
-        }
-
         self.expire_key_if_needed(&source)?;
-        self.expire_key_if_needed(&destination)?;
+        self.with_selected_db(destination_db, || self.expire_key_if_needed(&destination))?;
 
         let Some(mut source_entry) = self.export_migration_entry(&source)? else {
             append_integer(response_out, 0);
@@ -2111,19 +2234,25 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if !replace && self.key_exists_any(&destination)? {
+        let destination_exists =
+            self.with_selected_db(destination_db, || self.key_exists_any(&destination))?;
+        if !replace && destination_exists {
             append_integer(response_out, 0);
             return Ok(());
         }
 
-        let (destination_had_string, destination_object_type) =
-            self.key_type_snapshot_for_setkey_overwrite(&destination)?;
+        let (destination_had_string, destination_object_type) = self
+            .with_selected_db(destination_db, || {
+                self.key_type_snapshot_for_setkey_overwrite(&destination)
+            })?;
         let source_type = match &source_entry.value {
             MigrationValue::String(_) => None,
             MigrationValue::Object { object_type, .. } => Some(*object_type),
         };
         source_entry.key = destination.clone().into();
-        self.import_migration_entry(&source_entry)?;
+        self.with_selected_db(destination_db, || {
+            self.import_migration_entry(&source_entry)
+        })?;
         self.notify_setkey_overwrite_events(
             &destination,
             destination_had_string,

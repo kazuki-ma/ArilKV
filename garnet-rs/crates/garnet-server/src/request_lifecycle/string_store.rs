@@ -1,6 +1,71 @@
 use super::*;
 
 impl RequestProcessor {
+    #[inline]
+    pub(super) fn current_auxiliary_db_name(&self) -> Option<DbName> {
+        let selected_db = current_request_selected_db();
+        if selected_db == DbName::default() {
+            return None;
+        }
+        Some(selected_db)
+    }
+
+    pub(super) fn auxiliary_value_snapshot(
+        &self,
+        db: DbName,
+        key: &[u8],
+    ) -> Option<AuxiliaryDbValue> {
+        let Ok(databases) = self.auxiliary_databases.lock() else {
+            return None;
+        };
+        databases
+            .get(&db)
+            .and_then(|state| state.entries.get(key).cloned())
+    }
+
+    pub(super) fn auxiliary_keys_snapshot(
+        &self,
+        db: DbName,
+        predicate: impl Fn(&MigrationValue) -> bool,
+    ) -> Vec<RedisKey> {
+        let Ok(databases) = self.auxiliary_databases.lock() else {
+            return Vec::new();
+        };
+        let Some(state) = databases.get(&db) else {
+            return Vec::new();
+        };
+        state
+            .entries
+            .iter()
+            .filter_map(|(key, value)| {
+                let stored = value.value.as_ref()?;
+                if predicate(stored) {
+                    return Some(key.clone());
+                }
+                None
+            })
+            .collect()
+    }
+
+    pub(super) fn auxiliary_db_keys_snapshot(&self) -> BTreeMap<DbName, Vec<RedisKey>> {
+        let Ok(databases) = self.auxiliary_databases.lock() else {
+            return BTreeMap::new();
+        };
+
+        let mut keys_by_db = BTreeMap::new();
+        for (db, state) in databases.iter() {
+            let keys = state
+                .entries
+                .iter()
+                .filter_map(|(key, value)| value.value.as_ref().map(|_| key.clone()))
+                .collect::<Vec<_>>();
+            if !keys.is_empty() {
+                keys_by_db.insert(*db, keys);
+            }
+        }
+        keys_by_db
+    }
+
     pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
         if max_keys == 0 {
             return Ok(0);
@@ -85,6 +150,19 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.expire_key_if_needed(key)?;
+            let entry = self.auxiliary_value_snapshot(selected_db, key);
+            self.track_read_key_for_current_client(key);
+            let Some(entry) = entry else {
+                return Ok(None);
+            };
+            let Some(MigrationValue::String(value)) = entry.value else {
+                return Ok(None);
+            };
+            return Ok(Some(value.into_vec()));
+        }
+
         let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
@@ -110,6 +188,16 @@ impl RequestProcessor {
     }
 
     pub(super) fn key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.expire_key_if_needed(key)?;
+            let entry = self.auxiliary_value_snapshot(selected_db, key);
+            self.track_read_key_for_current_client(key);
+            return Ok(matches!(
+                entry.and_then(|entry| entry.value),
+                Some(MigrationValue::String(_))
+            ));
+        }
+
         let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
@@ -132,6 +220,16 @@ impl RequestProcessor {
     }
 
     pub(super) fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.expire_key_if_needed(key)?;
+            let entry = self.auxiliary_value_snapshot(selected_db, key);
+            self.track_read_key_for_current_client(key);
+            return Ok(matches!(
+                entry.and_then(|entry| entry.value),
+                Some(MigrationValue::Object { .. })
+            ));
+        }
+
         if self.has_set_hot_entry(key) {
             self.track_read_key_for_current_client(key);
             return Ok(true);
@@ -174,6 +272,30 @@ impl RequestProcessor {
         user_value: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<(), RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let expiration = expiration_unix_millis.and_then(|unix_millis| {
+                let deadline = instant_from_unix_millis(unix_millis)?;
+                Some(ExpirationMetadata {
+                    deadline,
+                    unix_millis: TimestampMillis::new(unix_millis),
+                })
+            });
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let entry = databases
+                .entry(selected_db)
+                .or_default()
+                .entries
+                .entry(RedisKey::from(key))
+                .or_default();
+            entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
+            entry.expiration = expiration;
+            entry.hash_field_expirations.clear();
+            self.bump_watch_version(key);
+            return Ok(());
+        }
+
         let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut output = Vec::new();
@@ -212,6 +334,28 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<(), RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return Ok(());
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Ok(());
+            };
+            if matches!(entry.value, Some(MigrationValue::String(_))) {
+                entry.value = None;
+                entry.expiration = None;
+                entry.hash_field_expirations.clear();
+                if entry.value.is_none() {
+                    let _ = state.entries.remove(key);
+                }
+                self.bump_watch_version(key);
+            }
+            return Ok(());
+        }
+
         let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
         let mut info = DeleteInfo::default();
@@ -234,6 +378,13 @@ impl RequestProcessor {
     }
 
     pub(crate) fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            return self
+                .auxiliary_value_snapshot(selected_db, key)
+                .and_then(|entry| entry.expiration)
+                .map(|metadata| metadata.unix_millis.as_u64());
+        }
+
         let shard_index = self.string_store_shard_index_for_key(key);
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return None;
@@ -248,6 +399,30 @@ impl RequestProcessor {
         key: &[u8],
         expiration_unix_millis: Option<u64>,
     ) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let expiration = expiration_unix_millis.and_then(|unix_millis| {
+                let deadline = instant_from_unix_millis(unix_millis)?;
+                Some(ExpirationMetadata {
+                    deadline,
+                    unix_millis: TimestampMillis::new(unix_millis),
+                })
+            });
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return Ok(false);
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Ok(false);
+            };
+            if !matches!(entry.value, Some(MigrationValue::String(_))) {
+                return Ok(false);
+            }
+            entry.expiration = expiration;
+            return Ok(true);
+        }
+
         let key_vec = key.to_vec();
         let mut store = self.lock_string_store_for_key(key);
         let mut session = store.session(&self.functions);
@@ -288,6 +463,42 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: ShardIndex,
     ) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            if self.allow_access_expired() {
+                return Ok(false);
+            }
+            let now = current_instant();
+            let should_expire = {
+                let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                    return Err(RequestExecutionError::StorageBusy);
+                };
+                let Some(state) = databases.get_mut(&selected_db) else {
+                    return Ok(false);
+                };
+                let Some(entry) = state.entries.get(key) else {
+                    return Ok(false);
+                };
+                let Some(expiration) = entry.expiration else {
+                    return Ok(false);
+                };
+                if self.is_expire_action_paused() {
+                    return Ok(expiration.deadline <= now);
+                }
+                if expiration.deadline > now {
+                    return Ok(false);
+                }
+                let _ = state.entries.remove(key);
+                true
+            };
+            if should_expire {
+                self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
+                self.record_lazy_expired_keys(1);
+                self.enqueue_lazy_expired_key_for_replication(key);
+                self.bump_watch_version_server_origin(key);
+            }
+            return Ok(should_expire);
+        }
+
         if self.allow_access_expired() {
             return Ok(false);
         }
@@ -519,6 +730,19 @@ impl RequestProcessor {
         shard_index: ShardIndex,
         expiration: Option<ExpirationMetadata>,
     ) {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            if let Ok(mut databases) = self.auxiliary_databases.lock() {
+                let Some(state) = databases.get_mut(&selected_db) else {
+                    return;
+                };
+                let Some(entry) = state.entries.get_mut(key) else {
+                    return;
+                };
+                entry.expiration = expiration;
+            }
+            return;
+        }
+
         let mut expirations = self.lock_string_expirations_for_shard(shard_index);
         match expiration {
             Some(expiration) => {
@@ -582,6 +806,36 @@ impl RequestProcessor {
         field: &[u8],
         expiration_unix_millis: Option<u64>,
     ) {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return;
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return;
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return;
+            };
+            match expiration_unix_millis {
+                Some(unix_millis) => {
+                    let Some(deadline) = instant_from_unix_millis(unix_millis) else {
+                        return;
+                    };
+                    entry.hash_field_expirations.insert(
+                        HashField::from(field),
+                        ExpirationMetadata {
+                            deadline,
+                            unix_millis: TimestampMillis::new(unix_millis),
+                        },
+                    );
+                }
+                None => {
+                    entry.hash_field_expirations.remove(field);
+                }
+            }
+            return;
+        }
+
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
         match expiration_unix_millis {
             Some(unix_millis) => {
@@ -628,6 +882,13 @@ impl RequestProcessor {
         key: &[u8],
         field: &[u8],
     ) -> Option<u64> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            return self
+                .auxiliary_value_snapshot(selected_db, key)
+                .and_then(|entry| entry.hash_field_expirations.get(field).cloned())
+                .map(|metadata| metadata.unix_millis.as_u64());
+        }
+
         let shard_index = self.object_store_shard_index_for_key(key);
         self.lock_hash_field_expirations_for_shard(shard_index)
             .get(key)
@@ -636,6 +897,12 @@ impl RequestProcessor {
     }
 
     pub(super) fn has_hash_field_expirations_for_key(&self, key: &[u8]) -> bool {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            return self
+                .auxiliary_value_snapshot(selected_db, key)
+                .is_some_and(|entry| !entry.hash_field_expirations.is_empty());
+        }
+
         let shard_index = self.object_store_shard_index_for_key(key);
         self.lock_hash_field_expirations_for_shard(shard_index)
             .contains_key(key)
@@ -646,6 +913,16 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: ShardIndex,
     ) {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            if let Ok(mut databases) = self.auxiliary_databases.lock()
+                && let Some(state) = databases.get_mut(&selected_db)
+                && let Some(entry) = state.entries.get_mut(key)
+            {
+                entry.hash_field_expirations.clear();
+            }
+            return;
+        }
+
         self.lock_hash_field_expirations_for_shard(shard_index)
             .remove(key);
     }
@@ -658,6 +935,31 @@ impl RequestProcessor {
         if fields.is_empty() {
             return Vec::new();
         }
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Vec::new();
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return Vec::new();
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Vec::new();
+            };
+            let now = current_instant();
+            let mut expired_fields = Vec::new();
+            for field in fields {
+                if let Some(metadata) = entry.hash_field_expirations.get(*field)
+                    && metadata.deadline <= now
+                {
+                    expired_fields.push(HashField::from(*field));
+                }
+            }
+            for field in &expired_fields {
+                entry.hash_field_expirations.remove(field.as_ref());
+            }
+            return expired_fields;
+        }
+
         let shard_index = self.object_store_shard_index_for_key(key);
         let now = current_instant();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
@@ -683,6 +985,34 @@ impl RequestProcessor {
     }
 
     pub(super) fn remove_all_expired_hash_fields_for_key(&self, key: &[u8]) -> Vec<HashField> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Vec::new();
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return Vec::new();
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Vec::new();
+            };
+            let now = current_instant();
+            let mut expired_fields = entry
+                .hash_field_expirations
+                .iter()
+                .filter_map(|(field, metadata)| {
+                    if metadata.deadline <= now {
+                        return Some(field.clone());
+                    }
+                    None
+                })
+                .collect::<Vec<_>>();
+            for field in &expired_fields {
+                entry.hash_field_expirations.remove(field);
+            }
+            expired_fields.shrink_to_fit();
+            return expired_fields;
+        }
+
         let shard_index = self.object_store_shard_index_for_key(key);
         let now = current_instant();
         let mut expirations = self.lock_hash_field_expirations_for_shard(shard_index);
@@ -718,6 +1048,13 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: ShardIndex,
     ) -> Option<Instant> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            return self
+                .auxiliary_value_snapshot(selected_db, key)
+                .and_then(|entry| entry.expiration)
+                .map(|metadata| metadata.deadline);
+        }
+
         if self.string_expiration_count_for_shard(shard_index) == 0 {
             return None;
         }
@@ -732,6 +1069,11 @@ impl RequestProcessor {
     }
 
     pub(super) fn string_keys_snapshot(&self) -> Vec<RedisKey> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            return self.auxiliary_keys_snapshot(selected_db, |value| {
+                matches!(value, MigrationValue::String(_))
+            });
+        }
         self.string_key_registries
             .iter()
             .flat_map(|registry| {
@@ -746,6 +1088,11 @@ impl RequestProcessor {
     }
 
     pub(super) fn object_keys_snapshot(&self) -> Vec<RedisKey> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            return self.auxiliary_keys_snapshot(selected_db, |value| {
+                matches!(value, MigrationValue::Object { .. })
+            });
+        }
         self.object_key_registries
             .iter()
             .flat_map(|registry| {

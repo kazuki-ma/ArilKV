@@ -1152,6 +1152,156 @@ async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
 }
 
 #[tokio::test]
+async fn multidb_select_copy_move_and_flushdb_match_external_scenarios_over_tcp() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"4"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"shared", b"zero"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"shared"]),
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"shared", b"one"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"shared"]),
+        b"$3\r\none\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"shared"]),
+        b"$4\r\nzero\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"src", b"hello", b"PX", b"60000"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"COPY", b"src", b"copied", b"DB", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"copied"]),
+        b"$5\r\nhello\r\n",
+    )
+    .await;
+    let copied_ttl = send_and_read_integer(
+        &mut client,
+        &encode_resp_command(&[b"PTTL", b"copied"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(copied_ttl > 0);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"MOVE", b"copied", b"3"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"copied"]),
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"3"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"copied"]),
+        b"$5\r\nhello\r\n",
+    )
+    .await;
+    let moved_ttl = send_and_read_integer(
+        &mut client,
+        &encode_resp_command(&[b"PTTL", b"copied"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(moved_ttl > 0);
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"DBSIZE"]), b":0\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"src"]),
+        b"$5\r\nhello\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

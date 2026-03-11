@@ -778,7 +778,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
-        let target_db = parse_db_name_arg(args[2])?;
+        let target_db = parse_configured_db_name_arg(args[2], self.configured_databases())?;
         if target_db == super::current_request_selected_db() {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
         }
@@ -787,82 +787,21 @@ impl RequestProcessor {
         self.expire_key_if_needed(&key)?;
         self.active_expire_hash_fields_for_key(&key)?;
 
-        let moved_entry = if let Some(value) = self.read_string_value(&key)? {
-            let length =
-                super::string_commands::string_value_len_for_keysizes(self, value.as_slice());
-            Some(super::MovedKeysizesEntry {
-                histogram_type_index: 0,
-                length,
-            })
-        } else if let Some(object) = self.object_read(&key)? {
-            let Some(histogram_entry) =
-                keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
-            else {
-                append_integer(response_out, 0);
-                return Ok(());
-            };
-            Some(super::MovedKeysizesEntry {
-                histogram_type_index: histogram_entry.histogram_type_index,
-                length: histogram_entry.length,
-            })
-        } else {
-            None
-        };
-
-        let Some(moved_entry) = moved_entry else {
+        let Some(mut entry) = self.export_migration_entry(&key)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
 
-        {
-            let moved_by_db = self
-                .moved_keysizes_by_db
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            if moved_by_db
-                .get(&target_db)
-                .is_some_and(|keys| keys.contains_key(key.as_slice()))
-            {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        }
-
-        let mut string_deleted = false;
-        {
-            let mut store = self.lock_string_store_for_key(&key);
-            let mut session = store.session(&self.functions);
-            let mut info = DeleteInfo::default();
-            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
-            match status {
-                DeleteOperationStatus::TombstonedInPlace
-                | DeleteOperationStatus::AppendedTombstone => {
-                    string_deleted = true;
-                }
-                DeleteOperationStatus::NotFound => {}
-                DeleteOperationStatus::RetryLater => {
-                    return Err(RequestExecutionError::StorageBusy);
-                }
-            }
-        }
-        if string_deleted {
-            self.remove_string_key_metadata(&key);
-        }
-        let object_deleted = self.object_delete(&key)?;
-        if !string_deleted && !object_deleted {
+        let target_exists = self.with_selected_db(target_db, || self.key_exists_any(&key))?;
+        if target_exists {
             append_integer(response_out, 0);
             return Ok(());
         }
-        if string_deleted && !object_deleted {
-            self.bump_watch_version(&key);
-        }
 
-        self.moved_keysizes_by_db
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .entry(target_db)
-            .or_default()
-            .insert(key, moved_entry);
+        entry.key = key.clone().into();
+        self.with_selected_db(target_db, || self.import_migration_entry(&entry))?;
+        self.delete_string_key_for_migration(&key)?;
+        let _ = self.object_delete(&key)?;
 
         append_integer(response_out, 1);
         Ok(())
@@ -4227,7 +4166,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let flush_mode = parse_flush_mode(args, "FLUSHDB", "FLUSHDB [ASYNC|SYNC]")?;
-        let removed_count = self.flush_all_keys()?;
+        let removed_count = self.flush_current_db_keys()?;
         if should_record_lazyfreed_for_flush_mode(flush_mode) {
             self.record_lazyfreed_objects(removed_count);
         }
@@ -4241,7 +4180,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let flush_mode = parse_flush_mode(args, "FLUSHALL", "FLUSHALL [ASYNC|SYNC]")?;
-        let removed_count = self.flush_all_keys()?;
+        let removed_count = self
+            .with_selected_db(DbName::default(), || self.flush_current_db_keys())?
+            .saturating_add(self.flush_auxiliary_databases());
         if should_record_lazyfreed_for_flush_mode(flush_mode) {
             self.record_lazyfreed_objects(removed_count);
         }
@@ -4249,7 +4190,20 @@ impl RequestProcessor {
         Ok(())
     }
 
-    fn flush_all_keys(&self) -> Result<u64, RequestExecutionError> {
+    fn flush_current_db_keys(&self) -> Result<u64, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.invalidate_all_tracking_entries();
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let removed = databases
+                .remove(&selected_db)
+                .map(|state| u64::try_from(state.entries.len()).unwrap_or(u64::MAX))
+                .unwrap_or(0);
+            self.reset_lazyfree_pending_objects();
+            return Ok(removed);
+        }
+
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
         // FLUSH* invalidates the full tracking table with an empty-key payload.
@@ -4309,13 +4263,21 @@ impl RequestProcessor {
             self.lock_object_key_registry_for_shard(shard_index).clear();
             self.string_expiration_counts[shard_index].store(0, Ordering::Release);
         }
-        self.moved_keysizes_by_db
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-
         self.reset_lazyfree_pending_objects();
         Ok(deleted_count)
+    }
+
+    fn flush_auxiliary_databases(&self) -> u64 {
+        let Ok(mut databases) = self.auxiliary_databases.lock() else {
+            return 0;
+        };
+        let mut removed = 0u64;
+        for state in databases.values() {
+            removed =
+                removed.saturating_add(u64::try_from(state.entries.len()).unwrap_or(u64::MAX));
+        }
+        databases.clear();
+        removed
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
@@ -4535,19 +4497,40 @@ impl RequestProcessor {
         }
 
         histograms_by_db.insert(DbName::default(), histograms);
-        {
-            let moved_keysizes_by_db = self
-                .moved_keysizes_by_db
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            for (db_index, moved_keysizes_entries) in moved_keysizes_by_db.iter() {
-                let db_histograms = histograms_by_db.entry(*db_index).or_insert(
-                    [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT],
-                );
-                for moved_entry in moved_keysizes_entries.values() {
-                    let bin_index = keysizes_histogram_bin_index(moved_entry.length);
-                    db_histograms[moved_entry.histogram_type_index][bin_index] += 1;
+        for (db_index, keys) in self.auxiliary_db_keys_snapshot() {
+            let db_histograms = histograms_by_db
+                .entry(db_index)
+                .or_insert([[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT]);
+            for key in keys {
+                self.with_selected_db(db_index, || self.expire_key_if_needed(key.as_slice()))?;
+                self.with_selected_db(db_index, || {
+                    self.active_expire_hash_fields_for_key(key.as_slice())
+                })?;
+
+                if let Some(value) =
+                    self.with_selected_db(db_index, || self.read_string_value(key.as_slice()))?
+                {
+                    let length = super::string_commands::string_value_len_for_keysizes(
+                        self,
+                        value.as_slice(),
+                    );
+                    let bin_index = keysizes_histogram_bin_index(length);
+                    db_histograms[0][bin_index] += 1;
+                    continue;
                 }
+
+                let Some(object) =
+                    self.with_selected_db(db_index, || self.object_read(key.as_slice()))?
+                else {
+                    continue;
+                };
+                let Some(histogram_entry) =
+                    keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
+                else {
+                    continue;
+                };
+                let bin_index = keysizes_histogram_bin_index(histogram_entry.length);
+                db_histograms[histogram_entry.histogram_type_index][bin_index] += 1;
             }
         }
 
@@ -4772,7 +4755,8 @@ impl RequestProcessor {
             return Ok(false);
         };
 
-        self.flush_all_keys()?;
+        self.with_selected_db(DbName::default(), || self.flush_current_db_keys())?;
+        let _ = self.flush_auxiliary_databases();
         self.clear_function_registry(false);
         self.clear_all_forced_list_quicklist_encodings();
 

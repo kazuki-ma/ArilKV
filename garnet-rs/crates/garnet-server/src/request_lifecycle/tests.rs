@@ -522,6 +522,32 @@ fn execute_command_line_with_client(
     execute_frame_with_client(processor, &frame, client_id, false)
 }
 
+fn execute_command_line_in_db(
+    processor: &RequestProcessor,
+    command_line: &str,
+    selected_db: DbName,
+) -> Vec<u8> {
+    let parts = command_line
+        .split_whitespace()
+        .map(str::as_bytes)
+        .collect::<Vec<_>>();
+    let frame = encode_resp(&parts);
+    let mut args = [ArgSlice::EMPTY; 64];
+    let meta = parse_resp_command_arg_slices(&frame, &mut args).unwrap();
+    let mut response = Vec::new();
+    processor
+        .execute_with_client_context_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+            false,
+            selected_db,
+        )
+        .unwrap();
+    response
+}
+
 fn assert_client_command_response(
     processor: &RequestProcessor,
     command_line: &str,
@@ -9309,8 +9335,8 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
-    let select_one = b"*2\r\n$6\r\nSELECT\r\n$1\r\n1\r\n";
-    let meta = parse_resp_command_arg_slices(select_one, &mut args).unwrap();
+    let select_out_of_range = b"*2\r\n$6\r\nSELECT\r\n$2\r\n16\r\n";
+    let meta = parse_resp_command_arg_slices(select_out_of_range, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap_err();
@@ -9346,8 +9372,8 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
     assert_eq!(response, b"+OK\r\n");
 
     response.clear();
-    let swapdb_other = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$1\r\n1\r\n";
-    let meta = parse_resp_command_arg_slices(swapdb_other, &mut args).unwrap();
+    let swapdb_out_of_range = b"*3\r\n$6\r\nSWAPDB\r\n$1\r\n0\r\n$2\r\n16\r\n";
+    let meta = parse_resp_command_arg_slices(swapdb_out_of_range, &mut args).unwrap();
     let err = processor
         .execute(&args[..meta.argument_count], &mut response)
         .unwrap_err();
@@ -9569,6 +9595,104 @@ fn select_respects_configured_database_limit_and_move_uses_selected_db_context()
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
+}
+
+#[test]
+fn multidb_select_keeps_keyspaces_separate_for_strings_and_objects() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "CONFIG SET databases 4", b"+OK\r\n");
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SET shared zero", DbName::new(0)),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "RPUSH list a", DbName::new(2)),
+        b":1\r\n"
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GET shared", DbName::new(0)),
+        b"$4\r\nzero\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GET shared", DbName::new(1)),
+        b"$-1\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "TYPE list", DbName::new(0)),
+        b"+none\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "TYPE list", DbName::new(2)),
+        b"+list\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "DBSIZE", DbName::new(0)),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "DBSIZE", DbName::new(2)),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "KEYS *", DbName::new(2)),
+        b"*1\r\n$4\r\nlist\r\n"
+    );
+}
+
+#[test]
+fn multidb_copy_move_and_flushdb_preserve_values_and_expiration() {
+    let processor = RequestProcessor::new().unwrap();
+    assert_command_response(&processor, "CONFIG SET databases 4", b"+OK\r\n");
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SET src hello PX 60000", DbName::new(0)),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "COPY src copied DB 1", DbName::new(0)),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GET copied", DbName::new(1)),
+        b"$5\r\nhello\r\n"
+    );
+    let copied_pttl = execute_command_line_in_db(&processor, "PTTL copied", DbName::new(1));
+    let copied_ttl = parse_integer_response(&copied_pttl);
+    assert!(copied_ttl > 0, "expected positive TTL, got {copied_ttl}");
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "MOVE copied 3", DbName::new(1)),
+        b":1\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GET copied", DbName::new(1)),
+        b"$-1\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GET copied", DbName::new(3)),
+        b"$5\r\nhello\r\n"
+    );
+    let moved_pttl = execute_command_line_in_db(&processor, "PTTL copied", DbName::new(3));
+    let moved_ttl = parse_integer_response(&moved_pttl);
+    assert!(
+        moved_ttl > 0,
+        "expected moved key to keep expiration, got {moved_ttl}"
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "FLUSHDB", DbName::new(3)),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "DBSIZE", DbName::new(3)),
+        b":0\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GET src", DbName::new(0)),
+        b"$5\r\nhello\r\n"
+    );
 }
 
 #[test]
