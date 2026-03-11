@@ -1398,21 +1398,9 @@ impl RequestProcessor {
                 self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
             }
             GetExAction::DeleteNow => {
-                let mut store = self.lock_string_store_for_key(&key);
-                let mut session = store.session(&self.functions);
-                let mut info = DeleteInfo::default();
-                let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
-                match status {
-                    DeleteOperationStatus::TombstonedInPlace
-                    | DeleteOperationStatus::AppendedTombstone => {
-                        self.remove_string_key_metadata(&key);
-                        self.bump_watch_version(&key);
-                        self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
-                    }
-                    DeleteOperationStatus::NotFound => {}
-                    DeleteOperationStatus::RetryLater => {
-                        return Err(RequestExecutionError::StorageBusy);
-                    }
+                if self.delete_string_value_in_current_db(&key)? {
+                    self.bump_watch_version(&key);
+                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
                 }
             }
         }
@@ -1965,23 +1953,7 @@ impl RequestProcessor {
 
         let mut deleted = 0i64;
         for key in keys {
-            let mut string_deleted = false;
-            let mut store = self.lock_string_store_for_key(&key);
-            let mut session = store.session(&self.functions);
-            let mut info = DeleteInfo::default();
-            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
-            match status {
-                DeleteOperationStatus::TombstonedInPlace
-                | DeleteOperationStatus::AppendedTombstone => {
-                    string_deleted = true;
-                    self.remove_string_key_metadata(&key);
-                }
-                DeleteOperationStatus::NotFound => {}
-                DeleteOperationStatus::RetryLater => {
-                    return Err(RequestExecutionError::StorageBusy);
-                }
-            }
-
+            let string_deleted = self.delete_string_value_in_current_db(&key)?;
             let object_deleted = match self.object_delete(&key) {
                 Ok(value) => value,
                 Err(error) => {
@@ -2041,25 +2013,7 @@ impl RequestProcessor {
         let mut lazyfreed = 0u64;
         for key in keys {
             let object_lazyfree_weight = self.unlink_object_lazyfree_weight(&key)?;
-
-            let mut string_deleted = false;
-            let mut store = self.lock_string_store_for_key(&key);
-            let mut session = store.session(&self.functions);
-            let mut info = DeleteInfo::default();
-            let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
-            match status {
-                DeleteOperationStatus::TombstonedInPlace
-                | DeleteOperationStatus::AppendedTombstone => {
-                    string_deleted = true;
-                    self.remove_string_key_metadata(&key);
-                }
-                DeleteOperationStatus::NotFound => {}
-                DeleteOperationStatus::RetryLater => {
-                    self.reset_lazyfree_pending_objects();
-                    return Err(RequestExecutionError::StorageBusy);
-                }
-            }
-
+            let string_deleted = self.delete_string_value_in_current_db(&key)?;
             let object_deleted = self.object_delete(&key)?;
             if string_deleted || object_deleted {
                 deleted += 1;
@@ -2657,6 +2611,41 @@ impl RequestProcessor {
         value: &[u8],
         expiration: Option<ExpirationMetadata>,
     ) -> Result<(), RequestExecutionError> {
+        let normalized_value = canonicalize_oversized_hyll_value(value);
+        self.ensure_string_length_within_limit(
+            normalized_value.len(),
+            RequestExecutionError::StringExceedsMaximumAllowedSize,
+        )?;
+
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let key_vec = RedisKey::from(key);
+            let object_exists = self.object_read(&key_vec)?.is_some();
+            if object_exists {
+                let _ = self.object_delete(&key_vec)?;
+            }
+
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let entry = databases
+                .entry(selected_db)
+                .or_default()
+                .entries
+                .entry(key_vec.clone())
+                .or_default();
+            entry.value = Some(MigrationValue::String(StringValue::from(normalized_value)));
+            entry.expiration = expiration;
+            entry.hash_field_expirations.clear();
+            drop(databases);
+
+            self.bump_watch_version(&key_vec);
+            self.notify_keyspace_event(NOTIFY_STRING, b"set", &key_vec);
+            if expiration.is_some() {
+                self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key_vec);
+            }
+            return Ok(());
+        }
+
         let shard_index = self.string_store_shard_index_for_key(key);
         self.expire_key_if_needed_in_shard(key, shard_index)?;
 
@@ -2667,11 +2656,6 @@ impl RequestProcessor {
 
         let mut output = Vec::new();
         let mut info = UpsertInfo::default();
-        let normalized_value = canonicalize_oversized_hyll_value(value);
-        self.ensure_string_length_within_limit(
-            normalized_value.len(),
-            RequestExecutionError::StringExceedsMaximumAllowedSize,
-        )?;
         let stored_value = encode_stored_value(
             normalized_value,
             expiration.map(|metadata| metadata.unix_millis.as_u64()),
@@ -2917,27 +2901,11 @@ impl RequestProcessor {
         object_exists: bool,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let key_vec = key.to_vec();
-        let mut string_deleted = false;
-        if string_exists {
-            let mut store = self.lock_string_store_for_key(key);
-            let mut session = store.session(&self.functions);
-            let mut info = DeleteInfo::default();
-            let status = session
-                .delete(&key_vec, &mut info)
-                .map_err(map_delete_error)?;
-            match status {
-                DeleteOperationStatus::TombstonedInPlace
-                | DeleteOperationStatus::AppendedTombstone => {
-                    string_deleted = true;
-                }
-                DeleteOperationStatus::NotFound => {}
-                DeleteOperationStatus::RetryLater => {
-                    return Err(RequestExecutionError::StorageBusy);
-                }
-            }
-            self.remove_string_key_metadata(key);
-        }
+        let string_deleted = if string_exists {
+            self.delete_string_value_in_current_db(key)?
+        } else {
+            false
+        };
 
         let object_deleted = if object_exists {
             self.object_delete(key)?

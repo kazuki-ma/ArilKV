@@ -28,7 +28,8 @@ RUNTEXT_TIMEOUT_SECONDS="${RUNTEXT_TIMEOUT_SECONDS:-}"
 RUNTEXT_WALL_TIMEOUT_SECONDS="${RUNTEXT_WALL_TIMEOUT_SECONDS:-1800}"
 RUNTEXT_CLIENTS="${RUNTEXT_CLIENTS:-}"
 RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
-EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-${SCRIPT_DIR}/known-failed-tests-singledb.txt}"
+RUNTEXT_SINGLEDB="${RUNTEXT_SINGLEDB:-1}"
+EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-}"
 REDIS_CLI_OVERRIDE_BIN="${REDIS_CLI_OVERRIDE_BIN:-}"
 RUNTEXT_SKIP_QUERYBUF_IN_FULL="${RUNTEXT_SKIP_QUERYBUF_IN_FULL:-1}"
 RUNTEXT_RUN_QUERYBUF_ISOLATED="${RUNTEXT_RUN_QUERYBUF_ISOLATED:-1}"
@@ -43,6 +44,20 @@ if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" && "${REDIS_RUNTEXT_MODE}" == "full" ]]; t
     # Keep full external probes from stalling for the runtest default (20 minutes)
     # when a single case blocks indefinitely.
     RUNTEXT_TIMEOUT_SECONDS="120"
+fi
+
+if [[ "${RUNTEXT_SINGLEDB}" != "0" && "${RUNTEXT_SINGLEDB}" != "1" ]]; then
+    echo "RUNTEXT_SINGLEDB must be 0 or 1" >&2
+    exit 2
+fi
+
+if [[ -z "${EXPECTED_FAILS_FILE}" && "${RUNTEXT_SINGLEDB}" == "1" ]]; then
+    EXPECTED_FAILS_FILE="${SCRIPT_DIR}/known-failed-tests-singledb.txt"
+fi
+
+RUNTEXT_DB_MODE_ARGS=()
+if [[ "${RUNTEXT_SINGLEDB}" == "1" ]]; then
+    RUNTEXT_DB_MODE_ARGS+=(--singledb)
 fi
 
 mkdir -p "${RESULT_DIR}"
@@ -181,21 +196,10 @@ install_redis_cli_override_patch() {
     CLI_TCL_PATH="${cli_tcl}" python3 <<'PY'
 from pathlib import Path
 import os
+import re
 
 path = Path(os.environ["CLI_TCL_PATH"])
 text = path.read_text()
-old = """proc rediscli {host port {opts {}}} {
-    set cmd [list src/redis-cli -h $host -p $port]
-    lappend cmd {*}[rediscli_tls_config "tests"]
-    lappend cmd {*}$opts
-    return $cmd
-}
-
-# Returns command line for executing redis-cli with a unix socket address
-proc rediscli_unixsocket {unixsocket {opts {}}} {
-    return [list src/redis-cli -s $unixsocket {*}$opts]
-}
-"""
 new = """proc rediscli_binary {} {
     # garnet-rs external redis-cli override
     if {[info exists ::env(REDIS_CLI_OVERRIDE_RESOLVED_BIN)] && $::env(REDIS_CLI_OVERRIDE_RESOLVED_BIN) ne ""} {
@@ -216,9 +220,19 @@ proc rediscli_unixsocket {unixsocket {opts {}}} {
     return [list [rediscli_binary] -s $unixsocket {*}$opts]
 }
 """
-if old not in text:
+pattern = re.compile(
+    r"""proc rediscli \{host port \{opts \{\}\}\} \{\n"""
+    r"""(?:    .*\n)+?"""
+    r"""\}\n\n"""
+    r"""# Returns command line for executing redis-cli with a unix socket address\n"""
+    r"""proc rediscli_unixsocket \{unixsocket \{opts \{\}\}\} \{\n"""
+    r"""(?:    .*\n)+?"""
+    r"""\}\n""",
+    re.MULTILINE,
+)
+if not pattern.search(text):
     raise SystemExit(f"expected cli.tcl block not found in {path}")
-path.write_text(text.replace(old, new, 1))
+path.write_text(pattern.sub(new, text, count=1))
 PY
 
     if ! grep -Fq "${patch_marker}" "${cli_tcl}"; then
@@ -411,7 +425,7 @@ run_runtest_case() {
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
         --port "${GARNET_PORT}"
-        --singledb
+        "${RUNTEXT_DB_MODE_ARGS[@]}"
         --dont-clean
         --single "${unit}"
     )
@@ -456,7 +470,7 @@ run_full_runtest_case() {
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
         --port "${GARNET_PORT}"
-        --singledb
+        "${RUNTEXT_DB_MODE_ARGS[@]}"
         --dont-clean
         --durable
     )
@@ -635,7 +649,7 @@ run_isolated_unit_case() {
         "${RUNTEXT_BIN}"
         --host 127.0.0.1
         --port "${GARNET_PORT}"
-        --singledb
+        "${RUNTEXT_DB_MODE_ARGS[@]}"
         --dont-clean
         --durable
         --single "${unit}"

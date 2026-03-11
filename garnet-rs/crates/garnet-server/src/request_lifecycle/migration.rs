@@ -74,6 +74,23 @@ impl RequestProcessor {
         Ok(moved)
     }
 
+    pub(super) fn snapshot_current_db_entries(
+        &self,
+    ) -> Result<Vec<MigrationEntry>, RequestExecutionError> {
+        let mut keys = BTreeSet::<RedisKey>::new();
+        keys.extend(self.string_keys_snapshot());
+        keys.extend(self.object_keys_snapshot());
+
+        let mut entries = Vec::with_capacity(keys.len());
+        for key in keys {
+            let Some(entry) = self.export_migration_entry(key.as_slice())? else {
+                continue;
+            };
+            entries.push(entry);
+        }
+        Ok(entries)
+    }
+
     pub fn migration_keys_for_slot(
         &self,
         slot: garnet_cluster::SlotNumber,

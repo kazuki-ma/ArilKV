@@ -713,14 +713,7 @@ impl RequestProcessor {
                     );
                 }
                 InfoSection::Keyspace => {
-                    payload.push_str("# Keyspace\r\n");
-                    if dbsize > 0 {
-                        let expires = self.total_expiration_count();
-                        payload.push_str(
-                            format!("db0:keys={},expires={},avg_ttl=0\r\n", dbsize, expires)
-                                .as_str(),
-                        );
-                    }
+                    payload.push_str(&self.render_keyspace_info_payload()?);
                 }
                 InfoSection::Keysizes => {
                     payload.push_str(&self.render_keysizes_info_payload()?);
@@ -813,11 +806,39 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SWAPDB", "SWAPDB index1 index2")?;
-        let index1 = parse_configured_db_name_arg(args[1], self.configured_databases())?;
-        let index2 = parse_configured_db_name_arg(args[2], self.configured_databases())?;
-        if index1 != index2 {
+        let configured_databases = self.configured_databases();
+        let index1 = parse_swapdb_db_name_arg(args[1], RequestExecutionError::InvalidFirstDbIndex)?;
+        let index2 =
+            parse_swapdb_db_name_arg(args[2], RequestExecutionError::InvalidSecondDbIndex)?;
+        if usize::from(index1) >= configured_databases
+            || usize::from(index2) >= configured_databases
+        {
             return Err(RequestExecutionError::DbIndexOutOfRange);
         }
+        if index1 == index2 {
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
+        let entries1 = self.with_selected_db(index1, || self.snapshot_current_db_entries())?;
+        let entries2 = self.with_selected_db(index2, || self.snapshot_current_db_entries())?;
+
+        self.with_selected_db(index1, || self.flush_current_db_keys())?;
+        self.with_selected_db(index2, || self.flush_current_db_keys())?;
+
+        self.with_selected_db(index1, || {
+            for entry in &entries2 {
+                self.import_migration_entry(entry)?;
+            }
+            Ok::<(), RequestExecutionError>(())
+        })?;
+        self.with_selected_db(index2, || {
+            for entry in &entries1 {
+                self.import_migration_entry(entry)?;
+            }
+            Ok::<(), RequestExecutionError>(())
+        })?;
+
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -4294,6 +4315,58 @@ impl RequestProcessor {
         total
     }
 
+    fn render_keyspace_info_payload(&self) -> Result<String, RequestExecutionError> {
+        let mut payload = String::from("# Keyspace\r\n");
+
+        let db0_keys =
+            usize::try_from(self.with_selected_db(DbName::default(), || self.active_key_count())?)
+                .unwrap_or(usize::MAX);
+        let db0_expires = self.total_expiration_count();
+        if db0_keys > 0 {
+            payload.push_str(
+                format!("db0:keys={db0_keys},expires={db0_expires},avg_ttl=0\r\n").as_str(),
+            );
+        }
+
+        let Ok(databases) = self.auxiliary_databases.lock() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        let mut dbs = databases
+            .iter()
+            .filter_map(|(db, state)| {
+                let key_count = state
+                    .entries
+                    .values()
+                    .filter(|entry| entry.value.is_some())
+                    .count();
+                if key_count == 0 {
+                    return None;
+                }
+                let expires = state
+                    .entries
+                    .values()
+                    .filter(|entry| entry.value.is_some() && entry.expiration.is_some())
+                    .count();
+                Some((*db, key_count, expires))
+            })
+            .collect::<Vec<_>>();
+        dbs.sort_by_key(|(db, _, _)| usize::from(*db));
+
+        for (db, key_count, expires) in dbs {
+            payload.push_str(
+                format!(
+                    "db{}:keys={},expires={},avg_ttl=0\r\n",
+                    usize::from(db),
+                    key_count,
+                    expires
+                )
+                .as_str(),
+            );
+        }
+
+        Ok(payload)
+    }
+
     fn estimated_used_memory_bytes(&self) -> Result<u64, RequestExecutionError> {
         const ESTIMATED_BASE_MEMORY_BYTES: u64 = 1024;
 
@@ -6366,6 +6439,20 @@ fn parse_configured_db_name_arg(
         return Err(RequestExecutionError::DbIndexOutOfRange);
     }
     Ok(db_name)
+}
+
+fn parse_swapdb_db_name_arg(
+    value: &[u8],
+    invalid_error: RequestExecutionError,
+) -> Result<DbName, RequestExecutionError> {
+    let Some(index) = parse_i64_ascii(value) else {
+        return Err(invalid_error);
+    };
+    if index < 0 {
+        return Err(invalid_error);
+    }
+    let index = usize::try_from(index).map_err(|_| invalid_error)?;
+    Ok(DbName::new(index))
 }
 
 fn scan_object_type_matches_filter(object_type: ObjectTypeTag, filter: ScanTypeFilter) -> bool {

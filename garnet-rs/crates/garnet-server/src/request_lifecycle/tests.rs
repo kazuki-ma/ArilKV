@@ -9555,10 +9555,21 @@ fn select_respects_configured_database_limit_and_move_uses_selected_db_context()
     assert_command_response(&processor, "SELECT 3", b"+OK\r\n");
     assert_command_error(&processor, "SELECT 4", b"-ERR DB index is out of range\r\n");
     assert_command_response(&processor, "SWAPDB 1 1", b"+OK\r\n");
+    assert_command_response(&processor, "SWAPDB 1 2", b"+OK\r\n");
     assert_command_error(
         &processor,
-        "SWAPDB 1 2",
+        "SWAPDB 4 5",
         b"-ERR DB index is out of range\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SWAPDB 4 a",
+        b"-ERR invalid second DB index\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "SWAPDB a 5",
+        b"-ERR invalid first DB index\r\n",
     );
 
     let frame = encode_resp(&[b"MOVE", b"ctx-key", b"2"]);

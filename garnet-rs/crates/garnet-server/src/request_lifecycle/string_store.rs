@@ -222,6 +222,10 @@ impl RequestProcessor {
     pub(super) fn object_key_exists(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
             self.expire_key_if_needed(key)?;
+            if self.has_set_hot_entry(key) {
+                self.track_read_key_for_current_client(key);
+                return Ok(true);
+            }
             let entry = self.auxiliary_value_snapshot(selected_db, key);
             self.track_read_key_for_current_client(key);
             return Ok(matches!(
@@ -264,6 +268,53 @@ impl RequestProcessor {
             return Ok(true);
         }
         self.object_key_exists(key)
+    }
+
+    pub(super) fn delete_string_value_in_current_db(
+        &self,
+        key: &[u8],
+    ) -> Result<bool, RequestExecutionError> {
+        if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let Ok(mut databases) = self.auxiliary_databases.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            let Some(state) = databases.get_mut(&selected_db) else {
+                return Ok(false);
+            };
+            let Some(entry) = state.entries.get_mut(key) else {
+                return Ok(false);
+            };
+            if !matches!(entry.value, Some(MigrationValue::String(_))) {
+                return Ok(false);
+            }
+
+            entry.value = None;
+            entry.expiration = None;
+            entry.hash_field_expirations.clear();
+            if entry.value.is_none() {
+                let _ = state.entries.remove(key);
+            }
+            return Ok(true);
+        }
+
+        let mut store = self.lock_string_store_for_key(key);
+        let mut session = store.session(&self.functions);
+        let mut info = DeleteInfo::default();
+        let status = session
+            .delete(&key.to_vec(), &mut info)
+            .map_err(map_delete_error)?;
+
+        match status {
+            DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
+                self.remove_string_key_metadata(key);
+                Ok(true)
+            }
+            DeleteOperationStatus::NotFound => {
+                self.remove_string_key_metadata(key);
+                Ok(false)
+            }
+            DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
+        }
     }
 
     pub(super) fn upsert_string_value_for_migration(
@@ -334,47 +385,10 @@ impl RequestProcessor {
         &self,
         key: &[u8],
     ) -> Result<(), RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
-            let Ok(mut databases) = self.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let Some(state) = databases.get_mut(&selected_db) else {
-                return Ok(());
-            };
-            let Some(entry) = state.entries.get_mut(key) else {
-                return Ok(());
-            };
-            if matches!(entry.value, Some(MigrationValue::String(_))) {
-                entry.value = None;
-                entry.expiration = None;
-                entry.hash_field_expirations.clear();
-                if entry.value.is_none() {
-                    let _ = state.entries.remove(key);
-                }
-                self.bump_watch_version(key);
-            }
-            return Ok(());
+        if self.delete_string_value_in_current_db(key)? {
+            self.bump_watch_version(key);
         }
-
-        let mut store = self.lock_string_store_for_key(key);
-        let mut session = store.session(&self.functions);
-        let mut info = DeleteInfo::default();
-        let status = session
-            .delete(&key.to_vec(), &mut info)
-            .map_err(map_delete_error)?;
-
-        match status {
-            DeleteOperationStatus::TombstonedInPlace
-            | DeleteOperationStatus::AppendedTombstone
-            | DeleteOperationStatus::NotFound => {
-                self.remove_string_key_metadata(key);
-                if !matches!(status, DeleteOperationStatus::NotFound) {
-                    self.bump_watch_version(key);
-                }
-                Ok(())
-            }
-            DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
-        }
+        Ok(())
     }
 
     pub(crate) fn expiration_unix_millis_for_key(&self, key: &[u8]) -> Option<u64> {

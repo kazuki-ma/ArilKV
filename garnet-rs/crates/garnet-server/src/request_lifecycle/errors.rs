@@ -81,6 +81,8 @@ pub enum RequestExecutionError {
     IndexOutOfRange,
     IncrementOverflow,
     AuthNotEnabled,
+    InvalidFirstDbIndex,
+    InvalidSecondDbIndex,
     DbIndexOutOfRange,
     SourceDestinationObjectsSame,
     WaitAofAppendOnlyDisabled,
@@ -325,6 +327,8 @@ impl RequestExecutionError {
                 response_out,
                 "ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?",
             ),
+            Self::InvalidFirstDbIndex => append_error(response_out, "ERR invalid first DB index"),
+            Self::InvalidSecondDbIndex => append_error(response_out, "ERR invalid second DB index"),
             Self::DbIndexOutOfRange => append_error(response_out, "ERR DB index is out of range"),
             Self::SourceDestinationObjectsSame => append_error(
                 response_out,

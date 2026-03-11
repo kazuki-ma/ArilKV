@@ -148,17 +148,18 @@ impl RequestProcessor {
     }
 
     fn take_set_hot_entry(&self, key: &[u8]) -> Option<SetObjectHotEntry> {
+        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
             return None;
         };
         if let Some(index) = hot_state
             .lru
             .iter()
-            .position(|candidate| candidate.as_slice() == key)
+            .position(|candidate| candidate == &scoped_key)
         {
             let _ = hot_state.lru.remove(index);
         }
-        hot_state.entries.remove(key)
+        hot_state.entries.remove(&scoped_key)
     }
 
     fn upsert_set_hot_entry(
@@ -166,18 +167,19 @@ impl RequestProcessor {
         key: &[u8],
         entry: SetObjectHotEntry,
     ) -> Result<(), RequestExecutionError> {
+        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         let mut evicted = None;
         {
             let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            hot_state.entries.insert(RedisKey::from(key), entry);
-            hot_state.touch(key);
+            hot_state.entries.insert(scoped_key.clone(), entry);
+            hot_state.touch(&scoped_key);
             while hot_state.entries.len() > SET_OBJECT_HOT_STATE_CAPACITY {
                 let Some(oldest_key) = hot_state.lru.pop_front() else {
                     break;
                 };
-                if oldest_key.as_slice() == key {
+                if oldest_key == scoped_key {
                     hot_state.lru.push_back(oldest_key);
                     break;
                 }
@@ -191,27 +193,31 @@ impl RequestProcessor {
             && oldest_entry.dirty
         {
             let payload = Self::serialize_set_hot_payload(&oldest_entry.payload);
-            self.object_upsert_raw(oldest_key.as_slice(), SET_OBJECT_TYPE_TAG, &payload)?;
+            self.with_selected_db(oldest_key.db, || {
+                self.object_upsert_raw(oldest_key.key.as_slice(), SET_OBJECT_TYPE_TAG, &payload)
+            })?;
         }
         Ok(())
     }
 
     pub(super) fn has_set_hot_entry(&self, key: &[u8]) -> bool {
+        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         self.set_object_hot_state
             .lock()
-            .map(|hot_state| hot_state.entries.contains_key(key))
+            .map(|hot_state| hot_state.entries.contains_key(&scoped_key))
             .unwrap_or(false)
     }
 
     fn set_hot_payload_for_object_read(&self, key: &[u8]) -> Option<Vec<u8>> {
+        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
             return None;
         };
         let payload = {
-            let entry = hot_state.entries.get(key)?;
+            let entry = hot_state.entries.get(&scoped_key)?;
             Self::serialize_set_hot_payload(&entry.payload)
         };
-        hot_state.touch(key);
+        hot_state.touch(&scoped_key);
         Some(payload)
     }
 

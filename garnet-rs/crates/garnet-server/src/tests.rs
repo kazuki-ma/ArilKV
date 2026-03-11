@@ -1302,6 +1302,356 @@ async fn multidb_select_copy_move_and_flushdb_match_external_scenarios_over_tcp(
 }
 
 #[tokio::test]
+async fn multidb_keyspace_sequences_match_external_scenarios_over_tcp() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"x"]),
+        b"$3\r\nfoo\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"x"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"x"]),
+        b"$-1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"MSET", b"foo1", b"a", b"foo2", b"b", b"foo3", b"c"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"MGET", b"foo1", b"foo2", b"foo3", b"foo4"]),
+        b"*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"foo1", b"foo2", b"foo3", b"foo4"]),
+        b":3\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"MGET", b"foo1", b"foo2", b"foo3"]),
+        b"*3\r\n$-1\r\n$-1\r\n$-1\r\n",
+    )
+    .await;
+
+    for key in [b"key_x", b"key_y", b"key_z", b"foo_a", b"foo_b", b"foo_c"] {
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"SET", key, b"hello"]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+    send_and_expect(&mut client, &encode_resp_command(&[b"DBSIZE"]), b":6\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"DEL", b"key_x", b"key_y", b"key_z", b"foo_a", b"foo_b", b"foo_c",
+        ]),
+        b":6\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"DBSIZE"]), b":0\r\n").await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"newkey", b"test"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"newkey"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"newkey"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"newkey"]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"emptykey", b""]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"emptykey"]),
+        b"$0\r\n\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"emptykey"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"emptykey"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXISTS", b"emptykey"]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"mykey"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"RENAME", b"mykey", b"mykey"]),
+        b"-ERR no such key\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"3"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"MSET", b"foo1", b"a", b"foo2", b"b", b"foo3", b"c"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"MGET", b"foo1", b"foo2", b"foo3", b"foo4"]),
+        b"*4\r\n$1\r\na\r\n$1\r\nb\r\n$1\r\nc\r\n$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"foo1", b"foo2", b"foo3", b"foo4"]),
+        b":3\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"mykey", b"foobar"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"COPY", b"mykey", b"mynewkey", b"DB", b"10"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"DBSIZE"]), b":1\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"mynewkey"]),
+        b"$6\r\nfoobar\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"DBSIZE"]), b":1\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEL", b"set1", b"newset1"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"set1", b"1", b"2", b"3", b"a"]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"COPY", b"set1", b"newset1"]),
+        b":1\r\n",
+    )
+    .await;
+    let set1_refcount = send_and_read_integer(
+        &mut client,
+        &encode_resp_command(&[b"OBJECT", b"REFCOUNT", b"set1"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let newset1_refcount = send_and_read_integer(
+        &mut client,
+        &encode_resp_command(&[b"OBJECT", b"REFCOUNT", b"newset1"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(set1_refcount, 1);
+    assert_eq!(newset1_refcount, 1);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"db0_key", b"zero"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"db1_key", b"one"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SWAPDB", b"0", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"db0_key"]),
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"db1_key"]),
+        b"$3\r\none\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"db0_key"]),
+        b"$4\r\nzero\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"db1_key"]),
+        b"$-1\r\n",
+    )
+    .await;
+    let keyspace_info = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"keyspace"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let keyspace_info = String::from_utf8(keyspace_info).unwrap();
+    assert!(keyspace_info.contains("# Keyspace\r\n"));
+    assert!(keyspace_info.contains("db0:keys=1,expires=0,avg_ttl=0\r\n"));
+    assert!(keyspace_info.contains("db1:keys=1,expires=0,avg_ttl=0\r\n"));
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SWAPDB", b"0", b"bad"]),
+        b"-ERR invalid second DB index\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SWAPDB", b"bad", b"1"]),
+        b"-ERR invalid first DB index\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn watch_stale_key_then_lazy_delete_does_not_abort_exec() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

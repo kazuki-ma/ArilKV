@@ -730,6 +730,21 @@ impl From<DbName> for usize {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct DbScopedKey {
+    db: DbName,
+    key: RedisKey,
+}
+
+impl DbScopedKey {
+    fn new(db: DbName, key: &[u8]) -> Self {
+        Self {
+            db,
+            key: RedisKey::from(key),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct ShardIndex(usize);
@@ -1381,20 +1396,16 @@ impl SetObjectHotEntry {
 
 #[derive(Debug, Default)]
 struct SetObjectHotState {
-    entries: HashMap<RedisKey, SetObjectHotEntry>,
-    lru: VecDeque<RedisKey>,
+    entries: HashMap<DbScopedKey, SetObjectHotEntry>,
+    lru: VecDeque<DbScopedKey>,
 }
 
 impl SetObjectHotState {
-    fn touch(&mut self, key: &[u8]) {
-        if let Some(index) = self
-            .lru
-            .iter()
-            .position(|existing| existing.as_slice() == key)
-        {
+    fn touch(&mut self, key: &DbScopedKey) {
+        if let Some(index) = self.lru.iter().position(|existing| existing == key) {
             let _ = self.lru.remove(index);
         }
-        self.lru.push_back(RedisKey::from(key));
+        self.lru.push_back(key.clone());
     }
 }
 
@@ -1814,7 +1825,7 @@ pub struct RequestProcessor {
     pause_blocked_blocking_clients: Mutex<HashSet<ClientId>>,
     forced_list_quicklist_keys: Mutex<HashSet<RedisKey>>,
     forced_raw_string_keys: Mutex<HashSet<RedisKey>>,
-    forced_set_encoding_floors: Mutex<HashMap<RedisKey, SetEncodingFloor>>,
+    forced_set_encoding_floors: Mutex<HashMap<DbScopedKey, SetEncodingFloor>>,
     set_object_hot_state: Mutex<SetObjectHotState>,
     set_debug_ht_state: Mutex<HashMap<RedisKey, SetDebugHtState>>,
     random_state: AtomicU64,
@@ -4356,15 +4367,17 @@ impl RequestProcessor {
     }
 
     pub(super) fn set_encoding_floor(&self, key: &[u8]) -> Option<SetEncodingFloor> {
+        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         self.forced_set_encoding_floors
             .lock()
             .ok()
-            .and_then(|floors| floors.get(key).copied())
+            .and_then(|floors| floors.get(&scoped_key).copied())
     }
 
     pub(super) fn clear_forced_set_encoding_floor(&self, key: &[u8]) {
+        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
-            let _ = floors.remove(key);
+            let _ = floors.remove(&scoped_key);
         }
     }
 
@@ -4486,10 +4499,11 @@ impl RequestProcessor {
         );
 
         if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
+            let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
             let previous = if replace_existing {
                 None
             } else {
-                floors.get(key).copied()
+                floors.get(&scoped_key).copied()
             };
             let next = match (previous, candidate) {
                 (Some(current), Some(candidate)) => Some(current.max(candidate)),
@@ -4498,9 +4512,9 @@ impl RequestProcessor {
                 (None, None) => None,
             };
             if let Some(next) = next {
-                floors.insert(RedisKey::from(key), next);
+                floors.insert(scoped_key, next);
             } else {
-                let _ = floors.remove(key);
+                let _ = floors.remove(&scoped_key);
             }
         }
     }

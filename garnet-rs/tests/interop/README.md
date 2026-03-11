@@ -46,7 +46,8 @@ cluster compatibility checks across `garnet-rs`, Redis, and Dragonfly.
 
 - `redis_runtest_external_subset.sh`
   - Runs Redis official `runtest` in external-server mode against local Garnet:
-    - `--host/--port --singledb --force-resp3`
+    - default DB mode is `--singledb` (`RUNTEXT_SINGLEDB=1`)
+    - set `RUNTEXT_SINGLEDB=0` to exercise MultiDB-capable Garnet without the singledb skip profile
     - default mode is **full** (no `--single` / `--only` / `--tags` filters)
     - full mode applies `--timeout 120` by default (override with `RUNTEXT_TIMEOUT_SECONDS`)
     - full mode skips `unit/querybuf` by default (`RUNTEXT_SKIP_QUERYBUF_IN_FULL=1`) to avoid
