@@ -1068,6 +1068,64 @@ impl RequestProcessor {
             .contains_key(key)
     }
 
+    pub(super) fn snapshot_hash_field_expirations_for_key(
+        &self,
+        key: &[u8],
+    ) -> Vec<(HashField, u64)> {
+        let now = current_instant();
+        let mut expirations = if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.auxiliary_value_snapshot(selected_db, key)
+                .map(|entry| {
+                    entry
+                        .hash_field_expirations
+                        .into_iter()
+                        .filter_map(|(field, metadata)| {
+                            if metadata.deadline <= now {
+                                return None;
+                            }
+                            Some((field, metadata.unix_millis.as_u64()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        } else {
+            let shard_index = self.object_store_shard_index_for_key(key);
+            self.lock_hash_field_expirations_for_shard(shard_index)
+                .get(key)
+                .map(|per_key| {
+                    per_key
+                        .iter()
+                        .filter_map(|(field, metadata)| {
+                            if metadata.deadline <= now {
+                                return None;
+                            }
+                            Some((field.clone(), metadata.unix_millis.as_u64()))
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        expirations.sort_by(|left, right| left.0.as_ref().cmp(right.0.as_ref()));
+        expirations
+    }
+
+    pub(super) fn restore_hash_field_expirations_for_key(
+        &self,
+        key: &[u8],
+        expirations: &[(HashField, u64)],
+    ) {
+        let shard_index = self.object_store_shard_index_for_key(key);
+        self.clear_hash_field_expirations_for_key_in_shard(key, shard_index);
+        for (field, expiration_unix_millis) in expirations {
+            self.set_hash_field_expiration_unix_millis_in_shard(
+                key,
+                shard_index,
+                field.as_ref(),
+                Some(*expiration_unix_millis),
+            );
+        }
+    }
+
     pub(super) fn clear_hash_field_expirations_for_key_in_shard(
         &self,
         key: &[u8],
@@ -1249,11 +1307,16 @@ impl RequestProcessor {
 
     pub(super) fn object_keys_snapshot(&self) -> Vec<RedisKey> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
-            return self.auxiliary_keys_snapshot(selected_db, |value| {
+            let mut keys = self.auxiliary_keys_snapshot(selected_db, |value| {
                 matches!(value, MigrationValue::Object { .. })
             });
+            keys.extend(self.set_hot_keys_snapshot_for_db(selected_db));
+            keys.sort();
+            keys.dedup();
+            return keys;
         }
-        self.object_key_registries
+        let mut keys = self
+            .object_key_registries
             .iter()
             .flat_map(|registry| {
                 registry
@@ -1263,7 +1326,11 @@ impl RequestProcessor {
                     .cloned()
                     .collect::<Vec<_>>()
             })
-            .collect()
+            .collect::<Vec<_>>();
+        keys.extend(self.set_hot_keys_snapshot_for_db(DbName::default()));
+        keys.sort();
+        keys.dedup();
+        keys
     }
 
     pub(super) fn bump_watch_version(&self, key: &[u8]) {

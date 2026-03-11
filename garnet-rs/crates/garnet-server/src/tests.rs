@@ -2122,6 +2122,228 @@ async fn multidb_active_expire_increments_expired_keys_active_like_external_scen
 }
 
 #[tokio::test]
+async fn multidb_debug_reload_preserves_mixed_dataset_with_hash_field_expirations_like_external_other_scenario()
+ {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let now_unix_seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    let expire_a = now_unix_seconds + 3600;
+    let expire_b = now_unix_seconds + 3601;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"plain{t}", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"RPUSH", b"list{t}", b"a", b"b"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"set{t}", b"a", b"b"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZADD", b"zset{t}", b"1", b"one", b"2", b"two"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HSET", b"hash{t}", b"a", b"1", b"b", b"2", b"c", b"3"]),
+        b":3\r\n",
+    )
+    .await;
+
+    let expire_a_text = expire_a.to_string();
+    let expire_b_text = expire_b.to_string();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"HEXPIREAT",
+            b"hash{t}",
+            expire_a_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"a",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"HEXPIREAT",
+            b"hash{t}",
+            expire_b_text.as_bytes(),
+            b"FIELDS",
+            b"1",
+            b"b",
+        ]),
+        b"*1\r\n:1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"plain{t}"]),
+        b"$5\r\nvalue\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"LRANGE", b"list{t}", b"0", b"-1"]),
+        b"*2\r\n$1\r\na\r\n$1\r\nb\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SCARD", b"set{t}"]),
+        b":2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SISMEMBER", b"set{t}", b"a"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SISMEMBER", b"set{t}", b"b"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ZRANGE", b"zset{t}", b"0", b"-1", b"WITHSCORES"]),
+        b"*4\r\n$3\r\none\r\n$1\r\n1\r\n$3\r\ntwo\r\n$1\r\n2\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HGETALL", b"hash{t}"]),
+        b"*6\r\n$1\r\na\r\n$1\r\n1\r\n$1\r\nb\r\n$1\r\n2\r\n$1\r\nc\r\n$1\r\n3\r\n",
+    )
+    .await;
+
+    let expected_hexpiretime = format!("*3\r\n:{}\r\n:{}\r\n:-1\r\n", expire_a, expire_b);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"HEXPIRETIME",
+            b"hash{t}",
+            b"FIELDS",
+            b"3",
+            b"a",
+            b"b",
+            b"c",
+        ]),
+        expected_hexpiretime.as_bytes(),
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn multidb_set_hot_entries_are_visible_to_keys_and_digest_across_debug_reload() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SADD", b"hot{t}", b"a"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"KEYS", b"*"]),
+        b"*1\r\n$6\r\nhot{t}\r\n",
+    )
+    .await;
+
+    let digest_before = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"DIGEST"]),
+        timeout,
+    )
+    .await;
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"KEYS", b"*"]),
+        b"*1\r\n$6\r\nhot{t}\r\n",
+    )
+    .await;
+
+    let digest_after = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"DIGEST"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        digest_before, digest_after,
+        "debug digest changed across reload"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn multidb_watch_flush_swapdb_expire_and_discard_match_external_multi_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();

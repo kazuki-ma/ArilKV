@@ -208,6 +208,52 @@ impl RequestProcessor {
             .unwrap_or(false)
     }
 
+    pub(super) fn set_hot_keys_snapshot_for_db(&self, db: DbName) -> Vec<RedisKey> {
+        let Ok(hot_state) = self.set_object_hot_state.lock() else {
+            return Vec::new();
+        };
+        hot_state
+            .entries
+            .keys()
+            .filter(|key| key.db == db)
+            .map(|key| key.key.clone())
+            .collect()
+    }
+
+    pub(super) fn materialize_set_hot_entries_for_db(
+        &self,
+        db: DbName,
+    ) -> Result<(), RequestExecutionError> {
+        let mut dirty_entries = Vec::new();
+        {
+            let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+                return Err(RequestExecutionError::StorageBusy);
+            };
+            for (key, entry) in hot_state.entries.iter_mut() {
+                if key.db != db || !entry.dirty {
+                    continue;
+                }
+                entry.dirty = false;
+                dirty_entries.push((key.clone(), Self::serialize_set_hot_payload(&entry.payload)));
+            }
+        }
+
+        for (key, payload) in dirty_entries {
+            self.with_selected_db(key.db, || {
+                self.object_upsert_raw(key.key.as_slice(), SET_OBJECT_TYPE_TAG, &payload)
+            })?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn clear_set_hot_entries_for_db(&self, db: DbName) {
+        let Ok(mut hot_state) = self.set_object_hot_state.lock() else {
+            return;
+        };
+        hot_state.entries.retain(|key, _| key.db != db);
+        hot_state.lru.retain(|key| key.db != db);
+    }
+
     fn set_hot_payload_for_object_read(&self, key: &[u8]) -> Option<Vec<u8>> {
         let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
         let Ok(mut hot_state) = self.set_object_hot_state.lock() else {

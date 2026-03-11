@@ -313,6 +313,7 @@ const DEBUG_PROTOCOL_ATTRIBUTE_KEY: &[u8] = b"key:123";
 const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
 const DEBUG_RELOAD_SNAPSHOT_MAGIC_V1: &[u8] = b"GRSNAP1";
 const DEBUG_RELOAD_SNAPSHOT_MAGIC_V2: &[u8] = b"GRSNAP2";
+const DEBUG_RELOAD_SNAPSHOT_MAGIC_V3: &[u8] = b"GRSNAP3";
 const DEBUG_RELOAD_SNAPSHOT_NO_EXPIRATION: u64 = u64::MAX;
 const DEBUG_RELOAD_SNAPSHOT_ENCODING_RAW: u8 = 0;
 const DEBUG_RELOAD_SNAPSHOT_ENCODING_ZERO_RUN: u8 = 1;
@@ -4223,12 +4224,14 @@ impl RequestProcessor {
 
     fn flush_current_db_keys(&self) -> Result<u64, RequestExecutionError> {
         if let Some(selected_db) = self.current_auxiliary_db_name() {
+            self.materialize_set_hot_entries_for_db(selected_db)?;
             self.invalidate_all_tracking_entries();
             let keys = {
                 let Ok(databases) = self.auxiliary_databases.lock() else {
                     return Err(RequestExecutionError::StorageBusy);
                 };
                 let Some(state) = databases.get(&selected_db) else {
+                    self.clear_set_hot_entries_for_db(selected_db);
                     return Ok(0);
                 };
                 state
@@ -4261,10 +4264,12 @@ impl RequestProcessor {
             {
                 let _ = databases.remove(&selected_db);
             }
+            self.clear_set_hot_entries_for_db(selected_db);
             self.reset_lazyfree_pending_objects();
             return Ok(deleted_count);
         }
 
+        self.materialize_set_hot_entries_for_db(DbName::default())?;
         let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
         keys.extend(self.object_keys_snapshot());
         // FLUSH* invalidates the full tracking table with an empty-key payload.
@@ -4324,6 +4329,7 @@ impl RequestProcessor {
             self.lock_object_key_registry_for_shard(shard_index).clear();
             self.string_expiration_counts[shard_index].store(0, Ordering::Release);
         }
+        self.clear_set_hot_entries_for_db(DbName::default());
         self.reset_lazyfree_pending_objects();
         Ok(deleted_count)
     }
@@ -4875,6 +4881,13 @@ struct DebugReloadSnapshotEntry {
     key: Vec<u8>,
     expiration_unix_millis: Option<u64>,
     dump_blob: Vec<u8>,
+    hash_field_expirations: Vec<DebugReloadHashFieldExpiration>,
+}
+
+#[derive(Debug, Clone)]
+struct DebugReloadHashFieldExpiration {
+    field: Vec<u8>,
+    expiration_unix_millis: u64,
 }
 
 impl RequestProcessor {
@@ -4915,12 +4928,28 @@ impl RequestProcessor {
         for entry in decoded.entries {
             let value = decode_dump_blob(&entry.dump_blob)
                 .ok_or(RequestExecutionError::InvalidDumpPayload)?;
-            let _ = restore_migration_value(
+            let restored = restore_migration_value(
                 self,
                 entry.key.as_slice(),
                 value,
                 entry.expiration_unix_millis,
             )?;
+            if restored {
+                let hash_field_expirations = entry
+                    .hash_field_expirations
+                    .iter()
+                    .map(|expiration| {
+                        (
+                            HashField::from(expiration.field.as_slice()),
+                            expiration.expiration_unix_millis,
+                        )
+                    })
+                    .collect::<Vec<_>>();
+                self.restore_hash_field_expirations_for_key(
+                    entry.key.as_slice(),
+                    &hash_field_expirations,
+                );
+            }
         }
         self.restore_function_registry_from_snapshot(&decoded.function_payload)?;
         self.set_saved_rdb_snapshot(snapshot_bytes);
@@ -4930,6 +4959,7 @@ impl RequestProcessor {
     fn collect_debug_reload_snapshot_entries(
         &self,
     ) -> Result<Vec<DebugReloadSnapshotEntry>, RequestExecutionError> {
+        self.materialize_set_hot_entries_for_db(current_request_selected_db())?;
         let mut keys = std::collections::BTreeSet::new();
         keys.extend(self.string_keys_snapshot());
         keys.extend(self.object_keys_snapshot());
@@ -4945,12 +4975,26 @@ impl RequestProcessor {
                     key: key.to_vec(),
                     expiration_unix_millis,
                     dump_blob,
+                    hash_field_expirations: Vec::new(),
                 });
                 continue;
             }
 
             if let Some(object) = self.object_read(key.as_slice())? {
                 let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+                let hash_field_expirations = if object.object_type == HASH_OBJECT_TYPE_TAG {
+                    self.snapshot_hash_field_expirations_for_key(key.as_slice())
+                        .into_iter()
+                        .map(
+                            |(field, expiration_unix_millis)| DebugReloadHashFieldExpiration {
+                                field: field.as_ref().to_vec(),
+                                expiration_unix_millis,
+                            },
+                        )
+                        .collect()
+                } else {
+                    Vec::new()
+                };
                 let dump_blob = encode_dump_blob(MigrationValue::Object {
                     object_type: object.object_type,
                     payload: object.payload,
@@ -4959,6 +5003,7 @@ impl RequestProcessor {
                     key: key.to_vec(),
                     expiration_unix_millis,
                     dump_blob,
+                    hash_field_expirations,
                 });
             }
         }
@@ -5082,8 +5127,8 @@ fn encode_debug_reload_snapshot(
     };
 
     let mut encoded =
-        Vec::with_capacity(DEBUG_RELOAD_SNAPSHOT_MAGIC_V2.len() + 1 + 4 + 4 + payload.len());
-    encoded.extend_from_slice(DEBUG_RELOAD_SNAPSHOT_MAGIC_V2);
+        Vec::with_capacity(DEBUG_RELOAD_SNAPSHOT_MAGIC_V3.len() + 1 + 4 + 4 + payload.len());
+    encoded.extend_from_slice(DEBUG_RELOAD_SNAPSHOT_MAGIC_V3);
     encoded.push(encoding);
     encoded.extend_from_slice(&raw_len.to_le_bytes());
     append_snapshot_len_prefixed_bytes(&mut encoded, payload.as_slice());
@@ -5096,12 +5141,16 @@ fn raw_len_for_snapshot_payload(
 ) -> usize {
     let mut total = 4usize;
     for entry in entries {
+        let hash_field_expirations =
+            encode_debug_reload_hash_field_expirations(&entry.hash_field_expirations);
         total = total
             .saturating_add(4)
             .saturating_add(entry.key.len())
             .saturating_add(8)
             .saturating_add(4)
-            .saturating_add(entry.dump_blob.len());
+            .saturating_add(entry.dump_blob.len())
+            .saturating_add(4)
+            .saturating_add(hash_field_expirations.len());
     }
     total
         .saturating_add(4)
@@ -5123,12 +5172,18 @@ fn encode_debug_reload_snapshot_body(
                 .to_le_bytes(),
         );
         append_snapshot_len_prefixed_bytes(&mut encoded, entry.dump_blob.as_slice());
+        let hash_field_expirations =
+            encode_debug_reload_hash_field_expirations(&entry.hash_field_expirations);
+        append_snapshot_len_prefixed_bytes(&mut encoded, hash_field_expirations.as_slice());
     }
     append_snapshot_len_prefixed_bytes(&mut encoded, function_payload);
     encoded
 }
 
 fn decode_debug_reload_snapshot(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+    if encoded.starts_with(DEBUG_RELOAD_SNAPSHOT_MAGIC_V3) {
+        return decode_debug_reload_snapshot_v3(encoded);
+    }
     if encoded.starts_with(DEBUG_RELOAD_SNAPSHOT_MAGIC_V2) {
         return decode_debug_reload_snapshot_v2(encoded);
     }
@@ -5140,18 +5195,31 @@ fn decode_debug_reload_snapshot(encoded: &[u8]) -> Option<DecodedDebugReloadSnap
 
 fn decode_debug_reload_snapshot_v1(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
     let body = encoded.get(DEBUG_RELOAD_SNAPSHOT_MAGIC_V1.len()..)?;
-    decode_debug_reload_snapshot_body(body)
+    decode_debug_reload_snapshot_body(body, false)
 }
 
 fn decode_debug_reload_snapshot_v2(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
     let mut index = DEBUG_RELOAD_SNAPSHOT_MAGIC_V2.len();
-    let encoding = *encoded.get(index)?;
-    index += 1;
+    decode_debug_reload_snapshot_compressed_body(encoded, &mut index, false)
+}
+
+fn decode_debug_reload_snapshot_v3(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+    let mut index = DEBUG_RELOAD_SNAPSHOT_MAGIC_V3.len();
+    decode_debug_reload_snapshot_compressed_body(encoded, &mut index, true)
+}
+
+fn decode_debug_reload_snapshot_compressed_body(
+    encoded: &[u8],
+    index: &mut usize,
+    includes_hash_field_expirations: bool,
+) -> Option<DecodedDebugReloadSnapshot> {
+    let encoding = *encoded.get(*index)?;
+    *index += 1;
     let expected_raw_len =
-        u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
-    index += 4;
-    let payload = read_snapshot_len_prefixed_bytes(encoded, &mut index)?;
-    if index != encoded.len() {
+        u32::from_le_bytes(encoded.get(*index..*index + 4)?.try_into().ok()?) as usize;
+    *index += 4;
+    let payload = read_snapshot_len_prefixed_bytes(encoded, index)?;
+    if *index != encoded.len() {
         return None;
     }
 
@@ -5165,10 +5233,13 @@ fn decode_debug_reload_snapshot_v2(encoded: &[u8]) -> Option<DecodedDebugReloadS
     if raw.len() != expected_raw_len {
         return None;
     }
-    decode_debug_reload_snapshot_body(raw.as_slice())
+    decode_debug_reload_snapshot_body(raw.as_slice(), includes_hash_field_expirations)
 }
 
-fn decode_debug_reload_snapshot_body(encoded: &[u8]) -> Option<DecodedDebugReloadSnapshot> {
+fn decode_debug_reload_snapshot_body(
+    encoded: &[u8],
+    includes_hash_field_expirations: bool,
+) -> Option<DecodedDebugReloadSnapshot> {
     let mut index = 0usize;
     let entry_count = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
     index += 4;
@@ -5179,6 +5250,13 @@ fn decode_debug_reload_snapshot_body(encoded: &[u8]) -> Option<DecodedDebugReloa
         let expiration_raw = u64::from_le_bytes(encoded.get(index..index + 8)?.try_into().ok()?);
         index += 8;
         let dump_blob = read_snapshot_len_prefixed_bytes(encoded, &mut index)?.to_vec();
+        let hash_field_expirations = if includes_hash_field_expirations {
+            let encoded_hash_field_expirations =
+                read_snapshot_len_prefixed_bytes(encoded, &mut index)?;
+            decode_debug_reload_hash_field_expirations(encoded_hash_field_expirations)?
+        } else {
+            Vec::new()
+        };
         let expiration_unix_millis = if expiration_raw == DEBUG_RELOAD_SNAPSHOT_NO_EXPIRATION {
             None
         } else {
@@ -5188,6 +5266,7 @@ fn decode_debug_reload_snapshot_body(encoded: &[u8]) -> Option<DecodedDebugReloa
             key,
             expiration_unix_millis,
             dump_blob,
+            hash_field_expirations,
         });
     }
 
@@ -5200,6 +5279,41 @@ fn decode_debug_reload_snapshot_body(encoded: &[u8]) -> Option<DecodedDebugReloa
         entries,
         function_payload,
     })
+}
+
+fn encode_debug_reload_hash_field_expirations(
+    hash_field_expirations: &[DebugReloadHashFieldExpiration],
+) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(&(hash_field_expirations.len() as u32).to_le_bytes());
+    for expiration in hash_field_expirations {
+        append_snapshot_len_prefixed_bytes(&mut encoded, expiration.field.as_slice());
+        encoded.extend_from_slice(&expiration.expiration_unix_millis.to_le_bytes());
+    }
+    encoded
+}
+
+fn decode_debug_reload_hash_field_expirations(
+    encoded: &[u8],
+) -> Option<Vec<DebugReloadHashFieldExpiration>> {
+    let mut index = 0usize;
+    let count = u32::from_le_bytes(encoded.get(index..index + 4)?.try_into().ok()?) as usize;
+    index += 4;
+    let mut hash_field_expirations = Vec::with_capacity(count);
+    for _ in 0..count {
+        let field = read_snapshot_len_prefixed_bytes(encoded, &mut index)?.to_vec();
+        let expiration_unix_millis =
+            u64::from_le_bytes(encoded.get(index..index + 8)?.try_into().ok()?);
+        index += 8;
+        hash_field_expirations.push(DebugReloadHashFieldExpiration {
+            field,
+            expiration_unix_millis,
+        });
+    }
+    if index != encoded.len() {
+        return None;
+    }
+    Some(hash_field_expirations)
 }
 
 fn append_snapshot_len_prefixed_bytes(target: &mut Vec<u8>, bytes: &[u8]) {
