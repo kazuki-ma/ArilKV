@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-11
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 676
+> **Current Iteration**: 677
 
 ---
 
@@ -1587,3 +1587,4 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 674 | 2026-03-11 | 11.479 | DONE | `MOVE`/`COPY`/`SWAPDB` の migration path を DB 明示化し、`migration.rs` のコア API（`export_migration_entry`, `import_migration_entry`, `migrate_keys_to`, `snapshot_current_db_entries`）に `DbName` 引数を追加して thread-local selected_db の再読取り依存を削減。`server_commands.rs`/`string_commands.rs`/`tests.rs` 側も該当箇所を explicit DB 引数で統一し、`MOVE/COPY` の destination-db 処理時の期限情報と通知の整合を明示コンテキストで維持。検証: `cargo check -p garnet-server`；`make test-server` PASS（`593 passed, 0 failed, 2 ignored; 23 passed; 1 passed`）；`build_compatibility_report.sh` full 外部相互運用再実行で `redis_runtest_full_external` は `PASS`（`failed_tests=0`）。 |
 | 675 | 2026-03-11 | 11.477 | DONE | `notify_keyspace_event`/`notify_setkey_overwrite_events` を `DbName` 明示 API に変え、関連する keyspace-notification/rendering ヘルパーを thread-local selected DB の依存から分離。`make test-server` PASS（`593 passed, 0 failed, 2 ignored; 23 passed; 1 passed`）。ベンチ: `binary_ab_local.sh`（`set +4.36%`, `get +16.88%`, set p99 -6.50%, get p99 -28.07%）と Linux Dragonfly 比較（`set ratio=0.288`, `get ratio=0.187`）を実施し、差分は `docs/performance/experiments/2026-03-11/11.477-keyspace-notify-explicit-scope/` に保存。 |
 | 676 | 2026-03-12 | 11.478 / 11.463 / 11.457 反映 | DONE (docs + external probes) | `I-002` ignore bucket moved to DONE and tracker artifacts were updated after `RUNTEXT_SINGLEDB=0` rebaseline. `unit/keyspace`, `unit/multi`, `unit/type/string`, `unit/type/list`, `unit/info-keysizes` now run without `Not supported on singledb` ignores; residual is localized to `unit/latency-monitor` (`key wasn't expired`) + lane backlog (`I-001/I-003/I-004`). |
+| 677 | 2026-03-12 | 11.479 | DONE | SWAPDB 非ゼロ DB 間の内容入れ替えを再実装し、DB1 と DB2 の `string/object` を含む全補助 DB state を両替する経路を追加。`swap_auxiliary_databases` を追加して `DBScopedKey` まわり state（`forced_*`, `set_debug_ht_state`, `set_object_hot_state`）を再マップし、同一 DB swap fast-path と同様に `index1 != 0 && index2 != 0` 時は snapshot/flush/reimport を回避。`execute_command_line_in_db` の external scenario 由来テストを先行追加し、`SWAPDB 1 2` 後の同名キー型切替 (`TYPE` / `LRANGE` / `GET` で WRONGTYPE) を固定。`make test-server` (`594 passed, 0 failed, 2 ignored; 23 passed; 1 passed`) と新規テストが PASS。 |

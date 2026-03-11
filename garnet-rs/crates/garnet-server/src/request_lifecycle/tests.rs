@@ -7746,6 +7746,40 @@ fn info_keysizes_keeps_db0_histogram_when_current_client_selected_db_is_nonzero(
 }
 
 #[test]
+fn swapdb_non_zero_databases_swap_content_with_matching_key_names() {
+    let processor = RequestProcessor::new().unwrap();
+    let db1 = DbName::new(1);
+    let db2 = DbName::new(2);
+    let run = |command: &str, selected_db: DbName| -> Vec<u8> {
+        match crate::testkit::execute_command_line_in_db(&processor, command, selected_db) {
+            Ok(response) => response,
+            Err(CommandHarnessError::Request(error)) => {
+                let mut response = Vec::new();
+                error.append_resp_error(&mut response);
+                response
+            }
+            Err(error) => panic!("command failed: `{command}` ({selected_db:?}): {error}"),
+        }
+    };
+
+    assert_eq!(run("SET shared v1", db1), b"+OK\r\n");
+    assert_eq!(run("LPUSH shared one", db2), b":1\r\n");
+
+    assert_eq!(run("TYPE shared", db1), b"+string\r\n");
+    assert_eq!(run("TYPE shared", db2), b"+list\r\n");
+    assert_eq!(run("SWAPDB 1 2", db1), b"+OK\r\n");
+
+    assert_eq!(run("TYPE shared", db1), b"+list\r\n");
+    assert_eq!(run("LRANGE shared 0 -1", db1), b"*1\r\n$3\r\none\r\n");
+    assert_eq!(
+        run("GET shared", db1),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    assert_eq!(run("TYPE shared", db2), b"+string\r\n");
+    assert_eq!(run("GET shared", db2), b"$2\r\nv1\r\n");
+}
+
+#[test]
 fn info_keysizes_uses_hyperloglog_logical_length_bins() {
     let processor = RequestProcessor::new().unwrap();
     assert_eq!(

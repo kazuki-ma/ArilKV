@@ -822,6 +822,12 @@ impl RequestProcessor {
             return Ok(());
         }
 
+        if index1 != DbName::default() && index2 != DbName::default() {
+            self.swap_auxiliary_databases(index1, index2)?;
+            append_simple_string(response_out, b"OK");
+            return Ok(());
+        }
+
         let entries1 =
             self.with_selected_db(index1, || self.snapshot_current_db_entries(index1))?;
         let entries2 =
@@ -845,6 +851,110 @@ impl RequestProcessor {
 
         append_simple_string(response_out, b"OK");
         Ok(())
+    }
+
+    fn swap_auxiliary_databases(
+        &self,
+        db1: DbName,
+        db2: DbName,
+    ) -> Result<(), RequestExecutionError> {
+        debug_assert_ne!(db1, db2);
+
+        self.invalidate_all_tracking_entries();
+
+        let mut databases = self
+            .auxiliary_databases
+            .lock()
+            .map_err(|_| RequestExecutionError::StorageBusy)?;
+
+        let first = databases.remove(&db1);
+        let second = databases.remove(&db2);
+
+        if let Some(first) = first {
+            let _ = databases.insert(db2, first);
+        }
+        if let Some(second) = second {
+            let _ = databases.insert(db1, second);
+        }
+
+        drop(databases);
+
+        self.swap_set_hot_state_for_auxiliary_db_pair(db1, db2);
+        self.swap_scoped_key_state(&self.forced_list_quicklist_keys, db1, db2);
+        self.swap_scoped_key_state(&self.forced_raw_string_keys, db1, db2);
+        self.swap_scoped_key_map_state(&self.forced_set_encoding_floors, db1, db2);
+        self.swap_scoped_key_map_state(&self.set_debug_ht_state, db1, db2);
+
+        Ok(())
+    }
+
+    fn swap_set_hot_state_for_auxiliary_db_pair(&self, db1: DbName, db2: DbName) {
+        let mut hot_state = match self.set_object_hot_state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+        let mut moved = HashMap::new();
+        moved.reserve(hot_state.entries.len());
+
+        for (key, value) in std::mem::take(&mut hot_state.entries) {
+            let remapped_key = Self::remap_scoped_key(key, db1, db2);
+            let _ = moved.insert(remapped_key, value);
+        }
+        hot_state.entries = moved;
+
+        for key in &mut hot_state.lru {
+            *key = Self::remap_scoped_key(key.clone(), db1, db2);
+        }
+    }
+
+    fn swap_scoped_key_map_state<T: Clone>(
+        &self,
+        state: &std::sync::Mutex<HashMap<DbScopedKey, T>>,
+        db1: DbName,
+        db2: DbName,
+    ) {
+        let mut state = match state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+
+        let mut swapped = HashMap::new();
+        swapped.reserve(state.len());
+        for (key, value) in state.drain() {
+            let remapped_key = Self::remap_scoped_key(key, db1, db2);
+            let _ = swapped.insert(remapped_key, value);
+        }
+        *state = swapped;
+    }
+
+    fn swap_scoped_key_state(
+        &self,
+        state: &std::sync::Mutex<HashSet<DbScopedKey>>,
+        db1: DbName,
+        db2: DbName,
+    ) {
+        let mut state = match state.lock() {
+            Ok(state) => state,
+            Err(_) => return,
+        };
+
+        let mut swapped = HashSet::new();
+        swapped.reserve(state.len());
+        for key in state.drain() {
+            let remapped_key = Self::remap_scoped_key(key, db1, db2);
+            let _ = swapped.insert(remapped_key);
+        }
+        *state = swapped;
+    }
+
+    fn remap_scoped_key(key: DbScopedKey, db1: DbName, db2: DbName) -> DbScopedKey {
+        if key.db == db1 {
+            return DbScopedKey::new(db2, &key.key);
+        }
+        if key.db == db2 {
+            return DbScopedKey::new(db1, &key.key);
+        }
+        key
     }
 
     pub(super) fn handle_migrate(
