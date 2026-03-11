@@ -53,7 +53,7 @@ impl RequestProcessor {
         )?;
 
         if inserted > 0 {
-            self.notify_keyspace_event(NOTIFY_SET, b"sadd", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"sadd", &key);
         }
         append_integer(response_out, inserted);
         Ok(())
@@ -99,12 +99,17 @@ impl RequestProcessor {
         )?;
 
         if removed > 0 {
-            self.notify_keyspace_event(NOTIFY_SET, b"srem", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &key);
         }
         if delete_key {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
         }
         append_integer(response_out, removed);
@@ -446,10 +451,15 @@ impl RequestProcessor {
             let member = selected[0].clone();
             let removed = set.remove(&member);
             debug_assert!(removed, "selected member must exist in set");
-            self.notify_keyspace_event(NOTIFY_SET, b"spop", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"spop", &key);
             if set.is_empty() {
                 let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             } else {
                 self.save_set_object(&key, &set)?;
             }
@@ -484,12 +494,17 @@ impl RequestProcessor {
             set.remove(member);
         }
         if !selected.is_empty() {
-            self.notify_keyspace_event(NOTIFY_SET, b"spop", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"spop", &key);
         }
         if set.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if !selected.is_empty() {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
         } else {
             self.save_set_object(&key, &set)?;
@@ -544,15 +559,25 @@ impl RequestProcessor {
 
         if source_set.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &source))?;
-            self.notify_keyspace_event(NOTIFY_SET, b"srem", &source);
-            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &source);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &source);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_GENERIC,
+                b"del",
+                &source,
+            );
         } else {
             self.save_set_object(&source, &source_set)?;
-            self.notify_keyspace_event(NOTIFY_SET, b"srem", &source);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &source);
         }
         if destination_changed {
             self.save_set_object(&destination, &destination_set)?;
-            self.notify_keyspace_event(NOTIFY_SET, b"sadd", &destination);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_SET,
+                b"sadd",
+                &destination,
+            );
         }
         append_integer(response_out, 1);
         Ok(())
@@ -930,6 +955,7 @@ fn store_set_result(
 
     processor.save_set_object_replacing_existing(destination, result_set)?;
     processor.notify_setkey_overwrite_events(
+        current_request_selected_db(),
         destination,
         destination_had_string,
         destination_object_type,

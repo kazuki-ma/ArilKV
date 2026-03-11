@@ -93,8 +93,8 @@ impl RequestProcessor {
         db: DbName,
     ) -> Result<Vec<MigrationEntry>, RequestExecutionError> {
         let mut keys = BTreeSet::<RedisKey>::new();
-        keys.extend(self.string_keys_snapshot());
-        keys.extend(self.object_keys_snapshot());
+        keys.extend(self.string_keys_snapshot(db));
+        keys.extend(self.object_keys_snapshot(db));
 
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
@@ -148,8 +148,9 @@ impl RequestProcessor {
         Ok(entries)
     }
 
-    pub fn migration_keys_for_slot(
+    pub(crate) fn migration_keys_for_slot(
         &self,
+        db: DbName,
         slot: garnet_cluster::SlotNumber,
         max_keys: usize,
     ) -> Vec<Vec<u8>> {
@@ -159,7 +160,7 @@ impl RequestProcessor {
 
         let mut slot_keys = BTreeSet::<RedisKey>::new();
 
-        let string_keys = self.string_keys_snapshot();
+        let string_keys = self.string_keys_snapshot(db);
         for key in string_keys {
             if redis_hash_slot(key.as_slice()) == slot {
                 slot_keys.insert(key);
@@ -169,7 +170,7 @@ impl RequestProcessor {
             }
         }
 
-        let object_keys = self.object_keys_snapshot();
+        let object_keys = self.object_keys_snapshot(db);
         for key in object_keys {
             if redis_hash_slot(key.as_slice()) == slot {
                 slot_keys.insert(key);
@@ -189,13 +190,8 @@ impl RequestProcessor {
         max_keys: usize,
         delete_source: bool,
     ) -> Result<usize, RequestExecutionError> {
-        let keys = self.migration_keys_for_slot(slot, max_keys);
-        self.migrate_keys_to(
-            target,
-            current_request_selected_db(),
-            current_request_selected_db(),
-            &keys,
-            delete_source,
-        )
+        let selected_db = current_request_selected_db();
+        let keys = self.migration_keys_for_slot(selected_db, slot, max_keys);
+        self.migrate_keys_to(target, selected_db, selected_db, &keys, delete_source)
     }
 }

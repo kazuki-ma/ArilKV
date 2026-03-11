@@ -1,0 +1,5 @@
+run,target,workload,ops_sec,avg_lat_ms,p99_ms,outdir
+1,garnet,set,60624.43,0.03370,0.14300,/tmp/garnet-11.477-df2/run-1
+1,garnet,get,29542.97,0.06741,0.54300,/tmp/garnet-11.477-df2/run-1
+1,dragonfly,set,17487.41,0.11394,0.45500,/tmp/garnet-11.477-df2/run-1
+1,dragonfly,get,5535.29,0.35975,2.55900,/tmp/garnet-11.477-df2/run-1

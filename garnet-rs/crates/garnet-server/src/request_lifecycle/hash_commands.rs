@@ -55,7 +55,7 @@ impl RequestProcessor {
         }
 
         self.save_hash_object(&key, &hash)?;
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hset", &key);
         append_integer(response_out, inserted);
         Ok(())
     }
@@ -148,12 +148,17 @@ impl RequestProcessor {
         }
 
         if removed > 0 {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hdel", &key);
         }
         if hash.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
         } else {
             self.save_hash_object(&key, &hash)?;
@@ -325,7 +330,7 @@ impl RequestProcessor {
             index += 2;
         }
         self.save_hash_object(&key, &hash)?;
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hset", &key);
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -353,7 +358,7 @@ impl RequestProcessor {
             None,
         );
         self.save_hash_object(&key, &hash)?;
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hset", &key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -552,7 +557,7 @@ impl RequestProcessor {
             .ok_or(RequestExecutionError::IncrementOverflow)?;
         hash.insert(field, updated.to_string().into_bytes());
         self.save_hash_object(&key, &hash)?;
-        self.notify_keyspace_event(NOTIFY_HASH, b"hincrby", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hincrby", &key);
         append_integer(response_out, updated);
         Ok(())
     }
@@ -585,7 +590,12 @@ impl RequestProcessor {
         let updated_text = updated.to_string().into_bytes();
         hash.insert(field, updated_text.clone());
         self.save_hash_object(&key, &hash)?;
-        self.notify_keyspace_event(NOTIFY_HASH, b"hincrbyfloat", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_HASH,
+            b"hincrbyfloat",
+            &key,
+        );
         append_bulk_string(response_out, &updated_text);
         Ok(())
     }
@@ -790,7 +800,7 @@ impl RequestProcessor {
                 );
             }
         }
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hset", &key);
 
         let immediate_expire = expire_options.expire_if_past_immediately
             && expire_options
@@ -812,16 +822,31 @@ impl RequestProcessor {
                 }
             }
             if removed_any {
-                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_HASH,
+                    b"hdel",
+                    &key,
+                );
             }
         } else if expire_options.expiration_unix_millis.is_some() && !applied_fields.is_empty() {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hexpire", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_HASH,
+                b"hexpire",
+                &key,
+            );
         }
 
         if hash.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if !applied_fields.is_empty() {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
         } else {
             self.save_hash_object(&key, &hash)?;
@@ -934,12 +959,27 @@ impl RequestProcessor {
                 }
             }
             if removed_any {
-                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_HASH,
+                    b"hdel",
+                    &key,
+                );
             }
         } else if updated_expiration_count > 0 {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hexpire", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_HASH,
+                b"hexpire",
+                &key,
+            );
         } else if persisted_expiration_count > 0 {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hpersist", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_HASH,
+                b"hpersist",
+                &key,
+            );
         }
 
         if lazy_expired || removed_any {
@@ -1001,13 +1041,18 @@ impl RequestProcessor {
             }
         }
         if removed > 0 {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hdel", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hdel", &key);
         }
 
         if hash.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
         } else {
             self.save_hash_object(&key, &hash)?;
@@ -1217,7 +1262,12 @@ impl RequestProcessor {
         }
 
         if persisted_count > 0 {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hpersist", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_HASH,
+                b"hpersist",
+                &key,
+            );
         }
         if lazy_expired {
             self.persist_hash_after_field_expiration(&key, &hash)?;
@@ -1433,7 +1483,7 @@ impl RequestProcessor {
         for field in &expired_fields {
             hash.remove(field.as_ref());
         }
-        self.notify_keyspace_event(NOTIFY_HASH, b"hexpired", key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hexpired", key);
         self.persist_hash_after_field_expiration(key, &hash)
     }
 
@@ -1532,10 +1582,20 @@ impl RequestProcessor {
                 }
             }
             if immediate_removed > 0 {
-                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_HASH,
+                    b"hdel",
+                    key.as_slice(),
+                );
             }
         } else if applied_count > 0 {
-            self.notify_keyspace_event(NOTIFY_HASH, b"hexpire", key.as_slice());
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_HASH,
+                b"hexpire",
+                key.as_slice(),
+            );
         }
 
         self.persist_hash_after_field_expiration(key.as_slice(), &hash)?;
@@ -1590,7 +1650,12 @@ impl RequestProcessor {
                 None,
             );
         }
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_HASH,
+            b"hset",
+            key.as_slice(),
+        );
         append_integer(response_out, result.inserted);
         Ok(())
     }
@@ -1642,7 +1707,12 @@ impl RequestProcessor {
                 None,
             );
         }
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_HASH,
+            b"hset",
+            key.as_slice(),
+        );
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -1689,7 +1759,12 @@ impl RequestProcessor {
             field,
             None,
         );
-        self.notify_keyspace_event(NOTIFY_HASH, b"hset", key.as_slice());
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_HASH,
+            b"hset",
+            key.as_slice(),
+        );
         append_integer(response_out, if result.inserted { 1 } else { 0 });
         Ok(())
     }
@@ -1949,13 +2024,23 @@ impl RequestProcessor {
                         None,
                     );
                 }
-                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_HASH,
+                    b"hdel",
+                    key.as_slice(),
+                );
                 if is_empty {
                     let _ = self.object_delete(DbKeyRef::new(
                         current_request_selected_db(),
                         key.as_slice(),
                     ))?;
-                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key.as_slice());
+                    self.notify_keyspace_event(
+                        current_request_selected_db(),
+                        NOTIFY_GENERIC,
+                        b"del",
+                        key.as_slice(),
+                    );
                 } else {
                     self.object_upsert(
                         DbKeyRef::new(current_request_selected_db(), key.as_slice()),
@@ -2010,13 +2095,23 @@ impl RequestProcessor {
                     field,
                     None,
                 );
-                self.notify_keyspace_event(NOTIFY_HASH, b"hdel", key.as_slice());
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_HASH,
+                    b"hdel",
+                    key.as_slice(),
+                );
                 if is_empty {
                     let _ = self.object_delete(DbKeyRef::new(
                         current_request_selected_db(),
                         key.as_slice(),
                     ))?;
-                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key.as_slice());
+                    self.notify_keyspace_event(
+                        current_request_selected_db(),
+                        NOTIFY_GENERIC,
+                        b"del",
+                        key.as_slice(),
+                    );
                 } else {
                     self.object_upsert(
                         DbKeyRef::new(current_request_selected_db(), key.as_slice()),
@@ -2143,7 +2238,7 @@ impl RequestProcessor {
         if expired_fields.is_empty() {
             return false;
         }
-        self.notify_keyspace_event(NOTIFY_HASH, b"hexpired", key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hexpired", key);
         for field in expired_fields {
             hash.remove(field.as_ref());
         }
@@ -2157,7 +2252,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         if hash.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
-            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_GENERIC, b"del", key);
         } else {
             self.save_hash_object(key, hash)?;
         }

@@ -11,6 +11,7 @@ use std::io;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+use crate::DbName;
 use crate::RequestExecutionError;
 use crate::RequestProcessor;
 use crate::ServerConfig;
@@ -253,7 +254,9 @@ pub fn execute_live_slot_migration_step(
     target_store.publish(target_importing);
 
     let moved = source_processor.migrate_slot_to(target_processor, slot, max_keys, true)?;
-    let finalized = source_processor.migration_keys_for_slot(slot, 1).is_empty();
+    let finalized = source_processor
+        .migration_keys_for_slot(DbName::default(), slot, 1)
+        .is_empty();
 
     if finalized {
         let source_finalized = source_store

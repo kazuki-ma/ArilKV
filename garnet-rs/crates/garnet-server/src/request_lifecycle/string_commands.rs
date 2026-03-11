@@ -156,7 +156,8 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
         let shard_index = self.string_store_shard_index_for_key(&key);
-        let logically_expired = self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        let logically_expired =
+            self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
         if logically_expired {
             if resp3 {
                 append_null(response_out);
@@ -247,7 +248,7 @@ impl RequestProcessor {
         }
 
         let shard_index = self.string_store_shard_index_for_key(&key);
-        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
 
         let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
@@ -327,7 +328,7 @@ impl RequestProcessor {
         }
 
         let shard_index = self.string_store_shard_index_for_key(&key);
-        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
 
         let mut store = self.lock_string_store_for_shard(shard_index);
         let mut session = store.session(&self.functions);
@@ -508,7 +509,12 @@ impl RequestProcessor {
         self.force_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         self.track_string_key(&key);
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(NOTIFY_STRING, b"setrange", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_STRING,
+            b"setrange",
+            &key,
+        );
         append_integer(response_out, value.len() as i64);
         Ok(())
     }
@@ -793,6 +799,7 @@ impl RequestProcessor {
                 None,
             )?;
             self.notify_setkey_overwrite_events(
+                current_request_selected_db(),
                 &destination,
                 destination_had_string,
                 destination_object_type,
@@ -1275,6 +1282,7 @@ impl RequestProcessor {
             if !stored.is_empty() {
                 self.save_list_object(store_key, &stored)?;
                 self.notify_setkey_overwrite_events(
+                    current_request_selected_db(),
                     store_key,
                     destination_had_string,
                     destination_object_type,
@@ -1374,7 +1382,12 @@ impl RequestProcessor {
             self.force_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         }
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(NOTIFY_STRING, b"append", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_STRING,
+            b"append",
+            &key,
+        );
         append_integer(response_out, current_value.len() as i64);
         Ok(())
     }
@@ -1424,7 +1437,12 @@ impl RequestProcessor {
                         ));
                     }
                     self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-                    self.notify_keyspace_event(NOTIFY_GENERIC, b"persist", &key);
+                    self.notify_keyspace_event(
+                        current_request_selected_db(),
+                        NOTIFY_GENERIC,
+                        b"persist",
+                        &key,
+                    );
                 }
             }
             GetExAction::SetExpiration(expiration) => {
@@ -1448,12 +1466,22 @@ impl RequestProcessor {
                     ));
                 }
                 self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"expire",
+                    &key,
+                );
             }
             GetExAction::DeleteNow => {
                 if self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))? {
                     self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-                    self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                    self.notify_keyspace_event(
+                        current_request_selected_db(),
+                        NOTIFY_GENERIC,
+                        b"del",
+                        &key,
+                    );
                 }
             }
         }
@@ -1510,7 +1538,12 @@ impl RequestProcessor {
             ));
             self.track_string_key(&key);
             self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-            self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STRING,
+                b"incrbyfloat",
+                &key,
+            );
             append_bulk_string(response_out, &updated_text);
             return Ok(());
         }
@@ -1531,7 +1564,12 @@ impl RequestProcessor {
         self.clear_forced_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         self.track_string_key(&key);
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_STRING,
+            b"incrbyfloat",
+            &key,
+        );
         append_bulk_string(response_out, &updated_text);
         Ok(())
     }
@@ -1548,7 +1586,7 @@ impl RequestProcessor {
         let value = args[2];
         let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
-        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
         let selected_db = current_request_selected_db();
@@ -1637,17 +1675,42 @@ impl RequestProcessor {
             self.record_key_access(&key, true);
 
             if !string_exists && !object_exists {
-                self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
-                self.notify_keyspace_event(NOTIFY_NEW, b"new", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_STRING,
+                    b"set",
+                    &key,
+                );
+                self.notify_keyspace_event(current_request_selected_db(), NOTIFY_NEW, b"new", &key);
             } else {
-                self.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_OVERWRITTEN,
+                    b"overwritten",
+                    &key,
+                );
                 if object_exists {
-                    self.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+                    self.notify_keyspace_event(
+                        current_request_selected_db(),
+                        NOTIFY_TYPE_CHANGED,
+                        b"type_changed",
+                        &key,
+                    );
                 }
-                self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_STRING,
+                    b"set",
+                    &key,
+                );
             }
             if effective_expiration.is_some() {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"expire",
+                    &key,
+                );
             }
 
             if options.return_old_value {
@@ -1791,17 +1854,32 @@ impl RequestProcessor {
         self.record_key_access(&key, true);
 
         if !string_exists && !object_exists {
-            self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
-            self.notify_keyspace_event(NOTIFY_NEW, b"new", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STRING, b"set", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_NEW, b"new", &key);
         } else {
-            self.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_OVERWRITTEN,
+                b"overwritten",
+                &key,
+            );
             if object_exists {
-                self.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_TYPE_CHANGED,
+                    b"type_changed",
+                    &key,
+                );
             }
-            self.notify_keyspace_event(NOTIFY_STRING, b"set", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STRING, b"set", &key);
         }
         if effective_expiration.is_some() {
-            self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_GENERIC,
+                b"expire",
+                &key,
+            );
         }
 
         // TLA+ : ServerProcessSetApply
@@ -1909,7 +1987,8 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let shard_index = self.string_store_shard_index_for_key(&key);
-        let logically_expired = self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        let logically_expired =
+            self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
         if logically_expired {
             if self.resp_protocol_version().is_resp3() {
                 append_null(response_out);
@@ -1955,7 +2034,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let shard_index = self.string_store_shard_index_for_key(&key);
-        self.expire_key_if_needed_in_shard(&key, shard_index)?;
+        self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
 
         if let Some(value) =
             self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
@@ -2057,7 +2136,12 @@ impl RequestProcessor {
                 };
             if string_deleted || object_deleted {
                 deleted += 1;
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
             if string_deleted && !object_deleted {
                 self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
@@ -2113,7 +2197,12 @@ impl RequestProcessor {
                 self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if string_deleted || object_deleted {
                 deleted += 1;
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
                 if string_deleted {
                     lazyfreed = lazyfreed.saturating_add(1);
                 } else if object_deleted {
@@ -2214,13 +2303,24 @@ impl RequestProcessor {
         let _ = self.object_delete(DbKeyRef::new(selected_db, &source))?;
 
         self.notify_setkey_overwrite_events(
+            current_request_selected_db(),
             &destination,
             destination_had_string,
             destination_object_type,
             source_type,
         );
-        self.notify_keyspace_event(NOTIFY_GENERIC, b"rename_from", &source);
-        self.notify_keyspace_event(NOTIFY_GENERIC, b"rename_to", &destination);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"rename_from",
+            &source,
+        );
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"rename_to",
+            &destination,
+        );
 
         if only_if_absent {
             append_integer(response_out, 1);
@@ -2307,12 +2407,18 @@ impl RequestProcessor {
         source_entry.key = destination.clone().into();
         self.import_migration_entry(destination_db, &source_entry)?;
         self.notify_setkey_overwrite_events(
+            current_request_selected_db(),
             &destination,
             destination_had_string,
             destination_object_type,
             source_type,
         );
-        self.notify_keyspace_event(NOTIFY_GENERIC, b"copy_to", &destination);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"copy_to",
+            &destination,
+        );
         append_integer(response_out, 1);
         Ok(())
     }
@@ -2401,7 +2507,12 @@ impl RequestProcessor {
             ));
             self.track_string_key(key);
             self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), key));
-            self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STRING,
+                b"incrby",
+                key,
+            );
             append_integer(response_out, updated);
             return Ok(());
         }
@@ -2425,7 +2536,12 @@ impl RequestProcessor {
                 ));
                 self.track_string_key(key);
                 self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), key));
-                self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_STRING,
+                    b"incrby",
+                    key,
+                );
                 append_integer(response_out, parsed);
                 Ok(())
             }
@@ -2451,7 +2567,12 @@ impl RequestProcessor {
                 ));
                 self.track_string_key(key);
                 self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), key));
-                self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_STRING,
+                    b"incrby",
+                    key,
+                );
                 append_integer(response_out, delta);
                 Ok(())
             }
@@ -2801,15 +2922,25 @@ impl RequestProcessor {
             drop(databases);
 
             self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key_vec));
-            self.notify_keyspace_event(NOTIFY_STRING, b"set", &key_vec);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STRING,
+                b"set",
+                &key_vec,
+            );
             if expiration.is_some() {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key_vec);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"expire",
+                    &key_vec,
+                );
             }
             return Ok(());
         }
 
         let shard_index = self.string_store_shard_index_for_key(key);
-        self.expire_key_if_needed_in_shard(key, shard_index)?;
+        self.expire_key_if_needed_in_shard(current_request_selected_db(), key, shard_index)?;
 
         let key_vec = key.to_vec();
         let mut store = self.lock_string_store_for_shard(shard_index);
@@ -2863,9 +2994,19 @@ impl RequestProcessor {
         );
         self.track_string_key_in_shard(&key_vec, shard_index);
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key_vec));
-        self.notify_keyspace_event(NOTIFY_STRING, b"set", &key_vec);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_STRING,
+            b"set",
+            &key_vec,
+        );
         if expiration.is_some() {
-            self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key_vec);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_GENERIC,
+                b"expire",
+                &key_vec,
+            );
         }
         Ok(())
     }
@@ -2991,7 +3132,12 @@ impl RequestProcessor {
             return Ok(());
         }
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"expire",
+            &key,
+        );
         append_integer(response_out, 1);
         Ok(())
     }
@@ -3077,7 +3223,12 @@ impl RequestProcessor {
             return Ok(());
         }
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(NOTIFY_GENERIC, b"expire", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"expire",
+            &key,
+        );
         append_integer(response_out, 1);
         Ok(())
     }
@@ -3104,7 +3255,7 @@ impl RequestProcessor {
             if string_deleted && !object_deleted {
                 self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), key));
             }
-            self.notify_keyspace_event(NOTIFY_GENERIC, b"del", key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_GENERIC, b"del", key);
             append_integer(response_out, 1);
         } else {
             append_integer(response_out, 0);
@@ -3313,7 +3464,12 @@ impl RequestProcessor {
         }
 
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(NOTIFY_GENERIC, b"persist", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"persist",
+            &key,
+        );
         append_integer(response_out, 1);
         Ok(())
     }

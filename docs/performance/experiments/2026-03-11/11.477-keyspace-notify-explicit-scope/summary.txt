@@ -1,0 +1,20 @@
+# 11.477 experiment summary
+
+- Date: 2026-03-11
+- Iteration: 11.477
+- Base benchmark commit: `6ea21a73a1`
+- Garnet-only before/after file: `comparison.txt`
+- Dragonfly differential files: `runs.csv`, `dragonfly_median_summary.csv`, `dragonfly_summary.txt`
+
+## Results
+
+- Garnet A/B (`THREADS=1`, `CONNS=2`, `REQUESTS=2000`, `PRELOAD_REQUESTS=2000`, `PIPELINE=1`, `SIZE_RANGE=1-64`)
+  - set p99 improvement: -6.50%
+  - get p99 improvement: -28.07%
+  - set throughput change: +4.36%
+  - get throughput change: +16.88%
+
+- Dragonfly compare (`THREADS=1`, `CONNS=2`, `REQUESTS=500`, `PRELOAD_REQUESTS=500`, `PIPELINE=1`, `SIZE_RANGE=1-64`)
+  - `dragonfly/set=17487.41`, `garnet/set=60624.43`
+  - `dragonfly/get=5535.29`, `garnet/get=29542.97`
+  - ratio set/get: `0.288 / 0.187`

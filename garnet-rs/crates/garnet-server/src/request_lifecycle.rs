@@ -3103,7 +3103,13 @@ impl RequestProcessor {
     /// `event_type` is the notification class (NOTIFY_STRING, NOTIFY_GENERIC, etc.).
     /// `event` is the event name (e.g. "set", "del", "expire").
     /// `key` is the affected key.
-    pub(super) fn notify_keyspace_event(&self, event_type: u32, event: &[u8], key: &[u8]) {
+    pub(super) fn notify_keyspace_event(
+        &self,
+        db: DbName,
+        event_type: u32,
+        event: &[u8],
+        key: &[u8],
+    ) {
         let flags = self.notify_keyspace_events_flags.load(Ordering::Acquire);
         if flags == 0 {
             return;
@@ -3113,7 +3119,7 @@ impl RequestProcessor {
             return;
         }
 
-        let selected_db = usize::from(current_request_selected_db());
+        let selected_db = usize::from(db);
         let selected_db_text = selected_db.to_string();
 
         // __keyspace@<db>__:<key> notifications (event name as message)
@@ -3148,6 +3154,7 @@ impl RequestProcessor {
 
     pub(crate) fn notify_setkey_overwrite_events(
         &self,
+        db: DbName,
         key: &[u8],
         previous_string_exists: bool,
         previous_object_type: Option<ObjectTypeTag>,
@@ -3157,7 +3164,7 @@ impl RequestProcessor {
             return;
         }
 
-        self.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", key);
+        self.notify_keyspace_event(db, NOTIFY_OVERWRITTEN, b"overwritten", key);
 
         let type_changed = if previous_string_exists {
             new_type.is_some()
@@ -3165,7 +3172,7 @@ impl RequestProcessor {
             previous_object_type != new_type
         };
         if type_changed {
-            self.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", key);
+            self.notify_keyspace_event(db, NOTIFY_TYPE_CHANGED, b"type_changed", key);
         }
     }
 

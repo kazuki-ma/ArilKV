@@ -2152,8 +2152,11 @@ impl RequestProcessor {
         let pattern = args[1];
         let allow_access_expired = self.allow_access_expired();
 
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
 
         let mut matched = Vec::new();
         for key in keys {
@@ -2198,8 +2201,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "RANDOMKEY", "RANDOMKEY")?;
 
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
         let expire_paused = self.is_expire_action_paused();
 
         let mut live_keys = Vec::new();
@@ -2299,8 +2305,11 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
 
         let mut matched = Vec::new();
         for key in keys {
@@ -3408,7 +3417,8 @@ impl RequestProcessor {
                 return Ok(());
             }
             let slot = garnet_cluster::SlotNumber::new(slot as u16);
-            let keys = self.migration_keys_for_slot(slot, usize::MAX);
+            let keys =
+                self.migration_keys_for_slot(current_request_selected_db(), slot, usize::MAX);
             append_integer(response_out, i64::try_from(keys.len()).unwrap_or(i64::MAX));
             return Ok(());
         }
@@ -3422,7 +3432,7 @@ impl RequestProcessor {
             let count = parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
             let max_keys = usize::try_from(count).unwrap_or(usize::MAX);
             let slot = garnet_cluster::SlotNumber::new(slot as u16);
-            let keys = self.migration_keys_for_slot(slot, max_keys);
+            let keys = self.migration_keys_for_slot(current_request_selected_db(), slot, max_keys);
             append_array_length(response_out, keys.len());
             for key in keys {
                 append_bulk_string(response_out, &key);
@@ -4339,8 +4349,11 @@ impl RequestProcessor {
         }
 
         self.materialize_set_hot_entries_for_db(DbName::default())?;
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
         // FLUSH* invalidates the full tracking table with an empty-key payload.
         self.invalidate_all_tracking_entries();
         self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
@@ -4434,8 +4447,11 @@ impl RequestProcessor {
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
         Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
     }
 
@@ -4505,8 +4521,11 @@ impl RequestProcessor {
         let mut total_bytes = ESTIMATED_BASE_MEMORY_BYTES;
         total_bytes = total_bytes.saturating_add(self.used_memory_vm_functions());
 
-        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
 
         for key in keys {
             if let Some(value) = self
@@ -4600,8 +4619,8 @@ impl RequestProcessor {
         &self,
         maxmemory_policy: &[u8],
     ) -> Result<bool, RequestExecutionError> {
-        let mut keys: Vec<RedisKey> = self.string_keys_snapshot();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: Vec<RedisKey> = self.string_keys_snapshot(current_request_selected_db());
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
         if keys.is_empty() {
             return Ok(false);
         }
@@ -4679,7 +4698,12 @@ impl RequestProcessor {
                     key.as_slice(),
                 ));
             }
-            self.notify_keyspace_event(NOTIFY_EVICTED, b"evicted", key.as_slice());
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_EVICTED,
+                b"evicted",
+                key.as_slice(),
+            );
             return Ok(true);
         }
         Ok(false)
@@ -4692,8 +4716,11 @@ impl RequestProcessor {
         let mut histograms_by_db = BTreeMap::new();
 
         self.with_selected_db(DbName::default(), || {
-            let mut keys: HashSet<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-            keys.extend(self.object_keys_snapshot());
+            let mut keys: HashSet<RedisKey> = self
+                .string_keys_snapshot(current_request_selected_db())
+                .into_iter()
+                .collect();
+            keys.extend(self.object_keys_snapshot(current_request_selected_db()));
 
             for key in keys {
                 self.expire_key_if_needed(key.as_slice())?;
@@ -4818,8 +4845,11 @@ impl RequestProcessor {
     }
 
     fn debug_dataset_digest(&self) -> Result<Vec<u8>, RequestExecutionError> {
-        let mut keys: Vec<RedisKey> = self.string_keys_snapshot().into_iter().collect();
-        keys.extend(self.object_keys_snapshot());
+        let mut keys: Vec<RedisKey> = self
+            .string_keys_snapshot(current_request_selected_db())
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
         keys.sort();
         keys.dedup();
 
@@ -4922,11 +4952,26 @@ fn restore_from_dump_blob(
         if let Some(frequency) = options.frequency {
             processor.set_key_frequency(&key, frequency);
         }
-        processor.notify_keyspace_event(NOTIFY_GENERIC, b"restore", &key);
+        processor.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_GENERIC,
+            b"restore",
+            &key,
+        );
         if had_previous_value {
-            processor.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+            processor.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_OVERWRITTEN,
+                b"overwritten",
+                &key,
+            );
             if previous_type != restored_type {
-                processor.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+                processor.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_TYPE_CHANGED,
+                    b"type_changed",
+                    &key,
+                );
             }
         }
     }
@@ -5072,8 +5117,8 @@ impl RequestProcessor {
     ) -> Result<Vec<DebugReloadSnapshotEntry>, RequestExecutionError> {
         self.materialize_set_hot_entries_for_db(current_request_selected_db())?;
         let mut keys = std::collections::BTreeSet::new();
-        keys.extend(self.string_keys_snapshot());
-        keys.extend(self.object_keys_snapshot());
+        keys.extend(self.string_keys_snapshot(current_request_selected_db()));
+        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
 
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {

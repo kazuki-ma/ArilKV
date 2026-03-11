@@ -77,6 +77,7 @@ impl RequestProcessor {
         if changed > 0 {
             self.save_zset_object(&key, &zset)?;
             self.notify_keyspace_event(
+                current_request_selected_db(),
                 NOTIFY_ZSET,
                 if options.incr { b"zincr" } else { b"zadd" },
                 &key,
@@ -131,12 +132,17 @@ impl RequestProcessor {
         }
 
         if removed > 0 {
-            self.notify_keyspace_event(NOTIFY_ZSET, b"zrem", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_ZSET, b"zrem", &key);
         }
         if zset.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             if removed > 0 {
-                self.notify_keyspace_event(NOTIFY_GENERIC, b"del", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_GENERIC,
+                    b"del",
+                    &key,
+                );
             }
         } else {
             self.save_zset_object(&key, &zset)?;
@@ -775,7 +781,7 @@ impl RequestProcessor {
         }
         zset.insert(member, updated);
         self.save_zset_object(&key, &zset)?;
-        self.notify_keyspace_event(NOTIFY_ZSET, b"zincr", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_ZSET, b"zincr", &key);
         if self.resp_protocol_version().is_resp3() {
             append_double(response_out, updated);
         } else {
@@ -2467,6 +2473,7 @@ fn store_zset_result(
 
     processor.save_zset_object(destination, result_zset)?;
     processor.notify_setkey_overwrite_events(
+        current_request_selected_db(),
         destination,
         destination_had_string,
         destination_object_type,

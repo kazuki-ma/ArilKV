@@ -1144,6 +1144,7 @@ fn store_geosearch_result(
     }
     processor.save_zset_object(destination, result_zset)?;
     processor.notify_setkey_overwrite_events(
+        current_request_selected_db(),
         destination,
         destination_had_string,
         destination_object_type,

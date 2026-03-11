@@ -124,7 +124,12 @@ impl RequestProcessor {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     removed += 1;
-                    self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
+                    self.notify_keyspace_event(
+                        DbName::default(),
+                        NOTIFY_EXPIRED,
+                        b"expired",
+                        key.as_slice(),
+                    );
                     if !object_deleted {
                         self.bump_watch_version_in_db(DbName::default(), key.as_slice());
                     }
@@ -132,7 +137,12 @@ impl RequestProcessor {
                 DeleteOperationStatus::NotFound => {
                     if object_deleted {
                         removed += 1;
-                        self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
+                        self.notify_keyspace_event(
+                            DbName::default(),
+                            NOTIFY_EXPIRED,
+                            b"expired",
+                            key.as_slice(),
+                        );
                     }
                 }
                 DeleteOperationStatus::RetryLater => {
@@ -217,7 +227,7 @@ impl RequestProcessor {
 
         for (db, key) in &expired {
             self.with_selected_db(*db, || {
-                self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
+                self.notify_keyspace_event(*db, NOTIFY_EXPIRED, b"expired", key.as_slice());
                 self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(*db, key.as_slice()));
                 self.bump_watch_version_server_origin_in_db(*db, key.as_slice());
             });
@@ -647,16 +657,17 @@ impl RequestProcessor {
     /// logically expired (whether or not it was actually deleted).
     pub(super) fn expire_key_if_needed(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
         let shard_index = self.string_store_shard_index_for_key(key);
-        self.expire_key_if_needed_in_shard(key, shard_index)
+        let selected_db = current_request_selected_db();
+        self.expire_key_if_needed_in_shard(selected_db, key, shard_index)
     }
 
     pub(super) fn expire_key_if_needed_in_shard(
         &self,
+        db: DbName,
         key: &[u8],
         shard_index: ShardIndex,
     ) -> Result<bool, RequestExecutionError> {
-        let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if db != DbName::default() {
             if self.allow_access_expired() {
                 return Ok(false);
             }
@@ -665,7 +676,7 @@ impl RequestProcessor {
                 let Ok(mut databases) = self.auxiliary_databases.lock() else {
                     return Err(RequestExecutionError::StorageBusy);
                 };
-                let Some(state) = databases.get_mut(&selected_db) else {
+                let Some(state) = databases.get_mut(&db) else {
                     return Ok(false);
                 };
                 let Some(entry) = state.entries.get(key) else {
@@ -684,10 +695,10 @@ impl RequestProcessor {
                 true
             };
             if should_expire {
-                self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
+                self.notify_keyspace_event(db, NOTIFY_EXPIRED, b"expired", key);
                 self.record_lazy_expired_keys(1);
-                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(selected_db, key));
-                self.bump_watch_version_server_origin_in_db(selected_db, key);
+                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(db, key));
+                self.bump_watch_version_server_origin_in_db(db, key);
             }
             return Ok(should_expire);
         }
@@ -753,7 +764,7 @@ impl RequestProcessor {
         self.untrack_string_key_in_shard(key, shard_index);
         // Replicate/emit lazy-expire deletion whenever expiration metadata says the key expired,
         // even if the underlying delete path returns NotFound.
-        self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
+        self.notify_keyspace_event(DbName::default(), NOTIFY_EXPIRED, b"expired", key);
         self.record_lazy_expired_keys(1);
         self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(DbName::default(), key));
         Ok(true)
@@ -1330,12 +1341,10 @@ impl RequestProcessor {
         self.string_expiration_deadline_in_shard(key, shard_index)
     }
 
-    pub(super) fn string_keys_snapshot(&self) -> Vec<RedisKey> {
-        let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
-            return self.auxiliary_keys_snapshot(selected_db, |value| {
-                matches!(value, MigrationValue::String(_))
-            });
+    pub(super) fn string_keys_snapshot(&self, db: DbName) -> Vec<RedisKey> {
+        if db != DbName::default() {
+            return self
+                .auxiliary_keys_snapshot(db, |value| matches!(value, MigrationValue::String(_)));
         }
         self.string_key_registries
             .iter()
@@ -1350,13 +1359,12 @@ impl RequestProcessor {
             .collect()
     }
 
-    pub(super) fn object_keys_snapshot(&self) -> Vec<RedisKey> {
-        let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
-            let mut keys = self.auxiliary_keys_snapshot(selected_db, |value| {
+    pub(super) fn object_keys_snapshot(&self, db: DbName) -> Vec<RedisKey> {
+        if db != DbName::default() {
+            let mut keys = self.auxiliary_keys_snapshot(db, |value| {
                 matches!(value, MigrationValue::Object { .. })
             });
-            keys.extend(self.set_hot_keys_snapshot_for_db(selected_db));
+            keys.extend(self.set_hot_keys_snapshot_for_db(db));
             keys.sort();
             keys.dedup();
             return keys;

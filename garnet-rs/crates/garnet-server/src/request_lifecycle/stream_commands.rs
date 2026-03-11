@@ -32,7 +32,12 @@ impl RequestProcessor {
         };
         let inserted = ensure_stream_consumer(group_state, consumer, now);
         if inserted {
-            self.notify_keyspace_event(NOTIFY_STREAM, b"xgroup-createconsumer", key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STREAM,
+                b"xgroup-createconsumer",
+                key,
+            );
         }
         inserted
     }
@@ -110,7 +115,7 @@ impl RequestProcessor {
                 apply_xtrim_spec_to_stream(&mut stream, trim_spec, self.stream_node_max_entries());
         }
         self.save_stream_object(&key, &stream)?;
-        self.notify_keyspace_event(NOTIFY_STREAM, b"xadd", &key);
+        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STREAM, b"xadd", &key);
         append_bulk_string(response_out, &id.encode());
         Ok(())
     }
@@ -143,7 +148,7 @@ impl RequestProcessor {
 
         self.save_stream_object(&key, &stream)?;
         if removed > 0 {
-            self.notify_keyspace_event(NOTIFY_STREAM, b"xdel", &key);
+            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STREAM, b"xdel", &key);
         }
         append_integer(response_out, removed);
         Ok(())
@@ -276,7 +281,12 @@ impl RequestProcessor {
             };
             stream.groups.insert(group, group_state);
             self.save_stream_object(&key, &stream)?;
-            self.notify_keyspace_event(NOTIFY_STREAM, b"xgroup-create", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STREAM,
+                b"xgroup-create",
+                &key,
+            );
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -310,7 +320,12 @@ impl RequestProcessor {
                 group_state.entries_read = parsed.map(|value| value.min(stream_entries_added));
             }
             self.save_stream_object(&key, &stream)?;
-            self.notify_keyspace_event(NOTIFY_STREAM, b"xgroup-setid", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STREAM,
+                b"xgroup-setid",
+                &key,
+            );
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -333,7 +348,12 @@ impl RequestProcessor {
                 self.save_stream_object(&key, &stream)?;
             }
             if removed == 1 {
-                self.notify_keyspace_event(NOTIFY_STREAM, b"xgroup-destroy", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_STREAM,
+                    b"xgroup-destroy",
+                    &key,
+                );
             }
             append_integer(response_out, removed);
             return Ok(());
@@ -378,7 +398,12 @@ impl RequestProcessor {
                 .map(|group_state| delete_stream_consumer(group_state, args[4]))
                 .unwrap_or(0);
             if consumer_removed {
-                self.notify_keyspace_event(NOTIFY_STREAM, b"xgroup-delconsumer", &key);
+                self.notify_keyspace_event(
+                    current_request_selected_db(),
+                    NOTIFY_STREAM,
+                    b"xgroup-delconsumer",
+                    &key,
+                );
                 self.save_stream_object(&key, &stream)?;
             }
             append_integer(response_out, removed_pending);
@@ -1334,7 +1359,12 @@ impl RequestProcessor {
             stream.max_deleted_entry_id = max_deleted_entry_id;
         }
         self.save_stream_object(&key, &stream)?;
-        self.notify_keyspace_event(NOTIFY_STREAM, b"xsetid", &key);
+        self.notify_keyspace_event(
+            current_request_selected_db(),
+            NOTIFY_STREAM,
+            b"xsetid",
+            &key,
+        );
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -1644,7 +1674,12 @@ impl RequestProcessor {
             } else {
                 self.save_stream_object(&key, &stream)?;
             }
-            self.notify_keyspace_event(NOTIFY_STREAM, b"xtrim", &key);
+            self.notify_keyspace_event(
+                current_request_selected_db(),
+                NOTIFY_STREAM,
+                b"xtrim",
+                &key,
+            );
         }
         append_integer(response_out, removed as i64);
         Ok(())
