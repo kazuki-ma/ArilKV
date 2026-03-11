@@ -4332,7 +4332,10 @@ impl RequestProcessor {
                 }
             }
             if string_deleted {
-                self.remove_string_key_metadata(key.as_slice());
+                self.remove_string_key_metadata(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
 
             let object_deleted = match self
@@ -4567,8 +4570,11 @@ impl RequestProcessor {
         if policy_is_volatile {
             let now = current_instant();
             keys.retain(|key| {
-                self.string_expiration_deadline(key.as_slice())
-                    .is_some_and(|deadline| deadline > now)
+                self.string_expiration_deadline(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ))
+                .is_some_and(|deadline| deadline > now)
             });
             if keys.is_empty() {
                 return Ok(false);
@@ -4584,10 +4590,13 @@ impl RequestProcessor {
         } else if maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl") {
             let now = current_instant();
             keys.sort_by_key(|key| {
-                self.string_expiration_deadline(key.as_slice())
-                    .map_or(u128::MAX, |deadline| {
-                        deadline.saturating_duration_since(now).as_millis()
-                    })
+                self.string_expiration_deadline(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ))
+                .map_or(u128::MAX, |deadline| {
+                    deadline.saturating_duration_since(now).as_millis()
+                })
             });
         }
 
@@ -4611,7 +4620,10 @@ impl RequestProcessor {
                 }
             }
             if string_deleted {
-                self.remove_string_key_metadata_in_shard(key.as_slice(), shard_index);
+                self.remove_string_key_metadata_in_shard(
+                    DbKeyRef::new(current_request_selected_db(), key.as_slice()),
+                    shard_index,
+                );
             }
             let object_deleted =
                 self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
@@ -4910,7 +4922,7 @@ fn restore_migration_value(
                 &payload,
             )?;
             processor.set_string_expiration_deadline(
-                key,
+                DbKeyRef::new(current_request_selected_db(), key),
                 expiration_unix_millis.and_then(instant_from_unix_millis),
             );
         }

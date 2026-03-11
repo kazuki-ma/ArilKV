@@ -63,7 +63,7 @@ impl RequestProcessor {
                     payload,
                 )?;
                 self.set_string_expiration_deadline(
-                    entry.key.as_slice(),
+                    DbKeyRef::new(current_request_selected_db(), entry.key.as_slice()),
                     entry
                         .expiration_unix_millis
                         .and_then(instant_from_unix_millis),

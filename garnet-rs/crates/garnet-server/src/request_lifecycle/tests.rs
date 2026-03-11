@@ -823,8 +823,16 @@ fn sharded_string_metadata_tracks_keys_and_expiration_per_shard() {
     assert_eq!(execute_frame(&processor, &set_a), b"+OK\r\n");
     assert_eq!(execute_frame(&processor, &set_b), b"+OK\r\n");
 
-    assert!(processor.string_expiration_deadline(&key_a).is_some());
-    assert!(processor.string_expiration_deadline(&key_b).is_none());
+    assert!(
+        processor
+            .string_expiration_deadline(DbKeyRef::new(DbName::default(), &key_a))
+            .is_some()
+    );
+    assert!(
+        processor
+            .string_expiration_deadline(DbKeyRef::new(DbName::default(), &key_b))
+            .is_none()
+    );
     assert_eq!(processor.string_expiration_count_for_shard(shard_a), 1);
     assert_eq!(processor.string_expiration_count_for_shard(shard_b), 0);
 
@@ -9490,6 +9498,58 @@ fn db_key_ref_object_mutations_are_scoped_by_explicit_db_without_db0_fallback() 
             .object_read(DbKeyRef::new(DbName::default(), b"obj"))
             .unwrap()
             .is_some()
+    );
+}
+
+#[test]
+fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
+    processor.with_selected_db(DbName::new(9), || {
+        assert_command_response(&processor, "SET shared db9", b"+OK\r\n");
+    });
+
+    let deadline = current_instant() + std::time::Duration::from_secs(30);
+    processor
+        .set_string_expiration_deadline(DbKeyRef::new(DbName::new(9), b"shared"), Some(deadline));
+
+    assert!(
+        processor
+            .string_expiration_deadline(DbKeyRef::new(DbName::default(), b"shared"))
+            .is_none()
+    );
+    assert!(
+        processor
+            .string_expiration_deadline(DbKeyRef::new(DbName::new(9), b"shared"))
+            .is_some()
+    );
+
+    processor.remove_string_key_metadata(DbKeyRef::new(DbName::new(9), b"shared"));
+
+    assert_eq!(
+        processor
+            .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+            .unwrap()
+            .unwrap(),
+        b"db0"
+    );
+    assert_eq!(
+        processor
+            .read_string_value(DbKeyRef::new(DbName::new(9), b"shared"))
+            .unwrap()
+            .unwrap(),
+        b"db9"
+    );
+    assert!(
+        processor
+            .string_expiration_deadline(DbKeyRef::new(DbName::default(), b"shared"))
+            .is_none()
+    );
+    assert!(
+        processor
+            .string_expiration_deadline(DbKeyRef::new(DbName::new(9), b"shared"))
+            .is_none()
     );
 }
 

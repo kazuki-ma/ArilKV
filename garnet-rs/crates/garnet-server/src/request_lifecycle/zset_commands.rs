@@ -2485,11 +2485,11 @@ fn delete_string_value_for_object_overwrite(
         .map_err(map_delete_error)?;
     match status {
         DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-            processor.remove_string_key_metadata(key);
+            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
             Ok(true)
         }
         DeleteOperationStatus::NotFound => {
-            processor.remove_string_key_metadata(key);
+            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
             Ok(false)
         }
         DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),

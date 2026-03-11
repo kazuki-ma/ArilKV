@@ -122,7 +122,10 @@ impl RequestProcessor {
                 session.delete(&key, &mut info).map_err(map_delete_error)?
             };
 
-            self.remove_string_key_metadata_in_shard(key.as_slice(), shard_index);
+            self.remove_string_key_metadata_in_shard(
+                DbKeyRef::new(DbName::default(), key.as_slice()),
+                shard_index,
+            );
             let object_deleted =
                 self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
 
@@ -427,11 +430,11 @@ impl RequestProcessor {
 
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.remove_string_key_metadata(key_bytes);
+                self.remove_string_key_metadata(key);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
-                self.remove_string_key_metadata(key_bytes);
+                self.remove_string_key_metadata(key);
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -503,7 +506,7 @@ impl RequestProcessor {
             })
         });
         let shard_index = self.string_store_shard_index_for_key(key_bytes);
-        self.set_string_expiration_metadata_in_shard(key_bytes, shard_index, expiration);
+        self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
         self.track_string_key(key_bytes);
         self.bump_watch_version(key_bytes);
         Ok(())
@@ -924,16 +927,16 @@ impl RequestProcessor {
 
     pub(super) fn set_string_expiration_metadata_in_shard(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         shard_index: ShardIndex,
         expiration: Option<ExpirationMetadata>,
     ) {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        if key.db() != DbName::default() {
             if let Ok(mut databases) = self.auxiliary_databases.lock() {
-                let Some(state) = databases.get_mut(&selected_db) else {
+                let Some(state) = databases.get_mut(&key.db()) else {
                     return;
                 };
-                let Some(entry) = state.entries.get_mut(key) else {
+                let Some(entry) = state.entries.get_mut(key.key()) else {
                     return;
                 };
                 entry.expiration = expiration;
@@ -944,13 +947,13 @@ impl RequestProcessor {
         let mut expirations = self.lock_string_expirations_for_shard(shard_index);
         match expiration {
             Some(expiration) => {
-                let previous = expirations.insert(RedisKey::from(key), expiration);
+                let previous = expirations.insert(RedisKey::from(key.key()), expiration);
                 if previous.is_none() {
                     self.increment_string_expiration_count(shard_index);
                 }
             }
             None => {
-                if expirations.remove(key).is_some() {
+                if expirations.remove(key.key()).is_some() {
                     self.decrement_string_expiration_count(shard_index);
                 }
             }
@@ -959,7 +962,7 @@ impl RequestProcessor {
 
     pub(super) fn set_string_expiration_deadline_in_shard(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         shard_index: ShardIndex,
         deadline: Option<Instant>,
     ) {
@@ -981,19 +984,27 @@ impl RequestProcessor {
         self.set_string_expiration_metadata_in_shard(key, shard_index, expiration);
     }
 
-    pub(super) fn set_string_expiration_deadline(&self, key: &[u8], deadline: Option<Instant>) {
-        let shard_index = self.string_store_shard_index_for_key(key);
+    pub(super) fn set_string_expiration_deadline(
+        &self,
+        key: DbKeyRef<'_>,
+        deadline: Option<Instant>,
+    ) {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
         self.set_string_expiration_deadline_in_shard(key, shard_index, deadline);
     }
 
-    pub(super) fn remove_string_key_metadata_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
+    pub(super) fn remove_string_key_metadata_in_shard(
+        &self,
+        key: DbKeyRef<'_>,
+        shard_index: ShardIndex,
+    ) {
         self.set_string_expiration_deadline_in_shard(key, shard_index, None);
-        self.untrack_string_key_in_shard(key, shard_index);
-        self.clear_forced_raw_string_encoding(key);
+        self.untrack_string_key_in_shard(key.key(), shard_index);
+        self.clear_forced_raw_string_encoding(key.key());
     }
 
-    pub(super) fn remove_string_key_metadata(&self, key: &[u8]) {
-        let shard_index = self.string_store_shard_index_for_key(key);
+    pub(super) fn remove_string_key_metadata(&self, key: DbKeyRef<'_>) {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
         self.remove_string_key_metadata_in_shard(key, shard_index);
     }
 
@@ -1301,12 +1312,12 @@ impl RequestProcessor {
 
     pub(super) fn string_expiration_deadline_in_shard(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         shard_index: ShardIndex,
     ) -> Option<Instant> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        if key.db() != DbName::default() {
             return self
-                .auxiliary_value_snapshot(selected_db, key)
+                .auxiliary_value_snapshot(key.db(), key.key())
                 .and_then(|entry| entry.expiration)
                 .map(|metadata| metadata.deadline);
         }
@@ -1315,12 +1326,12 @@ impl RequestProcessor {
             return None;
         }
         self.lock_string_expirations_for_shard(shard_index)
-            .get(key)
+            .get(key.key())
             .map(|metadata| metadata.deadline)
     }
 
-    pub(super) fn string_expiration_deadline(&self, key: &[u8]) -> Option<Instant> {
-        let shard_index = self.string_store_shard_index_for_key(key);
+    pub(super) fn string_expiration_deadline(&self, key: DbKeyRef<'_>) -> Option<Instant> {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
         self.string_expiration_deadline_in_shard(key, shard_index)
     }
 

@@ -54,6 +54,11 @@ Snapshot taken on 2026-03-11 after the third mechanical slice:
 - `current_request_selected_db(...)`: `288` call sites
 - `current_auxiliary_db_name(...)`: `22` call sites
 
+Snapshot taken on 2026-03-11 after the fourth mechanical slice:
+
+- `current_request_selected_db(...)`: `314` call sites
+- `current_auxiliary_db_name(...)`: `20` call sites
+
 Interpretation:
 
 - `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
@@ -89,13 +94,19 @@ Third mechanical slice:
 - object mutation / delete call sites in hash/list/set/zset/geo/stream/string commands, migration, restore/debug-reload, and admin paths were migrated
 - regression added to prove explicit `DbKeyRef` object mutation and deletion do not fall back to DB0
 
+Fourth mechanical slice:
+
+- `set_string_expiration_metadata_in_shard`, `set_string_expiration_deadline_in_shard`, `set_string_expiration_deadline`, `remove_string_key_metadata_in_shard`, `remove_string_key_metadata`, `string_expiration_deadline_in_shard`, and `string_expiration_deadline` now require `DbKeyRef`
+- string expiration metadata call sites in GETEX/PERSIST/EXPIRETIME, eviction/admin, object deletes, migration, and helper tests were migrated
+- regression added to prove explicit `DbKeyRef` expiration metadata paths do not fall back to DB0
+
 This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Convert the remaining expiration metadata setters/snapshot helpers to `DbKeyRef` or `DbScopedKey`.
+1. Convert the remaining hash-field expiration metadata/snapshot helpers to `DbKeyRef` or `DbScopedKey`.
 2. Remove the remaining `current_auxiliary_db_name()` branching from storage helpers.
 3. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
 4. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.

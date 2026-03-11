@@ -1397,8 +1397,14 @@ impl RequestProcessor {
         match action {
             GetExAction::KeepTtl => {}
             GetExAction::Persist => {
-                if self.string_expiration_deadline(&key).is_some() {
-                    self.set_string_expiration_deadline(&key, None);
+                if self
+                    .string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key))
+                    .is_some()
+                {
+                    self.set_string_expiration_deadline(
+                        DbKeyRef::new(current_request_selected_db(), &key),
+                        None,
+                    );
                     if !self.rewrite_existing_value_expiration(
                         DbKeyRef::new(current_request_selected_db(), &key),
                         None,
@@ -1414,12 +1420,19 @@ impl RequestProcessor {
             }
             GetExAction::SetExpiration(expiration) => {
                 let shard_index = self.string_store_shard_index_for_key(&key);
-                self.set_string_expiration_metadata_in_shard(&key, shard_index, Some(expiration));
+                self.set_string_expiration_metadata_in_shard(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    shard_index,
+                    Some(expiration),
+                );
                 if !self.rewrite_existing_value_expiration(
                     DbKeyRef::new(current_request_selected_db(), &key),
                     Some(expiration.unix_millis.as_u64()),
                 )? {
-                    self.set_string_expiration_deadline(&key, None);
+                    self.set_string_expiration_deadline(
+                        DbKeyRef::new(current_request_selected_db(), &key),
+                        None,
+                    );
                     return Err(storage_failure(
                         "getex",
                         "string key disappeared while rewriting expiration",
@@ -1751,7 +1764,11 @@ impl RequestProcessor {
             self.untrack_object_key_in_shard(&key, shard_index);
         }
         self.clear_forced_raw_string_encoding(&key);
-        self.set_string_expiration_metadata_in_shard(&key, shard_index, effective_expiration);
+        self.set_string_expiration_metadata_in_shard(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            shard_index,
+            effective_expiration,
+        );
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(&key);
         self.record_key_access(&key, true);
@@ -2814,7 +2831,11 @@ impl RequestProcessor {
         if object_exists {
             self.untrack_object_key_in_shard(&key_vec, shard_index);
         }
-        self.set_string_expiration_metadata_in_shard(&key_vec, shard_index, expiration);
+        self.set_string_expiration_metadata_in_shard(
+            DbKeyRef::new(current_request_selected_db(), &key_vec),
+            shard_index,
+            expiration,
+        );
         self.track_string_key_in_shard(&key_vec, shard_index);
         self.bump_watch_version(&key_vec);
         self.notify_keyspace_event(NOTIFY_STRING, b"set", &key_vec);
@@ -2924,7 +2945,7 @@ impl RequestProcessor {
         let deadline = instant_from_unix_millis(unix_millis).ok_or(overflow_error)?;
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.set_string_expiration_metadata_in_shard(
-            &key,
+            DbKeyRef::new(current_request_selected_db(), &key),
             shard_index,
             Some(ExpirationMetadata {
                 deadline,
@@ -2937,7 +2958,10 @@ impl RequestProcessor {
                 Some(unix_millis),
             )?
         {
-            self.set_string_expiration_deadline(&key, None);
+            self.set_string_expiration_deadline(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                None,
+            );
             append_integer(response_out, 0);
             return Ok(());
         }
@@ -3007,7 +3031,7 @@ impl RequestProcessor {
             instant_from_unix_millis(unix_millis).ok_or(RequestExecutionError::ValueNotInteger)?;
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.set_string_expiration_metadata_in_shard(
-            &key,
+            DbKeyRef::new(current_request_selected_db(), &key),
             shard_index,
             Some(ExpirationMetadata {
                 deadline,
@@ -3020,7 +3044,10 @@ impl RequestProcessor {
                 Some(unix_millis),
             )?
         {
-            self.set_string_expiration_deadline(&key, None);
+            self.set_string_expiration_deadline(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                None,
+            );
             append_integer(response_out, 0);
             return Ok(());
         }
@@ -3135,7 +3162,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        match self.string_expiration_deadline(&key) {
+        match self.string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key)) {
             None => {
                 append_integer(response_out, -1);
             }
@@ -3192,7 +3219,7 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        match self.string_expiration_deadline(&key) {
+        match self.string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key)) {
             None => {
                 append_integer(response_out, -1);
             }
@@ -3238,11 +3265,17 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if self.string_expiration_deadline(&key).is_none() {
+        if self
+            .string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key))
+            .is_none()
+        {
             append_integer(response_out, 0);
             return Ok(());
         }
-        self.set_string_expiration_deadline(&key, None);
+        self.set_string_expiration_deadline(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            None,
+        );
 
         if string_exists
             && !self.rewrite_existing_value_expiration(

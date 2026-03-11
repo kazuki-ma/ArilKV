@@ -123,7 +123,7 @@ impl RequestProcessor {
         let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.set_string_expiration_deadline(&key, None);
+                self.set_string_expiration_deadline(DbKeyRef::new(DbName::default(), &key), None);
                 self.clear_hash_field_expirations_for_key_in_shard(&key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
                 self.clear_forced_list_quicklist_encoding(&key);
