@@ -225,6 +225,21 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "STRLEN", "STRLEN key")?;
 
         let key = RedisKey::from(args[1]);
+        if self.current_auxiliary_db_name().is_some() {
+            if let Some(output) = self.read_string_value(&key)? {
+                append_integer(
+                    response_out,
+                    string_value_len_for_keysizes(self, &output) as i64,
+                );
+                return Ok(());
+            }
+            if self.object_key_exists(&key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 
@@ -286,6 +301,22 @@ impl RequestProcessor {
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
+        if self.current_auxiliary_db_name().is_some() {
+            if let Some(output) = self.read_string_value(&key)? {
+                if let Some(range) = normalize_string_range(output.len(), start, end) {
+                    append_bulk_string(response_out, &output[range.start..=range.end_inclusive]);
+                } else {
+                    append_bulk_string(response_out, b"");
+                }
+                return Ok(());
+            }
+            if self.object_key_exists(&key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            append_bulk_string(response_out, b"");
+            return Ok(());
+        }
+
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
 

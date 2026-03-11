@@ -9230,6 +9230,103 @@ fn pfdebug_encoding_and_strlen_follow_sparse_dense_transitions() {
 }
 
 #[test]
+fn hyperloglog_sparse_thresholds_match_external_scenario_in_auxiliary_db() {
+    let processor = RequestProcessor::new().unwrap();
+
+    processor.with_selected_db(DbName::new(9), || {
+        for sparse_max_bytes in [100usize, 500, 3_000] {
+            assert_command_response(
+                &processor,
+                &format!("CONFIG SET hll-sparse-max-bytes {sparse_max_bytes}"),
+                b"+OK\r\n",
+            );
+            let _ = execute_command_line(&processor, "DEL hll").unwrap();
+            assert_command_response(&processor, "PFADD hll", b":1\r\n");
+
+            let mut logical_len =
+                parse_integer_response(&execute_command_line(&processor, "STRLEN hll").unwrap())
+                    as usize;
+            let mut element_index = 0usize;
+            let mut guard = 0usize;
+
+            while logical_len <= sparse_max_bytes {
+                assert_command_response(&processor, "PFDEBUG ENCODING hll", b"$6\r\nsparse\r\n");
+
+                let mut command = String::from("PFADD hll");
+                for _ in 0..10 {
+                    command.push(' ');
+                    command.push_str(&format!("elem:{sparse_max_bytes}:{element_index}"));
+                    element_index += 1;
+                }
+                let _ = execute_command_line(&processor, &command).unwrap();
+                logical_len = parse_integer_response(
+                    &execute_command_line(&processor, "STRLEN hll").unwrap(),
+                ) as usize;
+                guard += 1;
+                assert!(guard < 1_000, "HLL sparse threshold test did not converge");
+            }
+
+            assert_command_response(&processor, "PFDEBUG ENCODING hll", b"$5\r\ndense\r\n");
+        }
+    });
+}
+
+#[test]
+fn hyperloglog_sparse_stress_matches_external_scenario_in_auxiliary_db() {
+    let processor = RequestProcessor::new().unwrap();
+
+    processor.with_selected_db(DbName::new(9), || {
+        assert_command_response(
+            &processor,
+            "CONFIG SET hll-sparse-max-bytes 3000",
+            b"+OK\r\n",
+        );
+
+        for case_index in 0..128usize {
+            let _ = execute_command_line(&processor, "DEL hll1 hll2").unwrap();
+
+            let element_count = (case_index * 37) % 100;
+            let mut pfadd_hll1 = String::from("PFADD hll1");
+            let mut pfadd_hll2 = String::from("PFADD hll2");
+            for element_index in 0..element_count {
+                let element = format!("stress:{case_index}:{element_index}");
+                pfadd_hll1.push(' ');
+                pfadd_hll1.push_str(&element);
+                pfadd_hll2.push(' ');
+                pfadd_hll2.push_str(&element);
+            }
+
+            assert_command_response(&processor, "PFADD hll2", b":1\r\n");
+            assert_command_response(&processor, "PFDEBUG TODENSE hll2", b"+OK\r\n");
+            let _ = execute_command_line(&processor, &pfadd_hll1).unwrap();
+            let _ = execute_command_line(&processor, &pfadd_hll2).unwrap();
+
+            assert_command_response(&processor, "PFDEBUG ENCODING hll1", b"$6\r\nsparse\r\n");
+            assert_command_response(&processor, "PFDEBUG ENCODING hll2", b"$5\r\ndense\r\n");
+            let hll1_count = execute_command_line(&processor, "PFCOUNT hll1").unwrap();
+            let hll2_count = execute_command_line(&processor, "PFCOUNT hll2").unwrap();
+            assert_eq!(hll1_count, hll2_count);
+        }
+    });
+}
+
+#[test]
+fn hyperloglog_cache_invalidation_matches_external_scenario_in_auxiliary_db() {
+    let processor = RequestProcessor::new().unwrap();
+
+    processor.with_selected_db(DbName::new(9), || {
+        let _ = execute_command_line(&processor, "DEL hll").unwrap();
+        assert_command_response(&processor, "PFADD hll a b c", b":1\r\n");
+        let _ = execute_command_line(&processor, "PFCOUNT hll").unwrap();
+        assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x00\r\n");
+        assert_command_response(&processor, "PFADD hll a b c", b":0\r\n");
+        assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x00\r\n");
+        assert_command_response(&processor, "PFADD hll 1 2 3", b":1\r\n");
+        assert_command_response(&processor, "GETRANGE hll 15 15", b"$1\r\n\x80\r\n");
+    });
+}
+
+#[test]
 fn oversized_hyll_set_is_canonicalized_to_invalid_hll_marker() {
     let processor = RequestProcessor::new().unwrap();
 
