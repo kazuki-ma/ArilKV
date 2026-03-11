@@ -1292,6 +1292,8 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
+        let snapshot = self.build_debug_reload_snapshot(false)?;
+        self.set_saved_rdb_snapshot(snapshot);
         self.start_bgsave();
         self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"Background saving started");
@@ -1543,11 +1545,13 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"RELOAD") {
             ensure_min_arity(args, 2, "DEBUG", "DEBUG RELOAD [NOSAVE] [NOFLUSH] [MERGE]")?;
+            let mut nosave = false;
             let mut noflush = false;
             let mut merge = false;
             for option in &args[2..] {
                 let token = option;
                 if ascii_eq_ignore_case(token, b"NOSAVE") {
+                    nosave = true;
                     continue;
                 }
                 if ascii_eq_ignore_case(token, b"NOFLUSH") {
@@ -1568,6 +1572,12 @@ impl RequestProcessor {
                 return Ok(());
             }
             if !noflush && !merge {
+                if !nosave {
+                    let snapshot = self.build_debug_reload_snapshot(false)?;
+                    self.reload_debug_snapshot_bytes(snapshot)?;
+                    append_simple_string(response_out, b"OK");
+                    return Ok(());
+                }
                 if self.reload_debug_snapshot_source()? {
                     append_simple_string(response_out, b"OK");
                     return Ok(());
@@ -4791,21 +4801,23 @@ fn restore_from_dump_blob(
         )
     };
 
-    restore_migration_value(processor, &key, value, expiration_unix_millis)?;
+    let restored = restore_migration_value(processor, &key, value, expiration_unix_millis)?;
 
-    if let Some(idle_time_seconds) = options.idle_time_seconds {
-        processor.set_key_idle_seconds(&key, idle_time_seconds);
-    } else {
-        processor.record_key_access(&key, true);
-    }
-    if let Some(frequency) = options.frequency {
-        processor.set_key_frequency(&key, frequency);
-    }
-    processor.notify_keyspace_event(NOTIFY_GENERIC, b"restore", &key);
-    if had_previous_value {
-        processor.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
-        if previous_type != restored_type {
-            processor.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+    if restored {
+        if let Some(idle_time_seconds) = options.idle_time_seconds {
+            processor.set_key_idle_seconds(&key, idle_time_seconds);
+        } else {
+            processor.record_key_access(&key, true);
+        }
+        if let Some(frequency) = options.frequency {
+            processor.set_key_frequency(&key, frequency);
+        }
+        processor.notify_keyspace_event(NOTIFY_GENERIC, b"restore", &key);
+        if had_previous_value {
+            processor.notify_keyspace_event(NOTIFY_OVERWRITTEN, b"overwritten", &key);
+            if previous_type != restored_type {
+                processor.notify_keyspace_event(NOTIFY_TYPE_CHANGED, b"type_changed", &key);
+            }
         }
     }
 
@@ -4818,7 +4830,11 @@ fn restore_migration_value(
     key: &[u8],
     value: MigrationValue,
     expiration_unix_millis: Option<u64>,
-) -> Result<(), RequestExecutionError> {
+) -> Result<bool, RequestExecutionError> {
+    if should_materialize_restored_value(expiration_unix_millis)? == false {
+        return Ok(false);
+    }
+
     match value {
         MigrationValue::String(raw) => {
             processor.upsert_string_value_for_migration(
@@ -4840,7 +4856,18 @@ fn restore_migration_value(
             );
         }
     }
-    Ok(())
+    Ok(true)
+}
+
+fn should_materialize_restored_value(
+    expiration_unix_millis: Option<u64>,
+) -> Result<bool, RequestExecutionError> {
+    let Some(expiration_unix_millis) = expiration_unix_millis else {
+        return Ok(true);
+    };
+    let now_unix_millis =
+        current_unix_time_millis().ok_or(RequestExecutionError::ValueOutOfRange)?;
+    Ok(expiration_unix_millis > now_unix_millis)
 }
 
 #[derive(Debug, Clone)]
@@ -4869,6 +4896,13 @@ impl RequestProcessor {
             Some(snapshot_bytes) => snapshot_bytes,
             None => return Ok(false),
         };
+        self.reload_debug_snapshot_bytes(snapshot_bytes)
+    }
+
+    pub(crate) fn reload_debug_snapshot_bytes(
+        &self,
+        snapshot_bytes: Vec<u8>,
+    ) -> Result<bool, RequestExecutionError> {
         let Some(decoded) = decode_debug_reload_snapshot(&snapshot_bytes) else {
             return Ok(false);
         };
@@ -4881,7 +4915,7 @@ impl RequestProcessor {
         for entry in decoded.entries {
             let value = decode_dump_blob(&entry.dump_blob)
                 .ok_or(RequestExecutionError::InvalidDumpPayload)?;
-            restore_migration_value(
+            let _ = restore_migration_value(
                 self,
                 entry.key.as_slice(),
                 value,
@@ -4905,12 +4939,11 @@ impl RequestProcessor {
             self.expire_key_if_needed(key.as_slice())?;
 
             if let Some(stored_value) = self.read_string_value(key.as_slice())? {
-                let decoded = decode_stored_value(stored_value.as_slice());
-                let dump_blob =
-                    encode_dump_blob(MigrationValue::String(decoded.user_value.to_vec().into()));
+                let expiration_unix_millis = self.expiration_unix_millis_for_key(key.as_slice());
+                let dump_blob = encode_dump_blob(MigrationValue::String(stored_value.into()));
                 entries.push(DebugReloadSnapshotEntry {
                     key: key.to_vec(),
-                    expiration_unix_millis: decoded.expiration_unix_millis,
+                    expiration_unix_millis,
                     dump_blob,
                 });
                 continue;

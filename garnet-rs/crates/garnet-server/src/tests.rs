@@ -15738,6 +15738,52 @@ async fn send_and_read_optional_bulk(
     Some(payload)
 }
 
+#[tokio::test]
+async fn bgsave_then_debug_reload_preserves_current_value_like_external_other_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    // Redis tests/unit/other.tcl:
+    // - "BGSAVE"
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FLUSHALL"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"SAVE"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"10"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"BGSAVE"]),
+        b"+Background saving started\r\n",
+    )
+    .await;
+    wait_for_bgsave_to_finish(&mut client, Duration::from_secs(5)).await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"RELOAD"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", b"x"]),
+        b"$2\r\n10\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
 async fn wait_for_bgsave_to_finish(client: &mut TcpStream, timeout: Duration) {
     let deadline = Instant::now() + timeout;
     while Instant::now() < deadline {

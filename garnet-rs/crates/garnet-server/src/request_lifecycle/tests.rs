@@ -5830,6 +5830,33 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
 }
 
 #[test]
+fn restore_with_absttl_in_the_past_matches_external_dump_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+    let dump_payload =
+        parse_bulk_payload(&execute_command_line(&processor, "DUMP missing").unwrap());
+    assert!(dump_payload.is_none());
+
+    assert_command_response(&processor, "SET key value", b"+OK\r\n");
+    let dump_payload =
+        parse_bulk_payload(&execute_command_line(&processor, "DUMP key").unwrap()).unwrap();
+
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n");
+    let past_unix_millis = current_unix_time_millis().unwrap().saturating_sub(3000);
+    let past_unix_millis_text = past_unix_millis.to_string();
+    let restore = encode_resp(&[
+        b"RESTORE",
+        b"foo",
+        past_unix_millis_text.as_bytes(),
+        dump_payload.as_slice(),
+        b"ABSTTL",
+        b"REPLACE",
+    ]);
+    assert_eq!(execute_frame(&processor, &restore), b"+OK\r\n");
+    assert_command_error(&processor, "DEBUG OBJECT foo", b"-ERR no such key\r\n");
+    assert_command_response(&processor, "DEBUG SET-ACTIVE-EXPIRE 1", b"+OK\r\n");
+}
+
+#[test]
 fn restore_legacy_stream_cgroups_rdb_ver_lt_10_matches_external_scenario() {
     let processor = RequestProcessor::new().unwrap();
     let payload = b"\x0F\x01\x10\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\xC3\x40\x4A\x40\x57\x16\x57\x00\x00\x00\x23\x00\x02\x01\x04\x01\x01\x01\x84\x64\x61\x74\x61\x05\x00\x01\x03\x01\x00\x20\x01\x03\x81\x61\x02\x04\x20\x0A\x00\x01\x40\x0A\x00\x62\x60\x0A\x00\x02\x40\x0A\x00\x63\x60\x0A\x40\x22\x01\x81\x64\x20\x0A\x40\x39\x20\x0A\x00\x65\x60\x0A\x00\x05\x40\x0A\x00\x66\x20\x0A\x00\xFF\x02\x06\x00\x02\x02\x67\x31\x05\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x3E\xF7\x83\x43\x7A\x01\x00\x00\x01\x01\x03\x63\x31\x31\x3E\xF7\x83\x43\x7A\x01\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x02\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x04\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x05\x00\x00\x00\x00\x00\x00\x00\x00\x02\x67\x32\x00\x00\x00\x00\x09\x00\x3D\x52\xEF\x68\x67\x52\x1D\xFA";
@@ -17882,6 +17909,60 @@ fn idmp_and_xcfgset_persistence_match_external_stream_scenarios() {
     assert_eq!(
         resp_test_integer(&aof_info[&b"idmp-maxsize".to_vec()]),
         4500
+    );
+}
+
+#[test]
+fn debug_reload_preserves_mixed_dataset_digest_like_external_other_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/other.tcl:
+    // - "Check consistency of different data types after a reload"
+    assert_command_response(&processor, "FLUSHDB", b"+OK\r\n");
+    assert_command_response(&processor, "SET s value", b"+OK\r\n");
+    assert_command_integer(&processor, "LPUSH l a b c", 3);
+    assert_command_integer(&processor, "SADD set x y z", 3);
+    assert_command_integer(&processor, "HSET h f1 v1 f2 v2", 2);
+    assert_command_integer(&processor, "ZADD z 1 one 2 two", 2);
+    assert_command_response(&processor, "XADD stream 1-0 f v", b"$3\r\n1-0\r\n");
+
+    let digest_before = execute_command_line(&processor, "DEBUG DIGEST").unwrap();
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+    let digest_after = execute_command_line(&processor, "DEBUG DIGEST").unwrap();
+    assert_eq!(digest_after, digest_before);
+}
+
+#[test]
+fn expires_survive_debug_reload_and_loadaof_like_external_other_scenario() {
+    let processor = RequestProcessor::new().unwrap();
+
+    // Redis tests/unit/other.tcl:
+    // - "EXPIRES after a reload (snapshot + append only file rewrite)"
+    assert_command_response(&processor, "FLUSHDB", b"+OK\r\n");
+    assert_command_response(&processor, "SET x 10", b"+OK\r\n");
+    assert_command_integer(&processor, "EXPIRE x 1000", 1);
+    assert_command_response(&processor, "SAVE", b"+OK\r\n");
+    assert_command_response(&processor, "DEBUG RELOAD", b"+OK\r\n");
+
+    let ttl_after_reload =
+        parse_integer_response(&execute_command_line(&processor, "TTL x").unwrap());
+    assert!(
+        ttl_after_reload > 900 && ttl_after_reload <= 1000,
+        "expected TTL after DEBUG RELOAD to stay in (900, 1000], got {ttl_after_reload}"
+    );
+
+    assert_command_response(
+        &processor,
+        "BGREWRITEAOF",
+        b"+Background append only file rewriting started\r\n",
+    );
+    assert_command_response(&processor, "DEBUG LOADAOF", b"+OK\r\n");
+
+    let ttl_after_loadaof =
+        parse_integer_response(&execute_command_line(&processor, "TTL x").unwrap());
+    assert!(
+        ttl_after_loadaof > 900 && ttl_after_loadaof <= 1000,
+        "expected TTL after DEBUG LOADAOF to stay in (900, 1000], got {ttl_after_loadaof}"
     );
 }
 
