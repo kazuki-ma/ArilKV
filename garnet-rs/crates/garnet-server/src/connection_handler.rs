@@ -3,6 +3,7 @@
 // - formal/tla/specs/BlockingDisconnectLeak.tla
 // - formal/tla/specs/BlockingWaitClassIsolation.tla
 // - formal/tla/specs/BlockingStreamAckGate.tla
+// - formal/tla/specs/BlockingCountVisibility.tla
 // - formal/tla/specs/LinkedBlmoveChainResidue.tla
 // - formal/tla/specs/ClientPauseUnblockRace.tla
 // - formal/tla/specs/WaitAckProgress.tla
@@ -2735,7 +2736,7 @@ async fn execute_blocking_frame_on_owner_thread(
     // - `Disconnect(c)`: disconnect check branch; cleanup must unregister the waiter.
     let blocking_request = request_uses_blocking_wait(command, args);
     let deadline = blocking_timeout_deadline(command, args);
-    let blocking_keys = blocking_wait_keys(command, args);
+    let blocking_keys = blocking_wait_keys(command, args, selected_db);
     let mut blocked = false;
     // TLA+ : ResumeBlockingAfterPause
     // For commands that were pause-gated before entering this loop, resume with
@@ -2791,9 +2792,13 @@ async fn execute_blocking_frame_on_owner_thread(
             if !blocked {
                 blocked = true;
                 // `Block(c,k)` critical section starts here.
-                processor.increment_blocked_clients();
                 processor.register_blocking_wait(client_id, &blocking_keys);
                 metrics.set_client_blocked(client_id, true);
+                // TLA+ : AdvertiseBlockedClientAfterRegistration
+                // Publish the blocked-client count only after the wait queue is
+                // registered, so external blocked_clients observers cannot race
+                // ahead of a not-yet-visible waiter.
+                processor.increment_blocked_clients();
                 if pause_blocked_marker_active {
                     processor.unregister_pause_blocked_blocking_client(client_id);
                     pause_blocked_marker_active = false;
@@ -2883,9 +2888,10 @@ async fn execute_blocking_frame_on_owner_thread(
 
         if !blocked {
             blocked = true;
-            processor.increment_blocked_clients();
             processor.register_blocking_wait(client_id, &blocking_keys);
             metrics.set_client_blocked(client_id, true);
+            // TLA+ : AdvertiseBlockedClientAfterRegistration
+            processor.increment_blocked_clients();
             if pause_blocked_marker_active {
                 processor.unregister_pause_blocked_blocking_client(client_id);
                 pause_blocked_marker_active = false;
@@ -2945,12 +2951,15 @@ fn clear_blocking_client_state(
 ) {
     // Shared cleanup for both successful wakeups and disconnect/unblock paths.
     // In TLA+ terms this is the queue-removal side of `Disconnect(c)` and wake completion.
-    processor.decrement_blocked_clients();
     processor.unregister_blocking_wait(client_id, blocking_keys);
     processor.clear_blocked_stream_wait_state(client_id);
     processor.clear_blocked_xread_tail_ids(client_id);
     processor.clear_client_unblock_request(client_id);
     metrics.set_client_blocked(client_id, false);
+    // TLA+ : WithdrawBlockedClientAfterCleanup
+    // Drop the externally visible blocked-client count only after all queue
+    // registration and waiter-local state is gone.
+    processor.decrement_blocked_clients();
 }
 
 fn clear_blocking_request_state(
@@ -3693,7 +3702,11 @@ fn ignore_wrongtype_while_blocked(command: CommandId) -> bool {
     )
 }
 
-fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
+fn blocking_wait_keys(
+    command: CommandId,
+    args: &[ArgSlice],
+    selected_db: DbName,
+) -> Vec<BlockingWaitKey> {
     match command {
         CommandId::Blpop | CommandId::Brpop | CommandId::Bzpopmin | CommandId::Bzpopmax => {
             if args.len() < 3 {
@@ -3703,6 +3716,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<BlockingWait
                 .iter()
                 .map(|arg| {
                     BlockingWaitKey::new(
+                        selected_db,
                         // SAFETY: The argument slice was parsed from a live request frame and stays valid
                         // while the request is being executed.
                         RedisKey::from(arg_slice_bytes(arg)),
@@ -3720,6 +3734,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<BlockingWait
                 return Vec::new();
             }
             vec![BlockingWaitKey::new(
+                selected_db,
                 // SAFETY: The argument slice was parsed from a live request frame and stays valid
                 // while the request is being executed.
                 RedisKey::from(arg_slice_bytes(&args[1])),
@@ -3745,6 +3760,7 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<BlockingWait
                 .iter()
                 .map(|arg| {
                     BlockingWaitKey::new(
+                        selected_db,
                         // SAFETY: The argument slice was parsed from a live request frame and stays valid
                         // while the request is being executed.
                         RedisKey::from(arg_slice_bytes(arg)),
@@ -3757,8 +3773,8 @@ fn blocking_wait_keys(command: CommandId, args: &[ArgSlice]) -> Vec<BlockingWait
                 })
                 .collect()
         }
-        CommandId::Xread => xread_blocking_wait_keys(args),
-        CommandId::Xreadgroup => xreadgroup_blocking_wait_keys(args),
+        CommandId::Xread => xread_blocking_wait_keys(args, selected_db),
+        CommandId::Xreadgroup => xreadgroup_blocking_wait_keys(args, selected_db),
         _ => Vec::new(),
     }
 }
@@ -3806,7 +3822,7 @@ fn xreadgroup_uses_blocking_special_id(args: &[ArgSlice]) -> bool {
         .all(|arg| arg_slice_bytes(arg) == b">")
 }
 
-fn xread_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
+fn xread_blocking_wait_keys(args: &[ArgSlice], selected_db: DbName) -> Vec<BlockingWaitKey> {
     if parse_xread_blocking_timeout_millis(CommandId::Xread, args).is_none() {
         return Vec::new();
     }
@@ -3822,6 +3838,7 @@ fn xread_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
         .iter()
         .map(|arg| {
             BlockingWaitKey::new(
+                selected_db,
                 RedisKey::from(arg_slice_bytes(arg)),
                 BlockingWaitClass::Stream,
             )
@@ -3829,7 +3846,7 @@ fn xread_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
         .collect()
 }
 
-fn xreadgroup_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
+fn xreadgroup_blocking_wait_keys(args: &[ArgSlice], selected_db: DbName) -> Vec<BlockingWaitKey> {
     if !xreadgroup_uses_blocking_special_id(args) {
         return Vec::new();
     }
@@ -3845,6 +3862,7 @@ fn xreadgroup_blocking_wait_keys(args: &[ArgSlice]) -> Vec<BlockingWaitKey> {
         .iter()
         .map(|arg| {
             BlockingWaitKey::new(
+                selected_db,
                 RedisKey::from(arg_slice_bytes(arg)),
                 BlockingWaitClass::Stream,
             )
@@ -6347,9 +6365,11 @@ mod tests {
             CommandId::Xreadgroup,
             blocking_args
         ));
-        let wait_keys = xreadgroup_blocking_wait_keys(blocking_args);
+        let wait_keys = xreadgroup_blocking_wait_keys(blocking_args, DbName::new(9));
         assert_eq!(wait_keys.len(), 2);
+        assert_eq!(wait_keys[0].db(), DbName::new(9));
         assert_eq!(wait_keys[0].key().as_slice(), b"s1");
+        assert_eq!(wait_keys[1].db(), DbName::new(9));
         assert_eq!(wait_keys[1].key().as_slice(), b"s2");
 
         let mixed_ids = encode_resp_frame(&[
@@ -6373,7 +6393,7 @@ mod tests {
             CommandId::Xreadgroup,
             mixed_args
         ));
-        assert!(xreadgroup_blocking_wait_keys(mixed_args).is_empty());
+        assert!(xreadgroup_blocking_wait_keys(mixed_args, DbName::new(9)).is_empty());
     }
 
     #[test]

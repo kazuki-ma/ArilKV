@@ -1,0 +1,18 @@
+Running base benchmark gate...
+Running new benchmark gate...
+binary_ab_comparison
+base_label=base
+new_label=new
+base.median_set_ops=65526.000
+base.median_get_ops=67493.000
+base.median_set_p99_ms=1.86300
+base.median_get_p99_ms=2.22300
+new.median_set_ops=82121.000
+new.median_get_ops=48535.000
+new.median_set_p99_ms=1.81500
+new.median_get_p99_ms=3.71100
+delta.set_ops_pct=25.33
+delta.get_ops_pct=-28.09
+delta.set_p99_ms_pct=-2.58
+delta.get_p99_ms_pct=66.94
+comparison_path=docs/performance/experiments/2026-03-11/11.455-multidb-blocking-wait-db-scope/artifacts/binary-ab/comparison.txt

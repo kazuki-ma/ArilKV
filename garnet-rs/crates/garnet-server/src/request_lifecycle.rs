@@ -4,6 +4,7 @@
 //! - formal/tla/specs/BlockingDisconnectLeak.tla
 //! - formal/tla/specs/BlockingWaitClassIsolation.tla
 //! - formal/tla/specs/BlockingStreamAckGate.tla
+//! - formal/tla/specs/BlockingCountVisibility.tla
 //! - formal/tla/specs/ClientPauseUnblockRace.tla
 //! - formal/tla/specs/StreamPelOwnership.tla
 
@@ -1922,13 +1923,18 @@ pub(crate) enum BlockingWaitClass {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(crate) struct BlockingWaitKey {
+    db: DbName,
     key: RedisKey,
     class: BlockingWaitClass,
 }
 
 impl BlockingWaitKey {
-    pub(crate) fn new(key: RedisKey, class: BlockingWaitClass) -> Self {
-        Self { key, class }
+    pub(crate) fn new(db: DbName, key: RedisKey, class: BlockingWaitClass) -> Self {
+        Self { db, key, class }
+    }
+
+    pub(crate) fn db(&self) -> DbName {
+        self.db
     }
 
     pub(crate) fn key(&self) -> &RedisKey {
@@ -4273,15 +4279,16 @@ impl RequestProcessor {
             Err(_) => return false,
         };
         for (wait_key, front_client_id) in queue_fronts {
-            if self
-                .expire_key_if_needed(wait_key.key().as_slice())
-                .is_err()
-            {
-                // Treat storage contention as pending wake work so producer ACK
-                // does not race ahead of a partially observed blocking chain.
-                return true;
-            }
-            let Ok(object) = self.object_read(wait_key.key().as_slice()) else {
+            let wait_object = self.with_selected_db(wait_key.db(), || {
+                if self
+                    .expire_key_if_needed(wait_key.key().as_slice())
+                    .is_err()
+                {
+                    return None;
+                }
+                self.object_read(wait_key.key().as_slice()).ok()
+            });
+            let Some(object) = wait_object else {
                 return true;
             };
             match wait_key.class() {

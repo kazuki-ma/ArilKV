@@ -4103,7 +4103,7 @@ async fn blocking_list_wakeups_increase_rdb_changes_since_last_save() {
     server.await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn linked_blmove_chain_is_observable_without_intermediate_residue() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -4124,6 +4124,10 @@ async fn linked_blmove_chain_is_observable_without_intermediate_residue() {
     let mut producer = TcpStream::connect(addr).await.unwrap();
     let mut inspector = TcpStream::connect(addr).await.unwrap();
 
+    for client in [&mut waiter1, &mut waiter2, &mut producer, &mut inspector] {
+        send_and_expect(client, b"*2\r\n$6\r\nSELECT\r\n$1\r\n9\r\n", b"+OK\r\n").await;
+    }
+
     send_and_expect(
         &mut inspector,
         b"*4\r\n$3\r\nDEL\r\n$8\r\nlist1{t}\r\n$8\r\nlist2{t}\r\n$8\r\nlist3{t}\r\n",
@@ -4137,6 +4141,7 @@ async fn linked_blmove_chain_is_observable_without_intermediate_residue() {
         )
         .await
         .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
     waiter2
         .write_all(
             b"*6\r\n$6\r\nBLMOVE\r\n$8\r\nlist2{t}\r\n$8\r\nlist3{t}\r\n$4\r\nLEFT\r\n$5\r\nRIGHT\r\n$1\r\n0\r\n",
