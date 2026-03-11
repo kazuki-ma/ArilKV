@@ -167,7 +167,8 @@ impl RequestProcessor {
         }
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
-        if self.current_auxiliary_db_name().is_some() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
@@ -227,7 +228,8 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "STRLEN", "STRLEN key")?;
 
         let key = RedisKey::from(args[1]);
-        if self.current_auxiliary_db_name().is_some() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
@@ -305,7 +307,8 @@ impl RequestProcessor {
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
-        if self.current_auxiliary_db_name().is_some() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
@@ -1488,7 +1491,8 @@ impl RequestProcessor {
         }
         let updated_text = updated.to_string().into_bytes();
 
-        if self.current_auxiliary_db_name().is_some() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             self.upsert_string_value_for_migration(
                 DbKeyRef::new(current_request_selected_db(), &key),
                 &updated_text,
@@ -1538,7 +1542,8 @@ impl RequestProcessor {
         self.expire_key_if_needed_in_shard(&key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             let old_string_value = self
                 .read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
                 .unwrap_or_default();
@@ -2361,7 +2366,8 @@ impl RequestProcessor {
             return Err(RequestExecutionError::WrongType);
         }
 
-        if self.current_auxiliary_db_name().is_some() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             let expiration_unix_millis =
                 self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key));
             let current =
@@ -2751,7 +2757,8 @@ impl RequestProcessor {
             RequestExecutionError::StringExceedsMaximumAllowedSize,
         )?;
 
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             let key_vec = RedisKey::from(key);
             let object_exists = self
                 .object_read(DbKeyRef::new(current_request_selected_db(), &key_vec))?

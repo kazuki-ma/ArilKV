@@ -64,6 +64,11 @@ Snapshot taken on 2026-03-11 after the fifth mechanical slice:
 - `current_request_selected_db(...)`: `358` call sites
 - `current_auxiliary_db_name(...)`: `13` call sites
 
+Snapshot taken on 2026-03-11 after the sixth mechanical slice:
+
+- `current_request_selected_db(...)`: `368` call sites
+- `current_auxiliary_db_name(...)`: `0` call sites
+
 Interpretation:
 
 - `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
@@ -111,16 +116,21 @@ Fifth mechanical slice:
 - hash-field expiration call sites in hash commands, admin snapshot/reload, object deletes, and helper tests were migrated
 - regression added to prove explicit `DbKeyRef` hash-field expiration metadata paths do not fall back to DB0
 
+Sixth mechanical slice:
+
+- deleted `current_auxiliary_db_name()` entirely instead of preserving it as a wrapper
+- migrated the remaining 13 helper/command branches in `migration.rs`, `server_commands.rs`, `string_commands.rs`, and `string_store.rs` to explicit boundary-local `selected_db` checks
+- storage/helper ambient-DB peeking metric is now zero; the remaining debt is boundary code that still calls `current_request_selected_db()` inside internal execution paths
+
 This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Remove the remaining `current_auxiliary_db_name()` branching from storage helpers and command helpers.
-2. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
-3. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
-4. Delete obsolete implicit-selected-DB helpers once all internal callers are migrated.
+1. Thread `DbName` through command invocation context so command handlers stop pulling it from thread-local request state.
+2. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
+3. Delete residual internal `current_request_selected_db()` peeks once boundary-owned `DbName` values exist.
 
 ## Acceptance criteria
 

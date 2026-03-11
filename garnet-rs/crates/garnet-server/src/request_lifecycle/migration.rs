@@ -106,11 +106,10 @@ impl RequestProcessor {
 
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
-            let expiration_unix_millis = self.expiration_unix_millis(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ));
-            let entry = if let Some(selected_db) = self.current_auxiliary_db_name() {
+            let selected_db = current_request_selected_db();
+            let expiration_unix_millis =
+                self.expiration_unix_millis(DbKeyRef::new(selected_db, key.as_slice()));
+            let entry = if selected_db != DbName::default() {
                 let Some(entry) = self.auxiliary_value_snapshot(selected_db, key.as_slice()) else {
                     continue;
                 };

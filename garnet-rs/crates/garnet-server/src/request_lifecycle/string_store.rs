@@ -1,15 +1,6 @@
 use super::*;
 
 impl RequestProcessor {
-    #[inline]
-    pub(super) fn current_auxiliary_db_name(&self) -> Option<DbName> {
-        let selected_db = current_request_selected_db();
-        if selected_db == DbName::default() {
-            return None;
-        }
-        Some(selected_db)
-    }
-
     pub(super) fn auxiliary_value_snapshot(
         &self,
         db: DbName,
@@ -664,7 +655,8 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: ShardIndex,
     ) -> Result<bool, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             if self.allow_access_expired() {
                 return Ok(false);
             }
@@ -1339,7 +1331,8 @@ impl RequestProcessor {
     }
 
     pub(super) fn string_keys_snapshot(&self) -> Vec<RedisKey> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             return self.auxiliary_keys_snapshot(selected_db, |value| {
                 matches!(value, MigrationValue::String(_))
             });
@@ -1358,7 +1351,8 @@ impl RequestProcessor {
     }
 
     pub(super) fn object_keys_snapshot(&self) -> Vec<RedisKey> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             let mut keys = self.auxiliary_keys_snapshot(selected_db, |value| {
                 matches!(value, MigrationValue::Object { .. })
             });

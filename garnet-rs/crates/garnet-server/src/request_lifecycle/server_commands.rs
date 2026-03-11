@@ -4257,7 +4257,8 @@ impl RequestProcessor {
     }
 
     fn flush_current_db_keys(&self) -> Result<u64, RequestExecutionError> {
-        if let Some(selected_db) = self.current_auxiliary_db_name() {
+        let selected_db = current_request_selected_db();
+        if selected_db != DbName::default() {
             self.materialize_set_hot_entries_for_db(selected_db)?;
             self.invalidate_all_tracking_entries();
             let keys = {
