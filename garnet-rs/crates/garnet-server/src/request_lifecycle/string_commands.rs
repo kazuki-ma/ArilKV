@@ -452,7 +452,7 @@ impl RequestProcessor {
                 &value,
                 expiration_unix_millis,
             )?;
-            self.force_raw_string_encoding(&key);
+            self.force_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
             self.track_string_key(&key);
             self.bump_watch_version(&key);
         }
@@ -505,7 +505,7 @@ impl RequestProcessor {
         value[offset..offset + new_segment.len()].copy_from_slice(new_segment);
 
         self.upsert_string_value_with_expiration_unix_millis(&key, &value, expiration_unix_millis)?;
-        self.force_raw_string_encoding(&key);
+        self.force_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         self.track_string_key(&key);
         self.bump_watch_version(&key);
         self.notify_keyspace_event(NOTIFY_STRING, b"setrange", &key);
@@ -753,8 +753,11 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[2]);
         let source_keys = args[3..].iter().map(|key| key.to_vec()).collect::<Vec<_>>();
         self.expire_key_if_needed(&destination)?;
-        let (destination_had_string, destination_object_type) =
-            self.key_type_snapshot_for_setkey_overwrite(&destination)?;
+        let (destination_had_string, destination_object_type) = self
+            .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
+                current_request_selected_db(),
+                &destination,
+            ))?;
 
         let mut source_values = Vec::with_capacity(source_keys.len());
         for key in &source_keys {
@@ -1035,7 +1038,7 @@ impl RequestProcessor {
                 &value,
                 expiration_unix_millis,
             )?;
-            self.force_raw_string_encoding(&key);
+            self.force_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
             self.track_string_key(&key);
             self.bump_watch_version(&key);
         }
@@ -1247,8 +1250,11 @@ impl RequestProcessor {
 
         if let Some(store_key) = options.store_key.as_deref() {
             self.expire_key_if_needed(store_key)?;
-            let (destination_had_string, destination_object_type) =
-                self.key_type_snapshot_for_setkey_overwrite(store_key)?;
+            let (destination_had_string, destination_object_type) = self
+                .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
+                    current_request_selected_db(),
+                    store_key,
+                ))?;
             let mut stored = Vec::new();
             if options.get_patterns.is_empty() {
                 stored.extend(selected.iter().cloned());
@@ -1365,7 +1371,7 @@ impl RequestProcessor {
         )?;
         self.track_string_key(&key);
         if !append_value.is_empty() {
-            self.force_raw_string_encoding(&key);
+            self.force_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         }
         self.bump_watch_version(&key);
         self.notify_keyspace_event(NOTIFY_STRING, b"append", &key);
@@ -1498,7 +1504,10 @@ impl RequestProcessor {
                 &updated_text,
                 expiration_unix_millis,
             )?;
-            self.clear_forced_raw_string_encoding(&key);
+            self.clear_forced_raw_string_encoding(DbKeyRef::new(
+                current_request_selected_db(),
+                &key,
+            ));
             self.track_string_key(&key);
             self.bump_watch_version(&key);
             self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
@@ -1519,7 +1528,7 @@ impl RequestProcessor {
         session
             .upsert(&key, &stored_value, &mut upsert_output, &mut upsert_info)
             .map_err(map_upsert_error)?;
-        self.clear_forced_raw_string_encoding(&key);
+        self.clear_forced_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         self.track_string_key(&key);
         self.bump_watch_version(&key);
         self.notify_keyspace_event(NOTIFY_STRING, b"incrbyfloat", &key);
@@ -1620,7 +1629,10 @@ impl RequestProcessor {
             entry.hash_field_expirations.clear();
             drop(databases);
 
-            self.clear_forced_raw_string_encoding(&key);
+            self.clear_forced_raw_string_encoding(DbKeyRef::new(
+                current_request_selected_db(),
+                &key,
+            ));
             self.bump_watch_version(&key);
             self.record_key_access(&key, true);
 
@@ -1768,7 +1780,7 @@ impl RequestProcessor {
         if object_exists {
             self.untrack_object_key_in_shard(&key, shard_index);
         }
-        self.clear_forced_raw_string_encoding(&key);
+        self.clear_forced_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         self.set_string_expiration_metadata_in_shard(
             DbKeyRef::new(current_request_selected_db(), &key),
             shard_index,
@@ -2191,8 +2203,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let (destination_had_string, destination_object_type) =
-            self.key_type_snapshot_for_setkey_overwrite(&destination)?;
+        let (destination_had_string, destination_object_type) = self
+            .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
+                current_request_selected_db(),
+                &destination,
+            ))?;
         let source_type = match &source_entry.value {
             MigrationValue::String(_) => None,
             MigrationValue::Object { object_type, .. } => Some(*object_type),
@@ -2285,9 +2300,12 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let (destination_had_string, destination_object_type) = self
-            .with_selected_db(destination_db, || {
-                self.key_type_snapshot_for_setkey_overwrite(&destination)
+        let (destination_had_string, destination_object_type) =
+            self.with_selected_db(destination_db, || {
+                self.key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
+                    current_request_selected_db(),
+                    &destination,
+                ))
             })?;
         let source_type = match &source_entry.value {
             MigrationValue::String(_) => None,
@@ -2386,7 +2404,10 @@ impl RequestProcessor {
                 &updated_text,
                 expiration_unix_millis,
             )?;
-            self.clear_forced_raw_string_encoding(key);
+            self.clear_forced_raw_string_encoding(DbKeyRef::new(
+                current_request_selected_db(),
+                key,
+            ));
             self.track_string_key(key);
             self.bump_watch_version(key);
             self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
@@ -2407,7 +2428,10 @@ impl RequestProcessor {
             | Ok(RmwOperationStatus::Inserted) => {
                 let parsed =
                     parse_i64_ascii(&output).ok_or(RequestExecutionError::ValueNotInteger)?;
-                self.clear_forced_raw_string_encoding(key);
+                self.clear_forced_raw_string_encoding(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key,
+                ));
                 self.track_string_key(key);
                 self.bump_watch_version(key);
                 self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);
@@ -2430,7 +2454,10 @@ impl RequestProcessor {
                         &mut upsert_info,
                     )
                     .map_err(map_upsert_error)?;
-                self.clear_forced_raw_string_encoding(key);
+                self.clear_forced_raw_string_encoding(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key,
+                ));
                 self.track_string_key(key);
                 self.bump_watch_version(key);
                 self.notify_keyspace_event(NOTIFY_STRING, b"incrby", key);

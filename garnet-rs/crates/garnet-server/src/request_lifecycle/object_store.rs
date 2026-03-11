@@ -106,9 +106,9 @@ impl RequestProcessor {
                 entry.expiration = None;
                 entry.hash_field_expirations.clear();
                 let _ = state.entries.remove(key_bytes);
-                self.clear_forced_list_quicklist_encoding(key_bytes);
-                self.clear_forced_set_encoding_floor(key_bytes);
-                self.clear_set_debug_ht_state(key_bytes);
+                self.clear_forced_list_quicklist_encoding(key);
+                self.clear_forced_set_encoding_floor(key);
+                self.clear_set_debug_ht_state(key);
                 self.bump_watch_version(key_bytes);
                 return Ok(true);
             }
@@ -129,9 +129,9 @@ impl RequestProcessor {
                     shard_index,
                 );
                 self.untrack_object_key_in_shard(&key, shard_index);
-                self.clear_forced_list_quicklist_encoding(&key);
-                self.clear_forced_set_encoding_floor(&key);
-                self.clear_set_debug_ht_state(&key);
+                self.clear_forced_list_quicklist_encoding(DbKeyRef::new(DbName::default(), &key));
+                self.clear_forced_set_encoding_floor(DbKeyRef::new(DbName::default(), &key));
+                self.clear_set_debug_ht_state(DbKeyRef::new(DbName::default(), &key));
                 self.bump_watch_version(&key);
                 Ok(true)
             }
@@ -141,9 +141,9 @@ impl RequestProcessor {
                     shard_index,
                 );
                 self.untrack_object_key_in_shard(&key, shard_index);
-                self.clear_forced_list_quicklist_encoding(&key);
-                self.clear_forced_set_encoding_floor(&key);
-                self.clear_set_debug_ht_state(&key);
+                self.clear_forced_list_quicklist_encoding(DbKeyRef::new(DbName::default(), &key));
+                self.clear_forced_set_encoding_floor(DbKeyRef::new(DbName::default(), &key));
+                self.clear_set_debug_ht_state(DbKeyRef::new(DbName::default(), &key));
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
@@ -333,9 +333,9 @@ impl RequestProcessor {
     ) {
         entry.invalidate_ordered_members();
         entry.dirty = true;
-        self.record_set_debug_ht_activity(key.key(), entry.payload.member_count());
+        self.record_set_debug_ht_activity(key, entry.payload.member_count());
         if let DecodedSetObjectPayload::Members(set) = &entry.payload {
-            self.update_set_encoding_floor_for_members(key.key(), set, replace_existing);
+            self.update_set_encoding_floor_for_members(key, set, replace_existing);
         }
         let shard_index = self.object_store_shard_index_for_key(key.key());
         self.track_object_key_in_shard(key.key(), shard_index);
@@ -452,9 +452,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
         if !list_listpack_compatible(list, configured_size) {
-            self.force_list_quicklist_encoding(key);
+            self.force_list_quicklist_encoding(DbKeyRef::new(current_request_selected_db(), key));
         } else {
-            self.clear_forced_list_quicklist_encoding(key);
+            self.clear_forced_list_quicklist_encoding(DbKeyRef::new(
+                current_request_selected_db(),
+                key,
+            ));
         }
         let payload = serialize_list_object_payload(list);
         self.object_upsert(
@@ -513,14 +516,11 @@ impl RequestProcessor {
         key: &[u8],
         set: &BTreeSet<Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
-        self.update_set_encoding_floor_for_members(key, set, false);
-        self.record_set_debug_ht_activity(key, set.len());
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        self.update_set_encoding_floor_for_members(db_key, set, false);
+        self.record_set_debug_ht_activity(db_key, set.len());
         let payload = serialize_set_object_payload(set);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            SET_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(db_key, SET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn save_set_object_replacing_existing(
@@ -528,14 +528,11 @@ impl RequestProcessor {
         key: &[u8],
         set: &BTreeSet<Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
-        self.update_set_encoding_floor_for_members(key, set, true);
-        self.record_set_debug_ht_activity(key, set.len());
+        let db_key = DbKeyRef::new(current_request_selected_db(), key);
+        self.update_set_encoding_floor_for_members(db_key, set, true);
+        self.record_set_debug_ht_activity(db_key, set.len());
         let payload = serialize_set_object_payload(set);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            SET_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(db_key, SET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn save_contiguous_i64_range_set_object(
@@ -545,7 +542,10 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let member_count = usize::try_from(i128::from(range.end()) - i128::from(range.start()) + 1)
             .unwrap_or(usize::MAX);
-        self.record_set_debug_ht_activity(key, member_count);
+        self.record_set_debug_ht_activity(
+            DbKeyRef::new(current_request_selected_db(), key),
+            member_count,
+        );
         let payload = serialize_contiguous_i64_range_set_payload(range);
         self.object_upsert(
             DbKeyRef::new(current_request_selected_db(), key),

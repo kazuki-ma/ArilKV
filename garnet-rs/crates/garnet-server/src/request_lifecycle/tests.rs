@@ -539,6 +539,14 @@ fn execute_command_line_in_db(
         .split_whitespace()
         .map(str::as_bytes)
         .collect::<Vec<_>>();
+    execute_command_args_in_db(processor, &parts, selected_db)
+}
+
+fn execute_command_args_in_db(
+    processor: &RequestProcessor,
+    parts: &[&[u8]],
+    selected_db: DbName,
+) -> Vec<u8> {
     let frame = encode_resp(&parts);
     let mut args = Vec::new();
     let meta = parse_resp_command_arg_slices_dynamic(&frame, &mut args, usize::MAX).unwrap();
@@ -7108,15 +7116,86 @@ fn lazy_expire_tracks_replication_delete_keys_on_read_access() {
 
     assert_command_response(&processor, "GET lazy:key", b"$-1\r\n");
     let queued = processor.take_lazy_expired_keys_for_replication();
-    let queued = queued
-        .into_iter()
-        .map(|key| key.key.into_vec())
-        .collect::<Vec<_>>();
-    assert_eq!(queued, vec![b"lazy:key".to_vec()]);
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].db, DbName::default());
+    assert_eq!(queued[0].key.as_slice(), b"lazy:key");
     assert!(
         processor
             .take_lazy_expired_keys_for_replication()
             .is_empty()
+    );
+}
+
+#[test]
+fn lazy_expire_replication_queue_preserves_auxiliary_db_name() {
+    let processor = RequestProcessor::new().unwrap();
+    let db = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+    assert_command_response_in_db(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n", db);
+    assert_command_response_in_db(&processor, "PSETEX aux:key 1 value", b"+OK\r\n", db);
+    thread::sleep(Duration::from_millis(10));
+
+    assert_command_response_in_db(&processor, "GET aux:key", b"$-1\r\n", db);
+    let queued = processor.take_lazy_expired_keys_for_replication();
+    assert_eq!(queued.len(), 1);
+    assert_eq!(queued[0].db, db);
+    assert_eq!(queued[0].key.as_slice(), b"aux:key");
+}
+
+#[test]
+fn script_replication_effects_preserve_selected_db() {
+    let processor = RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap();
+    let db = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+    let response = execute_command_args_in_db(
+        &processor,
+        &[
+            b"EVAL",
+            b"return redis.call('SET','script:key','db9')",
+            b"0",
+        ],
+        db,
+    );
+    assert_eq!(response, b"+OK\r\n");
+
+    let effects = processor.take_script_replication_effects();
+    assert_eq!(effects.len(), 1);
+    assert_eq!(effects[0].selected_db, db);
+}
+
+#[test]
+fn db_scoped_encoding_state_does_not_leak_between_databases() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+    assert_command_response_in_db(&processor, "SET shared 1", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared 1", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "APPEND shared x", b":2\r\n", db9);
+    assert_command_response_in_db(&processor, "OBJECT ENCODING shared", b"$3\r\nint\r\n", db0);
+    assert_command_response_in_db(&processor, "OBJECT ENCODING shared", b"$3\r\nraw\r\n", db9);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET set-max-listpack-value 1",
+        b"+OK\r\n",
+    );
+    assert_command_response_in_db(&processor, "SADD shared:set 1 2", b":2\r\n", db0);
+    assert_command_response_in_db(&processor, "SADD shared:set aa bb", b":2\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING shared:set",
+        b"$6\r\nintset\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING shared:set",
+        b"$9\r\nhashtable\r\n",
+        db9,
     );
 }
 

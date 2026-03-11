@@ -1650,7 +1650,10 @@ impl RequestProcessor {
             let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
             let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
-                self.set_encoding_floor(key.as_slice())
+                self.set_encoding_floor(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ))
             } else {
                 None
             };
@@ -1685,7 +1688,10 @@ impl RequestProcessor {
                 storage_failure("debug.htstats-key", "failed to decode set payload")
             })?;
             let member_count = payload.member_count();
-            let snapshot = self.set_debug_ht_stats_snapshot(&key, member_count);
+            let snapshot = self.set_debug_ht_stats_snapshot(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                member_count,
+            );
             let stats = format_set_debug_ht_stats_payload(snapshot, member_count, full);
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", &stats);
@@ -1816,7 +1822,10 @@ impl RequestProcessor {
             let (encoding, serialized_len) = if let Some(value) = string_value {
                 let enc = String::from_utf8_lossy(string_encoding_name(
                     &value,
-                    self.string_encoding_is_forced_raw(key.as_slice()),
+                    self.string_encoding_is_forced_raw(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    )),
                 ))
                 .into_owned();
                 let len = value.len();
@@ -1825,7 +1834,10 @@ impl RequestProcessor {
                 // Check forced-quicklist flag so DEBUG OBJECT is consistent
                 // with OBJECT ENCODING for lists with oversized elements.
                 if object.object_type == LIST_OBJECT_TYPE_TAG
-                    && self.list_quicklist_encoding_is_forced(&key)
+                    && self.list_quicklist_encoding_is_forced(DbKeyRef::new(
+                        current_request_selected_db(),
+                        &key,
+                    ))
                 {
                     let len = object.payload.len();
                     let lru = self.key_lru_millis(&key).unwrap_or(0);
@@ -1850,7 +1862,10 @@ impl RequestProcessor {
                 let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
                 let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
                 let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
-                    self.set_encoding_floor(key.as_slice())
+                    self.set_encoding_floor(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    ))
                 } else {
                     None
                 };
@@ -2009,7 +2024,10 @@ impl RequestProcessor {
             {
                 let encoding = string_encoding_name(
                     &value,
-                    self.string_encoding_is_forced_raw(key.as_slice()),
+                    self.string_encoding_is_forced_raw(DbKeyRef::new(
+                        current_request_selected_db(),
+                        key.as_slice(),
+                    )),
                 );
                 append_bulk_string(response_out, encoding);
                 return Ok(());
@@ -2025,7 +2043,10 @@ impl RequestProcessor {
                 return Ok(());
             };
             if object.object_type == LIST_OBJECT_TYPE_TAG
-                && self.list_quicklist_encoding_is_forced(&key)
+                && self.list_quicklist_encoding_is_forced(DbKeyRef::new(
+                    current_request_selected_db(),
+                    &key,
+                ))
             {
                 append_bulk_string(response_out, b"quicklist");
                 return Ok(());
@@ -2038,7 +2059,10 @@ impl RequestProcessor {
             let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
             let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
-                self.set_encoding_floor(key.as_slice())
+                self.set_encoding_floor(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ))
             } else {
                 None
             };

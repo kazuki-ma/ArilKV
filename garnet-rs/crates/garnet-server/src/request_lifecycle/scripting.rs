@@ -2168,6 +2168,7 @@ impl RequestProcessor {
             }
             other => {
                 self.enqueue_script_replication_effect(
+                    current_request_selected_db(),
                     command,
                     encode_script_call_frame(&arg_refs),
                     response,

@@ -74,6 +74,11 @@ Snapshot taken on 2026-03-11 after the seventh mechanical slice:
 - `current_request_selected_db(...)`: `368` call sites
 - `current_auxiliary_db_name(...)`: `0` call sites
 
+Snapshot taken on 2026-03-11 after the eighth mechanical slice:
+
+- `current_request_selected_db(...)`: `400` call sites
+- `current_auxiliary_db_name(...)`: `0` call sites
+
 Interpretation:
 
 - `current_auxiliary_db_name(...)` is the storage-helper peeking metric we want to drive down.
@@ -134,15 +139,35 @@ Seventh mechanical slice:
 - updated AOF replay to carry `selected_db` explicitly across replayed frames and to persist `SELECT` across operations instead of re-entering DB0 for every command
 - added explicit-DB harness helpers for DB-explicit and auxiliary-db regressions so test coverage no longer relies on ambient selected-db state
 
+Eighth mechanical slice:
+
+- changed queued/background helper surfaces to accept explicit DB-scoped inputs:
+  - lazy-expire replication queue now enqueues `DbKeyRef` / `DbScopedKey`
+  - script replication effects now take explicit `selected_db`
+  - `string_value_len_for_replication` and `key_type_snapshot_for_setkey_overwrite` now require `DbKeyRef`
+- keyed debug/encoding side state by `DbScopedKey` instead of bare key bytes:
+  - `forced_list_quicklist_keys`
+  - `forced_raw_string_keys`
+  - `forced_set_encoding_floors`
+  - `set_debug_ht_state`
+- fixed active-expire / auxiliary lazy-expire paths to propagate object delete, watch invalidation, and replication with explicit DBs instead of ambient request DB
+- added exact regressions for auxiliary lazy-expire queue DB, script replication selected DB, and DB-scoped encoding-state isolation
+
+Important interpretation:
+
+- the raw `current_request_selected_db(...)` grep count rose in this slice because several direct command call sites now construct `DbKeyRef::new(current_request_selected_db(), ...)` at the boundary instead of letting deeper helpers rediscover DB implicitly
+- that is an acceptable intermediate step; the bad pattern is hidden DB lookup inside shared helpers and queued/background paths
+- the next slices should now attack the remaining helper families directly, not optimize the grep count cosmetically
+
 This is still not the end state.
 
 ## Remaining work
 
 The remaining helper removal should proceed in this order:
 
-1. Convert blocking / background / migration paths to carry DB in their key structs instead of reconstructing it ad hoc.
-2. Delete residual internal `current_request_selected_db()` peeks once boundary-owned `DbName` values exist.
-3. Tighten test-only harnesses that still default to DB0 when they are meant to exercise nonzero DB behavior.
+1. Convert watch-version, keyspace-notification, and blocking-readiness helpers to accept explicit DB-scoped inputs instead of reading thread-local selected DB.
+2. Delete residual internal `current_request_selected_db()` peeks once those helper families no longer need ambient request context.
+3. Tighten any remaining test-only harnesses that still default to DB0 when they are meant to exercise nonzero DB behavior.
 
 ## Acceptance criteria
 

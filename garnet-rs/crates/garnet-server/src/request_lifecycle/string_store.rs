@@ -118,7 +118,7 @@ impl RequestProcessor {
                 shard_index,
             );
             let object_deleted =
-                self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+                self.object_delete(DbKeyRef::new(DbName::default(), key.as_slice()))?;
 
             match status {
                 DeleteOperationStatus::TombstonedInPlace
@@ -126,7 +126,7 @@ impl RequestProcessor {
                     removed += 1;
                     self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
                     if !object_deleted {
-                        self.bump_watch_version(key.as_slice());
+                        self.bump_watch_version_in_db(DbName::default(), key.as_slice());
                     }
                 }
                 DeleteOperationStatus::NotFound => {
@@ -218,8 +218,8 @@ impl RequestProcessor {
         for (db, key) in &expired {
             self.with_selected_db(*db, || {
                 self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key.as_slice());
-                self.enqueue_lazy_expired_key_for_replication(key.as_slice());
-                self.bump_watch_version_server_origin(key.as_slice());
+                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(*db, key.as_slice()));
+                self.bump_watch_version_server_origin_in_db(*db, key.as_slice());
             });
         }
         self.record_active_expired_keys(expired.len() as u64);
@@ -686,8 +686,8 @@ impl RequestProcessor {
             if should_expire {
                 self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
                 self.record_lazy_expired_keys(1);
-                self.enqueue_lazy_expired_key_for_replication(key);
-                self.bump_watch_version_server_origin(key);
+                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(selected_db, key));
+                self.bump_watch_version_server_origin_in_db(selected_db, key);
             }
             return Ok(should_expire);
         }
@@ -742,10 +742,10 @@ impl RequestProcessor {
         let status = session
             .delete(&key.to_vec(), &mut info)
             .map_err(map_delete_error)?;
-        let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
+        let _ = self.object_delete(DbKeyRef::new(DbName::default(), key))?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.bump_watch_version_server_origin(key);
+                self.bump_watch_version_server_origin_in_db(DbName::default(), key);
             }
             DeleteOperationStatus::NotFound => {}
             DeleteOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
@@ -755,7 +755,7 @@ impl RequestProcessor {
         // even if the underlying delete path returns NotFound.
         self.notify_keyspace_event(NOTIFY_EXPIRED, b"expired", key);
         self.record_lazy_expired_keys(1);
-        self.enqueue_lazy_expired_key_for_replication(key);
+        self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(DbName::default(), key));
         Ok(true)
     }
 
@@ -992,7 +992,7 @@ impl RequestProcessor {
     ) {
         self.set_string_expiration_deadline_in_shard(key, shard_index, None);
         self.untrack_string_key_in_shard(key.key(), shard_index);
-        self.clear_forced_raw_string_encoding(key.key());
+        self.clear_forced_raw_string_encoding(key);
     }
 
     pub(super) fn remove_string_key_metadata(&self, key: DbKeyRef<'_>) {
@@ -1379,15 +1379,23 @@ impl RequestProcessor {
         keys
     }
 
-    pub(super) fn bump_watch_version(&self, key: &[u8]) {
-        let slot = watch_version_slot(current_request_selected_db(), key);
+    pub(super) fn bump_watch_version_in_db(&self, db: DbName, key: &[u8]) {
+        let slot = watch_version_slot(db, key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
         self.enqueue_tracking_invalidation_for_key(key);
     }
 
-    pub(super) fn bump_watch_version_server_origin(&self, key: &[u8]) {
-        let slot = watch_version_slot(current_request_selected_db(), key);
+    pub(super) fn bump_watch_version(&self, key: &[u8]) {
+        self.bump_watch_version_in_db(current_request_selected_db(), key);
+    }
+
+    pub(super) fn bump_watch_version_server_origin_in_db(&self, db: DbName, key: &[u8]) {
+        let slot = watch_version_slot(db, key);
         self.watch_versions[slot].fetch_add(1, Ordering::SeqCst);
         self.enqueue_tracking_invalidation_for_key_as_server(key);
+    }
+
+    pub(super) fn bump_watch_version_server_origin(&self, key: &[u8]) {
+        self.bump_watch_version_server_origin_in_db(current_request_selected_db(), key);
     }
 }

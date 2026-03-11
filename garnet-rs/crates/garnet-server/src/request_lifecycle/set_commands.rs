@@ -131,7 +131,10 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        self.record_set_debug_ht_activity(&key, set.len());
+        self.record_set_debug_ht_activity(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            set.len(),
+        );
 
         if resp3 {
             append_set_length(response_out, set.len());
@@ -160,7 +163,10 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        self.record_set_debug_ht_activity(&key, set.len());
+        self.record_set_debug_ht_activity(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            set.len(),
+        );
         append_integer(response_out, if set.contains(member) { 1 } else { 0 });
         Ok(())
     }
@@ -182,7 +188,10 @@ impl RequestProcessor {
             },
         )?;
         if len > 0 {
-            self.record_set_debug_ht_activity(&key, len as usize);
+            self.record_set_debug_ht_activity(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                len as usize,
+            );
         }
         append_integer(response_out, len);
         Ok(())
@@ -225,7 +234,10 @@ impl RequestProcessor {
                 },
             )?;
             if member_count > 0 {
-                self.record_set_debug_ht_activity(&key, member_count);
+                self.record_set_debug_ht_activity(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    member_count,
+                );
             }
 
             append_array_length(response_out, 2);
@@ -245,7 +257,10 @@ impl RequestProcessor {
             append_set_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
-        self.record_set_debug_ht_activity(&key, set.len());
+        self.record_set_debug_ht_activity(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            set.len(),
+        );
 
         let mut matched = Vec::new();
         for member in &set {
@@ -276,7 +291,10 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let set = self.load_set_object(&key)?;
         if let Some(set) = &set {
-            self.record_set_debug_ht_activity(&key, set.len());
+            self.record_set_debug_ht_activity(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                set.len(),
+            );
         }
         let members = &args[2..];
         append_array_length(response_out, members.len());
@@ -319,7 +337,10 @@ impl RequestProcessor {
                 }
                 return Ok(());
             };
-            self.record_set_debug_ht_activity(&key, member_count);
+            self.record_set_debug_ht_activity(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                member_count,
+            );
             append_bulk_string(response_out, &member);
             return Ok(());
         }
@@ -371,7 +392,10 @@ impl RequestProcessor {
             }
             return Ok(());
         }
-        self.record_set_debug_ht_activity(&key, member_count);
+        self.record_set_debug_ht_activity(
+            DbKeyRef::new(current_request_selected_db(), &key),
+            member_count,
+        );
         if count < 0 {
             append_array_length(response_out, sampled.len());
             for member in sampled {
@@ -884,8 +908,11 @@ fn store_set_result(
     result_set: &BTreeSet<Vec<u8>>,
 ) -> Result<(), RequestExecutionError> {
     processor.expire_key_if_needed(destination)?;
-    let (destination_had_string, destination_object_type) =
-        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
+    let (destination_had_string, destination_object_type) = processor
+        .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
+            current_request_selected_db(),
+            destination,
+        ))?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_object_overwrite(processor, destination)?
     } else {

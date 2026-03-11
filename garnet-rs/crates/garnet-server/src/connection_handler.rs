@@ -754,9 +754,7 @@ fn pre_string_len_for_mutation_detection(
     }
     let key = arg_slice_bytes(args.get(1)?);
     processor
-        .with_selected_db(selected_db, || {
-            processor.string_value_len_for_replication(key)
-        })
+        .string_value_len_for_replication(DbKeyRef::new(selected_db, key))
         .ok()
         .flatten()
 }

@@ -96,7 +96,8 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+        let previous_was_quicklist = self
+            .list_quicklist_encoding_is_forced(DbKeyRef::new(current_request_selected_db(), &key))
             || !list_listpack_compatible(&list, configured_size);
         if list.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
@@ -373,7 +374,8 @@ impl RequestProcessor {
             return Err(RequestExecutionError::IndexOutOfRange);
         };
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+        let previous_was_quicklist = self
+            .list_quicklist_encoding_is_forced(DbKeyRef::new(current_request_selected_db(), &key))
             || !list_listpack_compatible(&list, configured_size);
         let force_quicklist_after_replace = if previous_was_quicklist {
             false
@@ -384,7 +386,7 @@ impl RequestProcessor {
         self.save_list_object(&key, &list)?;
         self.notify_keyspace_event(NOTIFY_LIST, b"lset", &key);
         if force_quicklist_after_replace {
-            self.force_list_quicklist_encoding(&key);
+            self.force_list_quicklist_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         } else if previous_was_quicklist {
             self.maybe_preserve_quicklist_after_shrink(
                 &key,
@@ -436,7 +438,8 @@ impl RequestProcessor {
 
         let trimmed = list[normalized_start as usize..=normalized_stop as usize].to_vec();
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+        let previous_was_quicklist = self
+            .list_quicklist_encoding_is_forced(DbKeyRef::new(current_request_selected_db(), &key))
             || !list_listpack_compatible(&list, configured_size);
         self.notify_keyspace_event(NOTIFY_LIST, b"ltrim", &key);
         if trimmed.is_empty() {
@@ -509,7 +512,8 @@ impl RequestProcessor {
             return Ok(());
         };
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(&key)
+        let previous_was_quicklist = self
+            .list_quicklist_encoding_is_forced(DbKeyRef::new(current_request_selected_db(), &key))
             || !list_listpack_compatible(&list, configured_size);
 
         let mut removed = 0i64;
@@ -778,8 +782,10 @@ impl RequestProcessor {
             return Ok(());
         };
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        let source_was_quicklist = self.list_quicklist_encoding_is_forced(source)
-            || !list_listpack_compatible(&source_list, configured_size);
+        let source_was_quicklist = self.list_quicklist_encoding_is_forced(DbKeyRef::new(
+            current_request_selected_db(),
+            source,
+        )) || !list_listpack_compatible(&source_list, configured_size);
         if source_list.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), source))?;
             if resp3 {
@@ -873,7 +879,8 @@ impl RequestProcessor {
             return Ok(None);
         };
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
-        let previous_was_quicklist = self.list_quicklist_encoding_is_forced(key)
+        let previous_was_quicklist = self
+            .list_quicklist_encoding_is_forced(DbKeyRef::new(current_request_selected_db(), key))
             || !list_listpack_compatible(&list, configured_size);
         if list.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
@@ -921,7 +928,7 @@ impl RequestProcessor {
             return;
         }
         if listpack_shrink_should_keep_quicklist(list, configured_size) {
-            self.force_list_quicklist_encoding(key);
+            self.force_list_quicklist_encoding(DbKeyRef::new(current_request_selected_db(), key));
         }
     }
 }

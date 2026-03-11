@@ -1123,8 +1123,11 @@ fn store_geosearch_result(
     result_zset: &BTreeMap<Vec<u8>, f64>,
 ) -> Result<(), RequestExecutionError> {
     processor.expire_key_if_needed(destination)?;
-    let (destination_had_string, destination_object_type) =
-        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
+    let (destination_had_string, destination_object_type) = processor
+        .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
+            current_request_selected_db(),
+            destination,
+        ))?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_geo_store_overwrite(processor, destination)?
     } else {

@@ -1863,11 +1863,11 @@ pub struct RequestProcessor {
     blocked_xread_tail_ids: Mutex<HashMap<ClientId, Vec<Option<StreamId>>>>,
     pending_client_unblocks: Mutex<HashMap<ClientId, ClientUnblockMode>>,
     pause_blocked_blocking_clients: Mutex<HashSet<ClientId>>,
-    forced_list_quicklist_keys: Mutex<HashSet<RedisKey>>,
-    forced_raw_string_keys: Mutex<HashSet<RedisKey>>,
+    forced_list_quicklist_keys: Mutex<HashSet<DbScopedKey>>,
+    forced_raw_string_keys: Mutex<HashSet<DbScopedKey>>,
     forced_set_encoding_floors: Mutex<HashMap<DbScopedKey, SetEncodingFloor>>,
     set_object_hot_state: Mutex<SetObjectHotState>,
-    set_debug_ht_state: Mutex<HashMap<RedisKey, SetDebugHtState>>,
+    set_debug_ht_state: Mutex<HashMap<DbScopedKey, SetDebugHtState>>,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
     debug_pause_cron: AtomicBool,
@@ -2246,21 +2246,9 @@ impl RequestProcessor {
         })
     }
 
-    pub(crate) fn watch_key_version(&self, key: &[u8]) -> WatchVersion {
-        self.watch_key_version_in_db(current_request_selected_db(), key)
-    }
-
     pub(crate) fn watch_key_version_in_db(&self, db: DbName, key: &[u8]) -> WatchVersion {
         let slot = watch_version_slot(db, key);
         WatchVersion::new(self.watch_versions[slot].load(Ordering::SeqCst))
-    }
-
-    pub(crate) fn expire_watch_key_if_needed(
-        &self,
-        key: &[u8],
-    ) -> Result<(), RequestExecutionError> {
-        self.expire_watch_key_if_needed_in_db(current_request_selected_db(), key)?;
-        Ok(())
     }
 
     pub(crate) fn expire_watch_key_if_needed_in_db(
@@ -2274,18 +2262,20 @@ impl RequestProcessor {
 
     pub(crate) fn string_value_len_for_replication(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<usize>, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
-        let Some(value) =
-            self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
-        else {
-            if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))? {
-                return Err(RequestExecutionError::WrongType);
-            }
-            return Ok(None);
-        };
-        Ok(Some(value.len()))
+        let db = key.db();
+        let key_bytes = key.key();
+        self.with_selected_db(db, || {
+            self.expire_key_if_needed(key_bytes)?;
+            let Some(value) = self.read_string_value(key)? else {
+                if self.object_key_exists(key)? {
+                    return Err(RequestExecutionError::WrongType);
+                }
+                return Ok(None);
+            };
+            Ok(Some(value.len()))
+        })
     }
 
     pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[WatchedKey]) {
@@ -2300,19 +2290,6 @@ impl RequestProcessor {
         watched_keys.iter().all(|watched| {
             self.watch_key_version_in_db(watched.db, watched.key.as_slice()) == watched.version
         })
-    }
-
-    pub(super) fn set_resp_protocol_version(&self, version: RespProtocolVersion) {
-        self.resp_protocol_version
-            .store(version.as_u8(), Ordering::Release);
-    }
-
-    pub(super) fn resp_protocol_version(&self) -> RespProtocolVersion {
-        if let Some(version) = RESP_PROTOCOL_OVERRIDE.with(|cell| cell.get()) {
-            return version;
-        }
-        RespProtocolVersion::from_u8(self.resp_protocol_version.load(Ordering::Acquire))
-            .unwrap_or(RespProtocolVersion::Resp2)
     }
 
     pub(super) fn with_resp_protocol_version_override<T>(
@@ -2336,6 +2313,19 @@ impl RequestProcessor {
             let _reset = RespProtocolOverrideReset { cell, previous };
             f()
         })
+    }
+
+    pub(super) fn set_resp_protocol_version(&self, version: RespProtocolVersion) {
+        self.resp_protocol_version
+            .store(version.as_u8(), Ordering::Release);
+    }
+
+    pub(super) fn resp_protocol_version(&self) -> RespProtocolVersion {
+        if let Some(version) = RESP_PROTOCOL_OVERRIDE.with(|cell| cell.get()) {
+            return version;
+        }
+        RespProtocolVersion::from_u8(self.resp_protocol_version.load(Ordering::Acquire))
+            .unwrap_or(RespProtocolVersion::Resp2)
     }
 
     pub(super) fn emit_resp3_zset_pairs(&self) -> bool {
@@ -3149,12 +3139,10 @@ impl RequestProcessor {
 
     pub(crate) fn key_type_snapshot_for_setkey_overwrite(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<(bool, Option<ObjectTypeTag>), RequestExecutionError> {
-        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), key))?;
-        let object_type = self
-            .object_read(DbKeyRef::new(current_request_selected_db(), key))?
-            .map(|object| object.object_type);
+        let string_exists = self.key_exists(key)?;
+        let object_type = self.object_read(key)?.map(|object| object.object_type);
         Ok((string_exists, object_type))
     }
 
@@ -3626,9 +3614,9 @@ impl RequestProcessor {
         }
     }
 
-    pub(crate) fn enqueue_lazy_expired_key_for_replication(&self, key: &[u8]) {
+    pub(crate) fn enqueue_lazy_expired_key_for_replication(&self, key: DbKeyRef<'_>) {
         if let Ok(mut pending) = self.lazy_expired_keys_for_replication.lock() {
-            pending.push(DbScopedKey::new(current_request_selected_db(), key));
+            pending.push(DbScopedKey::new(key.db(), key.key()));
         }
     }
 
@@ -3648,6 +3636,7 @@ impl RequestProcessor {
 
     pub(crate) fn enqueue_script_replication_effect(
         &self,
+        selected_db: DbName,
         command: CommandId,
         frame: Vec<u8>,
         response: Vec<u8>,
@@ -3656,7 +3645,7 @@ impl RequestProcessor {
             return;
         };
         pending.push(ScriptReplicationEffect {
-            selected_db: current_request_selected_db(),
+            selected_db,
             command,
             frame,
             response,
@@ -4327,10 +4316,7 @@ impl RequestProcessor {
             {
                 return Ok(None);
             }
-            self.object_read(DbKeyRef::new(
-                current_request_selected_db(),
-                wait_key.key().as_slice(),
-            ))
+            self.object_read(DbKeyRef::new(wait_key.db(), wait_key.key().as_slice()))
         })
     }
 
@@ -4436,15 +4422,15 @@ impl RequestProcessor {
         false
     }
 
-    pub(super) fn force_list_quicklist_encoding(&self, key: &[u8]) {
+    pub(super) fn force_list_quicklist_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
-            forced.insert(RedisKey::from(key));
+            forced.insert(DbScopedKey::new(key.db(), key.key()));
         }
     }
 
-    pub(super) fn clear_forced_list_quicklist_encoding(&self, key: &[u8]) {
+    pub(super) fn clear_forced_list_quicklist_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.forced_list_quicklist_keys.lock() {
-            let _ = forced.remove(key);
+            let _ = forced.remove(&DbScopedKey::new(key.db(), key.key()));
         }
     }
 
@@ -4454,42 +4440,42 @@ impl RequestProcessor {
         }
     }
 
-    pub(super) fn list_quicklist_encoding_is_forced(&self, key: &[u8]) -> bool {
+    pub(super) fn list_quicklist_encoding_is_forced(&self, key: DbKeyRef<'_>) -> bool {
         self.forced_list_quicklist_keys
             .lock()
-            .map(|forced| forced.contains(key))
+            .map(|forced| forced.contains(&DbScopedKey::new(key.db(), key.key())))
             .unwrap_or(false)
     }
 
-    pub(super) fn string_encoding_is_forced_raw(&self, key: &[u8]) -> bool {
+    pub(super) fn string_encoding_is_forced_raw(&self, key: DbKeyRef<'_>) -> bool {
         self.forced_raw_string_keys
             .lock()
-            .map(|forced| forced.contains(key))
+            .map(|forced| forced.contains(&DbScopedKey::new(key.db(), key.key())))
             .unwrap_or(false)
     }
 
-    pub(super) fn force_raw_string_encoding(&self, key: &[u8]) {
+    pub(super) fn force_raw_string_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.forced_raw_string_keys.lock() {
-            forced.insert(RedisKey::from(key));
+            forced.insert(DbScopedKey::new(key.db(), key.key()));
         }
     }
 
-    pub(super) fn clear_forced_raw_string_encoding(&self, key: &[u8]) {
+    pub(super) fn clear_forced_raw_string_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.forced_raw_string_keys.lock() {
-            let _ = forced.remove(key);
+            let _ = forced.remove(&DbScopedKey::new(key.db(), key.key()));
         }
     }
 
-    pub(super) fn set_encoding_floor(&self, key: &[u8]) -> Option<SetEncodingFloor> {
-        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+    pub(super) fn set_encoding_floor(&self, key: DbKeyRef<'_>) -> Option<SetEncodingFloor> {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         self.forced_set_encoding_floors
             .lock()
             .ok()
             .and_then(|floors| floors.get(&scoped_key).copied())
     }
 
-    pub(super) fn clear_forced_set_encoding_floor(&self, key: &[u8]) {
-        let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+    pub(super) fn clear_forced_set_encoding_floor(&self, key: DbKeyRef<'_>) {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
             let _ = floors.remove(&scoped_key);
         }
@@ -4561,13 +4547,13 @@ impl RequestProcessor {
         Ok(())
     }
 
-    fn clear_set_debug_ht_state(&self, key: &[u8]) {
+    fn clear_set_debug_ht_state(&self, key: DbKeyRef<'_>) {
         if let Ok(mut states) = self.set_debug_ht_state.lock() {
-            let _ = states.remove(key);
+            let _ = states.remove(&DbScopedKey::new(key.db(), key.key()));
         }
     }
 
-    fn record_set_debug_ht_activity(&self, key: &[u8], member_count: usize) {
+    fn record_set_debug_ht_activity(&self, key: DbKeyRef<'_>, member_count: usize) {
         if member_count == 0 {
             self.clear_set_debug_ht_state(key);
             return;
@@ -4576,7 +4562,7 @@ impl RequestProcessor {
         let bgsave_in_progress = self.rdb_bgsave_in_progress();
         if let Ok(mut states) = self.set_debug_ht_state.lock() {
             let state = states
-                .entry(RedisKey::from(key))
+                .entry(DbScopedKey::new(key.db(), key.key()))
                 .or_insert_with(|| SetDebugHtState::new(member_count));
             state.update_for_member_count(member_count, bgsave_in_progress);
             state.advance_rehash(member_count, bgsave_in_progress);
@@ -4585,20 +4571,20 @@ impl RequestProcessor {
 
     fn set_debug_ht_stats_snapshot(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         member_count: usize,
     ) -> SetDebugHtStatsSnapshot {
         self.set_debug_ht_state
             .lock()
             .ok()
-            .and_then(|states| states.get(key).copied())
+            .and_then(|states| states.get(&DbScopedKey::new(key.db(), key.key())).copied())
             .unwrap_or_else(|| SetDebugHtState::new(member_count))
             .snapshot()
     }
 
     pub(super) fn update_set_encoding_floor_for_members(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         set: &BTreeSet<Vec<u8>>,
         replace_existing: bool,
     ) {
@@ -4613,7 +4599,7 @@ impl RequestProcessor {
         );
 
         if let Ok(mut floors) = self.forced_set_encoding_floors.lock() {
-            let scoped_key = DbScopedKey::new(current_request_selected_db(), key);
+            let scoped_key = DbScopedKey::new(key.db(), key.key());
             let previous = if replace_existing {
                 None
             } else {
