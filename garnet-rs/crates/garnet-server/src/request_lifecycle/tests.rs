@@ -7981,6 +7981,30 @@ fn swapdb_zero_and_nonzero_preserves_object_access_metadata() {
 }
 
 #[test]
+fn swapdb_zero_and_nonzero_preserves_dirty_set_hot_state() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db1 = DbName::new(1);
+
+    assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
+    assert_command_response_in_db(&processor, "SADD shared a", b":1\r\n", db0);
+    assert_command_response_in_db(&processor, "SADD shared b c", b":2\r\n", db1);
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SWAPDB 0 1", db0),
+        b"+OK\r\n"
+    );
+
+    assert_command_response_in_db(&processor, "SCARD shared", b":2\r\n", db0);
+    assert_command_response_in_db(&processor, "SISMEMBER shared a", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "SISMEMBER shared b", b":1\r\n", db0);
+
+    assert_command_response_in_db(&processor, "SCARD shared", b":1\r\n", db1);
+    assert_command_response_in_db(&processor, "SISMEMBER shared a", b":1\r\n", db1);
+    assert_command_response_in_db(&processor, "SISMEMBER shared b", b":0\r\n", db1);
+}
+
+#[test]
 fn swapdb_zero_and_nonzero_makes_blocked_list_waiter_ready_in_target_logical_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();

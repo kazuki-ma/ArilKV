@@ -1658,17 +1658,124 @@ impl SetObjectHotEntry {
 }
 
 #[derive(Debug, Default)]
+struct SetObjectHotDbState {
+    entries: HashMap<RedisKey, SetObjectHotEntry>,
+}
+
+#[derive(Debug, Default)]
 struct SetObjectHotState {
-    entries: HashMap<DbScopedKey, SetObjectHotEntry>,
+    by_db: HashMap<DbName, SetObjectHotDbState>,
     lru: VecDeque<DbScopedKey>,
+    total_entries: usize,
 }
 
 impl SetObjectHotState {
-    fn touch(&mut self, key: &DbScopedKey) {
-        if let Some(index) = self.lru.iter().position(|existing| existing == key) {
+    fn touch(&mut self, key: DbKeyRef<'_>) {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
+        if let Some(index) = self.lru.iter().position(|existing| existing == &scoped_key) {
             let _ = self.lru.remove(index);
         }
-        self.lru.push_back(key.clone());
+        self.lru.push_back(scoped_key);
+    }
+
+    fn remove(&mut self, key: DbKeyRef<'_>) -> Option<SetObjectHotEntry> {
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
+        let (removed, remove_db) = self.by_db.get_mut(&key.db()).map(|db_state| {
+            let removed = db_state.entries.remove(key.key());
+            let remove_db = db_state.entries.is_empty();
+            (removed, remove_db)
+        })?;
+        if removed.is_some() {
+            self.total_entries = self.total_entries.saturating_sub(1);
+            if let Some(index) = self.lru.iter().position(|existing| existing == &scoped_key) {
+                let _ = self.lru.remove(index);
+            }
+        }
+        if remove_db {
+            let _ = self.by_db.remove(&key.db());
+        }
+        removed
+    }
+
+    fn insert(
+        &mut self,
+        key: DbKeyRef<'_>,
+        entry: SetObjectHotEntry,
+    ) -> Option<(DbScopedKey, SetObjectHotEntry)> {
+        let db_state = self.by_db.entry(key.db()).or_default();
+        if db_state
+            .entries
+            .insert(RedisKey::from(key.key()), entry)
+            .is_none()
+        {
+            self.total_entries += 1;
+        }
+        self.touch(key);
+
+        while self.total_entries > SET_OBJECT_HOT_STATE_CAPACITY {
+            let Some(oldest_key) = self.lru.pop_front() else {
+                break;
+            };
+            let (removed, remove_db) = match self.by_db.get_mut(&oldest_key.db) {
+                Some(db_state) => {
+                    let removed = db_state.entries.remove(oldest_key.key.as_slice());
+                    let remove_db = db_state.entries.is_empty();
+                    (removed, remove_db)
+                }
+                None => continue,
+            };
+            if remove_db {
+                let _ = self.by_db.remove(&oldest_key.db);
+            }
+            if let Some(oldest_entry) = removed {
+                self.total_entries = self.total_entries.saturating_sub(1);
+                return Some((oldest_key, oldest_entry));
+            }
+        }
+
+        None
+    }
+
+    fn contains(&self, key: DbKeyRef<'_>) -> bool {
+        self.by_db
+            .get(&key.db())
+            .is_some_and(|db_state| db_state.entries.contains_key(key.key()))
+    }
+
+    fn keys_for_db(&self, db: DbName) -> Vec<RedisKey> {
+        self.by_db
+            .get(&db)
+            .map(|db_state| db_state.entries.keys().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn clear_db(&mut self, db: DbName) {
+        let Some(db_state) = self.by_db.remove(&db) else {
+            return;
+        };
+        self.total_entries = self.total_entries.saturating_sub(db_state.entries.len());
+        self.lru.retain(|key| key.db != db);
+    }
+
+    fn swap_databases(&mut self, db1: DbName, db2: DbName) {
+        if db1 == db2 {
+            return;
+        }
+        let left = self.by_db.remove(&db1);
+        let right = self.by_db.remove(&db2);
+        if let Some(left) = left {
+            self.by_db.insert(db2, left);
+        }
+        if let Some(right) = right {
+            self.by_db.insert(db1, right);
+        }
+        for key in &mut self.lru {
+            if key.db == db1 {
+                key.db = db2;
+            } else if key.db == db2 {
+                key.db = db1;
+            }
+        }
     }
 }
 

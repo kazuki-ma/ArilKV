@@ -150,18 +150,10 @@ impl RequestProcessor {
     }
 
     fn take_set_hot_entry(&self, key: DbKeyRef<'_>) -> Option<SetObjectHotEntry> {
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
         let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return None;
         };
-        if let Some(index) = hot_state
-            .lru
-            .iter()
-            .position(|candidate| candidate == &scoped_key)
-        {
-            let _ = hot_state.lru.remove(index);
-        }
-        hot_state.entries.remove(&scoped_key)
+        hot_state.remove(key)
     }
 
     fn upsert_set_hot_entry(
@@ -169,28 +161,12 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         entry: SetObjectHotEntry,
     ) -> Result<(), RequestExecutionError> {
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
-        let mut evicted = None;
-        {
+        let evicted = {
             let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            hot_state.entries.insert(scoped_key.clone(), entry);
-            hot_state.touch(&scoped_key);
-            while hot_state.entries.len() > SET_OBJECT_HOT_STATE_CAPACITY {
-                let Some(oldest_key) = hot_state.lru.pop_front() else {
-                    break;
-                };
-                if oldest_key == scoped_key {
-                    hot_state.lru.push_back(oldest_key);
-                    break;
-                }
-                if let Some(oldest_entry) = hot_state.entries.remove(&oldest_key) {
-                    evicted = Some((oldest_key, oldest_entry));
-                    break;
-                }
-            }
-        }
+            hot_state.insert(key, entry)
+        };
         if let Some((oldest_key, oldest_entry)) = evicted
             && oldest_entry.dirty
         {
@@ -205,12 +181,11 @@ impl RequestProcessor {
     }
 
     pub(super) fn has_set_hot_entry(&self, key: DbKeyRef<'_>) -> bool {
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
         self.db_catalog
             .side_state
             .set_object_hot_state
             .lock()
-            .map(|hot_state| hot_state.entries.contains_key(&scoped_key))
+            .map(|hot_state| hot_state.contains(key))
             .unwrap_or(false)
     }
 
@@ -218,12 +193,7 @@ impl RequestProcessor {
         let Ok(hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return Vec::new();
         };
-        hot_state
-            .entries
-            .keys()
-            .filter(|key| key.db == db)
-            .map(|key| key.key.clone())
-            .collect()
+        hot_state.keys_for_db(db)
     }
 
     pub(super) fn materialize_set_hot_entries_for_db(
@@ -235,12 +205,21 @@ impl RequestProcessor {
             let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
                 return Err(RequestExecutionError::StorageBusy);
             };
-            for (key, entry) in hot_state.entries.iter_mut() {
-                if key.db != db || !entry.dirty {
+            let Some(db_state) = hot_state.by_db.get_mut(&db) else {
+                return Ok(());
+            };
+            for (key, entry) in db_state.entries.iter_mut() {
+                if !entry.dirty {
                     continue;
                 }
                 entry.dirty = false;
-                dirty_entries.push((key.clone(), Self::serialize_set_hot_payload(&entry.payload)));
+                dirty_entries.push((
+                    DbScopedKey {
+                        db,
+                        key: key.clone(),
+                    },
+                    Self::serialize_set_hot_payload(&entry.payload),
+                ));
             }
         }
 
@@ -258,20 +237,19 @@ impl RequestProcessor {
         let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return;
         };
-        hot_state.entries.retain(|key, _| key.db != db);
-        hot_state.lru.retain(|key| key.db != db);
+        hot_state.clear_db(db);
     }
 
     fn set_hot_payload_for_object_read(&self, key: DbKeyRef<'_>) -> Option<Vec<u8>> {
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
         let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
             return None;
         };
         let payload = {
-            let entry = hot_state.entries.get(&scoped_key)?;
+            let db_state = hot_state.by_db.get(&key.db())?;
+            let entry = db_state.entries.get(key.key())?;
             Self::serialize_set_hot_payload(&entry.payload)
         };
-        hot_state.touch(&scoped_key);
+        hot_state.touch(key);
         Some(payload)
     }
 

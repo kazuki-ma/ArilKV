@@ -841,7 +841,9 @@ impl RequestProcessor {
         // TLA+ : InvalidateSwapTrackedKeys
         self.invalidate_all_tracking_entries();
         self.swap_logical_db_storage_bindings(db1, db2)?;
-        self.swap_set_hot_state_for_logical_db_pair(db1, db2);
+        if let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() {
+            hot_state.swap_databases(db1, db2);
+        }
         if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
             forced.swap_databases(db1, db2);
         }
@@ -862,35 +864,6 @@ impl RequestProcessor {
         }
 
         Ok(())
-    }
-
-    fn swap_set_hot_state_for_logical_db_pair(&self, db1: DbName, db2: DbName) {
-        let mut hot_state = match self.db_catalog.side_state.set_object_hot_state.lock() {
-            Ok(state) => state,
-            Err(_) => return,
-        };
-        let mut moved = HashMap::new();
-        moved.reserve(hot_state.entries.len());
-
-        for (key, value) in std::mem::take(&mut hot_state.entries) {
-            let remapped_key = Self::remap_scoped_key(key, db1, db2);
-            let _ = moved.insert(remapped_key, value);
-        }
-        hot_state.entries = moved;
-
-        for key in &mut hot_state.lru {
-            *key = Self::remap_scoped_key(key.clone(), db1, db2);
-        }
-    }
-
-    fn remap_scoped_key(key: DbScopedKey, db1: DbName, db2: DbName) -> DbScopedKey {
-        if key.db == db1 {
-            return DbScopedKey::new(db2, &key.key);
-        }
-        if key.db == db2 {
-            return DbScopedKey::new(db1, &key.key);
-        }
-        key
     }
 
     pub(super) fn handle_migrate(
