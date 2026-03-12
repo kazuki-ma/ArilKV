@@ -6,7 +6,7 @@ impl RequestProcessor {
         db: DbName,
         key: &[u8],
     ) -> Result<Option<MigrationEntry>, RequestExecutionError> {
-        self.with_selected_db(db, || self.expire_key_if_needed(key))?;
+        self.expire_key_if_needed(DbKeyRef::new(db, key))?;
 
         if let Some(value) = self.read_string_value(DbKeyRef::new(db, key))? {
             return Ok(Some(MigrationEntry {

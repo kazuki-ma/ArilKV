@@ -184,7 +184,7 @@ impl RequestProcessor {
             current_request_selected_db(),
             key.as_slice(),
         )) {
-            self.expire_key_if_needed(&key)?;
+            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
             let object = match self
                 .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
             {

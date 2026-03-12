@@ -227,14 +227,12 @@ impl RequestProcessor {
             else {
                 continue;
             };
-            self.with_selected_db(logical_db, || {
-                self.notify_keyspace_event(logical_db, NOTIFY_EXPIRED, b"expired", key.as_slice());
-                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(
-                    logical_db,
-                    key.as_slice(),
-                ));
-                self.bump_watch_version_server_origin_in_db(logical_db, key.as_slice());
-            });
+            self.notify_keyspace_event(logical_db, NOTIFY_EXPIRED, b"expired", key.as_slice());
+            self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(
+                logical_db,
+                key.as_slice(),
+            ));
+            self.bump_watch_version_server_origin_in_db(logical_db, key.as_slice());
         }
         self.record_active_expired_keys(expired.len() as u64);
         Ok(expired.len())
@@ -248,7 +246,7 @@ impl RequestProcessor {
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
-                self.expire_key_if_needed_in_db(db, key_bytes)?;
+                self.expire_key_if_needed(DbKeyRef::new(db, key_bytes))?;
             }
             let entry = self.auxiliary_value_snapshot(db, key_bytes);
             self.track_read_key_for_current_client(key_bytes);
@@ -290,7 +288,7 @@ impl RequestProcessor {
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
-                self.expire_key_if_needed_in_db(db, key_bytes)?;
+                self.expire_key_if_needed(DbKeyRef::new(db, key_bytes))?;
             }
             let entry = self.auxiliary_value_snapshot(db, key_bytes);
             self.track_read_key_for_current_client(key_bytes);
@@ -329,7 +327,7 @@ impl RequestProcessor {
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
-                self.expire_key_if_needed_in_db(db, key_bytes)?;
+                self.expire_key_if_needed(DbKeyRef::new(db, key_bytes))?;
             }
             if self.has_set_hot_entry(DbKeyRef::new(db, key_bytes)) {
                 self.track_read_key_for_current_client(key_bytes);
@@ -640,17 +638,12 @@ impl RequestProcessor {
     /// Check if a key has expired and, unless expiration is suppressed by
     /// CLIENT PAUSE, physically delete it.  Returns `true` when the key is
     /// logically expired (whether or not it was actually deleted).
-    pub(super) fn expire_key_if_needed_in_db(
+    pub(super) fn expire_key_if_needed(
         &self,
-        db: DbName,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<bool, RequestExecutionError> {
-        let shard_index = self.string_store_shard_index_for_key(key);
-        self.expire_key_if_needed_in_shard(db, key, shard_index)
-    }
-
-    pub(super) fn expire_key_if_needed(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(current_request_selected_db(), key)
+        let shard_index = self.string_store_shard_index_for_key(key.key());
+        self.expire_key_if_needed_in_shard(key.db(), key.key(), shard_index)
     }
 
     pub(super) fn expire_key_if_needed_in_shard(

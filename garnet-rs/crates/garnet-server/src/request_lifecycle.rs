@@ -2705,31 +2705,18 @@ impl RequestProcessor {
         WatchVersion::new(self.watch_versions[slot].load(Ordering::SeqCst))
     }
 
-    pub(crate) fn expire_watch_key_if_needed_in_db(
-        &self,
-        db: DbName,
-        key: &[u8],
-    ) -> Result<(), RequestExecutionError> {
-        self.with_selected_db(db, || self.expire_key_if_needed(key))?;
-        Ok(())
-    }
-
     pub(crate) fn string_value_len_for_replication(
         &self,
         key: DbKeyRef<'_>,
     ) -> Result<Option<usize>, RequestExecutionError> {
-        let db = key.db();
-        let key_bytes = key.key();
-        self.with_selected_db(db, || {
-            self.expire_key_if_needed(key_bytes)?;
-            let Some(value) = self.read_string_value(key)? else {
-                if self.object_key_exists(key)? {
-                    return Err(RequestExecutionError::WrongType);
-                }
-                return Ok(None);
-            };
-            Ok(Some(value.len()))
-        })
+        self.expire_key_if_needed(key)?;
+        let Some(value) = self.read_string_value(key)? else {
+            if self.object_key_exists(key)? {
+                return Err(RequestExecutionError::WrongType);
+            }
+            return Ok(None);
+        };
+        Ok(Some(value.len()))
     }
 
     fn watched_value_fingerprint_in_db(
@@ -2758,7 +2745,7 @@ impl RequestProcessor {
         key: &[u8],
     ) -> Result<WatchedKey, RequestExecutionError> {
         // TLA+ : CaptureWatchedVisibleState
-        self.expire_watch_key_if_needed_in_db(db, key)?;
+        self.expire_key_if_needed(DbKeyRef::new(db, key))?;
         let version = self.watch_key_version_in_db(db, key);
         let storage_binding = self.db_storage_binding(db)?;
         let fingerprint = self.watched_value_fingerprint_in_db(db, key)?;
@@ -2773,9 +2760,7 @@ impl RequestProcessor {
 
     pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[WatchedKey]) {
         for watched in watched_keys {
-            let _ = self.with_selected_db(watched.db, || {
-                self.expire_key_if_needed(watched.key.as_slice())
-            });
+            let _ = self.expire_key_if_needed(DbKeyRef::new(watched.db, watched.key.as_slice()));
         }
     }
 
@@ -4832,18 +4817,17 @@ impl RequestProcessor {
         &self,
         wait_key: &BlockingWaitKey,
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
-        self.with_selected_db(wait_key.db(), || {
-            if self
-                .expiration_unix_millis(DbKeyRef::new(wait_key.db(), wait_key.key().as_slice()))
-                .is_some_and(|expiration_unix_millis| {
-                    current_unix_time_millis()
-                        .is_some_and(|now_unix_millis| expiration_unix_millis <= now_unix_millis)
-                })
-            {
-                return Ok(None);
-            }
-            self.object_read(DbKeyRef::new(wait_key.db(), wait_key.key().as_slice()))
-        })
+        let key = DbKeyRef::new(wait_key.db(), wait_key.key().as_slice());
+        if self
+            .expiration_unix_millis(key)
+            .is_some_and(|expiration_unix_millis| {
+                current_unix_time_millis()
+                    .is_some_and(|now_unix_millis| expiration_unix_millis <= now_unix_millis)
+            })
+        {
+            return Ok(None);
+        }
+        self.object_read(key)
     }
 
     fn blocking_wait_key_ready(

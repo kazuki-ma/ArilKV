@@ -2188,12 +2188,6 @@ pub(crate) async fn handle_connection(
                             for key_arg in &args[1..argument_count] {
                                 // SAFETY: `args` points to the live command frame.
                                 let key = arg_slice_bytes(key_arg);
-                                if let Err(error) = processor
-                                    .expire_watch_key_if_needed_in_db(client_state.selected_db, key)
-                                {
-                                    watch_error = Some(error);
-                                    break;
-                                }
                                 match processor.capture_watched_key(client_state.selected_db, key) {
                                     Ok(watched_key) => transaction.watch_key(watched_key),
                                     Err(error) => {
@@ -5717,9 +5711,7 @@ fn selected_db_key_exists_any(
     selected_db: DbName,
     key: &[u8],
 ) -> Result<bool, RequestExecutionError> {
-    processor.with_selected_db(selected_db, || {
-        processor.key_exists_any_without_expiring(DbKeyRef::new(selected_db, key))
-    })
+    processor.key_exists_any_without_expiring(DbKeyRef::new(selected_db, key))
 }
 
 fn selected_db_expiration_unix_millis_for_key(

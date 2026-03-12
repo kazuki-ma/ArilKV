@@ -1167,6 +1167,56 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
 }
 
 #[test]
+fn migration_entry_roundtrip_preserves_string_and_expiration_in_nonzero_db() {
+    let source = RequestProcessor::new().unwrap();
+    let target = RequestProcessor::new().unwrap();
+    let source_db = DbName::new(9);
+    let target_db = DbName::new(11);
+    let mut args = [ArgSlice::EMPTY; 8];
+    let mut response = Vec::new();
+
+    let set = b"*5\r\n$3\r\nSET\r\n$3\r\nkey\r\n$5\r\nvalue\r\n$2\r\nPX\r\n$4\r\n1000\r\n";
+    let meta = parse_resp_command_arg_slices(set, &mut args).unwrap();
+    source
+        .execute_in_db(&args[..meta.argument_count], &mut response, source_db)
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+
+    let entry = source
+        .export_migration_entry(source_db, b"key")
+        .unwrap()
+        .expect("source key should be exportable");
+    assert!(matches!(&entry.value, MigrationValue::String(value) if value.as_slice() == b"value"));
+    assert!(entry.expiration_unix_millis.is_some());
+
+    target.import_migration_entry(target_db, &entry).unwrap();
+
+    response.clear();
+    let get = b"*2\r\n$3\r\nGET\r\n$3\r\nkey\r\n";
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    target
+        .execute_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            DbName::default(),
+        )
+        .unwrap();
+    assert_eq!(response, b"$-1\r\n");
+
+    response.clear();
+    let meta = parse_resp_command_arg_slices(get, &mut args).unwrap();
+    target
+        .execute_in_db(&args[..meta.argument_count], &mut response, target_db)
+        .unwrap();
+    assert_eq!(response, b"$5\r\nvalue\r\n");
+    assert!(
+        target
+            .expiration_unix_millis(DbKeyRef::new(target_db, b"key"))
+            .is_some()
+    );
+}
+
+#[test]
 fn migrate_keys_to_transfers_object_value() {
     let source = RequestProcessor::new().unwrap();
     let target = RequestProcessor::new().unwrap();
@@ -7266,6 +7316,44 @@ fn watch_versions_are_scoped_by_explicit_db() {
     let version9_after = processor.watch_key_version_in_db(db9, b"shared");
     assert_eq!(version0_after, version0_before);
     assert_ne!(version9_after, version9_before);
+}
+
+#[test]
+fn capture_watched_key_expires_only_target_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
+    processor
+        .write_string_value(DbKeyRef::new(db9, b"shared"), b"db9", None)
+        .unwrap();
+    processor.set_string_expiration_deadline(
+        DbKeyRef::new(db9, b"shared"),
+        Some(current_instant() - Duration::from_millis(1)),
+    );
+
+    let watched = processor.capture_watched_key(db9, b"shared").unwrap();
+
+    assert_eq!(watched.db, db9);
+    assert_eq!(watched.fingerprint, WatchedValueFingerprint::new(0));
+    assert_eq!(
+        processor.watch_key_version_in_db(db9, b"shared"),
+        watched.version
+    );
+    assert_eq!(
+        processor
+            .read_string_value(DbKeyRef::new(db0, b"shared"))
+            .unwrap()
+            .unwrap(),
+        b"db0"
+    );
+    assert!(
+        processor
+            .read_string_value(DbKeyRef::new(db9, b"shared"))
+            .unwrap()
+            .is_none()
+    );
 }
 
 #[test]

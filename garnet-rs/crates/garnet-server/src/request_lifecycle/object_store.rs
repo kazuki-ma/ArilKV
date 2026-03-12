@@ -258,7 +258,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         operation: impl FnOnce(&mut Option<SetObjectHotEntry>) -> Result<R, RequestExecutionError>,
     ) -> Result<R, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        self.expire_key_if_needed(key)?;
 
         let mut entry = self.take_set_hot_entry(key);
         if entry.is_none() {
@@ -356,7 +356,7 @@ impl RequestProcessor {
         &self,
         key: DbKeyRef<'_>,
     ) -> Result<Option<BTreeMap<Vec<u8>, Vec<u8>>>, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -389,7 +389,7 @@ impl RequestProcessor {
         &self,
         key: DbKeyRef<'_>,
     ) -> Result<Option<Vec<Vec<u8>>>, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -444,7 +444,7 @@ impl RequestProcessor {
         &self,
         key: DbKeyRef<'_>,
     ) -> Result<Option<DecodedSetObjectPayload>, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -505,7 +505,7 @@ impl RequestProcessor {
         &self,
         key: DbKeyRef<'_>,
     ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
@@ -538,7 +538,7 @@ impl RequestProcessor {
         &self,
         key: DbKeyRef<'_>,
     ) -> Result<Option<StreamObject>, RequestExecutionError> {
-        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        self.expire_key_if_needed(key)?;
         let object = match self.object_read(key)? {
             Some(object) => object,
             None => {

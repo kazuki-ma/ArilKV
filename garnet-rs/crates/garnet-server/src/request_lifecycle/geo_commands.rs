@@ -1126,7 +1126,7 @@ fn store_geosearch_result(
     destination: &[u8],
     result_zset: &BTreeMap<Vec<u8>, f64>,
 ) -> Result<(), RequestExecutionError> {
-    processor.expire_key_if_needed(destination)?;
+    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), destination))?;
     let (destination_had_string, destination_object_type) = processor
         .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
             current_request_selected_db(),
