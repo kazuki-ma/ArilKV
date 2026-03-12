@@ -8,52 +8,41 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
-        let inserted = self.with_set_hot_entry(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            |entry| {
-                if entry.is_none() {
-                    if let Some((range, inserted_count)) =
-                        try_build_contiguous_i64_range(&args[2..])
-                    {
-                        let mut new_entry = SetObjectHotEntry::new(
-                            DecodedSetObjectPayload::ContiguousI64Range(range),
-                            false,
-                        );
-                        self.mark_set_hot_entry_dirty(
-                            DbKeyRef::new(current_request_selected_db(), &key),
-                            &mut new_entry,
-                            false,
-                        );
-                        *entry = Some(new_entry);
-                        return Ok(inserted_count as i64);
-                    }
-                    *entry = Some(SetObjectHotEntry::new(
-                        DecodedSetObjectPayload::Members(BTreeSet::new()),
-                        false,
-                    ));
-                }
-
-                let entry = entry.as_mut().unwrap();
-                let mut inserted = 0i64;
-                for member in &args[2..] {
-                    if entry.payload.insert_member(member) {
-                        inserted += 1;
-                    }
-                }
-                if inserted > 0 {
-                    self.mark_set_hot_entry_dirty(
-                        DbKeyRef::new(current_request_selected_db(), &key),
-                        entry,
+        let db_key = DbKeyRef::new(selected_db, &key);
+        let inserted = self.with_set_hot_entry(db_key, |entry| {
+            if entry.is_none() {
+                if let Some((range, inserted_count)) = try_build_contiguous_i64_range(&args[2..]) {
+                    let mut new_entry = SetObjectHotEntry::new(
+                        DecodedSetObjectPayload::ContiguousI64Range(range),
                         false,
                     );
+                    self.mark_set_hot_entry_dirty(db_key, &mut new_entry, false);
+                    *entry = Some(new_entry);
+                    return Ok(inserted_count as i64);
                 }
-                Ok(inserted)
-            },
-        )?;
+                *entry = Some(SetObjectHotEntry::new(
+                    DecodedSetObjectPayload::Members(BTreeSet::new()),
+                    false,
+                ));
+            }
+
+            let entry = entry.as_mut().unwrap();
+            let mut inserted = 0i64;
+            for member in &args[2..] {
+                if entry.payload.insert_member(member) {
+                    inserted += 1;
+                }
+            }
+            if inserted > 0 {
+                self.mark_set_hot_entry_dirty(db_key, entry, false);
+            }
+            Ok(inserted)
+        })?;
 
         if inserted > 0 {
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"sadd", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"sadd", &key);
         }
         append_integer(response_out, inserted);
         Ok(())
@@ -66,50 +55,40 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
-        let (removed, delete_key) = self.with_set_hot_entry(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            |entry| {
-                let Some(current_entry) = entry.as_mut() else {
-                    return Ok((0i64, false));
-                };
+        let db_key = DbKeyRef::new(selected_db, &key);
+        let (removed, delete_key) = self.with_set_hot_entry(db_key, |entry| {
+            let Some(current_entry) = entry.as_mut() else {
+                return Ok((0i64, false));
+            };
 
-                let mut removed = 0i64;
-                for member in &args[2..] {
-                    if current_entry.payload.remove_member(member) {
-                        removed += 1;
-                    }
+            let mut removed = 0i64;
+            for member in &args[2..] {
+                if current_entry.payload.remove_member(member) {
+                    removed += 1;
                 }
-                if removed == 0 {
-                    return Ok((0i64, false));
-                }
+            }
+            if removed == 0 {
+                return Ok((0i64, false));
+            }
 
-                if current_entry.payload.is_empty() {
-                    *entry = None;
-                    return Ok((removed, true));
-                }
+            if current_entry.payload.is_empty() {
+                *entry = None;
+                return Ok((removed, true));
+            }
 
-                self.mark_set_hot_entry_dirty(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    current_entry,
-                    false,
-                );
-                Ok((removed, false))
-            },
-        )?;
+            self.mark_set_hot_entry_dirty(db_key, current_entry, false);
+            Ok((removed, false))
+        })?;
 
         if removed > 0 {
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"srem", &key);
         }
         if delete_key {
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let _ = self.object_delete(db_key)?;
             if removed > 0 {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", &key);
             }
         }
         append_integer(response_out, removed);
@@ -123,9 +102,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SMEMBERS", "SMEMBERS key")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
+        let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let set = match self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+        let set = match self.load_set_object(db_key)? {
             Some(set) => set,
             None => {
                 if resp3 {
@@ -136,10 +117,7 @@ impl RequestProcessor {
                 return Ok(());
             }
         };
-        self.record_set_debug_ht_activity(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            set.len(),
-        );
+        self.record_set_debug_ht_activity(db_key, set.len());
 
         if resp3 {
             append_set_length(response_out, set.len());
@@ -159,19 +137,18 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SISMEMBER", "SISMEMBER key member")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
+        let db_key = DbKeyRef::new(selected_db, &key);
         let member = args[2];
-        let set = match self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+        let set = match self.load_set_object(db_key)? {
             Some(set) => set,
             None => {
                 append_integer(response_out, 0);
                 return Ok(());
             }
         };
-        self.record_set_debug_ht_activity(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            set.len(),
-        );
+        self.record_set_debug_ht_activity(db_key, set.len());
         append_integer(response_out, if set.contains(member) { 1 } else { 0 });
         Ok(())
     }
@@ -183,20 +160,16 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SCARD", "SCARD key")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
-        let len = self.with_set_hot_entry(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            |entry| {
-                Ok(entry
-                    .as_ref()
-                    .map_or(0, |entry| entry.payload.member_count() as i64))
-            },
-        )?;
+        let db_key = DbKeyRef::new(selected_db, &key);
+        let len = self.with_set_hot_entry(db_key, |entry| {
+            Ok(entry
+                .as_ref()
+                .map_or(0, |entry| entry.payload.member_count() as i64))
+        })?;
         if len > 0 {
-            self.record_set_debug_ht_activity(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                len as usize,
-            );
+            self.record_set_debug_ht_activity(db_key, len as usize);
         }
         append_integer(response_out, len);
         Ok(())
@@ -214,35 +187,31 @@ impl RequestProcessor {
             "SSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
+        let db_key = DbKeyRef::new(selected_db, &key);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
         if scan_options.pattern.is_none() {
-            let (member_count, next_cursor, page) = self.with_set_hot_entry(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                |entry| {
-                    let Some(entry) = entry.as_mut() else {
-                        return Ok((0usize, 0u64, Vec::new()));
-                    };
-                    let values = entry.ordered_members();
-                    let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
-                    let start = if raw_start >= values.len() {
-                        0
-                    } else {
-                        raw_start
-                    };
-                    let end = start.saturating_add(scan_options.count).min(values.len());
-                    let next_cursor = if end >= values.len() { 0 } else { end as u64 };
-                    Ok((values.len(), next_cursor, values[start..end].to_vec()))
-                },
-            )?;
+            let (member_count, next_cursor, page) = self.with_set_hot_entry(db_key, |entry| {
+                let Some(entry) = entry.as_mut() else {
+                    return Ok((0usize, 0u64, Vec::new()));
+                };
+                let values = entry.ordered_members();
+                let raw_start = usize::try_from(cursor).unwrap_or(usize::MAX);
+                let start = if raw_start >= values.len() {
+                    0
+                } else {
+                    raw_start
+                };
+                let end = start.saturating_add(scan_options.count).min(values.len());
+                let next_cursor = if end >= values.len() { 0 } else { end as u64 };
+                Ok((values.len(), next_cursor, values[start..end].to_vec()))
+            })?;
             if member_count > 0 {
-                self.record_set_debug_ht_activity(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    member_count,
-                );
+                self.record_set_debug_ht_activity(db_key, member_count);
             }
 
             append_array_length(response_out, 2);
@@ -258,15 +227,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let Some(set) = self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))?
-        else {
+        let Some(set) = self.load_set_object(db_key)? else {
             append_set_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
-        self.record_set_debug_ht_activity(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            set.len(),
-        );
+        self.record_set_debug_ht_activity(db_key, set.len());
 
         let mut matched = Vec::new();
         for member in &set {
@@ -294,13 +259,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SMISMEMBER", "SMISMEMBER key member [member ...]")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
-        let set = self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let db_key = DbKeyRef::new(selected_db, &key);
+        let set = self.load_set_object(db_key)?;
         if let Some(set) = &set {
-            self.record_set_debug_ht_activity(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                set.len(),
-            );
+            self.record_set_debug_ht_activity(db_key, set.len());
         }
         let members = &args[2..];
         append_array_length(response_out, members.len());
@@ -318,23 +282,22 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SRANDMEMBER", "SRANDMEMBER key [count]")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
+        let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
         if args.len() == 2 {
-            let sampled = self.with_set_hot_entry(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                |entry| {
-                    let Some(entry) = entry.as_mut() else {
-                        return Ok(None);
-                    };
-                    let members = entry.ordered_members();
-                    if members.is_empty() {
-                        return Ok(None);
-                    }
-                    let random_index = (self.next_random_u64() as usize) % members.len();
-                    Ok(Some((members.len(), members[random_index].clone())))
-                },
-            )?;
+            let sampled = self.with_set_hot_entry(db_key, |entry| {
+                let Some(entry) = entry.as_mut() else {
+                    return Ok(None);
+                };
+                let members = entry.ordered_members();
+                if members.is_empty() {
+                    return Ok(None);
+                }
+                let random_index = (self.next_random_u64() as usize) % members.len();
+                Ok(Some((members.len(), members[random_index].clone())))
+            })?;
             let Some((member_count, member)) = sampled else {
                 if resp3 {
                     append_null(response_out);
@@ -343,10 +306,7 @@ impl RequestProcessor {
                 }
                 return Ok(());
             };
-            self.record_set_debug_ht_activity(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                member_count,
-            );
+            self.record_set_debug_ht_activity(db_key, member_count);
             append_bulk_string(response_out, &member);
             return Ok(());
         }
@@ -355,40 +315,37 @@ impl RequestProcessor {
         // Positive count: distinct sampling → set type in RESP3.
         // Negative count: with-replacement → array type (may have duplicates).
         let use_set_type = resp3 && count > 0;
-        let sampled = self.with_set_hot_entry(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            |entry| {
-                let Some(entry) = entry.as_mut() else {
-                    return Ok((0usize, Vec::new()));
+        let sampled = self.with_set_hot_entry(db_key, |entry| {
+            let Some(entry) = entry.as_mut() else {
+                return Ok((0usize, Vec::new()));
+            };
+            let members = entry.ordered_members();
+            if members.is_empty() || count == 0 {
+                return Ok((members.len(), Vec::new()));
+            }
+            if count > 0 {
+                let requested =
+                    usize::try_from(count).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
+                let sampled = if requested == 1 {
+                    let random_index = (self.next_random_u64() as usize) % members.len();
+                    vec![members[random_index].clone()]
+                } else {
+                    select_random_members_distinct_from_ordered(self, members, requested)
                 };
-                let members = entry.ordered_members();
-                if members.is_empty() || count == 0 {
-                    return Ok((members.len(), Vec::new()));
-                }
-                if count > 0 {
-                    let requested = usize::try_from(count)
-                        .map_err(|_| RequestExecutionError::ValueOutOfRange)?;
-                    let sampled = if requested == 1 {
-                        let random_index = (self.next_random_u64() as usize) % members.len();
-                        vec![members[random_index].clone()]
-                    } else {
-                        select_random_members_distinct_from_ordered(self, members, requested)
-                    };
-                    return Ok((members.len(), sampled));
-                }
+                return Ok((members.len(), sampled));
+            }
 
-                let requested = count
-                    .checked_abs()
-                    .ok_or(RequestExecutionError::ValueOutOfRange)
-                    .and_then(|value| {
-                        usize::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)
-                    })?;
-                Ok((
-                    members.len(),
-                    sample_random_members_with_replacement_from_ordered(self, members, requested),
-                ))
-            },
-        )?;
+            let requested = count
+                .checked_abs()
+                .ok_or(RequestExecutionError::ValueOutOfRange)
+                .and_then(|value| {
+                    usize::try_from(value).map_err(|_| RequestExecutionError::ValueOutOfRange)
+                })?;
+            Ok((
+                members.len(),
+                sample_random_members_with_replacement_from_ordered(self, members, requested),
+            ))
+        })?;
         let (member_count, sampled) = sampled;
         if member_count == 0 {
             if use_set_type {
@@ -398,10 +355,7 @@ impl RequestProcessor {
             }
             return Ok(());
         }
-        self.record_set_debug_ht_activity(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            member_count,
-        );
+        self.record_set_debug_ht_activity(db_key, member_count);
         if count < 0 {
             append_array_length(response_out, sampled.len());
             for member in sampled {
@@ -427,9 +381,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SPOP", "SPOP key [count]")?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
+        let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let mut set = self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let mut set = self.load_set_object(db_key)?;
         if args.len() == 2 {
             let Some(mut set) = set.take() else {
                 if resp3 {
@@ -440,7 +396,7 @@ impl RequestProcessor {
                 return Ok(());
             };
             if set.is_empty() {
-                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+                let _ = self.object_delete(db_key)?;
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -452,17 +408,12 @@ impl RequestProcessor {
             let member = selected[0].clone();
             let removed = set.remove(&member);
             debug_assert!(removed, "selected member must exist in set");
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"spop", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"spop", &key);
             if set.is_empty() {
-                let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                let _ = self.object_delete(db_key)?;
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", &key);
             } else {
-                self.save_set_object(DbKeyRef::new(current_request_selected_db(), &key), &set)?;
+                self.save_set_object(db_key, &set)?;
             }
             append_bulk_string(response_out, &member);
             return Ok(());
@@ -495,20 +446,15 @@ impl RequestProcessor {
             set.remove(member);
         }
         if !selected.is_empty() {
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"spop", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"spop", &key);
         }
         if set.is_empty() {
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let _ = self.object_delete(db_key)?;
             if !selected.is_empty() {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", &key);
             }
         } else {
-            self.save_set_object(DbKeyRef::new(current_request_selected_db(), &key), &set)?;
+            self.save_set_object(db_key, &set)?;
         }
 
         if resp3 {
@@ -529,18 +475,20 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SMOVE", "SMOVE source destination member")?;
 
+        let selected_db = current_request_selected_db();
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
+        let source_db_key = DbKeyRef::new(selected_db, &source);
+        let destination_db_key = DbKeyRef::new(selected_db, &destination);
         let member = args[3].to_vec();
 
-        let mut source_set =
-            match self.load_set_object(DbKeyRef::new(current_request_selected_db(), &source))? {
-                Some(set) => set,
-                None => {
-                    append_integer(response_out, 0);
-                    return Ok(());
-                }
-            };
+        let mut source_set = match self.load_set_object(source_db_key)? {
+            Some(set) => set,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
         if source == destination {
             if !source_set.contains(&member) {
                 append_integer(response_out, 0);
@@ -551,7 +499,7 @@ impl RequestProcessor {
         }
 
         let mut destination_set = self
-            .load_set_object(DbKeyRef::new(current_request_selected_db(), &destination))?
+            .load_set_object(destination_db_key)?
             .unwrap_or_default();
         if !source_set.contains(&member) {
             append_integer(response_out, 0);
@@ -562,32 +510,16 @@ impl RequestProcessor {
         let destination_changed = destination_set.insert(member);
 
         if source_set.is_empty() {
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &source))?;
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &source);
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_GENERIC,
-                b"del",
-                &source,
-            );
+            let _ = self.object_delete(source_db_key)?;
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"srem", &source);
+            self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", &source);
         } else {
-            self.save_set_object(
-                DbKeyRef::new(current_request_selected_db(), &source),
-                &source_set,
-            )?;
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &source);
+            self.save_set_object(source_db_key, &source_set)?;
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"srem", &source);
         }
         if destination_changed {
-            self.save_set_object(
-                DbKeyRef::new(current_request_selected_db(), &destination),
-                &destination_set,
-            )?;
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_SET,
-                b"sadd",
-                &destination,
-            );
+            self.save_set_object(destination_db_key, &destination_set)?;
+            self.notify_keyspace_event(selected_db, NOTIFY_SET, b"sadd", &destination);
         }
         append_integer(response_out, 1);
         Ok(())
@@ -667,7 +599,8 @@ impl RequestProcessor {
             .iter()
             .map(|key| key.to_vec())
             .collect();
-        let inter = compute_sinter(self, current_request_selected_db(), &keys)?;
+        let selected_db = current_request_selected_db();
+        let inter = compute_sinter(self, selected_db, &keys)?;
         let mut cardinality = inter.len();
         if limit > 0 {
             cardinality = cardinality.min(limit);
