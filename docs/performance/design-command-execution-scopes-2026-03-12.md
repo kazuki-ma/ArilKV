@@ -456,6 +456,8 @@ At `EXEC` time:
 
 ### 10.2 Scripting
 
+Scripts are not a fourth permanent scope kind.
+
 Scripts should resolve their allowed key set up front and execute through the same scope planner.
 
 Guideline:
