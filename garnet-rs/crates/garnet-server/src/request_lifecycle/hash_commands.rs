@@ -723,7 +723,8 @@ impl RequestProcessor {
             "HSETEX key [FNX|FXX] [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|KEEPTTL] FIELDS num field value [field value ...]",
         )?;
 
-        let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
         let expire_options = parse_hsetex_options(args)?;
         let field_values = collect_hash_field_values(
             args,
@@ -735,14 +736,8 @@ impl RequestProcessor {
             .iter()
             .map(|(field, _)| *field)
             .collect::<Vec<_>>();
-        let mut hash = self
-            .load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?
-            .unwrap_or_default();
-        let lazy_expired = self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &access_fields,
-        );
+        let mut hash = self.load_hash_object(key)?.unwrap_or_default();
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &access_fields);
 
         let condition_matches = match expire_options.field_set_condition {
             HashFieldSetCondition::Any => true,
@@ -755,10 +750,7 @@ impl RequestProcessor {
         };
         if !condition_matches {
             if lazy_expired {
-                self.persist_hash_after_field_expiration(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    &hash,
-                )?;
+                self.persist_hash_after_field_expiration(key, &hash)?;
             }
             append_integer(response_out, 0);
             return Ok(());
@@ -770,19 +762,15 @@ impl RequestProcessor {
             applied_fields.insert((*field).to_vec());
             if let Some(expiration_unix_millis) = expire_options.expiration_unix_millis {
                 self.set_hash_field_expiration_unix_millis(
-                    DbKeyRef::new(current_request_selected_db(), &key),
+                    key,
                     field,
                     Some(expiration_unix_millis),
                 );
             } else if !expire_options.keep_ttl {
-                self.set_hash_field_expiration_unix_millis(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    field,
-                    None,
-                );
+                self.set_hash_field_expiration_unix_millis(key, field, None);
             }
         }
-        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hset", &key);
+        self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hset", key.key());
 
         let immediate_expire = expire_options.expire_if_past_immediately
             && expire_options
@@ -796,42 +784,23 @@ impl RequestProcessor {
             for field in &applied_fields {
                 if hash.remove(field.as_slice()).is_some() {
                     removed_any = true;
-                    self.set_hash_field_expiration_unix_millis(
-                        DbKeyRef::new(current_request_selected_db(), &key),
-                        field,
-                        None,
-                    );
+                    self.set_hash_field_expiration_unix_millis(key, field, None);
                 }
             }
             if removed_any {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_HASH,
-                    b"hdel",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hdel", key.key());
             }
         } else if expire_options.expiration_unix_millis.is_some() && !applied_fields.is_empty() {
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_HASH,
-                b"hexpire",
-                &key,
-            );
+            self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hexpire", key.key());
         }
 
         if hash.is_empty() {
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let _ = self.object_delete(key)?;
             if !applied_fields.is_empty() {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", key.key());
             }
         } else {
-            self.save_hash_object(DbKeyRef::new(current_request_selected_db(), &key), &hash)?;
+            self.save_hash_object(key, &hash)?;
         }
         append_integer(response_out, 1);
         Ok(())
@@ -848,7 +817,8 @@ impl RequestProcessor {
             "HGETEX",
             "HGETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|PERSIST] FIELDS num field [field ...]",
         )?;
-        let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
         let expire_options = parse_hgetex_options(args)?;
         let fields = collect_hash_fields(
             args,
@@ -856,27 +826,22 @@ impl RequestProcessor {
             expire_options.field_count,
         )?;
         let resp3 = self.resp_protocol_version().is_resp3();
-        let mut hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    append_array_length(response_out, fields.len());
-                    for _ in 0..fields.len() {
-                        if resp3 {
-                            append_null(response_out);
-                        } else {
-                            append_null_bulk_string(response_out);
-                        }
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                append_array_length(response_out, fields.len());
+                for _ in 0..fields.len() {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
                     }
-                    return Ok(());
                 }
-            };
+                return Ok(());
+            }
+        };
 
-        let lazy_expired = self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &fields,
-        );
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &fields);
         append_array_length(response_out, fields.len());
         for field in &fields {
             match hash.get(*field) {
@@ -896,23 +861,13 @@ impl RequestProcessor {
         for field in &fields {
             if hash.contains_key(*field) {
                 if expire_options.persist {
-                    if self
-                        .hash_field_expiration_unix_millis(
-                            DbKeyRef::new(current_request_selected_db(), &key),
-                            field,
-                        )
-                        .is_some()
-                    {
+                    if self.hash_field_expiration_unix_millis(key, field).is_some() {
                         persisted_expiration_count += 1;
                     }
-                    self.set_hash_field_expiration_unix_millis(
-                        DbKeyRef::new(current_request_selected_db(), &key),
-                        field,
-                        None,
-                    );
+                    self.set_hash_field_expiration_unix_millis(key, field, None);
                 } else {
                     self.set_hash_field_expiration_unix_millis(
-                        DbKeyRef::new(current_request_selected_db(), &key),
+                        key,
                         field,
                         expire_options.expiration_unix_millis,
                     );
@@ -921,11 +876,7 @@ impl RequestProcessor {
                     }
                 }
             } else {
-                self.set_hash_field_expiration_unix_millis(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    field,
-                    None,
-                );
+                self.set_hash_field_expiration_unix_millis(key, field, None);
             }
         }
 
@@ -938,42 +889,20 @@ impl RequestProcessor {
             for field in &fields {
                 if hash.remove(*field).is_some() {
                     removed_any = true;
-                    self.set_hash_field_expiration_unix_millis(
-                        DbKeyRef::new(current_request_selected_db(), &key),
-                        field,
-                        None,
-                    );
+                    self.set_hash_field_expiration_unix_millis(key, field, None);
                 }
             }
             if removed_any {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_HASH,
-                    b"hdel",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hdel", key.key());
             }
         } else if updated_expiration_count > 0 {
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_HASH,
-                b"hexpire",
-                &key,
-            );
+            self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hexpire", key.key());
         } else if persisted_expiration_count > 0 {
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_HASH,
-                b"hpersist",
-                &key,
-            );
+            self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hpersist", key.key());
         }
 
         if lazy_expired || removed_any {
-            self.persist_hash_after_field_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                &hash,
-            )?;
+            self.persist_hash_after_field_expiration(key, &hash)?;
         }
         Ok(())
     }
@@ -989,40 +918,32 @@ impl RequestProcessor {
             "HGETDEL",
             "HGETDEL key FIELDS num field [field ...]",
         )?;
-        let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
         let fields = parse_hgetdel_fields(args)?;
         let resp3 = self.resp_protocol_version().is_resp3();
-        let mut hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    append_array_length(response_out, fields.len());
-                    for _ in 0..fields.len() {
-                        if resp3 {
-                            append_null(response_out);
-                        } else {
-                            append_null_bulk_string(response_out);
-                        }
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                append_array_length(response_out, fields.len());
+                for _ in 0..fields.len() {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
                     }
-                    return Ok(());
                 }
-            };
+                return Ok(());
+            }
+        };
 
-        self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &fields,
-        );
+        self.apply_hash_field_lazy_expiration(key, &mut hash, &fields);
         let mut removed = 0usize;
         append_array_length(response_out, fields.len());
         for field in &fields {
             match hash.remove(*field) {
                 Some(value) => {
-                    self.set_hash_field_expiration_unix_millis(
-                        DbKeyRef::new(current_request_selected_db(), &key),
-                        field,
-                        None,
-                    );
+                    self.set_hash_field_expiration_unix_millis(key, field, None);
                     removed += 1;
                     append_bulk_string(response_out, &value);
                 }
@@ -1036,21 +957,16 @@ impl RequestProcessor {
             }
         }
         if removed > 0 {
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hdel", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hdel", key.key());
         }
 
         if hash.is_empty() {
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let _ = self.object_delete(key)?;
             if removed > 0 {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", key.key());
             }
         } else {
-            self.save_hash_object(DbKeyRef::new(current_request_selected_db(), &key), &hash)?;
+            self.save_hash_object(key, &hash)?;
         }
         Ok(())
     }
