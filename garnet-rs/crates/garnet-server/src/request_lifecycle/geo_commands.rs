@@ -870,7 +870,11 @@ fn execute_geo_query(
         Some(entries) => entries,
         None => {
             if let Some(destination) = store_key {
-                store_geosearch_result(processor, destination, &BTreeMap::new())?;
+                store_geosearch_result(
+                    processor,
+                    DbKeyRef::new(current_request_selected_db(), destination),
+                    &BTreeMap::new(),
+                )?;
                 append_integer(response_out, 0);
             } else {
                 append_array_length(response_out, 0);
@@ -905,7 +909,11 @@ fn execute_geo_query(
             destination_zset.insert(candidate.member, score);
         }
         let stored = destination_zset.len() as i64;
-        store_geosearch_result(processor, destination, &destination_zset)?;
+        store_geosearch_result(
+            processor,
+            DbKeyRef::new(current_request_selected_db(), destination),
+            &destination_zset,
+        )?;
         append_integer(response_out, stored);
         return Ok(());
     }
@@ -1123,15 +1131,12 @@ fn geo_box_contains(
 
 fn store_geosearch_result(
     processor: &RequestProcessor,
-    destination: &[u8],
+    destination: DbKeyRef<'_>,
     result_zset: &BTreeMap<Vec<u8>, f64>,
 ) -> Result<(), RequestExecutionError> {
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), destination))?;
-    let (destination_had_string, destination_object_type) = processor
-        .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
-            current_request_selected_db(),
-            destination,
-        ))?;
+    processor.expire_key_if_needed(destination)?;
+    let (destination_had_string, destination_object_type) =
+        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_geo_store_overwrite(processor, destination)?
     } else {
@@ -1139,20 +1144,16 @@ fn store_geosearch_result(
     };
 
     if result_zset.is_empty() {
-        let object_deleted =
-            processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
+        let object_deleted = processor.object_delete(destination)?;
         if string_deleted && !object_deleted {
-            processor.bump_watch_version(DbKeyRef::new(current_request_selected_db(), destination));
+            processor.bump_watch_version(destination);
         }
         return Ok(());
     }
-    processor.save_zset_object(
-        DbKeyRef::new(current_request_selected_db(), destination),
-        result_zset,
-    )?;
+    processor.save_zset_object(destination, result_zset)?;
     processor.notify_setkey_overwrite_events(
-        current_request_selected_db(),
-        destination,
+        destination.db(),
+        destination.key(),
         destination_had_string,
         destination_object_type,
         Some(ObjectTypeTag::Zset),
@@ -1162,10 +1163,10 @@ fn store_geosearch_result(
 
 fn delete_string_value_for_geo_store_overwrite(
     processor: &RequestProcessor,
-    key: &[u8],
+    key: DbKeyRef<'_>,
 ) -> Result<bool, RequestExecutionError> {
-    let key_vec = key.to_vec();
-    let mut store = processor.lock_string_store_for_key(key);
+    let key_vec = key.key().to_vec();
+    let mut store = processor.lock_string_store_for_key(key.key());
     let mut session = store.session(&processor.functions);
     let mut info = DeleteInfo::default();
     let status = session
@@ -1173,11 +1174,11 @@ fn delete_string_value_for_geo_store_overwrite(
         .map_err(map_delete_error)?;
     match status {
         DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
+            processor.remove_string_key_metadata(key);
             Ok(true)
         }
         DeleteOperationStatus::NotFound => {
-            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
+            processor.remove_string_key_metadata(key);
             Ok(false)
         }
         DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),

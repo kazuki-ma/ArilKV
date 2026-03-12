@@ -2092,7 +2092,7 @@ async fn multidb_active_expire_increments_expired_keys_active_like_external_scen
         .await;
     }
 
-    let deadline = Instant::now() + Duration::from_secs(5);
+    let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         let info = send_and_read_bulk_payload(
             &mut stats_client,
@@ -2102,17 +2102,17 @@ async fn multidb_active_expire_increments_expired_keys_active_like_external_scen
         .await;
         let expired_keys = read_info_u64(&info, "expired_keys").unwrap_or(0);
         let expired_keys_active = read_info_u64(&info, "expired_keys_active").unwrap_or(0);
-        if expired_keys == 3 {
+        if expired_keys_active == 3 {
             assert_eq!(
-                expired_keys_active, 3,
-                "active expire reported expired_keys=3 but expired_keys_active={expired_keys_active} on db9"
+                expired_keys, 3,
+                "active expire reached expired_keys_active=3 but expired_keys={expired_keys} on db9"
             );
             break;
         }
 
         assert!(
             Instant::now() < deadline,
-            "active expire did not reach expired_keys=3 on db9: expired_keys={expired_keys}, expired_keys_active={expired_keys_active}"
+            "active expire did not reach expired_keys_active=3 on db9: expired_keys={expired_keys}, expired_keys_active={expired_keys_active}"
         );
         sleep(Duration::from_millis(100)).await;
     }

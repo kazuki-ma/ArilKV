@@ -511,7 +511,11 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
         let diff = compute_zdiff(self, &parsed_keys.keys)?;
-        store_zset_result(self, &destination, &diff)?;
+        store_zset_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &diff,
+        )?;
         append_integer(response_out, diff.len() as i64);
         Ok(())
     }
@@ -575,7 +579,11 @@ impl RequestProcessor {
             &combine_options.weights,
             combine_options.aggregate,
         )?;
-        store_zset_result(self, &destination, &inter)?;
+        store_zset_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &inter,
+        )?;
         append_integer(response_out, inter.len() as i64);
         Ok(())
     }
@@ -639,7 +647,11 @@ impl RequestProcessor {
             &combine_options.weights,
             combine_options.aggregate,
         )?;
-        store_zset_result(self, &destination, &union)?;
+        store_zset_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &union,
+        )?;
         append_integer(response_out, union.len() as i64);
         Ok(())
     }
@@ -710,7 +722,11 @@ impl RequestProcessor {
                 None => Vec::new(),
             };
         let result = zset_map_from_entries(selected);
-        store_zset_result(self, &destination, &result)?;
+        store_zset_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &result,
+        )?;
         append_integer(response_out, result.len() as i64);
         Ok(())
     }
@@ -2467,15 +2483,12 @@ fn compute_zinter_cardinality(
 
 fn store_zset_result(
     processor: &RequestProcessor,
-    destination: &[u8],
+    destination: DbKeyRef<'_>,
     result_zset: &BTreeMap<Vec<u8>, f64>,
 ) -> Result<(), RequestExecutionError> {
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), destination))?;
-    let (destination_had_string, destination_object_type) = processor
-        .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
-            current_request_selected_db(),
-            destination,
-        ))?;
+    processor.expire_key_if_needed(destination)?;
+    let (destination_had_string, destination_object_type) =
+        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_object_overwrite(processor, destination)?
     } else {
@@ -2483,21 +2496,17 @@ fn store_zset_result(
     };
 
     if result_zset.is_empty() {
-        let object_deleted =
-            processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
+        let object_deleted = processor.object_delete(destination)?;
         if string_deleted && !object_deleted {
-            processor.bump_watch_version(DbKeyRef::new(current_request_selected_db(), destination));
+            processor.bump_watch_version(destination);
         }
         return Ok(());
     }
 
-    processor.save_zset_object(
-        DbKeyRef::new(current_request_selected_db(), destination),
-        result_zset,
-    )?;
+    processor.save_zset_object(destination, result_zset)?;
     processor.notify_setkey_overwrite_events(
-        current_request_selected_db(),
-        destination,
+        destination.db(),
+        destination.key(),
         destination_had_string,
         destination_object_type,
         Some(ObjectTypeTag::Zset),
@@ -2507,10 +2516,10 @@ fn store_zset_result(
 
 fn delete_string_value_for_object_overwrite(
     processor: &RequestProcessor,
-    key: &[u8],
+    key: DbKeyRef<'_>,
 ) -> Result<bool, RequestExecutionError> {
-    let key_vec = key.to_vec();
-    let mut store = processor.lock_string_store_for_key(key);
+    let key_vec = key.key().to_vec();
+    let mut store = processor.lock_string_store_for_key(key.key());
     let mut session = store.session(&processor.functions);
     let mut info = DeleteInfo::default();
     let status = session
@@ -2518,11 +2527,11 @@ fn delete_string_value_for_object_overwrite(
         .map_err(map_delete_error)?;
     match status {
         DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
+            processor.remove_string_key_metadata(key);
             Ok(true)
         }
         DeleteOperationStatus::NotFound => {
-            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
+            processor.remove_string_key_metadata(key);
             Ok(false)
         }
         DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),

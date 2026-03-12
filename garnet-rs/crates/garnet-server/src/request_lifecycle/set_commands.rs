@@ -701,7 +701,11 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let union = compute_sunion(self, &keys)?;
-        store_set_result(self, &destination, &union)?;
+        store_set_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &union,
+        )?;
         append_integer(response_out, union.len() as i64);
         Ok(())
     }
@@ -720,7 +724,11 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let inter = compute_sinter(self, &keys)?;
-        store_set_result(self, &destination, &inter)?;
+        store_set_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &inter,
+        )?;
         append_integer(response_out, inter.len() as i64);
         Ok(())
     }
@@ -739,7 +747,11 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let diff = compute_sdiff(self, &keys)?;
-        store_set_result(self, &destination, &diff)?;
+        store_set_result(
+            self,
+            DbKeyRef::new(current_request_selected_db(), &destination),
+            &diff,
+        )?;
         append_integer(response_out, diff.len() as i64);
         Ok(())
     }
@@ -945,15 +957,12 @@ fn parse_canonical_i64_member(member: &[u8]) -> Option<i64> {
 
 fn store_set_result(
     processor: &RequestProcessor,
-    destination: &[u8],
+    destination: DbKeyRef<'_>,
     result_set: &BTreeSet<Vec<u8>>,
 ) -> Result<(), RequestExecutionError> {
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), destination))?;
-    let (destination_had_string, destination_object_type) = processor
-        .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
-            current_request_selected_db(),
-            destination,
-        ))?;
+    processor.expire_key_if_needed(destination)?;
+    let (destination_had_string, destination_object_type) =
+        processor.key_type_snapshot_for_setkey_overwrite(destination)?;
     let string_deleted = if destination_had_string {
         delete_string_value_for_object_overwrite(processor, destination)?
     } else {
@@ -961,21 +970,17 @@ fn store_set_result(
     };
 
     if result_set.is_empty() {
-        let object_deleted =
-            processor.object_delete(DbKeyRef::new(current_request_selected_db(), destination))?;
+        let object_deleted = processor.object_delete(destination)?;
         if string_deleted && !object_deleted {
-            processor.bump_watch_version(DbKeyRef::new(current_request_selected_db(), destination));
+            processor.bump_watch_version(destination);
         }
         return Ok(());
     }
 
-    processor.save_set_object_replacing_existing(
-        DbKeyRef::new(current_request_selected_db(), destination),
-        result_set,
-    )?;
+    processor.save_set_object_replacing_existing(destination, result_set)?;
     processor.notify_setkey_overwrite_events(
-        current_request_selected_db(),
-        destination,
+        destination.db(),
+        destination.key(),
         destination_had_string,
         destination_object_type,
         Some(ObjectTypeTag::Set),
@@ -985,10 +990,10 @@ fn store_set_result(
 
 fn delete_string_value_for_object_overwrite(
     processor: &RequestProcessor,
-    key: &[u8],
+    key: DbKeyRef<'_>,
 ) -> Result<bool, RequestExecutionError> {
-    let key_vec = key.to_vec();
-    let mut store = processor.lock_string_store_for_key(key);
+    let key_vec = key.key().to_vec();
+    let mut store = processor.lock_string_store_for_key(key.key());
     let mut session = store.session(&processor.functions);
     let mut info = DeleteInfo::default();
     let status = session
@@ -996,11 +1001,11 @@ fn delete_string_value_for_object_overwrite(
         .map_err(map_delete_error)?;
     match status {
         DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
+            processor.remove_string_key_metadata(key);
             Ok(true)
         }
         DeleteOperationStatus::NotFound => {
-            processor.remove_string_key_metadata(DbKeyRef::new(current_request_selected_db(), key));
+            processor.remove_string_key_metadata(key);
             Ok(false)
         }
         DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),
