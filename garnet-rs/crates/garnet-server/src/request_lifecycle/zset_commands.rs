@@ -467,7 +467,8 @@ impl RequestProcessor {
             .iter()
             .map(|key| key.to_vec())
             .collect();
-        let mut cardinality = compute_zinter_cardinality(self, &keys)?;
+        let mut cardinality =
+            compute_zinter_cardinality(self, current_request_selected_db(), &keys)?;
         if limit > 0 {
             cardinality = cardinality.min(limit);
         }
@@ -481,9 +482,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZDIFF", "ZDIFF numkeys key [key ...] [WITHSCORES]")?;
+        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zdiff")?;
         let with_scores = parse_zdiff_withscores(args, parsed_keys.option_start)?;
-        let diff = compute_zdiff(self, &parsed_keys.keys)?;
+        let diff = compute_zdiff(self, selected_db, &parsed_keys.keys)?;
         append_zset_combine_response(
             response_out,
             &diff,
@@ -505,17 +507,14 @@ impl RequestProcessor {
             "ZDIFFSTORE",
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zdiffstore")?;
         if parsed_keys.option_start != args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let diff = compute_zdiff(self, &parsed_keys.keys)?;
-        store_zset_result(
-            self,
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &diff,
-        )?;
+        let diff = compute_zdiff(self, selected_db, &parsed_keys.keys)?;
+        store_zset_result(self, DbKeyRef::new(selected_db, &destination), &diff)?;
         append_integer(response_out, diff.len() as i64);
         Ok(())
     }
@@ -531,6 +530,7 @@ impl RequestProcessor {
             "ZINTER",
             "ZINTER numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
+        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zinter")?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -540,6 +540,7 @@ impl RequestProcessor {
         )?;
         let inter = compute_zinter(
             self,
+            selected_db,
             &parsed_keys.keys,
             &combine_options.weights,
             combine_options.aggregate,
@@ -565,6 +566,7 @@ impl RequestProcessor {
             "ZINTERSTORE",
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zinterstore")?;
         let combine_options = parse_zset_combine_options(
@@ -575,15 +577,12 @@ impl RequestProcessor {
         )?;
         let inter = compute_zinter(
             self,
+            selected_db,
             &parsed_keys.keys,
             &combine_options.weights,
             combine_options.aggregate,
         )?;
-        store_zset_result(
-            self,
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &inter,
-        )?;
+        store_zset_result(self, DbKeyRef::new(selected_db, &destination), &inter)?;
         append_integer(response_out, inter.len() as i64);
         Ok(())
     }
@@ -599,6 +598,7 @@ impl RequestProcessor {
             "ZUNION",
             "ZUNION numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
+        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zunion")?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -608,6 +608,7 @@ impl RequestProcessor {
         )?;
         let union = compute_zunion(
             self,
+            selected_db,
             &parsed_keys.keys,
             &combine_options.weights,
             combine_options.aggregate,
@@ -633,6 +634,7 @@ impl RequestProcessor {
             "ZUNIONSTORE",
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zunionstore")?;
         let combine_options = parse_zset_combine_options(
@@ -643,15 +645,12 @@ impl RequestProcessor {
         )?;
         let union = compute_zunion(
             self,
+            selected_db,
             &parsed_keys.keys,
             &combine_options.weights,
             combine_options.aggregate,
         )?;
-        store_zset_result(
-            self,
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &union,
-        )?;
+        store_zset_result(self, DbKeyRef::new(selected_db, &destination), &union)?;
         append_integer(response_out, union.len() as i64);
         Ok(())
     }
@@ -2033,17 +2032,18 @@ fn apply_weight(score: f64, weight: f64) -> f64 {
 
 fn compute_zdiff(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
 ) -> Result<BTreeMap<Vec<u8>, f64>, RequestExecutionError> {
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeMap::new());
     };
-    let mut diff = match load_zset_like_object(processor, first_key)? {
+    let mut diff = match load_zset_like_object(processor, selected_db, first_key)? {
         Some(zset) => zset,
         None => return Ok(BTreeMap::new()),
     };
     for key in remaining_keys {
-        let Some(other) = load_zset_like_object(processor, key)? else {
+        let Some(other) = load_zset_like_object(processor, selected_db, key)? else {
             continue;
         };
         diff.retain(|member, _score| !other.contains_key(member));
@@ -2056,6 +2056,7 @@ fn compute_zdiff(
 
 fn compute_zinter(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
     weights: &[f64],
     aggregate_mode: ZsetAggregateMode,
@@ -2063,7 +2064,7 @@ fn compute_zinter(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeMap::new());
     };
-    let Some(first_set) = load_zset_like_object(processor, first_key)? else {
+    let Some(first_set) = load_zset_like_object(processor, selected_db, first_key)? else {
         return Ok(BTreeMap::new());
     };
     let mut inter: BTreeMap<Vec<u8>, f64> = first_set
@@ -2072,7 +2073,7 @@ fn compute_zinter(
         .collect();
 
     for (index, key) in remaining_keys.iter().enumerate() {
-        let Some(other) = load_zset_like_object(processor, key)? else {
+        let Some(other) = load_zset_like_object(processor, selected_db, key)? else {
             return Ok(BTreeMap::new());
         };
         let weight = weights[index + 1];
@@ -2093,13 +2094,14 @@ fn compute_zinter(
 
 fn compute_zunion(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
     weights: &[f64],
     aggregate_mode: ZsetAggregateMode,
 ) -> Result<BTreeMap<Vec<u8>, f64>, RequestExecutionError> {
     let mut union = BTreeMap::new();
     for (index, key) in keys.iter().enumerate() {
-        let Some(zset) = load_zset_like_object(processor, key)? else {
+        let Some(zset) = load_zset_like_object(processor, selected_db, key)? else {
             continue;
         };
         let weight = weights[index];
@@ -2459,18 +2461,20 @@ fn score_in_bound(score: f64, min: ZscoreBound, max: ZscoreBound) -> bool {
 
 fn compute_zinter_cardinality(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
 ) -> Result<usize, RequestExecutionError> {
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(0);
     };
-    let mut intersection: BTreeSet<Vec<u8>> = match load_zset_like_object(processor, first_key)? {
-        Some(zset) => zset.keys().cloned().collect(),
-        None => return Ok(0),
-    };
+    let mut intersection: BTreeSet<Vec<u8>> =
+        match load_zset_like_object(processor, selected_db, first_key)? {
+            Some(zset) => zset.keys().cloned().collect(),
+            None => return Ok(0),
+        };
 
     for key in remaining_keys {
-        let Some(other_zset) = load_zset_like_object(processor, key)? else {
+        let Some(other_zset) = load_zset_like_object(processor, selected_db, key)? else {
             return Ok(0);
         };
         intersection.retain(|member| other_zset.contains_key(member));
@@ -2584,14 +2588,13 @@ fn select_random_zset_entries_with_replacement(
 
 fn load_zset_like_object(
     processor: &RequestProcessor,
+    selected_db: DbName,
     key: &[u8],
 ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
-    match processor.load_zset_object(DbKeyRef::new(current_request_selected_db(), key)) {
+    match processor.load_zset_object(DbKeyRef::new(selected_db, key)) {
         Ok(zset) => Ok(zset),
         Err(RequestExecutionError::WrongType) => {
-            let Some(set) =
-                processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?
-            else {
+            let Some(set) = processor.load_set_object(DbKeyRef::new(selected_db, key))? else {
                 return Ok(None);
             };
             let zset = set.into_iter().map(|member| (member, 1.0)).collect();

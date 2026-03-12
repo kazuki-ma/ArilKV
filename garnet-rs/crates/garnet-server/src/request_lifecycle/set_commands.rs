@@ -599,8 +599,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SUNION", "SUNION key [key ...]")?;
+        let selected_db = current_request_selected_db();
         let keys = collect_set_keys(args, 1);
-        let union = compute_sunion(self, &keys)?;
+        let union = compute_sunion(self, selected_db, &keys)?;
         let resp3 = self.resp_protocol_version().is_resp3();
         append_set_members(response_out, &union, resp3);
         Ok(())
@@ -612,8 +613,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SINTER", "SINTER key [key ...]")?;
+        let selected_db = current_request_selected_db();
         let keys = collect_set_keys(args, 1);
-        let inter = compute_sinter(self, &keys)?;
+        let inter = compute_sinter(self, selected_db, &keys)?;
         let resp3 = self.resp_protocol_version().is_resp3();
         append_set_members(response_out, &inter, resp3);
         Ok(())
@@ -665,7 +667,7 @@ impl RequestProcessor {
             .iter()
             .map(|key| key.to_vec())
             .collect();
-        let inter = compute_sinter(self, &keys)?;
+        let inter = compute_sinter(self, current_request_selected_db(), &keys)?;
         let mut cardinality = inter.len();
         if limit > 0 {
             cardinality = cardinality.min(limit);
@@ -680,8 +682,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SDIFF", "SDIFF key [key ...]")?;
+        let selected_db = current_request_selected_db();
         let keys = collect_set_keys(args, 1);
-        let diff = compute_sdiff(self, &keys)?;
+        let diff = compute_sdiff(self, selected_db, &keys)?;
         let resp3 = self.resp_protocol_version().is_resp3();
         append_set_members(response_out, &diff, resp3);
         Ok(())
@@ -698,14 +701,11 @@ impl RequestProcessor {
             "SUNIONSTORE",
             "SUNIONSTORE destination key [key ...]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
-        let union = compute_sunion(self, &keys)?;
-        store_set_result(
-            self,
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &union,
-        )?;
+        let union = compute_sunion(self, selected_db, &keys)?;
+        store_set_result(self, DbKeyRef::new(selected_db, &destination), &union)?;
         append_integer(response_out, union.len() as i64);
         Ok(())
     }
@@ -721,14 +721,11 @@ impl RequestProcessor {
             "SINTERSTORE",
             "SINTERSTORE destination key [key ...]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
-        let inter = compute_sinter(self, &keys)?;
-        store_set_result(
-            self,
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &inter,
-        )?;
+        let inter = compute_sinter(self, selected_db, &keys)?;
+        store_set_result(self, DbKeyRef::new(selected_db, &destination), &inter)?;
         append_integer(response_out, inter.len() as i64);
         Ok(())
     }
@@ -744,14 +741,11 @@ impl RequestProcessor {
             "SDIFFSTORE",
             "SDIFFSTORE destination key [key ...]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
-        let diff = compute_sdiff(self, &keys)?;
-        store_set_result(
-            self,
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &diff,
-        )?;
+        let diff = compute_sdiff(self, selected_db, &keys)?;
+        store_set_result(self, DbKeyRef::new(selected_db, &destination), &diff)?;
         append_integer(response_out, diff.len() as i64);
         Ok(())
     }
@@ -865,13 +859,12 @@ fn append_set_members(response_out: &mut Vec<u8>, set: &BTreeSet<Vec<u8>>, resp3
 
 fn compute_sunion(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
 ) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
     let mut union = BTreeSet::new();
     for key in keys {
-        if let Some(set) =
-            processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?
-        {
+        if let Some(set) = processor.load_set_object(DbKeyRef::new(selected_db, key))? {
             union.extend(set);
         }
     }
@@ -880,16 +873,15 @@ fn compute_sunion(
 
 fn compute_sinter(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
 ) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeSet::new());
     };
-    let mut inter =
-        processor.load_set_object(DbKeyRef::new(current_request_selected_db(), first_key))?;
+    let mut inter = processor.load_set_object(DbKeyRef::new(selected_db, first_key))?;
     for key in remaining_keys {
-        let other_set =
-            processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?;
+        let other_set = processor.load_set_object(DbKeyRef::new(selected_db, key))?;
         if let Some(inter_set) = inter.as_mut() {
             let Some(other_set) = other_set else {
                 inter = None;
@@ -907,17 +899,16 @@ fn compute_sinter(
 
 fn compute_sdiff(
     processor: &RequestProcessor,
+    selected_db: DbName,
     keys: &[Vec<u8>],
 ) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeSet::new());
     };
-    let mut diff =
-        processor.load_set_object(DbKeyRef::new(current_request_selected_db(), first_key))?;
+    let mut diff = processor.load_set_object(DbKeyRef::new(selected_db, first_key))?;
 
     for key in remaining_keys {
-        let other_set =
-            processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?;
+        let other_set = processor.load_set_object(DbKeyRef::new(selected_db, key))?;
         if let Some(diff_set) = diff.as_mut() {
             let Some(other_set) = other_set else {
                 continue;
