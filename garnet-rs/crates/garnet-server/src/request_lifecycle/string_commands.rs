@@ -1166,8 +1166,9 @@ impl RequestProcessor {
         )?;
 
         let options = parse_sort_options(args, read_only)?;
+        let selected_db = current_request_selected_db();
         let source_key = RedisKey::from(args[1]);
-        let mut elements = load_sort_elements(self, &source_key)?;
+        let mut elements = load_sort_elements(self, DbKeyRef::new(selected_db, &source_key))?;
 
         let by_pattern = options.by_pattern.as_deref();
         let should_sort = match by_pattern {
@@ -1178,7 +1179,8 @@ impl RequestProcessor {
             let mut sortable: Vec<(SortElement, Vec<u8>)> = Vec::with_capacity(elements.len());
             for (rank, element) in elements.into_iter().enumerate() {
                 let weight = if let Some(pattern) = by_pattern {
-                    resolve_sort_lookup_value(self, pattern, &element)?.unwrap_or_default()
+                    resolve_sort_lookup_value(self, selected_db, pattern, &element)?
+                        .unwrap_or_default()
                 } else {
                     element.clone()
                 };
@@ -1256,36 +1258,28 @@ impl RequestProcessor {
         let selected = apply_sort_limit(&elements, options.limit_offset, options.limit_count);
 
         if let Some(store_key) = options.store_key.as_deref() {
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), store_key))?;
-            let (destination_had_string, destination_object_type) = self
-                .key_type_snapshot_for_setkey_overwrite(DbKeyRef::new(
-                    current_request_selected_db(),
-                    store_key,
-                ))?;
+            let store_key_ref = DbKeyRef::new(selected_db, store_key);
+            self.expire_key_if_needed(store_key_ref)?;
+            let (destination_had_string, destination_object_type) =
+                self.key_type_snapshot_for_setkey_overwrite(store_key_ref)?;
             let mut stored = Vec::new();
             if options.get_patterns.is_empty() {
                 stored.extend(selected.iter().cloned());
             } else {
                 for element in selected {
                     for pattern in &options.get_patterns {
-                        let resolved = resolve_sort_get_value(self, pattern, element)?;
+                        let resolved = resolve_sort_get_value(self, selected_db, pattern, element)?;
                         stored.push(resolved.unwrap_or_default());
                     }
                 }
             }
 
-            self.delete_string_key_for_migration(DbKeyRef::new(
-                current_request_selected_db(),
-                store_key,
-            ))?;
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), store_key))?;
+            self.delete_string_key_for_migration(store_key_ref)?;
+            let _ = self.object_delete(store_key_ref)?;
             if !stored.is_empty() {
-                self.save_list_object(
-                    DbKeyRef::new(current_request_selected_db(), store_key),
-                    &stored,
-                )?;
+                self.save_list_object(store_key_ref, &stored)?;
                 self.notify_setkey_overwrite_events(
-                    current_request_selected_db(),
+                    selected_db,
                     store_key,
                     destination_had_string,
                     destination_object_type,
@@ -1313,7 +1307,7 @@ impl RequestProcessor {
             let resp3 = self.resp_protocol_version().is_resp3();
             for element in selected {
                 for pattern in &options.get_patterns {
-                    match resolve_sort_get_value(self, pattern, element)? {
+                    match resolve_sort_get_value(self, selected_db, pattern, element)? {
                         Some(value) => append_bulk_string(response_out, &value),
                         None => {
                             if resp3 {
@@ -2700,8 +2694,10 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFADD", "PFADD key element [element ...]")?;
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
-        let existing = load_pf_set_for_key(self, &key)?;
+        let key_ref = DbKeyRef::new(selected_db, &key);
+        let existing = load_pf_set_for_key(self, key_ref)?;
         let was_missing = existing.is_none();
         let mut state = existing.unwrap_or_default();
         let mut register_changed = false;
@@ -2727,11 +2723,7 @@ impl RequestProcessor {
             {
                 state.encoding = HllEncoding::Dense;
             }
-            self.upsert_string_value_for_migration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                &encode_pf_set(&state),
-                None,
-            )?;
+            self.upsert_string_value_for_migration(key_ref, &encode_pf_set(&state), None)?;
         }
         append_integer(response_out, changed);
         Ok(())
@@ -2743,11 +2735,12 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFCOUNT", "PFCOUNT key [key ...]")?;
+        let selected_db = current_request_selected_db();
         let mut union_registers = [0u8; PFDEBUG_REGISTER_COUNT];
         let mut single_key_state_update = None::<(Vec<u8>, PfSetState)>;
         for key_arg in &args[1..] {
             let key = key_arg.to_vec();
-            if let Some(state) = load_pf_set_for_key(self, &key)? {
+            if let Some(state) = load_pf_set_for_key(self, DbKeyRef::new(selected_db, &key))? {
                 pf_merge_registers(&mut union_registers, &state.registers);
                 if args.len() == 2 && state.cache_dirty {
                     let mut normalized = state;
@@ -2758,7 +2751,7 @@ impl RequestProcessor {
         }
         if let Some((key, state)) = single_key_state_update {
             self.upsert_string_value_for_migration(
-                DbKeyRef::new(current_request_selected_db(), &key),
+                DbKeyRef::new(selected_db, &key),
                 &encode_pf_set(&state),
                 None,
             )?;
@@ -2778,11 +2771,13 @@ impl RequestProcessor {
             "PFMERGE",
             "PFMERGE destkey sourcekey [sourcekey ...]",
         )?;
+        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
-        let mut merged = load_pf_set_for_key(self, &destination)?.unwrap_or_default();
+        let destination_ref = DbKeyRef::new(selected_db, &destination);
+        let mut merged = load_pf_set_for_key(self, destination_ref)?.unwrap_or_default();
         for source_arg in &args[2..] {
             let source = source_arg.to_vec();
-            if let Some(set) = load_pf_set_for_key(self, &source)? {
+            if let Some(set) = load_pf_set_for_key(self, DbKeyRef::new(selected_db, &source))? {
                 pf_merge_registers(&mut merged.registers, &set.registers);
             }
         }
@@ -2795,11 +2790,7 @@ impl RequestProcessor {
         {
             merged.encoding = HllEncoding::Dense;
         }
-        self.upsert_string_value_for_migration(
-            DbKeyRef::new(current_request_selected_db(), &destination),
-            &encode_pf_set(&merged),
-            None,
-        )?;
+        self.upsert_string_value_for_migration(destination_ref, &encode_pf_set(&merged), None)?;
         append_simple_string(response_out, b"OK");
         Ok(())
     }
@@ -2823,8 +2814,9 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG ENCODING key")?;
+            let selected_db = current_request_selected_db();
             let key = RedisKey::from(args[2]);
-            let encoding = if load_pf_set_for_key(self, &key)?
+            let encoding = if load_pf_set_for_key(self, DbKeyRef::new(selected_db, &key))?
                 .map(|state| state.encoding == HllEncoding::Dense)
                 .unwrap_or(false)
             {
@@ -2837,21 +2829,21 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"TODENSE") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG TODENSE key")?;
+            let selected_db = current_request_selected_db();
             let key = RedisKey::from(args[2]);
-            let mut state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
+            let key_ref = DbKeyRef::new(selected_db, &key);
+            let mut state = load_pf_set_for_key(self, key_ref)?.unwrap_or_default();
             state.encoding = HllEncoding::Dense;
-            self.upsert_string_value_for_migration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                &encode_pf_set(&state),
-                None,
-            )?;
+            self.upsert_string_value_for_migration(key_ref, &encode_pf_set(&state), None)?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GETREG") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG GETREG key")?;
+            let selected_db = current_request_selected_db();
             let key = RedisKey::from(args[2]);
-            let state = load_pf_set_for_key(self, &key)?.unwrap_or_default();
+            let state =
+                load_pf_set_for_key(self, DbKeyRef::new(selected_db, &key))?.unwrap_or_default();
             append_array_length(response_out, PFDEBUG_REGISTER_COUNT);
             for register in state.registers {
                 append_integer(response_out, i64::from(register));
@@ -4245,17 +4237,13 @@ fn apply_sort_limit(values: &[Vec<u8>], offset: usize, count: Option<usize>) -> 
 
 fn load_sort_elements(
     processor: &RequestProcessor,
-    key: &[u8],
+    key: DbKeyRef<'_>,
 ) -> Result<Vec<Vec<u8>>, RequestExecutionError> {
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), key))?;
-    if processor
-        .read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
-        .is_some()
-    {
+    processor.expire_key_if_needed(key)?;
+    if processor.read_string_value(key)?.is_some() {
         return Err(RequestExecutionError::WrongType);
     }
-    let Some(object) = processor.object_read(DbKeyRef::new(current_request_selected_db(), key))?
-    else {
+    let Some(object) = processor.object_read(key)? else {
         return Ok(Vec::new());
     };
     match object.object_type {
@@ -4290,30 +4278,33 @@ fn load_sort_elements(
 
 fn resolve_sort_get_value(
     processor: &RequestProcessor,
+    selected_db: DbName,
     pattern: &[u8],
     element: &[u8],
 ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
     if pattern == b"#" {
         return Ok(Some(element.to_vec()));
     }
-    resolve_sort_lookup_value(processor, pattern, element)
+    resolve_sort_lookup_value(processor, selected_db, pattern, element)
 }
 
 fn resolve_sort_lookup_value(
     processor: &RequestProcessor,
+    selected_db: DbName,
     pattern: &[u8],
     element: &[u8],
 ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
     let split_pattern = split_sort_pattern(pattern);
     let key = substitute_sort_wildcard(split_pattern.key_pattern, element);
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+    let key_ref = DbKeyRef::new(selected_db, &key);
+    processor.expire_key_if_needed(key_ref)?;
 
     if let Some(field_pattern) = split_pattern.hash_field_pattern {
         let field = substitute_sort_wildcard(field_pattern, element);
-        return processor.hash_get_field_for_sort_lookup(&key, &field);
+        return processor.hash_get_field_for_sort_lookup(key_ref, &field);
     }
 
-    processor.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))
+    processor.read_string_value(key_ref)
 }
 
 struct SortPatternSplit<'a> {
@@ -4408,13 +4399,11 @@ fn apply_bitop(operation: BitopOperation, source_values: &[Vec<u8>]) -> Vec<u8> 
 
 fn load_pf_set_for_key(
     processor: &RequestProcessor,
-    key: &[u8],
+    key: DbKeyRef<'_>,
 ) -> Result<Option<PfSetState>, RequestExecutionError> {
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), key))?;
-    let Some(value) =
-        processor.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
-    else {
-        if processor.object_key_exists(DbKeyRef::new(current_request_selected_db(), key))? {
+    processor.expire_key_if_needed(key)?;
+    let Some(value) = processor.read_string_value(key)? else {
+        if processor.object_key_exists(key)? {
             return Err(RequestExecutionError::WrongType);
         }
         return Ok(None);

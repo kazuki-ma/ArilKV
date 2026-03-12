@@ -1503,20 +1503,16 @@ impl RequestProcessor {
 
     pub(super) fn hash_get_field_for_sort_lookup(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         field: &[u8],
     ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
-        let mut hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), key))? {
-                Some(hash) => hash,
-                None => return Ok(None),
-            };
-        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &[field]);
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => return Ok(None),
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key.key(), &mut hash, &[field]);
         if lazy_expired {
-            self.persist_hash_after_field_expiration(
-                DbKeyRef::new(current_request_selected_db(), key),
-                &hash,
-            )?;
+            self.persist_hash_after_field_expiration(key, &hash)?;
             if hash.is_empty() {
                 return Ok(None);
             }
