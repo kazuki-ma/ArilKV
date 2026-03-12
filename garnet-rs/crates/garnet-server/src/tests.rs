@@ -8883,18 +8883,6 @@ async fn sync_replication_stream_preserves_nested_blmove_unblock_order_like_exte
     pipeline.extend_from_slice(&encode_resp_command(&[b"SET", b"key2{t}", b"value2"]));
     producer.write_all(&pipeline).await.unwrap();
 
-    let mut expected_pipeline_responses = Vec::new();
-    expected_pipeline_responses.extend_from_slice(b"+OK\r\n");
-    expected_pipeline_responses.extend_from_slice(b":1\r\n");
-    expected_pipeline_responses.extend_from_slice(b"+OK\r\n");
-    let pipeline_responses = read_exact_with_timeout(
-        &mut producer,
-        expected_pipeline_responses.len(),
-        Duration::from_secs(1),
-    )
-    .await;
-    assert_eq!(pipeline_responses, expected_pipeline_responses);
-
     wait_for_blocked_clients(&mut inspector, 0, Duration::from_secs(1)).await;
 
     let dummy_bulk = b"$5\r\ndummy\r\n";
@@ -8911,6 +8899,18 @@ async fn sync_replication_stream_preserves_nested_blmove_unblock_order_like_exte
         b"+OK\r\n",
     )
     .await;
+
+    let mut expected_pipeline_responses = Vec::new();
+    expected_pipeline_responses.extend_from_slice(b"+OK\r\n");
+    expected_pipeline_responses.extend_from_slice(b":1\r\n");
+    expected_pipeline_responses.extend_from_slice(b"+OK\r\n");
+    let pipeline_responses = read_exact_with_timeout(
+        &mut producer,
+        expected_pipeline_responses.len(),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(pipeline_responses, expected_pipeline_responses);
 
     let mut expected = Vec::new();
     expected.extend_from_slice(&encode_resp_command(&[b"SELECT", b"0"]));
@@ -16136,6 +16136,196 @@ async fn slowlog_rewritten_and_blocking_commands_match_external_scenarios() {
             .count()
             == 1
     );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn scan_with_expired_keys_type_filter_and_pattern_filter_matches_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(1);
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    for index in 0..1000 {
+        let key = format!("key:{index}");
+        send_and_expect(
+            &mut client,
+            &encode_resp_command(&[b"SET", key.as_bytes(), b"value"]),
+            b"+OK\r\n",
+        )
+        .await;
+    }
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"key:foo", b"bar"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PEXPIRE", b"key:foo", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"HSET", b"key:hash", b"f", b"v"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PEXPIRE", b"key:hash", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"boo", b"far"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PEXPIRE", b"boo", b"1"]),
+        b":1\r\n",
+    )
+    .await;
+
+    sleep(Duration::from_millis(10)).await;
+
+    let mut cursor = b"0".to_vec();
+    let mut seen = 0usize;
+    loop {
+        let response = send_and_read_resp_value(
+            &mut client,
+            &encode_resp_command(&[
+                b"SCAN",
+                cursor.as_slice(),
+                b"TYPE",
+                b"string",
+                b"MATCH",
+                b"key*",
+                b"COUNT",
+                b"10",
+            ]),
+            timeout,
+        )
+        .await;
+        let items = resp_socket_array(&response);
+        assert_eq!(
+            items.len(),
+            2,
+            "SCAN reply should have cursor and key array"
+        );
+        cursor = resp_socket_bulk(&items[0]).to_vec();
+        seen += resp_socket_array(&items[1]).len();
+        if cursor == b"0" {
+            break;
+        }
+    }
+    assert_eq!(
+        seen, 1000,
+        "SCAN should only return the non-expired key* strings"
+    );
+
+    let keyspace = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"INFO", b"keyspace"]),
+        timeout,
+    )
+    .await;
+    let keyspace_text = String::from_utf8(keyspace).unwrap();
+    assert!(
+        keyspace_text.contains("db0:keys=1001,"),
+        "INFO keyspace should keep the non-matching expired key visible until accessed: {keyspace_text}"
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn tracking_gets_notification_of_expired_keys_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    wait_for_server_ping(addr).await;
+
+    let timeout = Duration::from_secs(1);
+    let mut writer = TcpStream::connect(addr).await.unwrap();
+    let mut redirect = TcpStream::connect(addr).await.unwrap();
+
+    let redirect_id = send_and_read_integer(
+        &mut redirect,
+        &encode_resp_command(&[b"CLIENT", b"ID"]),
+        timeout,
+    )
+    .await;
+    let redirect_id_text = redirect_id.to_string();
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CLIENT", b"TRACKING", b"OFF"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[
+            b"CLIENT",
+            b"TRACKING",
+            b"ON",
+            b"BCAST",
+            b"REDIRECT",
+            redirect_id_text.as_bytes(),
+            b"NOLOOP",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"mykey", b"myval", b"PX", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"mykeyotherkey", b"myval"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    sleep(Duration::from_millis(1000)).await;
+
+    let message = read_resp_value_with_timeout(&mut redirect, Duration::from_secs(3)).await;
+    let items = resp_socket_array(&message);
+    assert_eq!(
+        items.len(),
+        3,
+        "tracking invalidation should use RESP2 pubsub message"
+    );
+    assert_eq!(resp_socket_bulk(&items[0]), b"message");
+    assert_eq!(resp_socket_bulk(&items[1]), b"__redis__:invalidate");
+    assert_eq!(resp_socket_bulk(&items[2]), b"mykey");
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();

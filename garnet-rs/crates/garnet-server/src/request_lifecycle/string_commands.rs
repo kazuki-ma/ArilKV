@@ -169,7 +169,7 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_get.before_store_lock");
 
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
@@ -230,7 +230,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
@@ -309,7 +309,7 @@ impl RequestProcessor {
         let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
@@ -1526,7 +1526,7 @@ impl RequestProcessor {
         let updated_text = updated.to_string().into_bytes();
 
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             self.upsert_string_value_for_migration(
                 DbKeyRef::new(current_request_selected_db(), &key),
                 &updated_text,
@@ -1590,7 +1590,7 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             let old_string_value = self
                 .read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
                 .unwrap_or_default();
@@ -1653,19 +1653,12 @@ impl RequestProcessor {
                 RequestExecutionError::StringExceedsMaximumAllowedSize,
             )?;
 
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let entry = databases
-                .entry(selected_db)
-                .or_default()
-                .entries
-                .entry(key.clone())
-                .or_default();
-            entry.value = Some(MigrationValue::String(StringValue::from(normalized_value)));
-            entry.expiration = effective_expiration;
-            entry.hash_field_expirations.clear();
-            drop(databases);
+            let _ = self.with_auxiliary_db_state(selected_db, true, |state| {
+                let entry = state.entries.entry(key.clone()).or_default();
+                entry.value = Some(MigrationValue::String(StringValue::from(normalized_value)));
+                entry.expiration = effective_expiration;
+                entry.hash_field_expirations.clear();
+            })?;
 
             self.clear_forced_raw_string_encoding(DbKeyRef::new(
                 current_request_selected_db(),
@@ -2482,7 +2475,7 @@ impl RequestProcessor {
         }
 
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             let expiration_unix_millis =
                 self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key));
             let current =
@@ -2897,7 +2890,7 @@ impl RequestProcessor {
         )?;
 
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             let key_vec = RedisKey::from(key);
             let object_exists = self
                 .object_read(DbKeyRef::new(current_request_selected_db(), &key_vec))?
@@ -2907,19 +2900,12 @@ impl RequestProcessor {
                     self.object_delete(DbKeyRef::new(current_request_selected_db(), &key_vec))?;
             }
 
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let entry = databases
-                .entry(selected_db)
-                .or_default()
-                .entries
-                .entry(key_vec.clone())
-                .or_default();
-            entry.value = Some(MigrationValue::String(StringValue::from(normalized_value)));
-            entry.expiration = expiration;
-            entry.hash_field_expirations.clear();
-            drop(databases);
+            let _ = self.with_auxiliary_db_state(selected_db, true, |state| {
+                let entry = state.entries.entry(key_vec.clone()).or_default();
+                entry.value = Some(MigrationValue::String(StringValue::from(normalized_value)));
+                entry.expiration = expiration;
+                entry.hash_field_expirations.clear();
+            })?;
 
             self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key_vec));
             self.notify_keyspace_event(

@@ -7780,6 +7780,207 @@ fn swapdb_non_zero_databases_swap_content_with_matching_key_names() {
 }
 
 #[test]
+fn swapdb_zero_and_nonzero_databases_swap_content_with_matching_key_names() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db1 = DbName::new(1);
+    let run = |command: &str, selected_db: DbName| -> Vec<u8> {
+        match crate::testkit::execute_command_line_in_db(&processor, command, selected_db) {
+            Ok(response) => response,
+            Err(CommandHarnessError::Request(error)) => {
+                let mut response = Vec::new();
+                error.append_resp_error(&mut response);
+                response
+            }
+            Err(error) => panic!("command failed: `{command}` ({selected_db:?}): {error}"),
+        }
+    };
+
+    assert_eq!(run("CONFIG SET databases 2", db0), b"+OK\r\n");
+    assert_eq!(run("SET shared main", db0), b"+OK\r\n");
+    assert_eq!(run("LPUSH shared side", db1), b":1\r\n");
+
+    assert_eq!(run("TYPE shared", db0), b"+string\r\n");
+    assert_eq!(run("TYPE shared", db1), b"+list\r\n");
+    assert_eq!(run("SWAPDB 0 1", db0), b"+OK\r\n");
+
+    assert_eq!(run("TYPE shared", db0), b"+list\r\n");
+    assert_eq!(run("LRANGE shared 0 -1", db0), b"*1\r\n$4\r\nside\r\n");
+    assert_eq!(
+        run("GET shared", db0),
+        b"-WRONGTYPE Operation against a key holding the wrong kind of value\r\n"
+    );
+    assert_eq!(run("TYPE shared", db1), b"+string\r\n");
+    assert_eq!(run("GET shared", db1), b"$4\r\nmain\r\n");
+}
+
+#[test]
+fn swapdb_zero_and_nonzero_preserves_quicklist_encoding_and_debug_object_state() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db1 = DbName::new(1);
+    let large_quicklist_value = vec![b'x'; 8192];
+
+    assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
+    assert_eq!(
+        execute_command_args_in_db(
+            &processor,
+            &[b"RPUSH", b"lst", b"a", large_quicklist_value.as_slice()],
+            db0,
+        ),
+        b":2\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "RPUSH lst a b", db1),
+        b":2\r\n"
+    );
+
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING lst",
+        b"$9\r\nquicklist\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING lst",
+        b"$8\r\nlistpack\r\n",
+        db1,
+    );
+
+    let debug_before_db0 = parse_bulk_payload(&execute_command_line_in_db(
+        &processor,
+        "DEBUG OBJECT lst",
+        db0,
+    ))
+    .expect("DEBUG OBJECT returns bulk payload");
+    let debug_before_db1 = parse_bulk_payload(&execute_command_line_in_db(
+        &processor,
+        "DEBUG OBJECT lst",
+        db1,
+    ))
+    .expect("DEBUG OBJECT returns bulk payload");
+    let debug_before_db0_text = String::from_utf8_lossy(&debug_before_db0);
+    let debug_before_db1_text = String::from_utf8_lossy(&debug_before_db1);
+    assert!(debug_before_db0_text.contains("ql_listpack_max:"));
+    assert!(!debug_before_db1_text.contains("ql_listpack_max:"));
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SWAPDB 0 1", db0),
+        b"+OK\r\n"
+    );
+
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING lst",
+        b"$8\r\nlistpack\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING lst",
+        b"$9\r\nquicklist\r\n",
+        db1,
+    );
+
+    let debug_after_db0 = parse_bulk_payload(&execute_command_line_in_db(
+        &processor,
+        "DEBUG OBJECT lst",
+        db0,
+    ))
+    .expect("DEBUG OBJECT returns bulk payload");
+    let debug_after_db1 = parse_bulk_payload(&execute_command_line_in_db(
+        &processor,
+        "DEBUG OBJECT lst",
+        db1,
+    ))
+    .expect("DEBUG OBJECT returns bulk payload");
+    let debug_after_db0_text = String::from_utf8_lossy(&debug_after_db0);
+    let debug_after_db1_text = String::from_utf8_lossy(&debug_after_db1);
+    assert!(!debug_after_db0_text.contains("ql_listpack_max:"));
+    assert!(debug_after_db1_text.contains("ql_listpack_max:"));
+}
+
+#[test]
+fn swapdb_zero_and_nonzero_makes_blocked_list_waiter_ready_in_target_logical_db() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db1 = DbName::new(1);
+    let client_id = ClientId::new(9001);
+    let wait_key = BlockingWaitKey::new(
+        db1,
+        RedisKey::from(b"shared".as_slice()),
+        BlockingWaitClass::List,
+    );
+
+    assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LPUSH shared one", db0),
+        b":1\r\n"
+    );
+
+    processor.register_blocking_wait(client_id, std::slice::from_ref(&wait_key));
+    assert!(
+        !processor.blocking_wait_keys_ready(client_id, std::slice::from_ref(&wait_key)),
+        "db1 waiter should not observe db0 content before swap"
+    );
+    assert!(
+        !processor.has_ready_blocking_waiters(),
+        "no logical waiter should be ready before swap"
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SWAPDB 0 1", db0),
+        b"+OK\r\n"
+    );
+
+    assert!(
+        processor.blocking_wait_keys_ready(client_id, std::slice::from_ref(&wait_key)),
+        "db1 waiter should observe swapped-in list after swap"
+    );
+    assert!(
+        processor.has_ready_blocking_waiters(),
+        "swap should expose the ready waiter"
+    );
+}
+
+#[test]
+fn swapdb_emits_global_tracking_invalidation() {
+    let processor = RequestProcessor::new().unwrap();
+    let source_client = ClientId::new(303);
+    let redirect_client = ClientId::new(404);
+    let expected_invalidation =
+        b"*3\r\n$7\r\nmessage\r\n$20\r\n__redis__:invalidate\r\n$0\r\n\r\n".to_vec();
+
+    processor.register_pubsub_client(source_client);
+    processor.register_pubsub_client(redirect_client);
+    processor.configure_client_tracking(
+        source_client,
+        ClientTrackingConfig {
+            mode: ClientTrackingModeSetting::On,
+            redirect_id: Some(redirect_client),
+            ..ClientTrackingConfig::default()
+        },
+    );
+
+    assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SET left a", DbName::default()),
+        b"+OK\r\n"
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SET right b", DbName::new(1)),
+        b"+OK\r\n"
+    );
+
+    assert_client_command_response(&processor, "SWAPDB 0 1", source_client, b"+OK\r\n");
+    assert_eq!(
+        processor.take_pending_pubsub_messages(redirect_client),
+        vec![expected_invalidation]
+    );
+}
+
+#[test]
 fn info_keysizes_uses_hyperloglog_logical_length_bins() {
     let processor = RequestProcessor::new().unwrap();
     assert_eq!(

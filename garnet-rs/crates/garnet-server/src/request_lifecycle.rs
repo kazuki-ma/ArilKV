@@ -8,6 +8,7 @@
 //! - formal/tla/specs/BlockingCountVisibility.tla
 //! - formal/tla/specs/ClientPauseUnblockRace.tla
 //! - formal/tla/specs/StreamPelOwnership.tla
+//! - formal/tla/specs/SwapDbWatchVisibility.tla
 
 use crate::ClientId;
 use crate::CommandId;
@@ -32,6 +33,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::sync::OnceLock;
+use std::sync::RwLock;
 use std::sync::atomic::AtomicBool;
 use std::sync::atomic::AtomicI64;
 use std::sync::atomic::AtomicU8;
@@ -43,6 +45,7 @@ use std::time::Duration;
 use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
+use tokio::sync::Notify;
 use tsavorite::DeleteInfo;
 use tsavorite::DeleteOperationStatus;
 use tsavorite::ReadInfo;
@@ -115,6 +118,7 @@ const DEFAULT_SET_MAX_LISTPACK_ENTRIES: usize = 128;
 const DEFAULT_SET_MAX_LISTPACK_VALUE: usize = 64;
 const DEFAULT_SET_MAX_INTSET_ENTRIES: usize = 512;
 const DEFAULT_PROTO_MAX_BULK_LEN: usize = 512 * 1024 * 1024;
+const DEFAULT_CONFIGURED_DATABASES: usize = 16;
 const DEFAULT_STRING_STORE_SHARDS: usize = 2;
 const SINGLE_OWNER_THREAD_STRING_STORE_SHARDS: usize = 1;
 const LATENCY_EVENT_HISTORY_CAPACITY: usize = 160;
@@ -162,6 +166,12 @@ struct RequestExecutionContext {
 struct ScriptTimeSnapshot {
     unix_micros: u64,
     instant: Instant,
+}
+
+#[derive(Default, Clone, Copy)]
+struct ExpirationStats {
+    expired_keys: u64,
+    expired_keys_active: u64,
 }
 
 struct RequestExecutionContextScope {
@@ -241,6 +251,16 @@ fn begin_tracking_invalidation_collection() {
 #[inline]
 fn finish_tracking_invalidation_collection() -> Vec<RedisKey> {
     TRACKING_INVALIDATION_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or_default())
+}
+
+#[inline]
+fn clear_tracking_invalidation_collection() {
+    TRACKING_INVALIDATION_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(current) = stack.last_mut() {
+            current.clear();
+        }
+    });
 }
 
 #[inline]
@@ -339,16 +359,40 @@ impl WatchVersion {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub(crate) struct WatchedValueFingerprint(u64);
+
+impl WatchedValueFingerprint {
+    pub(crate) const fn new(value: u64) -> Self {
+        Self(value)
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct WatchedKey {
     pub(crate) db: DbName,
     pub(crate) key: RedisKey,
     pub(crate) version: WatchVersion,
+    storage_binding: DbStorageBinding,
+    fingerprint: WatchedValueFingerprint,
 }
 
 impl WatchedKey {
-    pub(crate) const fn new(db: DbName, key: RedisKey, version: WatchVersion) -> Self {
-        Self { db, key, version }
+    const fn new(
+        db: DbName,
+        key: RedisKey,
+        version: WatchVersion,
+        storage_binding: DbStorageBinding,
+        fingerprint: WatchedValueFingerprint,
+    ) -> Self {
+        Self {
+            db,
+            key,
+            version,
+            storage_binding,
+            fingerprint,
+        }
     }
 }
 
@@ -460,6 +504,7 @@ pub(super) struct ScriptingRuntimeConfig {
 
 mod command_helpers;
 mod config;
+mod db_catalog_storage;
 mod errors;
 mod geo_commands;
 mod hash_commands;
@@ -501,6 +546,7 @@ use self::config::string_store_shard_count_from_values;
 use self::config::tsavorite_config_from_env;
 #[cfg(test)]
 use self::config::tsavorite_config_from_values;
+use self::db_catalog_storage::AuxiliaryDbStorageMap;
 pub use self::errors::RequestExecutionError;
 use self::errors::map_delete_error;
 use self::errors::map_read_error;
@@ -731,6 +777,34 @@ impl From<DbName> for usize {
     fn from(value: DbName) -> Self {
         value.0
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+struct AuxiliaryStorageName(usize);
+
+impl AuxiliaryStorageName {
+    const fn new(raw: usize) -> Self {
+        Self(raw)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DbStorageBinding {
+    MainRuntime,
+    Auxiliary(AuxiliaryStorageName),
+}
+
+#[derive(Debug, Default)]
+struct DbCatalogBindings {
+    logical_to_storage: Vec<DbStorageBinding>,
+}
+
+fn default_db_storage_binding(db: DbName) -> DbStorageBinding {
+    if db == DbName::default() {
+        return DbStorageBinding::MainRuntime;
+    }
+    DbStorageBinding::Auxiliary(AuxiliaryStorageName::new(usize::from(db)))
 }
 
 pub(crate) type KeyBytes = [u8];
@@ -1047,7 +1121,8 @@ struct MainDbRuntime {
 
 struct DbCatalog {
     main_db_runtime: MainDbRuntime,
-    auxiliary_databases: Mutex<HashMap<DbName, AuxiliaryDbState>>,
+    auxiliary_databases: AuxiliaryDbStorageMap,
+    logical_bindings: RwLock<DbCatalogBindings>,
     side_state: DbCatalogSideState,
 }
 
@@ -1883,12 +1958,13 @@ pub struct RequestProcessor {
     blocked_xread_tail_ids: Mutex<HashMap<ClientId, Vec<Option<StreamId>>>>,
     pending_client_unblocks: Mutex<HashMap<ClientId, ClientUnblockMode>>,
     pause_blocked_blocking_clients: Mutex<HashSet<ClientId>>,
+    blocking_progress_epoch: AtomicU64,
+    blocking_progress_notify: Notify,
     random_state: AtomicU64,
     active_expire_enabled: AtomicBool,
     debug_pause_cron: AtomicBool,
     debug_disable_deny_scripts: AtomicBool,
-    expired_keys: AtomicU64,
-    expired_keys_active: AtomicU64,
+    expiration_stats: Mutex<ExpirationStats>,
     total_error_replies: AtomicU64,
     lastsave_unix_seconds: AtomicU64,
     rdb_changes_since_last_save: AtomicU64,
@@ -2172,7 +2248,12 @@ impl RequestProcessor {
                     string_key_registries: string_key_registries.into(),
                     object_key_registries: object_key_registries.into(),
                 },
-                auxiliary_databases: Mutex::new(HashMap::new()),
+                auxiliary_databases: AuxiliaryDbStorageMap::default(),
+                logical_bindings: RwLock::new(DbCatalogBindings {
+                    logical_to_storage: (0..DEFAULT_CONFIGURED_DATABASES)
+                        .map(|index| default_db_storage_binding(DbName::new(index)))
+                        .collect(),
+                }),
                 side_state: DbCatalogSideState {
                     forced_list_quicklist_keys: Mutex::new(HashSet::new()),
                     forced_raw_string_keys: Mutex::new(HashSet::new()),
@@ -2191,12 +2272,13 @@ impl RequestProcessor {
             blocked_xread_tail_ids: Mutex::new(HashMap::new()),
             pending_client_unblocks: Mutex::new(HashMap::new()),
             pause_blocked_blocking_clients: Mutex::new(HashSet::new()),
+            blocking_progress_epoch: AtomicU64::new(0),
+            blocking_progress_notify: Notify::new(),
             random_state: AtomicU64::new(current_unix_time_millis().unwrap_or(0x9e3779b97f4a7c15)),
             active_expire_enabled: AtomicBool::new(true),
             debug_pause_cron: AtomicBool::new(false),
             debug_disable_deny_scripts: AtomicBool::new(false),
-            expired_keys: AtomicU64::new(0),
-            expired_keys_active: AtomicU64::new(0),
+            expiration_stats: Mutex::new(ExpirationStats::default()),
             total_error_replies: AtomicU64::new(0),
             lastsave_unix_seconds: AtomicU64::new(current_unix_time_millis().unwrap_or(0) / 1000),
             rdb_changes_since_last_save: AtomicU64::new(0),
@@ -2264,6 +2346,99 @@ impl RequestProcessor {
         })
     }
 
+    fn ensure_db_binding_capacity(&self, required_len: usize) -> Result<(), RequestExecutionError> {
+        let Ok(mut bindings) = self.db_catalog.logical_bindings.write() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        if bindings.logical_to_storage.len() >= required_len {
+            return Ok(());
+        }
+        let current_len = bindings.logical_to_storage.len();
+        bindings
+            .logical_to_storage
+            .reserve(required_len - current_len);
+        for index in current_len..required_len {
+            bindings
+                .logical_to_storage
+                .push(default_db_storage_binding(DbName::new(index)));
+        }
+        Ok(())
+    }
+
+    fn db_storage_binding(
+        &self,
+        logical_db: DbName,
+    ) -> Result<DbStorageBinding, RequestExecutionError> {
+        let index = usize::from(logical_db);
+        self.ensure_db_binding_capacity(index.saturating_add(1))?;
+        let Ok(bindings) = self.db_catalog.logical_bindings.read() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        Ok(bindings.logical_to_storage[index])
+    }
+
+    fn auxiliary_storage_for_logical_db(
+        &self,
+        logical_db: DbName,
+    ) -> Result<Option<AuxiliaryStorageName>, RequestExecutionError> {
+        match self.db_storage_binding(logical_db)? {
+            DbStorageBinding::MainRuntime => Ok(None),
+            DbStorageBinding::Auxiliary(storage) => Ok(Some(storage)),
+        }
+    }
+
+    fn logical_db_uses_main_runtime(
+        &self,
+        logical_db: DbName,
+    ) -> Result<bool, RequestExecutionError> {
+        Ok(matches!(
+            self.db_storage_binding(logical_db)?,
+            DbStorageBinding::MainRuntime
+        ))
+    }
+
+    fn logical_db_for_auxiliary_storage(
+        &self,
+        storage: AuxiliaryStorageName,
+    ) -> Result<Option<DbName>, RequestExecutionError> {
+        let Ok(bindings) = self.db_catalog.logical_bindings.read() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        Ok(bindings
+            .logical_to_storage
+            .iter()
+            .position(|binding| *binding == DbStorageBinding::Auxiliary(storage))
+            .map(DbName::new))
+    }
+
+    fn logical_db_for_main_runtime(&self) -> Result<DbName, RequestExecutionError> {
+        let Ok(bindings) = self.db_catalog.logical_bindings.read() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        Ok(bindings
+            .logical_to_storage
+            .iter()
+            .position(|binding| *binding == DbStorageBinding::MainRuntime)
+            .map(DbName::new)
+            .unwrap_or_default())
+    }
+
+    fn swap_logical_db_storage_bindings(
+        &self,
+        db1: DbName,
+        db2: DbName,
+    ) -> Result<(), RequestExecutionError> {
+        let required_len = usize::from(db1.max(db2)).saturating_add(1);
+        self.ensure_db_binding_capacity(required_len)?;
+        let Ok(mut bindings) = self.db_catalog.logical_bindings.write() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        bindings
+            .logical_to_storage
+            .swap(usize::from(db1), usize::from(db2));
+        Ok(())
+    }
+
     pub(crate) fn watch_key_version_in_db(&self, db: DbName, key: &[u8]) -> WatchVersion {
         let slot = watch_version_slot(db, key);
         WatchVersion::new(self.watch_versions[slot].load(Ordering::SeqCst))
@@ -2296,6 +2471,45 @@ impl RequestProcessor {
         })
     }
 
+    fn watched_value_fingerprint_in_db(
+        &self,
+        db: DbName,
+        key: &[u8],
+    ) -> Result<WatchedValueFingerprint, RequestExecutionError> {
+        if let Some(value) = self.read_string_value(DbKeyRef::new(db, key))? {
+            let mut hash = fnv1a_hash64(b"s");
+            hash = fnv1a_hash64_extend(hash, &value);
+            return Ok(WatchedValueFingerprint::new(hash));
+        }
+        if let Some(object) = self.object_read(DbKeyRef::new(db, key))? {
+            let object_type = [object.object_type as u8];
+            let mut hash = fnv1a_hash64(b"o");
+            hash = fnv1a_hash64_extend(hash, &object_type);
+            hash = fnv1a_hash64_extend(hash, &object.payload);
+            return Ok(WatchedValueFingerprint::new(hash));
+        }
+        Ok(WatchedValueFingerprint::new(0))
+    }
+
+    pub(crate) fn capture_watched_key(
+        &self,
+        db: DbName,
+        key: &[u8],
+    ) -> Result<WatchedKey, RequestExecutionError> {
+        // TLA+ : CaptureWatchedVisibleState
+        self.expire_watch_key_if_needed_in_db(db, key)?;
+        let version = self.watch_key_version_in_db(db, key);
+        let storage_binding = self.db_storage_binding(db)?;
+        let fingerprint = self.watched_value_fingerprint_in_db(db, key)?;
+        Ok(WatchedKey::new(
+            db,
+            RedisKey::from(key),
+            version,
+            storage_binding,
+            fingerprint,
+        ))
+    }
+
     pub(crate) fn refresh_watched_keys_before_exec(&self, watched_keys: &[WatchedKey]) {
         for watched in watched_keys {
             let _ = self.with_selected_db(watched.db, || {
@@ -2305,8 +2519,17 @@ impl RequestProcessor {
     }
 
     pub(crate) fn watch_versions_match(&self, watched_keys: &[WatchedKey]) -> bool {
+        // TLA+ : ValidateWatchedVisibleState
         watched_keys.iter().all(|watched| {
-            self.watch_key_version_in_db(watched.db, watched.key.as_slice()) == watched.version
+            let Ok(current_binding) = self.db_storage_binding(watched.db) else {
+                return false;
+            };
+            if current_binding == watched.storage_binding {
+                return self.watch_key_version_in_db(watched.db, watched.key.as_slice())
+                    == watched.version;
+            }
+            self.watched_value_fingerprint_in_db(watched.db, watched.key.as_slice())
+                .is_ok_and(|fingerprint| fingerprint == watched.fingerprint)
         })
     }
 
@@ -3973,6 +4196,23 @@ impl RequestProcessor {
         }
     }
 
+    pub(crate) fn blocking_progress_epoch(&self) -> u64 {
+        self.blocking_progress_epoch.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn note_blocking_progress(&self) {
+        self.blocking_progress_epoch.fetch_add(1, Ordering::AcqRel);
+        self.blocking_progress_notify.notify_waiters();
+    }
+
+    pub(crate) async fn wait_for_blocking_progress_after(&self, observed_epoch: u64) {
+        let notified = self.blocking_progress_notify.notified();
+        if self.blocking_progress_epoch() != observed_epoch {
+            return;
+        }
+        notified.await;
+    }
+
     pub(crate) fn register_blocking_wait(
         &self,
         client_id: ClientId,
@@ -4746,19 +4986,22 @@ impl RequestProcessor {
             .store(disabled, Ordering::Release);
     }
 
-    pub(super) fn expired_keys(&self) -> u64 {
-        self.expired_keys.load(Ordering::Relaxed)
-    }
-
-    pub(super) fn expired_keys_active(&self) -> u64 {
-        self.expired_keys_active.load(Ordering::Relaxed)
+    pub(super) fn expiration_stats_snapshot(&self) -> (u64, u64) {
+        let stats = self
+            .expiration_stats
+            .lock()
+            .map(|stats| *stats)
+            .unwrap_or_default();
+        (stats.expired_keys, stats.expired_keys_active)
     }
 
     pub(super) fn record_lazy_expired_keys(&self, count: u64) {
         if count == 0 {
             return;
         }
-        self.expired_keys.fetch_add(count, Ordering::Relaxed);
+        if let Ok(mut stats) = self.expiration_stats.lock() {
+            stats.expired_keys = stats.expired_keys.saturating_add(count);
+        }
         self.record_latency_event(b"expire-cycle", 25);
     }
 
@@ -4766,14 +5009,17 @@ impl RequestProcessor {
         if count == 0 {
             return;
         }
-        self.expired_keys.fetch_add(count, Ordering::Relaxed);
-        self.expired_keys_active.fetch_add(count, Ordering::Relaxed);
+        if let Ok(mut stats) = self.expiration_stats.lock() {
+            stats.expired_keys = stats.expired_keys.saturating_add(count);
+            stats.expired_keys_active = stats.expired_keys_active.saturating_add(count);
+        }
         self.record_latency_event(b"expire-cycle", 25);
     }
 
     pub(super) fn reset_expiration_stats(&self) {
-        self.expired_keys.store(0, Ordering::Relaxed);
-        self.expired_keys_active.store(0, Ordering::Relaxed);
+        if let Ok(mut stats) = self.expiration_stats.lock() {
+            *stats = ExpirationStats::default();
+        }
     }
 
     pub(super) fn next_random_u64(&self) -> u64 {
@@ -5546,7 +5792,10 @@ fn extend_arg_bytes_from_slices<'a>(args: &'a [ArgSlice], out: &mut Vec<&'a [u8]
 
 #[inline]
 fn fnv1a_hash64(key: &[u8]) -> u64 {
-    let mut hash = 0xcbf29ce484222325u64;
+    fnv1a_hash64_extend(0xcbf29ce484222325u64, key)
+}
+
+fn fnv1a_hash64_extend(mut hash: u64, key: &[u8]) -> u64 {
     for byte in key {
         hash ^= u64::from(*byte);
         hash = hash.wrapping_mul(0x100000001b3);

@@ -1,3 +1,6 @@
+// TLA+ model linkage:
+// - formal/tla/specs/SwapDbWatchVisibility.tla
+
 use super::object_store::list_listpack_compatible;
 use super::*;
 use crate::command_spec::ArityPolicy;
@@ -595,8 +598,7 @@ impl RequestProcessor {
         let watching_clients = self.watching_clients();
         let rdb_bgsave_in_progress = if self.rdb_bgsave_in_progress() { 1 } else { 0 };
         let rdb_changes_since_last_save = self.rdb_changes_since_last_save();
-        let expired_keys = self.expired_keys();
-        let expired_keys_active = self.expired_keys_active();
+        let (expired_keys, expired_keys_active) = self.expiration_stats_snapshot();
         let total_error_replies = self.total_error_replies();
         let lazyfree_pending_objects = self.lazyfree_pending_objects();
         let lazyfreed_objects = self.lazyfreed_objects();
@@ -822,65 +824,24 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if index1 != DbName::default() && index2 != DbName::default() {
-            self.swap_auxiliary_databases(index1, index2)?;
-            append_simple_string(response_out, b"OK");
-            return Ok(());
-        }
-
-        let entries1 =
-            self.with_selected_db(index1, || self.snapshot_current_db_entries(index1))?;
-        let entries2 =
-            self.with_selected_db(index2, || self.snapshot_current_db_entries(index2))?;
-
-        self.with_selected_db(index1, || self.flush_current_db_keys())?;
-        self.with_selected_db(index2, || self.flush_current_db_keys())?;
-
-        self.with_selected_db(index1, || {
-            for entry in &entries2 {
-                self.import_migration_entry(index1, entry)?;
-            }
-            Ok::<(), RequestExecutionError>(())
-        })?;
-        self.with_selected_db(index2, || {
-            for entry in &entries1 {
-                self.import_migration_entry(index2, entry)?;
-            }
-            Ok::<(), RequestExecutionError>(())
-        })?;
+        // TLA+ : SwapLogicalDbBindings
+        self.swap_logical_databases(index1, index2)?;
 
         append_simple_string(response_out, b"OK");
         Ok(())
     }
 
-    fn swap_auxiliary_databases(
+    fn swap_logical_databases(
         &self,
         db1: DbName,
         db2: DbName,
     ) -> Result<(), RequestExecutionError> {
         debug_assert_ne!(db1, db2);
 
+        // TLA+ : InvalidateSwapTrackedKeys
         self.invalidate_all_tracking_entries();
-
-        let mut databases = self
-            .db_catalog
-            .auxiliary_databases
-            .lock()
-            .map_err(|_| RequestExecutionError::StorageBusy)?;
-
-        let first = databases.remove(&db1);
-        let second = databases.remove(&db2);
-
-        if let Some(first) = first {
-            let _ = databases.insert(db2, first);
-        }
-        if let Some(second) = second {
-            let _ = databases.insert(db1, second);
-        }
-
-        drop(databases);
-
-        self.swap_set_hot_state_for_auxiliary_db_pair(db1, db2);
+        self.swap_logical_db_storage_bindings(db1, db2)?;
+        self.swap_set_hot_state_for_logical_db_pair(db1, db2);
         self.swap_scoped_key_state(
             &self.db_catalog.side_state.forced_list_quicklist_keys,
             db1,
@@ -897,7 +858,7 @@ impl RequestProcessor {
         Ok(())
     }
 
-    fn swap_set_hot_state_for_auxiliary_db_pair(&self, db1: DbName, db2: DbName) {
+    fn swap_set_hot_state_for_logical_db_pair(&self, db1: DbName, db2: DbName) {
         let mut hot_state = match self.db_catalog.side_state.set_object_hot_state.lock() {
             Ok(state) => state,
             Err(_) => return,
@@ -4389,6 +4350,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let flush_mode = parse_flush_mode(args, "FLUSHDB", "FLUSHDB [ASYNC|SYNC]")?;
         let removed_count = self.flush_current_db_keys()?;
+        clear_tracking_invalidation_collection();
+        self.invalidate_all_tracking_entries();
         if should_record_lazyfreed_for_flush_mode(flush_mode) {
             self.record_lazyfreed_objects(removed_count);
         }
@@ -4402,9 +4365,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let flush_mode = parse_flush_mode(args, "FLUSHALL", "FLUSHALL [ASYNC|SYNC]")?;
-        let removed_count = self
-            .with_selected_db(DbName::default(), || self.flush_current_db_keys())?
-            .saturating_add(self.flush_auxiliary_databases());
+        let removed_count = self.flush_all_logical_databases()?;
         if should_record_lazyfreed_for_flush_mode(flush_mode) {
             self.record_lazyfreed_objects(removed_count);
         }
@@ -4414,22 +4375,18 @@ impl RequestProcessor {
 
     fn flush_current_db_keys(&self) -> Result<u64, RequestExecutionError> {
         let selected_db = current_request_selected_db();
-        if selected_db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(selected_db)? {
             self.materialize_set_hot_entries_for_db(selected_db)?;
-            self.invalidate_all_tracking_entries();
-            let keys = {
-                let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
-                    return Err(RequestExecutionError::StorageBusy);
-                };
-                let Some(state) = databases.get(&selected_db) else {
-                    self.clear_set_hot_entries_for_db(selected_db);
-                    return Ok(0);
-                };
+            let Some(keys) = self.with_auxiliary_db_state_read(selected_db, |state| {
                 state
                     .entries
                     .iter()
                     .filter_map(|(key, entry)| entry.value.as_ref().map(|_| key.clone()))
                     .collect::<Vec<_>>()
+            })?
+            else {
+                self.clear_set_hot_entries_for_db(selected_db);
+                return Ok(0);
             };
             self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
 
@@ -4453,28 +4410,26 @@ impl RequestProcessor {
                 }
             }
 
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
+            let Some(auxiliary_storage) = self.auxiliary_storage_for_logical_db(selected_db)?
+            else {
+                self.clear_set_hot_entries_for_db(selected_db);
+                self.reset_lazyfree_pending_objects();
+                return Ok(deleted_count);
             };
-            if databases
-                .get(&selected_db)
-                .is_some_and(|state| state.entries.is_empty())
-            {
-                let _ = databases.remove(&selected_db);
-            }
+            self.db_catalog
+                .auxiliary_databases
+                .remove_if_empty(auxiliary_storage)?;
             self.clear_set_hot_entries_for_db(selected_db);
             self.reset_lazyfree_pending_objects();
             return Ok(deleted_count);
         }
 
-        self.materialize_set_hot_entries_for_db(DbName::default())?;
+        self.materialize_set_hot_entries_for_db(selected_db)?;
         let mut keys: HashSet<RedisKey> = self
             .string_keys_snapshot(current_request_selected_db())
             .into_iter()
             .collect();
         keys.extend(self.object_keys_snapshot(current_request_selected_db()));
-        // FLUSH* invalidates the full tracking table with an empty-key payload.
-        self.invalidate_all_tracking_entries();
         self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
 
         let mut deleted_count = 0u64;
@@ -4544,31 +4499,21 @@ impl RequestProcessor {
             self.db_catalog.main_db_runtime.string_expiration_counts[shard_index]
                 .store(0, Ordering::Release);
         }
-        self.clear_set_hot_entries_for_db(DbName::default());
+        self.clear_set_hot_entries_for_db(selected_db);
         self.reset_lazyfree_pending_objects();
         Ok(deleted_count)
     }
 
-    fn flush_auxiliary_databases(&self) -> u64 {
-        let dbs = {
-            let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return 0;
-            };
-            databases.keys().copied().collect::<Vec<_>>()
-        };
-
+    fn flush_all_logical_databases(&self) -> Result<u64, RequestExecutionError> {
         let mut removed = 0u64;
-        for db in dbs {
-            let Ok(flushed) = self.with_selected_db(db, || self.flush_current_db_keys()) else {
-                continue;
-            };
-            removed = removed.saturating_add(flushed);
+        for db_index in 0..self.configured_databases() {
+            removed = removed.saturating_add(
+                self.with_selected_db(DbName::new(db_index), || self.flush_current_db_keys())?,
+            );
         }
-        let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-            return 0;
-        };
-        databases.retain(|_, state| !state.entries.is_empty());
-        removed
+        clear_tracking_invalidation_collection();
+        self.invalidate_all_tracking_entries();
+        Ok(removed)
     }
 
     fn active_key_count(&self) -> Result<i64, RequestExecutionError> {
@@ -4580,55 +4525,46 @@ impl RequestProcessor {
         Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
     }
 
-    fn total_expiration_count(&self) -> usize {
-        let mut total = 0usize;
-        for shard_index in self
-            .db_catalog
-            .main_db_runtime
-            .string_expiration_counts
-            .indices()
-        {
-            total = total.saturating_add(self.string_expiration_count_for_shard(shard_index));
-        }
-        total
+    fn expiration_count_for_selected_db(&self) -> usize {
+        let selected_db = current_request_selected_db();
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
+        keys.into_iter()
+            .filter(|key| {
+                self.expiration_unix_millis(DbKeyRef::new(selected_db, key.as_slice()))
+                    .is_some()
+            })
+            .count()
+    }
+
+    fn info_key_count_for_selected_db(&self) -> usize {
+        let selected_db = current_request_selected_db();
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
+        keys.into_iter()
+            .filter(|key| {
+                let db_key = DbKeyRef::new(selected_db, key.as_slice());
+                self.key_exists_any_without_expiring(db_key)
+                    .unwrap_or(false)
+                    || self.expiration_unix_millis(db_key).is_some()
+            })
+            .count()
     }
 
     fn render_keyspace_info_payload(&self) -> Result<String, RequestExecutionError> {
         let mut payload = String::from("# Keyspace\r\n");
-
-        let db0_keys =
-            usize::try_from(self.with_selected_db(DbName::default(), || self.active_key_count())?)
-                .unwrap_or(usize::MAX);
-        let db0_expires = self.total_expiration_count();
-        if db0_keys > 0 {
-            payload.push_str(
-                format!("db0:keys={db0_keys},expires={db0_expires},avg_ttl=0\r\n").as_str(),
-            );
+        let mut dbs = Vec::new();
+        for db_index in 0..self.configured_databases() {
+            let db = DbName::new(db_index);
+            let key_count = self.with_selected_db(db, || self.info_key_count_for_selected_db());
+            if key_count == 0 {
+                continue;
+            }
+            let expires = self.with_selected_db(db, || self.expiration_count_for_selected_db());
+            dbs.push((db, key_count, expires));
         }
-
-        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
-            return Err(RequestExecutionError::StorageBusy);
-        };
-        let mut dbs = databases
-            .iter()
-            .filter_map(|(db, state)| {
-                let key_count = state
-                    .entries
-                    .values()
-                    .filter(|entry| entry.value.is_some())
-                    .count();
-                if key_count == 0 {
-                    return None;
-                }
-                let expires = state
-                    .entries
-                    .values()
-                    .filter(|entry| entry.value.is_some() && entry.expiration.is_some())
-                    .count();
-                Some((*db, key_count, expires))
-            })
-            .collect::<Vec<_>>();
-        dbs.sort_by_key(|(db, _, _)| usize::from(*db));
 
         for (db, key_count, expires) in dbs {
             payload.push_str(
@@ -4844,8 +4780,9 @@ impl RequestProcessor {
         let mut histograms =
             [[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT];
         let mut histograms_by_db = BTreeMap::new();
+        let main_runtime_db = self.logical_db_for_main_runtime()?;
 
-        self.with_selected_db(DbName::default(), || {
+        self.with_selected_db(main_runtime_db, || {
             let mut keys: HashSet<RedisKey> = self
                 .string_keys_snapshot(current_request_selected_db())
                 .into_iter()
@@ -4886,7 +4823,7 @@ impl RequestProcessor {
             Ok::<(), RequestExecutionError>(())
         })?;
 
-        histograms_by_db.insert(DbName::default(), histograms);
+        histograms_by_db.insert(main_runtime_db, histograms);
         for (db_index, keys) in self.auxiliary_db_keys_snapshot() {
             let db_histograms = histograms_by_db
                 .entry(db_index)
@@ -5206,8 +5143,7 @@ impl RequestProcessor {
             return Ok(false);
         };
 
-        self.with_selected_db(DbName::default(), || self.flush_current_db_keys())?;
-        let _ = self.flush_auxiliary_databases();
+        let _ = self.flush_all_logical_databases()?;
         self.clear_function_registry(false);
         self.clear_all_forced_list_quicklist_encodings();
 

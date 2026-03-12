@@ -13,9 +13,7 @@ use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
 use crate::request_lifecycle::DbName;
-use crate::request_lifecycle::RedisKey;
 use crate::request_lifecycle::ShardIndex;
-use crate::request_lifecycle::WatchVersion;
 use crate::request_lifecycle::WatchedKey;
 
 #[derive(Default)]
@@ -42,17 +40,18 @@ impl ConnectionTransactionState {
         self.watched_keys.clear();
     }
 
-    pub(crate) fn watch_key(&mut self, db: DbName, key: &[u8], version: WatchVersion) {
+    pub(crate) fn watch_key(&mut self, watched_key: WatchedKey) {
+        let db = watched_key.db;
+        let key = watched_key.key.as_slice();
         if let Some(watched) = self
             .watched_keys
             .iter_mut()
             .find(|watched| watched.db == db && watched.key.as_slice() == key)
         {
-            watched.version = version;
+            *watched = watched_key;
             return;
         }
-        self.watched_keys
-            .push(WatchedKey::new(db, RedisKey::from(key), version));
+        self.watched_keys.push(watched_key);
     }
 
     pub(crate) fn set_transaction_slot_or_abort(&mut self, slot: SlotNumber) -> bool {

@@ -9,20 +9,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let entry = databases
-                .entry(db)
-                .or_default()
-                .entries
-                .entry(RedisKey::from(key_bytes))
-                .or_default();
-            entry.value = Some(MigrationValue::Object {
-                object_type,
-                payload: payload.to_vec(),
-            });
+        if !self.logical_db_uses_main_runtime(db)? {
+            let _ = self.with_auxiliary_db_state(db, true, |state| {
+                let entry = state.entries.entry(RedisKey::from(key_bytes)).or_default();
+                entry.value = Some(MigrationValue::Object {
+                    object_type,
+                    payload: payload.to_vec(),
+                });
+            })?;
             self.bump_watch_version(key);
             return Ok(());
         }
@@ -38,7 +32,7 @@ impl RequestProcessor {
             .upsert(&key, value.as_vec(), &mut output, &mut info)
             .map_err(map_upsert_error)?;
         self.track_object_key_in_shard(&key, shard_index);
-        self.bump_watch_version(DbKeyRef::new(DbName::default(), &key));
+        self.bump_watch_version(DbKeyRef::new(db, &key));
         Ok(())
     }
 
@@ -48,7 +42,7 @@ impl RequestProcessor {
     ) -> Result<Option<DecodedObjectValue>, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             self.track_read_key_for_current_client(key_bytes);
             let Some(entry) = self.auxiliary_value_snapshot(db, key_bytes) else {
                 return Ok(None);
@@ -91,21 +85,21 @@ impl RequestProcessor {
     fn object_delete_raw(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let Some(state) = databases.get_mut(&db) else {
-                return Ok(false);
-            };
-            let Some(entry) = state.entries.get_mut(key_bytes) else {
-                return Ok(false);
-            };
-            if matches!(entry.value, Some(MigrationValue::Object { .. })) {
+        if !self.logical_db_uses_main_runtime(db)? {
+            let deleted = self.with_auxiliary_db_state(db, false, |state| {
+                let Some(entry) = state.entries.get_mut(key_bytes) else {
+                    return false;
+                };
+                if !matches!(entry.value, Some(MigrationValue::Object { .. })) {
+                    return false;
+                }
                 entry.value = None;
                 entry.expiration = None;
                 entry.hash_field_expirations.clear();
                 let _ = state.entries.remove(key_bytes);
+                true
+            })?;
+            if deleted.unwrap_or(false) {
                 self.clear_forced_list_quicklist_encoding(key);
                 self.clear_forced_set_encoding_floor(key);
                 self.clear_set_debug_ht_state(key);
@@ -123,27 +117,23 @@ impl RequestProcessor {
         let status = session.delete(&key, &mut info).map_err(map_delete_error)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.set_string_expiration_deadline(DbKeyRef::new(DbName::default(), &key), None);
-                self.clear_hash_field_expirations_for_key_in_shard(
-                    DbKeyRef::new(DbName::default(), &key),
-                    shard_index,
-                );
+                let logical_key = DbKeyRef::new(db, &key);
+                self.set_string_expiration_deadline(logical_key, None);
+                self.clear_hash_field_expirations_for_key_in_shard(logical_key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
-                self.clear_forced_list_quicklist_encoding(DbKeyRef::new(DbName::default(), &key));
-                self.clear_forced_set_encoding_floor(DbKeyRef::new(DbName::default(), &key));
-                self.clear_set_debug_ht_state(DbKeyRef::new(DbName::default(), &key));
-                self.bump_watch_version(DbKeyRef::new(DbName::default(), &key));
+                self.clear_forced_list_quicklist_encoding(logical_key);
+                self.clear_forced_set_encoding_floor(logical_key);
+                self.clear_set_debug_ht_state(logical_key);
+                self.bump_watch_version(logical_key);
                 Ok(true)
             }
             DeleteOperationStatus::NotFound => {
-                self.clear_hash_field_expirations_for_key_in_shard(
-                    DbKeyRef::new(DbName::default(), &key),
-                    shard_index,
-                );
+                let logical_key = DbKeyRef::new(db, &key);
+                self.clear_hash_field_expirations_for_key_in_shard(logical_key, shard_index);
                 self.untrack_object_key_in_shard(&key, shard_index);
-                self.clear_forced_list_quicklist_encoding(DbKeyRef::new(DbName::default(), &key));
-                self.clear_forced_set_encoding_floor(DbKeyRef::new(DbName::default(), &key));
-                self.clear_set_debug_ht_state(DbKeyRef::new(DbName::default(), &key));
+                self.clear_forced_list_quicklist_encoding(logical_key);
+                self.clear_forced_set_encoding_floor(logical_key);
+                self.clear_set_debug_ht_state(logical_key);
                 Ok(false)
             }
             DeleteOperationStatus::RetryLater => Err(RequestExecutionError::StorageBusy),

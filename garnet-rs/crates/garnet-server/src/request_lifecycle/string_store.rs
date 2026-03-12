@@ -6,12 +6,12 @@ impl RequestProcessor {
         db: DbName,
         key: &[u8],
     ) -> Option<AuxiliaryDbValue> {
-        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
-            return None;
-        };
-        databases
-            .get(&db)
-            .and_then(|state| state.entries.get(key).cloned())
+        let auxiliary_storage = self.auxiliary_storage_for_logical_db(db).ok().flatten()?;
+        self.db_catalog
+            .auxiliary_databases
+            .snapshot_value(auxiliary_storage, key)
+            .ok()
+            .flatten()
     }
 
     pub(super) fn auxiliary_keys_snapshot(
@@ -19,42 +19,63 @@ impl RequestProcessor {
         db: DbName,
         predicate: impl Fn(&MigrationValue) -> bool,
     ) -> Vec<RedisKey> {
-        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
+        let Ok(Some(auxiliary_storage)) = self.auxiliary_storage_for_logical_db(db) else {
             return Vec::new();
         };
-        let Some(state) = databases.get(&db) else {
-            return Vec::new();
-        };
-        state
-            .entries
-            .iter()
-            .filter_map(|(key, value)| {
-                let stored = value.value.as_ref()?;
-                if predicate(stored) {
-                    return Some(key.clone());
-                }
-                None
-            })
-            .collect()
+        self.db_catalog
+            .auxiliary_databases
+            .keys_snapshot_matching(auxiliary_storage, predicate)
+            .unwrap_or_default()
     }
 
     pub(super) fn auxiliary_db_keys_snapshot(&self) -> BTreeMap<DbName, Vec<RedisKey>> {
-        let Ok(databases) = self.db_catalog.auxiliary_databases.lock() else {
-            return BTreeMap::new();
-        };
-
+        let configured_databases = self.configured_databases();
         let mut keys_by_db = BTreeMap::new();
-        for (db, state) in databases.iter() {
-            let keys = state
-                .entries
-                .iter()
-                .filter_map(|(key, value)| value.value.as_ref().map(|_| key.clone()))
-                .collect::<Vec<_>>();
+        for logical_index in 0..configured_databases {
+            let logical_db = DbName::new(logical_index);
+            let Ok(Some(auxiliary_storage)) = self.auxiliary_storage_for_logical_db(logical_db)
+            else {
+                continue;
+            };
+            let Ok(keys) = self
+                .db_catalog
+                .auxiliary_databases
+                .visible_keys_snapshot(auxiliary_storage)
+            else {
+                continue;
+            };
             if !keys.is_empty() {
-                keys_by_db.insert(*db, keys);
+                keys_by_db.insert(logical_db, keys);
             }
         }
         keys_by_db
+    }
+
+    pub(super) fn with_auxiliary_db_state<T>(
+        &self,
+        logical_db: DbName,
+        create_if_missing: bool,
+        f: impl FnOnce(&mut AuxiliaryDbState) -> T,
+    ) -> Result<Option<T>, RequestExecutionError> {
+        let Some(auxiliary_storage) = self.auxiliary_storage_for_logical_db(logical_db)? else {
+            return Ok(None);
+        };
+        self.db_catalog
+            .auxiliary_databases
+            .with_state(auxiliary_storage, create_if_missing, f)
+    }
+
+    pub(super) fn with_auxiliary_db_state_read<T>(
+        &self,
+        logical_db: DbName,
+        f: impl FnOnce(&AuxiliaryDbState) -> T,
+    ) -> Result<Option<T>, RequestExecutionError> {
+        let Some(auxiliary_storage) = self.auxiliary_storage_for_logical_db(logical_db)? else {
+            return Ok(None);
+        };
+        self.db_catalog
+            .auxiliary_databases
+            .with_state_read(auxiliary_storage, f)
     }
 
     pub fn expire_stale_keys(&self, max_keys: usize) -> Result<usize, RequestExecutionError> {
@@ -111,6 +132,7 @@ impl RequestProcessor {
 
         let mut removed = 0usize;
         for key in expired_keys {
+            let logical_db = self.logical_db_for_main_runtime()?;
             let status = {
                 let mut store = self.lock_string_store_for_shard(shard_index);
                 let mut session = store.session(&self.functions);
@@ -119,31 +141,30 @@ impl RequestProcessor {
             };
 
             self.remove_string_key_metadata_in_shard(
-                DbKeyRef::new(DbName::default(), key.as_slice()),
+                DbKeyRef::new(logical_db, key.as_slice()),
                 shard_index,
             );
-            let object_deleted =
-                self.object_delete(DbKeyRef::new(DbName::default(), key.as_slice()))?;
+            let object_deleted = self.object_delete(DbKeyRef::new(logical_db, key.as_slice()))?;
 
             match status {
                 DeleteOperationStatus::TombstonedInPlace
                 | DeleteOperationStatus::AppendedTombstone => {
                     removed += 1;
                     self.notify_keyspace_event(
-                        DbName::default(),
+                        logical_db,
                         NOTIFY_EXPIRED,
                         b"expired",
                         key.as_slice(),
                     );
                     if !object_deleted {
-                        self.bump_watch_version_in_db(DbName::default(), key.as_slice());
+                        self.bump_watch_version_in_db(logical_db, key.as_slice());
                     }
                 }
                 DeleteOperationStatus::NotFound => {
                     if object_deleted {
                         removed += 1;
                         self.notify_keyspace_event(
-                            DbName::default(),
+                            logical_db,
                             NOTIFY_EXPIRED,
                             b"expired",
                             key.as_slice(),
@@ -194,53 +215,25 @@ impl RequestProcessor {
         }
 
         let now = current_instant();
-        let mut expired = Vec::new();
-        let mut empty_dbs = Vec::new();
-        {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
+        let expired = self
+            .db_catalog
+            .auxiliary_databases
+            .expire_stale_keys_in_shard(shard_index, max_keys, now, |key| {
+                self.string_store_shard_index_for_key(key)
+            })?;
+
+        for (auxiliary_storage, key) in &expired {
+            let Some(logical_db) = self.logical_db_for_auxiliary_storage(*auxiliary_storage)?
+            else {
+                continue;
             };
-
-            for (db, state) in databases.iter_mut() {
-                if expired.len() >= max_keys {
-                    break;
-                }
-
-                let expired_keys = state
-                    .entries
-                    .iter()
-                    .filter_map(|(key, entry)| {
-                        let expiration = entry.expiration?;
-                        if expiration.deadline > now {
-                            return None;
-                        }
-                        if self.string_store_shard_index_for_key(key.as_slice()) != shard_index {
-                            return None;
-                        }
-                        Some(key.clone())
-                    })
-                    .take(max_keys - expired.len())
-                    .collect::<Vec<_>>();
-
-                for key in expired_keys {
-                    let _ = state.entries.remove(key.as_slice());
-                    expired.push((*db, key));
-                }
-                if state.entries.is_empty() {
-                    empty_dbs.push(*db);
-                }
-            }
-
-            for db in empty_dbs {
-                let _ = databases.remove(&db);
-            }
-        }
-
-        for (db, key) in &expired {
-            self.with_selected_db(*db, || {
-                self.notify_keyspace_event(*db, NOTIFY_EXPIRED, b"expired", key.as_slice());
-                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(*db, key.as_slice()));
-                self.bump_watch_version_server_origin_in_db(*db, key.as_slice());
+            self.with_selected_db(logical_db, || {
+                self.notify_keyspace_event(logical_db, NOTIFY_EXPIRED, b"expired", key.as_slice());
+                self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(
+                    logical_db,
+                    key.as_slice(),
+                ));
+                self.bump_watch_version_server_origin_in_db(logical_db, key.as_slice());
             });
         }
         self.record_active_expired_keys(expired.len() as u64);
@@ -253,7 +246,7 @@ impl RequestProcessor {
     ) -> Result<Option<Vec<u8>>, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
                 self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
             }
@@ -295,7 +288,7 @@ impl RequestProcessor {
     pub(super) fn key_exists(&self, key: DbKeyRef<'_>) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
                 self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
             }
@@ -334,7 +327,7 @@ impl RequestProcessor {
     ) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
                 self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
             }
@@ -392,7 +385,7 @@ impl RequestProcessor {
     ) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             if self.has_set_hot_entry(DbKeyRef::new(db, key_bytes)) {
                 self.track_read_key_for_current_client(key_bytes);
                 return Ok(true);
@@ -410,27 +403,22 @@ impl RequestProcessor {
     ) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let Some(state) = databases.get_mut(&db) else {
-                return Ok(false);
-            };
-            let Some(entry) = state.entries.get_mut(key_bytes) else {
-                return Ok(false);
-            };
-            if !matches!(entry.value, Some(MigrationValue::String(_))) {
-                return Ok(false);
-            }
-
-            entry.value = None;
-            entry.expiration = None;
-            entry.hash_field_expirations.clear();
-            if entry.value.is_none() {
-                let _ = state.entries.remove(key_bytes);
-            }
-            return Ok(true);
+        if !self.logical_db_uses_main_runtime(db)? {
+            return Ok(self
+                .with_auxiliary_db_state(db, false, |state| {
+                    let Some(entry) = state.entries.get_mut(key_bytes) else {
+                        return false;
+                    };
+                    if !matches!(entry.value, Some(MigrationValue::String(_))) {
+                        return false;
+                    }
+                    entry.value = None;
+                    entry.expiration = None;
+                    entry.hash_field_expirations.clear();
+                    let _ = state.entries.remove(key_bytes);
+                    true
+                })?
+                .unwrap_or(false));
         }
 
         let mut store = self.lock_string_store_for_key(key_bytes);
@@ -461,7 +449,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             let expiration = expiration_unix_millis.and_then(|unix_millis| {
                 let deadline = instant_from_unix_millis(unix_millis)?;
                 Some(ExpirationMetadata {
@@ -469,18 +457,12 @@ impl RequestProcessor {
                     unix_millis: TimestampMillis::new(unix_millis),
                 })
             });
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let entry = databases
-                .entry(db)
-                .or_default()
-                .entries
-                .entry(RedisKey::from(key_bytes))
-                .or_default();
-            entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
-            entry.expiration = expiration;
-            entry.hash_field_expirations.clear();
+            let _ = self.with_auxiliary_db_state(db, true, |state| {
+                let entry = state.entries.entry(RedisKey::from(key_bytes)).or_default();
+                entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
+                entry.expiration = expiration;
+                entry.hash_field_expirations.clear();
+            })?;
             self.bump_watch_version(key);
             return Ok(());
         }
@@ -532,7 +514,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             let expiration = expiration_unix_millis.and_then(|unix_millis| {
                 let deadline = instant_from_unix_millis(unix_millis)?;
                 Some(ExpirationMetadata {
@@ -540,18 +522,12 @@ impl RequestProcessor {
                     unix_millis: TimestampMillis::new(unix_millis),
                 })
             });
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let entry = databases
-                .entry(db)
-                .or_default()
-                .entries
-                .entry(RedisKey::from(key_bytes))
-                .or_default();
-            entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
-            entry.expiration = expiration;
-            entry.hash_field_expirations.clear();
+            let _ = self.with_auxiliary_db_state(db, true, |state| {
+                let entry = state.entries.entry(RedisKey::from(key_bytes)).or_default();
+                entry.value = Some(MigrationValue::String(StringValue::from(user_value)));
+                entry.expiration = expiration;
+                entry.hash_field_expirations.clear();
+            })?;
             return Ok(());
         }
 
@@ -589,7 +565,7 @@ impl RequestProcessor {
     pub(crate) fn expiration_unix_millis(&self, key: DbKeyRef<'_>) -> Option<u64> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if let Ok(false) = self.logical_db_uses_main_runtime(db) {
             return self
                 .auxiliary_value_snapshot(db, key_bytes)
                 .and_then(|entry| entry.expiration)
@@ -612,7 +588,7 @@ impl RequestProcessor {
     ) -> Result<bool, RequestExecutionError> {
         let db = key.db();
         let key_bytes = key.key();
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             let expiration = expiration_unix_millis.and_then(|unix_millis| {
                 let deadline = instant_from_unix_millis(unix_millis)?;
                 Some(ExpirationMetadata {
@@ -620,20 +596,18 @@ impl RequestProcessor {
                     unix_millis: TimestampMillis::new(unix_millis),
                 })
             });
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Err(RequestExecutionError::StorageBusy);
-            };
-            let Some(state) = databases.get_mut(&db) else {
-                return Ok(false);
-            };
-            let Some(entry) = state.entries.get_mut(key_bytes) else {
-                return Ok(false);
-            };
-            if !matches!(entry.value, Some(MigrationValue::String(_))) {
-                return Ok(false);
-            }
-            entry.expiration = expiration;
-            return Ok(true);
+            return Ok(self
+                .with_auxiliary_db_state(db, false, |state| {
+                    let Some(entry) = state.entries.get_mut(key_bytes) else {
+                        return false;
+                    };
+                    if !matches!(entry.value, Some(MigrationValue::String(_))) {
+                        return false;
+                    }
+                    entry.expiration = expiration;
+                    true
+                })?
+                .unwrap_or(false));
         }
 
         let key_vec = key_bytes.to_vec();
@@ -678,32 +652,32 @@ impl RequestProcessor {
         key: &[u8],
         shard_index: ShardIndex,
     ) -> Result<bool, RequestExecutionError> {
-        if db != DbName::default() {
+        if !self.logical_db_uses_main_runtime(db)? {
             if self.allow_access_expired() {
                 return Ok(false);
             }
             let now = current_instant();
-            let should_expire = {
-                let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                    return Err(RequestExecutionError::StorageBusy);
-                };
-                let Some(state) = databases.get_mut(&db) else {
-                    return Ok(false);
-                };
+            let Some(should_expire) = self.with_auxiliary_db_state(db, false, |state| {
                 let Some(entry) = state.entries.get(key) else {
-                    return Ok(false);
+                    return None;
                 };
                 let Some(expiration) = entry.expiration else {
-                    return Ok(false);
+                    return None;
                 };
                 if self.is_expire_action_paused() {
-                    return Ok(expiration.deadline <= now);
+                    return Some(expiration.deadline <= now);
                 }
                 if expiration.deadline > now {
-                    return Ok(false);
+                    return Some(false);
                 }
                 let _ = state.entries.remove(key);
-                true
+                Some(true)
+            })?
+            else {
+                return Ok(false);
+            };
+            let Some(should_expire) = should_expire else {
+                return Ok(false);
             };
             if should_expire {
                 self.notify_keyspace_event(db, NOTIFY_EXPIRED, b"expired", key);
@@ -764,10 +738,11 @@ impl RequestProcessor {
         let status = session
             .delete(&key.to_vec(), &mut info)
             .map_err(map_delete_error)?;
-        let _ = self.object_delete(DbKeyRef::new(DbName::default(), key))?;
+        let logical_key = DbKeyRef::new(db, key);
+        let _ = self.object_delete(logical_key)?;
         match status {
             DeleteOperationStatus::TombstonedInPlace | DeleteOperationStatus::AppendedTombstone => {
-                self.bump_watch_version_server_origin_in_db(DbName::default(), key);
+                self.bump_watch_version_server_origin_in_db(db, key);
             }
             DeleteOperationStatus::NotFound => {}
             DeleteOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
@@ -775,9 +750,9 @@ impl RequestProcessor {
         self.untrack_string_key_in_shard(key, shard_index);
         // Replicate/emit lazy-expire deletion whenever expiration metadata says the key expired,
         // even if the underlying delete path returns NotFound.
-        self.notify_keyspace_event(DbName::default(), NOTIFY_EXPIRED, b"expired", key);
+        self.notify_keyspace_event(db, NOTIFY_EXPIRED, b"expired", key);
         self.record_lazy_expired_keys(1);
-        self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(DbName::default(), key));
+        self.enqueue_lazy_expired_key_for_replication(logical_key);
         Ok(true)
     }
 
@@ -993,16 +968,13 @@ impl RequestProcessor {
         shard_index: ShardIndex,
         expiration: Option<ExpirationMetadata>,
     ) {
-        if key.db() != DbName::default() {
-            if let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() {
-                let Some(state) = databases.get_mut(&key.db()) else {
-                    return;
-                };
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
+            let _ = self.with_auxiliary_db_state(key.db(), false, |state| {
                 let Some(entry) = state.entries.get_mut(key.key()) else {
                     return;
                 };
                 entry.expiration = expiration;
-            }
+            });
             return;
         }
 
@@ -1077,33 +1049,29 @@ impl RequestProcessor {
         field: &[u8],
         expiration_unix_millis: Option<u64>,
     ) {
-        if key.db() != DbName::default() {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return;
-            };
-            let Some(state) = databases.get_mut(&key.db()) else {
-                return;
-            };
-            let Some(entry) = state.entries.get_mut(key.key()) else {
-                return;
-            };
-            match expiration_unix_millis {
-                Some(unix_millis) => {
-                    let Some(deadline) = instant_from_unix_millis(unix_millis) else {
-                        return;
-                    };
-                    entry.hash_field_expirations.insert(
-                        HashField::from(field),
-                        ExpirationMetadata {
-                            deadline,
-                            unix_millis: TimestampMillis::new(unix_millis),
-                        },
-                    );
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
+            let _ = self.with_auxiliary_db_state(key.db(), false, |state| {
+                let Some(entry) = state.entries.get_mut(key.key()) else {
+                    return;
+                };
+                match expiration_unix_millis {
+                    Some(unix_millis) => {
+                        let Some(deadline) = instant_from_unix_millis(unix_millis) else {
+                            return;
+                        };
+                        entry.hash_field_expirations.insert(
+                            HashField::from(field),
+                            ExpirationMetadata {
+                                deadline,
+                                unix_millis: TimestampMillis::new(unix_millis),
+                            },
+                        );
+                    }
+                    None => {
+                        entry.hash_field_expirations.remove(field);
+                    }
                 }
-                None => {
-                    entry.hash_field_expirations.remove(field);
-                }
-            }
+            });
             return;
         }
 
@@ -1153,7 +1121,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         field: &[u8],
     ) -> Option<u64> {
-        if key.db() != DbName::default() {
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
             return self
                 .auxiliary_value_snapshot(key.db(), key.key())
                 .and_then(|entry| entry.hash_field_expirations.get(field).cloned())
@@ -1168,7 +1136,7 @@ impl RequestProcessor {
     }
 
     pub(super) fn has_hash_field_expirations_for_key(&self, key: DbKeyRef<'_>) -> bool {
-        if key.db() != DbName::default() {
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
             return self
                 .auxiliary_value_snapshot(key.db(), key.key())
                 .is_some_and(|entry| !entry.hash_field_expirations.is_empty());
@@ -1184,7 +1152,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
     ) -> Vec<(HashField, u64)> {
         let now = current_instant();
-        let mut expirations = if key.db() != DbName::default() {
+        let mut expirations = if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
             self.auxiliary_value_snapshot(key.db(), key.key())
                 .map(|entry| {
                     entry
@@ -1242,13 +1210,12 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         shard_index: ShardIndex,
     ) {
-        if key.db() != DbName::default() {
-            if let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock()
-                && let Some(state) = databases.get_mut(&key.db())
-                && let Some(entry) = state.entries.get_mut(key.key())
-            {
-                entry.hash_field_expirations.clear();
-            }
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
+            let _ = self.with_auxiliary_db_state(key.db(), false, |state| {
+                if let Some(entry) = state.entries.get_mut(key.key()) {
+                    entry.hash_field_expirations.clear();
+                }
+            });
             return;
         }
 
@@ -1264,29 +1231,29 @@ impl RequestProcessor {
         if fields.is_empty() {
             return Vec::new();
         }
-        if key.db() != DbName::default() {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Vec::new();
-            };
-            let Some(state) = databases.get_mut(&key.db()) else {
-                return Vec::new();
-            };
-            let Some(entry) = state.entries.get_mut(key.key()) else {
-                return Vec::new();
-            };
-            let now = current_instant();
-            let mut expired_fields = Vec::new();
-            for field in fields {
-                if let Some(metadata) = entry.hash_field_expirations.get(*field)
-                    && metadata.deadline <= now
-                {
-                    expired_fields.push(HashField::from(*field));
-                }
-            }
-            for field in &expired_fields {
-                entry.hash_field_expirations.remove(field.as_ref());
-            }
-            return expired_fields;
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
+            return self
+                .with_auxiliary_db_state(key.db(), false, |state| {
+                    let Some(entry) = state.entries.get_mut(key.key()) else {
+                        return Vec::new();
+                    };
+                    let now = current_instant();
+                    let mut expired_fields = Vec::new();
+                    for field in fields {
+                        if let Some(metadata) = entry.hash_field_expirations.get(*field)
+                            && metadata.deadline <= now
+                        {
+                            expired_fields.push(HashField::from(*field));
+                        }
+                    }
+                    for field in &expired_fields {
+                        entry.hash_field_expirations.remove(field.as_ref());
+                    }
+                    expired_fields
+                })
+                .ok()
+                .flatten()
+                .unwrap_or_default();
         }
 
         let shard_index = self.object_store_shard_index_for_key(key.key());
@@ -1317,32 +1284,32 @@ impl RequestProcessor {
         &self,
         key: DbKeyRef<'_>,
     ) -> Vec<HashField> {
-        if key.db() != DbName::default() {
-            let Ok(mut databases) = self.db_catalog.auxiliary_databases.lock() else {
-                return Vec::new();
-            };
-            let Some(state) = databases.get_mut(&key.db()) else {
-                return Vec::new();
-            };
-            let Some(entry) = state.entries.get_mut(key.key()) else {
-                return Vec::new();
-            };
-            let now = current_instant();
-            let mut expired_fields = entry
-                .hash_field_expirations
-                .iter()
-                .filter_map(|(field, metadata)| {
-                    if metadata.deadline <= now {
-                        return Some(field.clone());
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
+            return self
+                .with_auxiliary_db_state(key.db(), false, |state| {
+                    let Some(entry) = state.entries.get_mut(key.key()) else {
+                        return Vec::new();
+                    };
+                    let now = current_instant();
+                    let mut expired_fields = entry
+                        .hash_field_expirations
+                        .iter()
+                        .filter_map(|(field, metadata)| {
+                            if metadata.deadline <= now {
+                                return Some(field.clone());
+                            }
+                            None
+                        })
+                        .collect::<Vec<_>>();
+                    for field in &expired_fields {
+                        entry.hash_field_expirations.remove(field);
                     }
-                    None
+                    expired_fields.shrink_to_fit();
+                    expired_fields
                 })
-                .collect::<Vec<_>>();
-            for field in &expired_fields {
-                entry.hash_field_expirations.remove(field);
-            }
-            expired_fields.shrink_to_fit();
-            return expired_fields;
+                .ok()
+                .flatten()
+                .unwrap_or_default();
         }
 
         let shard_index = self.object_store_shard_index_for_key(key.key());
@@ -1380,7 +1347,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         shard_index: ShardIndex,
     ) -> Option<Instant> {
-        if key.db() != DbName::default() {
+        if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
             return self
                 .auxiliary_value_snapshot(key.db(), key.key())
                 .and_then(|entry| entry.expiration)
@@ -1401,7 +1368,7 @@ impl RequestProcessor {
     }
 
     pub(super) fn string_keys_snapshot(&self, db: DbName) -> Vec<RedisKey> {
-        if db != DbName::default() {
+        if let Ok(false) = self.logical_db_uses_main_runtime(db) {
             return self
                 .auxiliary_keys_snapshot(db, |value| matches!(value, MigrationValue::String(_)));
         }
@@ -1421,7 +1388,7 @@ impl RequestProcessor {
     }
 
     pub(super) fn object_keys_snapshot(&self, db: DbName) -> Vec<RedisKey> {
-        if db != DbName::default() {
+        if let Ok(false) = self.logical_db_uses_main_runtime(db) {
             let mut keys = self.auxiliary_keys_snapshot(db, |value| {
                 matches!(value, MigrationValue::Object { .. })
             });
@@ -1444,7 +1411,7 @@ impl RequestProcessor {
                     .collect::<Vec<_>>()
             })
             .collect::<Vec<_>>();
-        keys.extend(self.set_hot_keys_snapshot_for_db(DbName::default()));
+        keys.extend(self.set_hot_keys_snapshot_for_db(db));
         keys.sort();
         keys.dedup();
         keys

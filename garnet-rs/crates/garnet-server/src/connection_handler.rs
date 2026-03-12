@@ -2194,9 +2194,13 @@ pub(crate) async fn handle_connection(
                                     watch_error = Some(error);
                                     break;
                                 }
-                                let version = processor
-                                    .watch_key_version_in_db(client_state.selected_db, key);
-                                transaction.watch_key(client_state.selected_db, key, version);
+                                match processor.capture_watched_key(client_state.selected_db, key) {
+                                    Ok(watched_key) => transaction.watch_key(watched_key),
+                                    Err(error) => {
+                                        watch_error = Some(error);
+                                        break;
+                                    }
+                                }
                             }
                             if let Some(error) = watch_error {
                                 transaction.clear_watches();
@@ -3035,6 +3039,7 @@ fn clear_blocking_client_state(
     // Drop the externally visible blocked-client count only after all queue
     // registration and waiter-local state is gone.
     processor.decrement_blocked_clients();
+    processor.note_blocking_progress();
 }
 
 fn clear_blocking_request_state(
@@ -3067,8 +3072,10 @@ async fn yield_for_blocking_progress(processor: &RequestProcessor, initial_block
         if !processor.has_ready_blocking_waiters() {
             return;
         }
-        sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
-        yield_now().await;
+        let observed_epoch = processor.blocking_progress_epoch();
+        processor
+            .wait_for_blocking_progress_after(observed_epoch)
+            .await;
     }
 }
 

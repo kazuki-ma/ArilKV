@@ -88,66 +88,6 @@ impl RequestProcessor {
         Ok(moved)
     }
 
-    pub(super) fn snapshot_current_db_entries(
-        &self,
-        db: DbName,
-    ) -> Result<Vec<MigrationEntry>, RequestExecutionError> {
-        let mut keys = BTreeSet::<RedisKey>::new();
-        keys.extend(self.string_keys_snapshot(db));
-        keys.extend(self.object_keys_snapshot(db));
-
-        let mut entries = Vec::with_capacity(keys.len());
-        for key in keys {
-            let expiration_unix_millis =
-                self.expiration_unix_millis(DbKeyRef::new(db, key.as_slice()));
-            let entry = if db != DbName::default() {
-                let Some(entry) = self.auxiliary_value_snapshot(db, key.as_slice()) else {
-                    continue;
-                };
-                match entry.value {
-                    Some(MigrationValue::String(value)) => Some(MigrationEntry {
-                        key: ItemKey::from(key.as_slice()),
-                        value: MigrationValue::String(value),
-                        expiration_unix_millis,
-                    }),
-                    Some(MigrationValue::Object {
-                        object_type,
-                        payload,
-                    }) => Some(MigrationEntry {
-                        key: ItemKey::from(key.as_slice()),
-                        value: MigrationValue::Object {
-                            object_type,
-                            payload,
-                        },
-                        expiration_unix_millis,
-                    }),
-                    None => None,
-                }
-            } else if let Some(value) = self.read_string_value(DbKeyRef::new(db, key.as_slice()))? {
-                Some(MigrationEntry {
-                    key: ItemKey::from(key.as_slice()),
-                    value: MigrationValue::String(value.into()),
-                    expiration_unix_millis,
-                })
-            } else {
-                self.object_read(DbKeyRef::new(db, key.as_slice()))?
-                    .map(|object| MigrationEntry {
-                        key: ItemKey::from(key.as_slice()),
-                        value: MigrationValue::Object {
-                            object_type: object.object_type,
-                            payload: object.payload,
-                        },
-                        expiration_unix_millis,
-                    })
-            };
-            let Some(entry) = entry else {
-                continue;
-            };
-            entries.push(entry);
-        }
-        Ok(entries)
-    }
-
     pub(crate) fn migration_keys_for_slot(
         &self,
         db: DbName,
