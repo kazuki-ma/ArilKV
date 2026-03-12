@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-12
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 699
+> **Current Iteration**: 700
 
 ---
 
@@ -1610,7 +1610,7 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 697 | 2026-03-12 | 11.490 | DONE | Wrote the greenfield target design for a unified typed KV runtime in [docs/performance/design-unified-typed-kv-runtime-2026-03-12.md](/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/design-unified-typed-kv-runtime-2026-03-12.md). The document defines why the current split `string_store` / `object_store` model is structurally expensive, proposes a `DbRuntime`-owned typed `EntryRecord` / `EntryValue` storage model with one shard lookup and one overwrite path, specifies how expiry/watch/access metadata should be co-owned with the entry/DB runtime, and lays out a staged migration path from the current dual-store implementation toward unified storage and later owner-thread mutable runtime objects. Validation: document-only iteration; no code or compatibility artifacts changed. |
 | 698 | 2026-03-12 | 11.491 | DONE | Wrote the greenfield target design for a typed mutation op-log and shared durability ledger in [docs/performance/design-typed-mutation-oplog-and-durability-ledger-2026-03-12.md](/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/design-typed-mutation-oplog-and-durability-ledger-2026-03-12.md). The document explains why the current split between command rewrite, `WAIT` special-casing, and offline-only AOF primitives is structurally wrong, proposes a `MutationRecord`-driven ordered op-log with monotonic frontiers for `applied`, `replication`, `local_append`, `local_fsync`, `replica_ack`, and `replica_durable`, and maps `WAIT` / `WAITAOF` onto that shared ledger plus a staged migration from the current implementation. Validation: document-only iteration; no code or compatibility artifacts changed. |
 | 699 | 2026-03-12 | 11.492 | DONE | Wrote the greenfield metadata taxonomy and ownership design in [docs/performance/design-entry-local-metadata-ownership-2026-03-12.md](/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/design-entry-local-metadata-ownership-2026-03-12.md). The document classifies current metadata into canonical entry/value metadata, DB-local indexes, rebuildable caches, and coordination ledgers; maps current lanes such as key expiration, hash-field expiration, LFU/LRU, encoding hints, set hot-state, debug state, registries, and watch versions into that taxonomy; and defines which categories must survive `SWAPDB`, replication, and persistence. Validation: document-only iteration; no code or compatibility artifacts changed. |
-| 700 | 2026-03-12 | 11.493 | TODO | Greenfield code-cleanliness redesign: split command execution into typed `KeyLocal`, `DbLocal`, and `Global` scopes so handlers cannot reach for ambient request-local DB state. Acceptance: a design defines the scope API, dispatch mapping, and how multi-key / cluster-routed commands fit into it. |
+| 700 | 2026-03-12 | 11.493 | DONE | Wrote the greenfield command-boundary redesign in [docs/performance/design-command-execution-scopes-2026-03-12.md](/Users/kazuki-matsuda/dev/src/github.com/microsoft/garnet/docs/performance/design-command-execution-scopes-2026-03-12.md). The document separates execution scope from routing metadata, defines typed `KeyLocal` / `DbLocal` / `Global` handler boundaries and handle objects, explains why `KeyAccessPattern` and first-key routing are not sufficient semantic scopes, classifies multi-key and control-plane commands correctly, and covers how transactions, scripts, replay, and background tasks should enter the same explicit scope planner instead of reaching for ambient selected-DB state. Validation: document-only iteration; no code or compatibility artifacts changed. |
 | 701 | 2026-03-12 | 11.494 | TODO | Greenfield code-cleanliness redesign: make `DbRuntime` the sole first-class owner of per-DB state for all logical databases, with no DB0 special case and `SWAPDB` implemented as logical binding swap. Acceptance: a design covers memory layout, background tasks, migration, and O(1) swap semantics. |
 | 702 | 2026-03-12 | 11.495 | TODO | Greenfield code-cleanliness redesign: constrain raw `&[u8]` key handling to parse/I-O boundaries and standardize internal key APIs on typed `KeyRef` / `OwnedKey` / `DbKeyRef` / `DbScopedKey`. Acceptance: an API guideline and migration plan identify every remaining raw-key internal path and the target replacement type. |
 | 703 | 2026-03-12 | 11.496 | TODO | Greenfield control-plane redesign: split cluster/replication/durability control-plane state out of request handlers and serve `CLUSTER *`, `READONLY/READWRITE`, `FAILOVER`, and routing from one live topology snapshot source. Acceptance: a design describes ownership, refresh/update rules, and the request-path API used by both command handlers and background coordinators. |
@@ -1618,9 +1618,6 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 
 ## Appendix: Little Detailed TODO For Next Iteration (removed after done)
 
-- `11.493` command scopes:
-  - classify existing commands into `KeyLocal`, `DbLocal`, and `Global`.
-  - write the minimal handler trait/API needed so internal code cannot read ambient selected DB state.
 - `11.494` first-class `DbRuntime`:
   - define the exact contents of one logical DB runtime and how DB0 becomes non-special.
   - spell out how `SWAPDB`, flush, background expire, and migration interact with that owner object.
