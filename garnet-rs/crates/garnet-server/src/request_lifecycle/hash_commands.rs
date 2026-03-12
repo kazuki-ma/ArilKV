@@ -165,21 +165,15 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HGETALL", "HGETALL key")?;
 
-        let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
-        if !self.has_hash_field_expirations_for_key(DbKeyRef::new(
-            current_request_selected_db(),
-            key.as_slice(),
-        )) {
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let object = match self
-                .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-            {
+        if !self.has_hash_field_expirations_for_key(key) {
+            self.expire_key_if_needed(key)?;
+            let object = match self.object_read(key)? {
                 Some(object) => object,
                 None => {
-                    if self
-                        .key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
-                    {
+                    if self.key_exists(key)? {
                         return Err(RequestExecutionError::WrongType);
                     }
                     if resp3 {
@@ -208,18 +202,17 @@ impl RequestProcessor {
             }
             return Ok(());
         }
-        let hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    if resp3 {
-                        append_map_length(response_out, 0);
-                    } else {
-                        append_array_length(response_out, 0);
-                    }
-                    return Ok(());
+        let hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                if resp3 {
+                    append_map_length(response_out, 0);
+                } else {
+                    append_array_length(response_out, 0);
                 }
-            };
+                return Ok(());
+            }
+        };
 
         if resp3 {
             append_map_length(response_out, hash.len());
@@ -240,9 +233,9 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HLEN", "HLEN key")?;
 
-        let key = RedisKey::from(args[1]);
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
         let len = self
-            .load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            .load_hash_object(key)?
             .map(|hash| hash.len() as i64)
             .unwrap_or(0);
         append_integer(response_out, len);
@@ -256,19 +249,12 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HMGET", "HMGET key field [field ...]")?;
 
-        let key = RedisKey::from(args[1]);
-        let mut hash = self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
+        let mut hash = self.load_hash_object(key)?;
         if let Some(hash_mut) = hash.as_mut() {
-            let lazy_expired = self.apply_hash_field_lazy_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                hash_mut,
-                &args[2..],
-            );
+            let lazy_expired = self.apply_hash_field_lazy_expiration(key, hash_mut, &args[2..]);
             if lazy_expired {
-                self.persist_hash_after_field_expiration(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    hash_mut,
-                )?;
+                self.persist_hash_after_field_expiration(key, hash_mut)?;
             }
         }
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -335,29 +321,20 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HSETNX", "HSETNX key field value")?;
 
-        let key = RedisKey::from(args[1]);
-        let mut hash = self
-            .load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?
-            .unwrap_or_default();
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
+        let mut hash = self.load_hash_object(key)?.unwrap_or_default();
         let field = args[2].to_vec();
-        self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &[args[2]],
-        );
+        self.apply_hash_field_lazy_expiration(key, &mut hash, &[args[2]]);
         if hash.contains_key(&field) {
             append_integer(response_out, 0);
             return Ok(());
         }
         let value = args[3].to_vec();
         hash.insert(field, value);
-        self.set_hash_field_expiration_unix_millis(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            args[2],
-            None,
-        );
-        self.save_hash_object(DbKeyRef::new(current_request_selected_db(), &key), &hash)?;
-        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hset", &key);
+        self.set_hash_field_expiration_unix_millis(key, args[2], None);
+        self.save_hash_object(key, &hash)?;
+        self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hset", key.key());
         append_integer(response_out, 1);
         Ok(())
     }
@@ -369,26 +346,18 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HEXISTS", "HEXISTS key field")?;
 
-        let key = RedisKey::from(args[1]);
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
         let field = args[2];
-        let mut hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    append_integer(response_out, 0);
-                    return Ok(());
-                }
-            };
-        let lazy_expired = self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &[field],
-        );
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &[field]);
         if lazy_expired {
-            self.persist_hash_after_field_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                &hash,
-            )?;
+            self.persist_hash_after_field_expiration(key, &hash)?;
         }
         let exists = hash.contains_key(field);
         append_integer(response_out, i64::from(exists));
@@ -402,15 +371,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HKEYS", "HKEYS key")?;
 
-        let key = RedisKey::from(args[1]);
-        let hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    append_array_length(response_out, 0);
-                    return Ok(());
-                }
-            };
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
+        let hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                append_array_length(response_out, 0);
+                return Ok(());
+            }
+        };
         append_array_length(response_out, hash.len());
         for field in hash.keys() {
             append_bulk_string(response_out, field);
@@ -425,15 +393,14 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HVALS", "HVALS key")?;
 
-        let key = RedisKey::from(args[1]);
-        let hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    append_array_length(response_out, 0);
-                    return Ok(());
-                }
-            };
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
+        let hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                append_array_length(response_out, 0);
+                return Ok(());
+            }
+        };
         append_array_length(response_out, hash.len());
         for value in hash.values() {
             append_bulk_string(response_out, value);
@@ -448,26 +415,18 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HSTRLEN", "HSTRLEN key field")?;
 
-        let key = RedisKey::from(args[1]);
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
         let field = args[2];
-        let mut hash =
-            match self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))? {
-                Some(hash) => hash,
-                None => {
-                    append_integer(response_out, 0);
-                    return Ok(());
-                }
-            };
-        let lazy_expired = self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &[field],
-        );
+        let mut hash = match self.load_hash_object(key)? {
+            Some(hash) => hash,
+            None => {
+                append_integer(response_out, 0);
+                return Ok(());
+            }
+        };
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &[field]);
         if lazy_expired {
-            self.persist_hash_after_field_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                &hash,
-            )?;
+            self.persist_hash_after_field_expiration(key, &hash)?;
         }
         let len = hash.get(field).map(|value| value.len() as i64).unwrap_or(0);
         append_integer(response_out, len);
@@ -486,15 +445,13 @@ impl RequestProcessor {
             "HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]",
         )?;
 
-        let key = RedisKey::from(args[1]);
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
         let novalues = scan_options.novalues;
         let resp3 = self.resp_protocol_version().is_resp3();
 
-        let Some(hash) =
-            self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?
-        else {
+        let Some(hash) = self.load_hash_object(key)? else {
             append_hash_scan_response(
                 response_out,
                 cursor,
@@ -511,16 +468,9 @@ impl RequestProcessor {
             .iter()
             .map(Vec::as_slice)
             .collect::<Vec<_>>();
-        let lazy_expired = self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &all_fields,
-        );
+        let lazy_expired = self.apply_hash_field_lazy_expiration(key, &mut hash, &all_fields);
         if lazy_expired {
-            self.persist_hash_after_field_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                &hash,
-            )?;
+            self.persist_hash_after_field_expiration(key, &hash)?;
             if hash.is_empty() {
                 append_hash_scan_response(
                     response_out,
@@ -569,16 +519,11 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "HINCRBY", "HINCRBY key field increment")?;
 
         let increment = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2].to_vec();
-        let mut hash = self
-            .load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?
-            .unwrap_or_default();
-        self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &[args[2]],
-        );
+        let mut hash = self.load_hash_object(key)?.unwrap_or_default();
+        self.apply_hash_field_lazy_expiration(key, &mut hash, &[args[2]]);
 
         let current = match hash.get(&field) {
             Some(value) => parse_i64_ascii(value).ok_or(RequestExecutionError::ValueNotInteger)?,
@@ -588,8 +533,8 @@ impl RequestProcessor {
             .checked_add(increment)
             .ok_or(RequestExecutionError::IncrementOverflow)?;
         hash.insert(field, updated.to_string().into_bytes());
-        self.save_hash_object(DbKeyRef::new(current_request_selected_db(), &key), &hash)?;
-        self.notify_keyspace_event(current_request_selected_db(), NOTIFY_HASH, b"hincrby", &key);
+        self.save_hash_object(key, &hash)?;
+        self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hincrby", key.key());
         append_integer(response_out, updated);
         Ok(())
     }
@@ -606,16 +551,11 @@ impl RequestProcessor {
         if !increment.is_finite() {
             return Err(RequestExecutionError::ValueIsNanOrInfinity);
         }
-        let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2].to_vec();
-        let mut hash = self
-            .load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?
-            .unwrap_or_default();
-        self.apply_hash_field_lazy_expiration(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            &mut hash,
-            &[args[2]],
-        );
+        let mut hash = self.load_hash_object(key)?.unwrap_or_default();
+        self.apply_hash_field_lazy_expiration(key, &mut hash, &[args[2]]);
 
         let current = match hash.get(&field) {
             Some(value) => parse_f64_ascii(value).ok_or(RequestExecutionError::ValueNotFloat)?,
@@ -627,13 +567,8 @@ impl RequestProcessor {
         }
         let updated_text = updated.to_string().into_bytes();
         hash.insert(field, updated_text.clone());
-        self.save_hash_object(DbKeyRef::new(current_request_selected_db(), &key), &hash)?;
-        self.notify_keyspace_event(
-            current_request_selected_db(),
-            NOTIFY_HASH,
-            b"hincrbyfloat",
-            &key,
-        );
+        self.save_hash_object(key, &hash)?;
+        self.notify_keyspace_event(selected_db, NOTIFY_HASH, b"hincrbyfloat", key.key());
         append_bulk_string(response_out, &updated_text);
         Ok(())
     }
@@ -651,24 +586,17 @@ impl RequestProcessor {
             "HRANDFIELD key [count [WITHVALUES]]",
         )?;
 
-        let key = RedisKey::from(args[1]);
-        let mut hash = self.load_hash_object(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let key = DbKeyRef::new(current_request_selected_db(), args[1]);
+        let mut hash = self.load_hash_object(key)?;
         if let Some(hash_mut) = hash.as_mut() {
             let all_fields_owned = hash_mut.keys().cloned().collect::<Vec<_>>();
             let all_fields = all_fields_owned
                 .iter()
                 .map(Vec::as_slice)
                 .collect::<Vec<_>>();
-            let lazy_expired = self.apply_hash_field_lazy_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                hash_mut,
-                &all_fields,
-            );
+            let lazy_expired = self.apply_hash_field_lazy_expiration(key, hash_mut, &all_fields);
             if lazy_expired {
-                self.persist_hash_after_field_expiration(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    hash_mut,
-                )?;
+                self.persist_hash_after_field_expiration(key, hash_mut)?;
             }
         }
         let resp3 = self.resp_protocol_version().is_resp3();
