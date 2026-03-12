@@ -426,7 +426,7 @@ impl RequestProcessor {
 
     pub(super) fn load_set_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<BTreeSet<Vec<u8>>>, RequestExecutionError> {
         let payload = match self.load_set_object_payload(key)? {
             Some(payload) => payload,
@@ -442,14 +442,13 @@ impl RequestProcessor {
 
     pub(super) fn load_set_object_payload(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<DecodedSetObjectPayload>, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        let object = match self.object_read(db_key)? {
+        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(db_key)? {
+                if self.key_exists(key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -470,45 +469,36 @@ impl RequestProcessor {
 
     pub(super) fn save_set_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         set: &BTreeSet<Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        self.update_set_encoding_floor_for_members(db_key, set, false);
-        self.record_set_debug_ht_activity(db_key, set.len());
+        self.update_set_encoding_floor_for_members(key, set, false);
+        self.record_set_debug_ht_activity(key, set.len());
         let payload = serialize_set_object_payload(set);
-        self.object_upsert(db_key, SET_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn save_set_object_replacing_existing(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         set: &BTreeSet<Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        self.update_set_encoding_floor_for_members(db_key, set, true);
-        self.record_set_debug_ht_activity(db_key, set.len());
+        self.update_set_encoding_floor_for_members(key, set, true);
+        self.record_set_debug_ht_activity(key, set.len());
         let payload = serialize_set_object_payload(set);
-        self.object_upsert(db_key, SET_OBJECT_TYPE_TAG, &payload)
+        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn save_contiguous_i64_range_set_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         range: ContiguousI64RangeSet,
     ) -> Result<(), RequestExecutionError> {
         let member_count = usize::try_from(i128::from(range.end()) - i128::from(range.start()) + 1)
             .unwrap_or(usize::MAX);
-        self.record_set_debug_ht_activity(
-            DbKeyRef::new(current_request_selected_db(), key),
-            member_count,
-        );
+        self.record_set_debug_ht_activity(key, member_count);
         let payload = serialize_contiguous_i64_range_set_payload(range);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            SET_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(key, SET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn load_zset_object(

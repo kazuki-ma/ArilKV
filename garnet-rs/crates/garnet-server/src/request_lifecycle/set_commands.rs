@@ -125,7 +125,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let set = match self.load_set_object(&key)? {
+        let set = match self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))? {
             Some(set) => set,
             None => {
                 if resp3 {
@@ -161,7 +161,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let member = args[2];
-        let set = match self.load_set_object(&key)? {
+        let set = match self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))? {
             Some(set) => set,
             None => {
                 append_integer(response_out, 0);
@@ -258,7 +258,8 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let Some(set) = self.load_set_object(&key)? else {
+        let Some(set) = self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_set_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
@@ -294,7 +295,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "SMISMEMBER", "SMISMEMBER key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let set = self.load_set_object(&key)?;
+        let set = self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))?;
         if let Some(set) = &set {
             self.record_set_debug_ht_activity(
                 DbKeyRef::new(current_request_selected_db(), &key),
@@ -428,7 +429,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let mut set = self.load_set_object(&key)?;
+        let mut set = self.load_set_object(DbKeyRef::new(current_request_selected_db(), &key))?;
         if args.len() == 2 {
             let Some(mut set) = set.take() else {
                 if resp3 {
@@ -461,7 +462,7 @@ impl RequestProcessor {
                     &key,
                 );
             } else {
-                self.save_set_object(&key, &set)?;
+                self.save_set_object(DbKeyRef::new(current_request_selected_db(), &key), &set)?;
             }
             append_bulk_string(response_out, &member);
             return Ok(());
@@ -507,7 +508,7 @@ impl RequestProcessor {
                 );
             }
         } else {
-            self.save_set_object(&key, &set)?;
+            self.save_set_object(DbKeyRef::new(current_request_selected_db(), &key), &set)?;
         }
 
         if resp3 {
@@ -532,13 +533,14 @@ impl RequestProcessor {
         let destination = RedisKey::from(args[2]);
         let member = args[3].to_vec();
 
-        let mut source_set = match self.load_set_object(&source)? {
-            Some(set) => set,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut source_set =
+            match self.load_set_object(DbKeyRef::new(current_request_selected_db(), &source))? {
+                Some(set) => set,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
         if source == destination {
             if !source_set.contains(&member) {
                 append_integer(response_out, 0);
@@ -548,7 +550,9 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let mut destination_set = self.load_set_object(&destination)?.unwrap_or_default();
+        let mut destination_set = self
+            .load_set_object(DbKeyRef::new(current_request_selected_db(), &destination))?
+            .unwrap_or_default();
         if !source_set.contains(&member) {
             append_integer(response_out, 0);
             return Ok(());
@@ -567,11 +571,17 @@ impl RequestProcessor {
                 &source,
             );
         } else {
-            self.save_set_object(&source, &source_set)?;
+            self.save_set_object(
+                DbKeyRef::new(current_request_selected_db(), &source),
+                &source_set,
+            )?;
             self.notify_keyspace_event(current_request_selected_db(), NOTIFY_SET, b"srem", &source);
         }
         if destination_changed {
-            self.save_set_object(&destination, &destination_set)?;
+            self.save_set_object(
+                DbKeyRef::new(current_request_selected_db(), &destination),
+                &destination_set,
+            )?;
             self.notify_keyspace_event(
                 current_request_selected_db(),
                 NOTIFY_SET,
@@ -847,7 +857,9 @@ fn compute_sunion(
 ) -> Result<BTreeSet<Vec<u8>>, RequestExecutionError> {
     let mut union = BTreeSet::new();
     for key in keys {
-        if let Some(set) = processor.load_set_object(key)? {
+        if let Some(set) =
+            processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?
+        {
             union.extend(set);
         }
     }
@@ -861,9 +873,11 @@ fn compute_sinter(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeSet::new());
     };
-    let mut inter = processor.load_set_object(first_key)?;
+    let mut inter =
+        processor.load_set_object(DbKeyRef::new(current_request_selected_db(), first_key))?;
     for key in remaining_keys {
-        let other_set = processor.load_set_object(key)?;
+        let other_set =
+            processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?;
         if let Some(inter_set) = inter.as_mut() {
             let Some(other_set) = other_set else {
                 inter = None;
@@ -886,10 +900,12 @@ fn compute_sdiff(
     let Some((first_key, remaining_keys)) = keys.split_first() else {
         return Ok(BTreeSet::new());
     };
-    let mut diff = processor.load_set_object(first_key)?;
+    let mut diff =
+        processor.load_set_object(DbKeyRef::new(current_request_selected_db(), first_key))?;
 
     for key in remaining_keys {
-        let other_set = processor.load_set_object(key)?;
+        let other_set =
+            processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?;
         if let Some(diff_set) = diff.as_mut() {
             let Some(other_set) = other_set else {
                 continue;
@@ -953,7 +969,10 @@ fn store_set_result(
         return Ok(());
     }
 
-    processor.save_set_object_replacing_existing(destination, result_set)?;
+    processor.save_set_object_replacing_existing(
+        DbKeyRef::new(current_request_selected_db(), destination),
+        result_set,
+    )?;
     processor.notify_setkey_overwrite_events(
         current_request_selected_db(),
         destination,

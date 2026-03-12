@@ -2557,7 +2557,9 @@ fn load_zset_like_object(
     match processor.load_zset_object(key) {
         Ok(zset) => Ok(zset),
         Err(RequestExecutionError::WrongType) => {
-            let Some(set) = processor.load_set_object(key)? else {
+            let Some(set) =
+                processor.load_set_object(DbKeyRef::new(current_request_selected_db(), key))?
+            else {
                 return Ok(None);
             };
             let zset = set.into_iter().map(|member| (member, 1.0)).collect();
