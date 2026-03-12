@@ -14090,6 +14090,48 @@ fn georadius_family_supports_query_and_store_paths() {
 }
 
 #[test]
+fn geo_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GEOADD shared 0 0 tokyo 30 0 far", db0),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GEOADD shared 0 0 tokyo 0.1 0 near", db9),
+        b":2\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GEORADIUSBYMEMBER shared tokyo 20 km ASC", db0,),
+        b"*1\r\n$5\r\ntokyo\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "GEORADIUSBYMEMBER shared tokyo 20 km ASC", db9,),
+        b"*2\r\n$5\r\ntokyo\r\n$4\r\nnear\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(
+            &processor,
+            "GEOSEARCHSTORE out shared FROMMEMBER tokyo BYRADIUS 20 km",
+            db9,
+        ),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "EXISTS out", db0),
+        b":0\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "EXISTS out", db9),
+        b":1\r\n".to_vec()
+    );
+}
+
+#[test]
 fn migrate_command_validates_arguments_before_disabled_response() {
     let processor = RequestProcessor::new().unwrap();
 

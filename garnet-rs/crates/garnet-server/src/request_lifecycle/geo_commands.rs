@@ -134,7 +134,9 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "GEOADD", GEOADD_USAGE)?;
 
+        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
+        let key_ref = DbKeyRef::new(selected_db, &key);
         let parsed_options = parse_geoadd_options(args, 2)?;
         let options = parsed_options.options;
         let mut index = parsed_options.next_index;
@@ -156,9 +158,7 @@ impl RequestProcessor {
             });
         }
 
-        let mut zset = self
-            .load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?
-            .unwrap_or_default();
+        let mut zset = self.load_zset_object(key_ref)?.unwrap_or_default();
         let mut updated = false;
         let mut added = 0i64;
         let mut changed = 0i64;
@@ -208,7 +208,7 @@ impl RequestProcessor {
         }
 
         if updated {
-            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
+            self.save_zset_object(key_ref, &zset)?;
         }
 
         let result = if options.ch { changed } else { added };
@@ -223,8 +223,9 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "GEOPOS", GEOPOS_USAGE)?;
 
+        let selected_db = current_request_selected_db();
         let key = args[1];
-        let zset = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))?;
+        let zset = self.load_zset_object(DbKeyRef::new(selected_db, key))?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
         append_array_length(response_out, args.len() - 2);
@@ -278,7 +279,8 @@ impl RequestProcessor {
 
         let key = args[1];
         let resp3 = self.resp_protocol_version().is_resp3();
-        let zset = match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))? {
+        let selected_db = current_request_selected_db();
+        let zset = match self.load_zset_object(DbKeyRef::new(selected_db, key))? {
             Some(entries) => entries,
             None => {
                 if resp3 {
@@ -348,8 +350,9 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "GEOHASH", GEOHASH_USAGE)?;
 
+        let selected_db = current_request_selected_db();
         let key = args[1];
-        let zset = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))?;
+        let zset = self.load_zset_object(DbKeyRef::new(selected_db, key))?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
         append_array_length(response_out, args.len() - 2);
@@ -468,9 +471,11 @@ impl RequestProcessor {
             any: radius_options.any,
             store_dist: radius_options.store_dist,
         };
+        let selected_db = current_request_selected_db();
         let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
+            selected_db,
             source_key,
             &query_options,
             radius_options.store_key.as_deref(),
@@ -512,9 +517,11 @@ impl RequestProcessor {
             any: radius_options.any,
             store_dist: radius_options.store_dist,
         };
+        let selected_db = current_request_selected_db();
         let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
+            selected_db,
             source_key,
             &query_options,
             radius_options.store_key.as_deref(),
@@ -530,9 +537,18 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 7, "GEOSEARCH", GEOSEARCH_USAGE)?;
         let options = parse_geosearch_options(args, 2, true, false)?;
+        let selected_db = current_request_selected_db();
         let source_key = args[1];
         let resp3 = self.resp_protocol_version().is_resp3();
-        execute_geo_query(self, source_key, &options, None, response_out, resp3)
+        execute_geo_query(
+            self,
+            selected_db,
+            source_key,
+            &options,
+            None,
+            response_out,
+            resp3,
+        )
     }
 
     pub(super) fn handle_geosearchstore(
@@ -543,11 +559,13 @@ impl RequestProcessor {
         ensure_min_arity(args, 8, "GEOSEARCHSTORE", GEOSEARCHSTORE_USAGE)?;
         let options = parse_geosearch_options(args, 3, false, true)?;
 
+        let selected_db = current_request_selected_db();
         let destination_key = RedisKey::from(args[1]);
         let source_key = args[2];
         let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
+            selected_db,
             source_key,
             &options,
             Some(destination_key.as_slice()),
@@ -858,21 +876,20 @@ fn parse_georadius_options(
 
 fn execute_geo_query(
     processor: &RequestProcessor,
+    selected_db: DbName,
     source_key: &[u8],
     options: &GeoSearchOptions,
     store_key: Option<&[u8]>,
     response_out: &mut Vec<u8>,
     resp3: bool,
 ) -> Result<(), RequestExecutionError> {
-    let source_zset = match processor
-        .load_zset_object(DbKeyRef::new(current_request_selected_db(), source_key))?
-    {
+    let source_zset = match processor.load_zset_object(DbKeyRef::new(selected_db, source_key))? {
         Some(entries) => entries,
         None => {
             if let Some(destination) = store_key {
                 store_geosearch_result(
                     processor,
-                    DbKeyRef::new(current_request_selected_db(), destination),
+                    DbKeyRef::new(selected_db, destination),
                     &BTreeMap::new(),
                 )?;
                 append_integer(response_out, 0);
@@ -911,7 +928,7 @@ fn execute_geo_query(
         let stored = destination_zset.len() as i64;
         store_geosearch_result(
             processor,
-            DbKeyRef::new(current_request_selected_db(), destination),
+            DbKeyRef::new(selected_db, destination),
             &destination_zset,
         )?;
         append_integer(response_out, stored);
