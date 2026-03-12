@@ -156,7 +156,9 @@ impl RequestProcessor {
             });
         }
 
-        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
+        let mut zset = self
+            .load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            .unwrap_or_default();
         let mut updated = false;
         let mut added = 0i64;
         let mut changed = 0i64;
@@ -206,7 +208,7 @@ impl RequestProcessor {
         }
 
         if updated {
-            self.save_zset_object(&key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
         }
 
         let result = if options.ch { changed } else { added };
@@ -222,7 +224,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "GEOPOS", GEOPOS_USAGE)?;
 
         let key = args[1];
-        let zset = self.load_zset_object(key)?;
+        let zset = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
         append_array_length(response_out, args.len() - 2);
@@ -276,7 +278,7 @@ impl RequestProcessor {
 
         let key = args[1];
         let resp3 = self.resp_protocol_version().is_resp3();
-        let zset = match self.load_zset_object(key)? {
+        let zset = match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))? {
             Some(entries) => entries,
             None => {
                 if resp3 {
@@ -347,7 +349,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "GEOHASH", GEOHASH_USAGE)?;
 
         let key = args[1];
-        let zset = self.load_zset_object(key)?;
+        let zset = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))?;
         let resp3 = self.resp_protocol_version().is_resp3();
 
         append_array_length(response_out, args.len() - 2);
@@ -862,7 +864,9 @@ fn execute_geo_query(
     response_out: &mut Vec<u8>,
     resp3: bool,
 ) -> Result<(), RequestExecutionError> {
-    let source_zset = match processor.load_zset_object(source_key)? {
+    let source_zset = match processor
+        .load_zset_object(DbKeyRef::new(current_request_selected_db(), source_key))?
+    {
         Some(entries) => entries,
         None => {
             if let Some(destination) = store_key {
@@ -1142,7 +1146,10 @@ fn store_geosearch_result(
         }
         return Ok(());
     }
-    processor.save_zset_object(destination, result_zset)?;
+    processor.save_zset_object(
+        DbKeyRef::new(current_request_selected_db(), destination),
+        result_zset,
+    )?;
     processor.notify_setkey_overwrite_events(
         current_request_selected_db(),
         destination,

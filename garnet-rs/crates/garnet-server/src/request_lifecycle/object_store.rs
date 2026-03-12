@@ -503,14 +503,13 @@ impl RequestProcessor {
 
     pub(super) fn load_zset_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        let object = match self.object_read(db_key)? {
+        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(db_key)? {
+                if self.key_exists(key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -528,15 +527,11 @@ impl RequestProcessor {
 
     pub(super) fn save_zset_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         zset: &BTreeMap<Vec<u8>, f64>,
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_zset_object_payload(zset);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            ZSET_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(key, ZSET_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn load_stream_object(

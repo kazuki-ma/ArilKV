@@ -26,7 +26,9 @@ impl RequestProcessor {
             index += 2;
         }
 
-        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
+        let mut zset = self
+            .load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            .unwrap_or_default();
         let mut added = 0i64;
         let mut updated = 0i64;
         let mut processed = 0i64;
@@ -75,7 +77,7 @@ impl RequestProcessor {
 
         let changed = added + updated;
         if changed > 0 {
-            self.save_zset_object(&key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
             self.notify_keyspace_event(
                 current_request_selected_db(),
                 NOTIFY_ZSET,
@@ -116,13 +118,14 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let mut removed = 0i64;
         for member in &args[2..] {
@@ -145,7 +148,7 @@ impl RequestProcessor {
                 );
             }
         } else {
-            self.save_zset_object(&key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
         }
         append_integer(response_out, removed);
         Ok(())
@@ -166,13 +169,14 @@ impl RequestProcessor {
         let left = args[2];
         let right = args[3];
         let options = parse_zrange_options(args, 4, true)?;
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let selected = collect_zrange_entries(&zset, left, right, options)?;
         append_owned_zrange_score_entries(
@@ -210,13 +214,14 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let mut entries = sorted_zset_entries_by_score(&zset);
         entries.reverse();
@@ -262,17 +267,18 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let member = args[2];
         let resp3 = self.resp_protocol_version().is_resp3();
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                if resp3 {
-                    append_null(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-        };
+            };
 
         match zset.get(member) {
             Some(score) => {
@@ -302,7 +308,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let count = self
-            .load_zset_object(&key)?
+            .load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?
             .map_or(0usize, |zset| zset.len());
         append_integer(response_out, count as i64);
         Ok(())
@@ -318,13 +324,14 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let max = parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let count = zset
             .values()
@@ -344,13 +351,14 @@ impl RequestProcessor {
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
         let max = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
 
-        let count = match self.load_zset_object(&key)? {
-            Some(zset) => zset
-                .keys()
-                .filter(|member| zlex_member_in_bounds(member.as_slice(), min, max))
-                .count(),
-            None => 0usize,
-        };
+        let count =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset
+                    .keys()
+                    .filter(|member| zlex_member_in_bounds(member.as_slice(), min, max))
+                    .count(),
+                None => 0usize,
+            };
         append_integer(response_out, count as i64);
         Ok(())
     }
@@ -381,13 +389,14 @@ impl RequestProcessor {
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
         let max = parse_zlex_bound(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
 
-        let mut zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let to_remove: Vec<Vec<u8>> = zset
             .keys()
@@ -405,7 +414,7 @@ impl RequestProcessor {
         if zset.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         } else {
-            self.save_zset_object(&key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
         }
         append_integer(response_out, removed);
         Ok(())
@@ -695,10 +704,11 @@ impl RequestProcessor {
         let right = args[4];
         let options = parse_zrange_options(args, 5, false)?;
 
-        let selected = match self.load_zset_object(&source)? {
-            Some(zset) => collect_zrange_entries(&zset, left, right, options)?,
-            None => Vec::new(),
-        };
+        let selected =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &source))? {
+                Some(zset) => collect_zrange_entries(&zset, left, right, options)?,
+                None => Vec::new(),
+            };
         let result = zset_map_from_entries(selected);
         store_zset_result(self, &destination, &result)?;
         append_integer(response_out, result.len() as i64);
@@ -722,7 +732,9 @@ impl RequestProcessor {
         let scan_options = parse_scan_match_count_options(args, 3)?;
 
         let resp3 = self.resp_protocol_version().is_resp3();
-        let Some(zset) = self.load_zset_object(&key)? else {
+        let Some(zset) =
+            self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_zset_scan_response(response_out, cursor, scan_options.count, &[], resp3);
             return Ok(());
         };
@@ -773,14 +785,16 @@ impl RequestProcessor {
             parse_zset_score_value(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let member = args[3].to_vec();
 
-        let mut zset = self.load_zset_object(&key)?.unwrap_or_default();
+        let mut zset = self
+            .load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            .unwrap_or_default();
         let current = zset.get(&member).copied().unwrap_or(0.0);
         let updated = current + increment;
         if updated.is_nan() {
             return Err(RequestExecutionError::ResultingScoreNotANumber);
         }
         zset.insert(member, updated);
-        self.save_zset_object(&key, &zset)?;
+        self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_ZSET, b"zincr", &key);
         if self.resp_protocol_version().is_resp3() {
             append_double(response_out, updated);
@@ -800,13 +814,14 @@ impl RequestProcessor {
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
 
-        let mut zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let entries = sorted_zset_entries_by_score(&zset);
         let Some(range) = normalize_zset_index_range(entries.len(), start, stop) else {
@@ -825,7 +840,7 @@ impl RequestProcessor {
         if zset.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         } else {
-            self.save_zset_object(&key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
         }
         append_integer(response_out, removed);
         Ok(())
@@ -841,13 +856,14 @@ impl RequestProcessor {
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
         let max = parse_zscore_bound(args[3]).ok_or(RequestExecutionError::ValueNotFloat)?;
 
-        let mut zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
         let to_remove: Vec<Vec<u8>> = zset
             .iter()
             .filter(|(_member, score)| score_in_bound(**score, min, max))
@@ -865,7 +881,7 @@ impl RequestProcessor {
         if zset.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
         } else {
-            self.save_zset_object(&key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), &key), &zset)?;
         }
         append_integer(response_out, removed);
         Ok(())
@@ -899,13 +915,14 @@ impl RequestProcessor {
             parse_zscore_bound(args[3]).ok_or(RequestExecutionError::MinOrMaxNotFloat)?;
         let options = parse_zrange_by_score_options(args, 4)?;
 
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let (min_bound, max_bound) = if reverse {
             (right_bound, left_bound)
@@ -972,13 +989,14 @@ impl RequestProcessor {
             (left_bound, right_bound)
         };
 
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let mut matched = Vec::new();
         if reverse {
@@ -1018,7 +1036,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
         let key = RedisKey::from(args[1]);
-        let zset = self.load_zset_object(&key)?;
+        let zset = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?;
         let members = &args[2..];
 
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -1059,7 +1077,7 @@ impl RequestProcessor {
         )?;
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let zset = self.load_zset_object(&key)?;
+        let zset = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?;
         if args.len() == 2 {
             let Some(zset) = zset else {
                 if resp3 {
@@ -1213,19 +1231,20 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let member = args[2];
         let resp3 = self.resp_protocol_version().is_resp3();
-        let zset = match self.load_zset_object(&key)? {
-            Some(zset) => zset,
-            None => {
-                if resp3 {
-                    append_null(response_out);
-                } else if with_score {
-                    append_null_array(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
+        let zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(zset) => zset,
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else if with_score {
+                        append_null_array(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-        };
+            };
         let entries = sorted_zset_entries_by_score(&zset);
         let Some(index) = entries
             .iter()
@@ -1289,7 +1308,7 @@ impl RequestProcessor {
         // Type-check the key even when count is 0 (Redis returns WRONGTYPE
         // for wrong-typed keys regardless of count).
         if count == 0 {
-            let _ = self.load_zset_object(&key)?;
+            let _ = self.load_zset_object(DbKeyRef::new(current_request_selected_db(), &key))?;
             append_array_length(response_out, 0);
             return Ok(());
         }
@@ -1398,10 +1417,11 @@ impl RequestProcessor {
         pop_max: bool,
         count: usize,
     ) -> Result<Option<Vec<(Vec<u8>, f64)>>, RequestExecutionError> {
-        let mut zset = match self.load_zset_object(key)? {
-            Some(zset) => zset,
-            None => return Ok(None),
-        };
+        let mut zset =
+            match self.load_zset_object(DbKeyRef::new(current_request_selected_db(), key))? {
+                Some(zset) => zset,
+                None => return Ok(None),
+            };
         if zset.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
             return Ok(None);
@@ -1426,7 +1446,7 @@ impl RequestProcessor {
         if zset.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
         } else {
-            self.save_zset_object(key, &zset)?;
+            self.save_zset_object(DbKeyRef::new(current_request_selected_db(), key), &zset)?;
         }
         Ok(Some(selected))
     }
@@ -2471,7 +2491,10 @@ fn store_zset_result(
         return Ok(());
     }
 
-    processor.save_zset_object(destination, result_zset)?;
+    processor.save_zset_object(
+        DbKeyRef::new(current_request_selected_db(), destination),
+        result_zset,
+    )?;
     processor.notify_setkey_overwrite_events(
         current_request_selected_db(),
         destination,
@@ -2554,7 +2577,7 @@ fn load_zset_like_object(
     processor: &RequestProcessor,
     key: &[u8],
 ) -> Result<Option<BTreeMap<Vec<u8>, f64>>, RequestExecutionError> {
-    match processor.load_zset_object(key) {
+    match processor.load_zset_object(DbKeyRef::new(current_request_selected_db(), key)) {
         Ok(zset) => Ok(zset),
         Err(RequestExecutionError::WrongType) => {
             let Some(set) =
