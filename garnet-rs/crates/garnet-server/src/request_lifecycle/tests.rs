@@ -2453,6 +2453,60 @@ fn hash_field_expiration_extension_commands_cover_ttl_expiretime_and_persist() {
 }
 
 #[test]
+fn hash_field_expiration_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response_in_db(&processor, "HSET shared field db0", b":1\r\n", db0);
+    assert_command_response_in_db(&processor, "HSET shared field db9", b":1\r\n", db9);
+
+    let future_millis = current_unix_time_millis().unwrap() + 30_000;
+    let hpexpireat = format!("HPEXPIREAT shared {future_millis} FIELDS 1 field");
+    assert_eq!(
+        parse_integer_array_response(&execute_command_line_in_db(&processor, &hpexpireat, db9)),
+        vec![1]
+    );
+
+    assert_eq!(
+        parse_integer_array_response(&execute_command_line_in_db(
+            &processor,
+            "HPTTL shared FIELDS 1 field",
+            db0,
+        )),
+        vec![-1]
+    );
+
+    let db9_hpttl = parse_integer_array_response(&execute_command_line_in_db(
+        &processor,
+        "HPTTL shared FIELDS 1 field",
+        db9,
+    ));
+    assert_eq!(db9_hpttl.len(), 1);
+    assert!((0..=30_000).contains(&db9_hpttl[0]));
+
+    assert_eq!(
+        parse_integer_array_response(&execute_command_line_in_db(
+            &processor,
+            "HPERSIST shared FIELDS 1 field",
+            db0,
+        )),
+        vec![-1]
+    );
+    assert_eq!(
+        parse_integer_array_response(&execute_command_line_in_db(
+            &processor,
+            "HPERSIST shared FIELDS 1 field",
+            db9,
+        )),
+        vec![1]
+    );
+
+    assert_command_response_in_db(&processor, "HGET shared field", b"$3\r\ndb0\r\n", db0);
+    assert_command_response_in_db(&processor, "HGET shared field", b"$3\r\ndb9\r\n", db9);
+}
+
+#[test]
 fn hsetex_hgetex_hgetdel_hexpire_hpexpire_cover_basic_operations() {
     let processor = RequestProcessor::new().unwrap();
 
