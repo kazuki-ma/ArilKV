@@ -258,7 +258,7 @@ impl RequestProcessor {
         key: DbKeyRef<'_>,
         operation: impl FnOnce(&mut Option<SetObjectHotEntry>) -> Result<R, RequestExecutionError>,
     ) -> Result<R, RequestExecutionError> {
-        self.with_selected_db(key.db(), || self.expire_key_if_needed(key.key()))?;
+        self.expire_key_if_needed_in_db(key.db(), key.key())?;
 
         let mut entry = self.take_set_hot_entry(key);
         if entry.is_none() {
@@ -354,14 +354,13 @@ impl RequestProcessor {
     #[allow(clippy::type_complexity)]
     pub(super) fn load_hash_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<BTreeMap<Vec<u8>, Vec<u8>>>, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        let object = match self.object_read(db_key)? {
+        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(db_key)? {
+                if self.key_exists(key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -379,15 +378,11 @@ impl RequestProcessor {
 
     pub(super) fn save_hash_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         hash: &BTreeMap<Vec<u8>, Vec<u8>>,
     ) -> Result<(), RequestExecutionError> {
         let payload = serialize_hash_object_payload(hash);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            HASH_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(key, HASH_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn load_list_object(

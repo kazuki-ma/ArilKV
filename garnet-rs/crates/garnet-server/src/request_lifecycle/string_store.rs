@@ -248,7 +248,7 @@ impl RequestProcessor {
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
-                self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
+                self.expire_key_if_needed_in_db(db, key_bytes)?;
             }
             let entry = self.auxiliary_value_snapshot(db, key_bytes);
             self.track_read_key_for_current_client(key_bytes);
@@ -290,7 +290,7 @@ impl RequestProcessor {
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
-                self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
+                self.expire_key_if_needed_in_db(db, key_bytes)?;
             }
             let entry = self.auxiliary_value_snapshot(db, key_bytes);
             self.track_read_key_for_current_client(key_bytes);
@@ -329,7 +329,7 @@ impl RequestProcessor {
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
             if !allow_expired_data_access() {
-                self.with_selected_db(db, || self.expire_key_if_needed(key_bytes))?;
+                self.expire_key_if_needed_in_db(db, key_bytes)?;
             }
             if self.has_set_hot_entry(DbKeyRef::new(db, key_bytes)) {
                 self.track_read_key_for_current_client(key_bytes);
@@ -640,10 +640,17 @@ impl RequestProcessor {
     /// Check if a key has expired and, unless expiration is suppressed by
     /// CLIENT PAUSE, physically delete it.  Returns `true` when the key is
     /// logically expired (whether or not it was actually deleted).
-    pub(super) fn expire_key_if_needed(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+    pub(super) fn expire_key_if_needed_in_db(
+        &self,
+        db: DbName,
+        key: &[u8],
+    ) -> Result<bool, RequestExecutionError> {
         let shard_index = self.string_store_shard_index_for_key(key);
-        let selected_db = current_request_selected_db();
-        self.expire_key_if_needed_in_shard(selected_db, key, shard_index)
+        self.expire_key_if_needed_in_shard(db, key, shard_index)
+    }
+
+    pub(super) fn expire_key_if_needed(&self, key: &[u8]) -> Result<bool, RequestExecutionError> {
+        self.expire_key_if_needed_in_db(current_request_selected_db(), key)
     }
 
     pub(super) fn expire_key_if_needed_in_shard(
