@@ -3340,6 +3340,53 @@ fn additional_list_commands_cover_common_redis_semantics() {
 }
 
 #[test]
+fn list_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "RPUSH shared zero-a zero-b", db0),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "RPUSH shared nine-a nine-b nine-c", db9),
+        b":3\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LRANGE shared 0 -1", db0),
+        b"*2\r\n$6\r\nzero-a\r\n$6\r\nzero-b\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LRANGE shared 0 -1", db9),
+        b"*3\r\n$6\r\nnine-a\r\n$6\r\nnine-b\r\n$6\r\nnine-c\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LPOP shared", db9),
+        b"$6\r\nnine-a\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LLEN shared", db0),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LTRIM shared 1 1", db0),
+        b"+OK\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LRANGE shared 0 -1", db0),
+        b"*1\r\n$6\r\nzero-b\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "LRANGE shared 0 -1", db9),
+        b"*2\r\n$6\r\nnine-b\r\n$6\r\nnine-c\r\n".to_vec()
+    );
+}
+
+#[test]
 fn blocking_and_mpop_list_commands_cover_redis_shapes() {
     let processor = RequestProcessor::new().unwrap();
 
