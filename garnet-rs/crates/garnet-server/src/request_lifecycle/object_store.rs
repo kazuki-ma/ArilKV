@@ -387,14 +387,13 @@ impl RequestProcessor {
 
     pub(super) fn load_list_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<Vec<Vec<u8>>>, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        let object = match self.object_read(db_key)? {
+        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(db_key)? {
+                if self.key_exists(key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -412,24 +411,17 @@ impl RequestProcessor {
 
     pub(super) fn save_list_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         list: &[Vec<u8>],
     ) -> Result<(), RequestExecutionError> {
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
         if !list_listpack_compatible(list, configured_size) {
-            self.force_list_quicklist_encoding(DbKeyRef::new(current_request_selected_db(), key));
+            self.force_list_quicklist_encoding(key);
         } else {
-            self.clear_forced_list_quicklist_encoding(DbKeyRef::new(
-                current_request_selected_db(),
-                key,
-            ));
+            self.clear_forced_list_quicklist_encoding(key);
         }
         let payload = serialize_list_object_payload(list);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            LIST_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(key, LIST_OBJECT_TYPE_TAG, &payload)
     }
 
     pub(super) fn load_set_object(

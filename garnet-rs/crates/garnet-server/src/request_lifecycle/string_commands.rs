@@ -1280,7 +1280,10 @@ impl RequestProcessor {
             ))?;
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), store_key))?;
             if !stored.is_empty() {
-                self.save_list_object(store_key, &stored)?;
+                self.save_list_object(
+                    DbKeyRef::new(current_request_selected_db(), store_key),
+                    &stored,
+                )?;
                 self.notify_setkey_overwrite_events(
                     current_request_selected_db(),
                     store_key,

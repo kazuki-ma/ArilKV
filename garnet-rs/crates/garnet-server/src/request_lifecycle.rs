@@ -656,6 +656,12 @@ impl From<&[u8]> for RedisKey {
     }
 }
 
+impl From<KeyRef<'_>> for RedisKey {
+    fn from(value: KeyRef<'_>) -> Self {
+        Self::from(value.as_bytes())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub(crate) struct HashField(Vec<u8>);
 
@@ -810,14 +816,37 @@ fn default_db_storage_binding(db: DbName) -> DbStorageBinding {
 pub(crate) type KeyBytes = [u8];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub(crate) struct KeyRef<'a>(&'a KeyBytes);
+
+impl<'a> KeyRef<'a> {
+    pub(crate) const fn new(raw: &'a KeyBytes) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) const fn as_bytes(self) -> &'a KeyBytes {
+        self.0
+    }
+}
+
+impl AsRef<[u8]> for KeyRef<'_> {
+    fn as_ref(&self) -> &[u8] {
+        self.0
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) struct DbKeyRef<'a> {
     db: DbName,
-    key: &'a KeyBytes,
+    key: KeyRef<'a>,
 }
 
 impl<'a> DbKeyRef<'a> {
     pub(crate) const fn new(db: DbName, key: &'a KeyBytes) -> Self {
-        Self { db, key }
+        Self {
+            db,
+            key: KeyRef::new(key),
+        }
     }
 
     pub(crate) const fn db(self) -> DbName {
@@ -825,6 +854,10 @@ impl<'a> DbKeyRef<'a> {
     }
 
     pub(crate) const fn key(self) -> &'a KeyBytes {
+        self.key.as_bytes()
+    }
+
+    pub(crate) const fn key_ref(self) -> KeyRef<'a> {
         self.key
     }
 }
@@ -854,7 +887,7 @@ impl DbKeySetState {
         self.by_db
             .entry(key.db())
             .or_default()
-            .insert(RedisKey::from(key.key()));
+            .insert(RedisKey::from(key.key_ref()));
     }
 
     fn remove(&mut self, key: DbKeyRef<'_>) {
@@ -914,7 +947,7 @@ impl<T> DbKeyMapState<T> {
         self.by_db
             .entry(key.db())
             .or_default()
-            .insert(RedisKey::from(key.key()), value);
+            .insert(RedisKey::from(key.key_ref()), value);
     }
 
     fn remove(&mut self, key: DbKeyRef<'_>) -> Option<T> {
@@ -1705,7 +1738,7 @@ impl SetObjectHotState {
         let db_state = self.by_db.entry(key.db()).or_default();
         if db_state
             .entries
-            .insert(RedisKey::from(key.key()), entry)
+            .insert(RedisKey::from(key.key_ref()), entry)
             .is_none()
         {
             self.total_entries += 1;

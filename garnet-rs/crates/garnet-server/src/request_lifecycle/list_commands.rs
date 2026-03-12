@@ -12,11 +12,13 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "LPUSH", "LPUSH key value [value ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut list = self.load_list_object(&key)?.unwrap_or_default();
+        let mut list = self
+            .load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            .unwrap_or_default();
         for value in &args[2..] {
             list.insert(0, value.to_vec());
         }
-        self.save_list_object(&key, &list)?;
+        self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_LIST, b"lpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
@@ -30,11 +32,13 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "RPUSH", "RPUSH key value [value ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut list = self.load_list_object(&key)?.unwrap_or_default();
+        let mut list = self
+            .load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            .unwrap_or_default();
         for value in &args[2..] {
             list.push(value.to_vec());
         }
-        self.save_list_object(&key, &list)?;
+        self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_LIST, b"rpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
@@ -83,19 +87,20 @@ impl RequestProcessor {
         let resp3 = self.resp_protocol_version().is_resp3();
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
 
-        let mut list = match self.load_list_object(&key)? {
-            Some(list) => list,
-            None => {
-                if resp3 {
-                    append_null(response_out);
-                } else if count.is_some() {
-                    append_null_array(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
+        let mut list =
+            match self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(list) => list,
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else if count.is_some() {
+                        append_null_array(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-        };
+            };
         let previous_was_quicklist = self
             .list_quicklist_encoding_is_forced(DbKeyRef::new(current_request_selected_db(), &key))
             || !list_listpack_compatible(&list, configured_size);
@@ -144,7 +149,7 @@ impl RequestProcessor {
                     );
                 }
             } else {
-                self.save_list_object(&key, &list)?;
+                self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
                 self.maybe_preserve_quicklist_after_shrink(
                     &key,
                     previous_was_quicklist,
@@ -173,7 +178,7 @@ impl RequestProcessor {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             self.notify_keyspace_event(current_request_selected_db(), NOTIFY_GENERIC, b"del", &key);
         } else {
-            self.save_list_object(&key, &list)?;
+            self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
             self.maybe_preserve_quicklist_after_shrink(
                 &key,
                 previous_was_quicklist,
@@ -195,13 +200,14 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let list = match self.load_list_object(&key)? {
-            Some(list) => list,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let list =
+            match self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(list) => list,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let len = list.len() as i64;
         if len == 0 {
@@ -243,7 +249,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let length = self
-            .load_list_object(&key)?
+            .load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
             .map_or(0, |list| list.len() as i64);
         append_integer(response_out, length);
         Ok(())
@@ -258,17 +264,18 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let resp3 = self.resp_protocol_version().is_resp3();
-        let list = match self.load_list_object(&key)? {
-            Some(list) => list,
-            None => {
-                if resp3 {
-                    append_null(response_out);
-                } else {
-                    append_null_bulk_string(response_out);
+        let list =
+            match self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(list) => list,
+                None => {
+                    if resp3 {
+                        append_null(response_out);
+                    } else {
+                        append_null_bulk_string(response_out);
+                    }
+                    return Ok(());
                 }
-                return Ok(());
-            }
-        };
+            };
         let Some(index) = normalize_list_index(list.len(), index) else {
             if resp3 {
                 append_null(response_out);
@@ -296,7 +303,9 @@ impl RequestProcessor {
         let element = args[2];
         let options = parse_lpos_options(args, 3)?;
         let resp3 = self.resp_protocol_version().is_resp3();
-        let Some(list) = self.load_list_object(&key)? else {
+        let Some(list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             if options.count.is_some() {
                 append_array_length(response_out, 0);
             } else if resp3 {
@@ -378,7 +387,7 @@ impl RequestProcessor {
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let value = args[3].to_vec();
         let mut list = self
-            .load_list_object(&key)?
+            .load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
             .ok_or(RequestExecutionError::NoSuchKey)?;
         let Some(index) = normalize_list_index(list.len(), index) else {
             return Err(RequestExecutionError::IndexOutOfRange);
@@ -393,7 +402,7 @@ impl RequestProcessor {
             listpack_growth_would_force_quicklist(&list, configured_size, &[value.as_slice()])
         };
         list[index] = value;
-        self.save_list_object(&key, &list)?;
+        self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_LIST, b"lset", &key);
         if force_quicklist_after_replace {
             self.force_list_quicklist_encoding(DbKeyRef::new(current_request_selected_db(), &key));
@@ -418,13 +427,14 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let stop = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let list = match self.load_list_object(&key)? {
-            Some(list) => list,
-            None => {
-                append_simple_string(response_out, b"OK");
-                return Ok(());
-            }
-        };
+        let list =
+            match self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(list) => list,
+                None => {
+                    append_simple_string(response_out, b"OK");
+                    return Ok(());
+                }
+            };
 
         let len = list.len() as i64;
         if len == 0 {
@@ -456,7 +466,7 @@ impl RequestProcessor {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             self.notify_keyspace_event(current_request_selected_db(), NOTIFY_GENERIC, b"del", &key);
         } else {
-            self.save_list_object(&key, &trimmed)?;
+            self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &trimmed)?;
             self.maybe_preserve_quicklist_after_shrink(
                 &key,
                 previous_was_quicklist,
@@ -475,14 +485,16 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSHX", "LPUSHX key value [value ...]")?;
         let key = RedisKey::from(args[1]);
-        let Some(mut list) = self.load_list_object(&key)? else {
+        let Some(mut list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_integer(response_out, 0);
             return Ok(());
         };
         for value in &args[2..] {
             list.insert(0, value.to_vec());
         }
-        self.save_list_object(&key, &list)?;
+        self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_LIST, b"lpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
@@ -495,14 +507,16 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSHX", "RPUSHX key value [value ...]")?;
         let key = RedisKey::from(args[1]);
-        let Some(mut list) = self.load_list_object(&key)? else {
+        let Some(mut list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_integer(response_out, 0);
             return Ok(());
         };
         for value in &args[2..] {
             list.push(value.to_vec());
         }
-        self.save_list_object(&key, &list)?;
+        self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_LIST, b"rpush", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
@@ -517,7 +531,9 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let target = args[3].to_vec();
-        let Some(mut list) = self.load_list_object(&key)? else {
+        let Some(mut list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_integer(response_out, 0);
             return Ok(());
         };
@@ -565,7 +581,7 @@ impl RequestProcessor {
                     &key,
                 );
             } else {
-                self.save_list_object(&key, &list)?;
+                self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
                 self.maybe_preserve_quicklist_after_shrink(
                     &key,
                     previous_was_quicklist,
@@ -590,7 +606,9 @@ impl RequestProcessor {
         let pivot = args[3];
         let element = args[4].to_vec();
 
-        let Some(mut list) = self.load_list_object(&key)? else {
+        let Some(mut list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_integer(response_out, 0);
             return Ok(());
         };
@@ -607,7 +625,7 @@ impl RequestProcessor {
         } else {
             return Err(RequestExecutionError::SyntaxError);
         }
-        self.save_list_object(&key, &list)?;
+        self.save_list_object(DbKeyRef::new(current_request_selected_db(), &key), &list)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_LIST, b"linsert", &key);
         append_integer(response_out, list.len() as i64);
         Ok(())
@@ -788,7 +806,9 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let resp3 = self.resp_protocol_version().is_resp3();
-        let Some(mut source_list) = self.load_list_object(source)? else {
+        let Some(mut source_list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), source))?
+        else {
             if resp3 {
                 append_null(response_out);
             } else {
@@ -815,12 +835,17 @@ impl RequestProcessor {
             let value = pop_list_side(&mut source_list, source_side)
                 .expect("source_list was checked as non-empty");
             push_list_side(&mut source_list, destination_side, value.clone());
-            self.save_list_object(source, &source_list)?;
+            self.save_list_object(
+                DbKeyRef::new(current_request_selected_db(), source),
+                &source_list,
+            )?;
             append_bulk_string(response_out, &value);
             return Ok(());
         }
 
-        let mut destination_list = self.load_list_object(destination)?.unwrap_or_default();
+        let mut destination_list = self
+            .load_list_object(DbKeyRef::new(current_request_selected_db(), destination))?
+            .unwrap_or_default();
         let value = pop_list_side(&mut source_list, source_side)
             .expect("source_list was checked as non-empty");
         push_list_side(&mut destination_list, destination_side, value.clone());
@@ -828,7 +853,10 @@ impl RequestProcessor {
         if source_list.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), source))?;
         } else {
-            self.save_list_object(source, &source_list)?;
+            self.save_list_object(
+                DbKeyRef::new(current_request_selected_db(), source),
+                &source_list,
+            )?;
             self.maybe_preserve_quicklist_after_shrink(
                 source,
                 source_was_quicklist,
@@ -836,7 +864,10 @@ impl RequestProcessor {
                 &source_list,
             );
         }
-        self.save_list_object(destination, &destination_list)?;
+        self.save_list_object(
+            DbKeyRef::new(current_request_selected_db(), destination),
+            &destination_list,
+        )?;
         append_bulk_string(response_out, &value);
         Ok(())
     }
@@ -890,7 +921,9 @@ impl RequestProcessor {
         side: ListSide,
         count: usize,
     ) -> Result<Option<Vec<Vec<u8>>>, RequestExecutionError> {
-        let Some(mut list) = self.load_list_object(key)? else {
+        let Some(mut list) =
+            self.load_list_object(DbKeyRef::new(current_request_selected_db(), key))?
+        else {
             return Ok(None);
         };
         let configured_size = self.list_max_listpack_size.load(Ordering::Acquire);
@@ -918,7 +951,7 @@ impl RequestProcessor {
         if list.is_empty() {
             let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
         } else {
-            self.save_list_object(key, &list)?;
+            self.save_list_object(DbKeyRef::new(current_request_selected_db(), key), &list)?;
             self.maybe_preserve_quicklist_after_shrink(
                 key,
                 previous_was_quicklist,
