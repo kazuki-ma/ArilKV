@@ -747,7 +747,7 @@ impl RequestProcessor {
             DeleteOperationStatus::NotFound => {}
             DeleteOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
         }
-        self.untrack_string_key_in_shard(key, shard_index);
+        self.untrack_string_key_in_shard(logical_key, shard_index);
         // Replicate/emit lazy-expire deletion whenever expiration metadata says the key expired,
         // even if the underlying delete path returns NotFound.
         self.notify_keyspace_event(db, NOTIFY_EXPIRED, b"expired", key);
@@ -935,14 +935,14 @@ impl RequestProcessor {
         self.track_string_key_in_shard(key, shard_index);
     }
 
-    pub(super) fn untrack_string_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
+    pub(super) fn untrack_string_key_in_shard(&self, key: DbKeyRef<'_>, shard_index: ShardIndex) {
         self.lock_string_key_registry_for_shard(shard_index)
-            .remove(key);
+            .remove(key.key());
         self.clear_key_access(key);
     }
 
-    pub(super) fn untrack_string_key(&self, key: &[u8]) {
-        let shard_index = self.string_store_shard_index_for_key(key);
+    pub(super) fn untrack_string_key(&self, key: DbKeyRef<'_>) {
+        let shard_index = self.string_store_shard_index_for_key(key.key());
         self.untrack_string_key_in_shard(key, shard_index);
     }
 
@@ -951,14 +951,14 @@ impl RequestProcessor {
             .insert(RedisKey::from(key));
     }
 
-    pub(super) fn untrack_object_key_in_shard(&self, key: &[u8], shard_index: ShardIndex) {
+    pub(super) fn untrack_object_key_in_shard(&self, key: DbKeyRef<'_>, shard_index: ShardIndex) {
         self.lock_object_key_registry_for_shard(shard_index)
-            .remove(key);
+            .remove(key.key());
         self.clear_key_access(key);
     }
 
-    pub(super) fn untrack_object_key(&self, key: &[u8]) {
-        let shard_index = self.object_store_shard_index_for_key(key);
+    pub(super) fn untrack_object_key(&self, key: DbKeyRef<'_>) {
+        let shard_index = self.object_store_shard_index_for_key(key.key());
         self.untrack_object_key_in_shard(key, shard_index);
     }
 
@@ -1033,7 +1033,7 @@ impl RequestProcessor {
         shard_index: ShardIndex,
     ) {
         self.set_string_expiration_deadline_in_shard(key, shard_index, None);
-        self.untrack_string_key_in_shard(key.key(), shard_index);
+        self.untrack_string_key_in_shard(key, shard_index);
         self.clear_forced_raw_string_encoding(key);
     }
 

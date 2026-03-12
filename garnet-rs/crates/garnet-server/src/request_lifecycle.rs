@@ -1132,8 +1132,8 @@ struct DbCatalogSideState {
     forced_set_encoding_floors: Mutex<HashMap<DbScopedKey, SetEncodingFloor>>,
     set_object_hot_state: Mutex<SetObjectHotState>,
     set_debug_ht_state: Mutex<HashMap<DbScopedKey, SetDebugHtState>>,
-    key_lru_access_millis: Mutex<HashMap<RedisKey, u64>>,
-    key_lfu_frequency: Mutex<HashMap<RedisKey, u8>>,
+    key_lru_access_millis: Mutex<HashMap<DbScopedKey, u64>>,
+    key_lfu_frequency: Mutex<HashMap<DbScopedKey, u8>>,
 }
 
 const DEFAULT_STREAM_IDMP_DURATION_SECONDS: u64 = 100;
@@ -3977,8 +3977,8 @@ impl RequestProcessor {
         payload
     }
 
-    pub(super) fn record_key_access(&self, key: &[u8], force_touch: bool) {
-        if key.is_empty() {
+    pub(super) fn record_key_access(&self, key: DbKeyRef<'_>, force_touch: bool) {
+        if key.key().is_empty() {
             return;
         }
         if !force_touch && current_client_no_touch_mode() {
@@ -3986,62 +3986,67 @@ impl RequestProcessor {
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
         if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            lru_state.insert(RedisKey::from(key), now_millis);
+            lru_state.insert(DbScopedKey::new(key.db(), key.key()), now_millis);
         }
     }
 
-    pub(super) fn clear_key_access(&self, key: &[u8]) {
-        if key.is_empty() {
+    pub(super) fn clear_key_access(&self, key: DbKeyRef<'_>) {
+        if key.key().is_empty() {
             return;
         }
+        let scoped_key = DbScopedKey::new(key.db(), key.key());
         if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            let _ = lru_state.remove(key);
+            let _ = lru_state.remove(&scoped_key);
         }
         if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
-            let _ = lfu_state.remove(key);
+            let _ = lfu_state.remove(&scoped_key);
         }
     }
 
-    pub(super) fn key_lru_millis(&self, key: &[u8]) -> Option<u64> {
+    pub(super) fn key_lru_millis(&self, key: DbKeyRef<'_>) -> Option<u64> {
         let Ok(lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() else {
             return None;
         };
-        lru_state.get(key).copied()
+        lru_state
+            .get(&DbScopedKey::new(key.db(), key.key()))
+            .copied()
     }
 
-    pub(super) fn key_idle_seconds(&self, key: &[u8]) -> Option<i64> {
+    pub(super) fn key_idle_seconds(&self, key: DbKeyRef<'_>) -> Option<i64> {
         let last_access_millis = self.key_lru_millis(key)?;
         let now_millis = current_unix_time_millis().unwrap_or(last_access_millis);
         let idle_millis = now_millis.saturating_sub(last_access_millis);
         i64::try_from(idle_millis / 1000).ok()
     }
 
-    pub(super) fn set_key_idle_seconds(&self, key: &[u8], idle_seconds: u64) {
-        if key.is_empty() {
+    pub(super) fn set_key_idle_seconds(&self, key: DbKeyRef<'_>, idle_seconds: u64) {
+        if key.key().is_empty() {
             return;
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
         let idle_millis = idle_seconds.saturating_mul(1000);
         let lru_millis = now_millis.saturating_sub(idle_millis);
         if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            lru_state.insert(RedisKey::from(key), lru_millis);
+            lru_state.insert(DbScopedKey::new(key.db(), key.key()), lru_millis);
         }
     }
 
-    pub(super) fn set_key_frequency(&self, key: &[u8], frequency: u8) {
-        if key.is_empty() {
+    pub(super) fn set_key_frequency(&self, key: DbKeyRef<'_>, frequency: u8) {
+        if key.key().is_empty() {
             return;
         }
         if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
-            lfu_state.insert(RedisKey::from(key), frequency);
+            lfu_state.insert(DbScopedKey::new(key.db(), key.key()), frequency);
         }
     }
 
-    pub(super) fn key_frequency(&self, key: &[u8]) -> Option<u8> {
+    pub(super) fn key_frequency(&self, key: DbKeyRef<'_>) -> Option<u8> {
         let Ok(lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() else {
             return None;
         };
-        lfu_state.get(key).copied()
+        lfu_state
+            .get(&DbScopedKey::new(key.db(), key.key()))
+            .copied()
     }
 
     pub(super) fn scripting_enabled(&self) -> bool {

@@ -7214,6 +7214,43 @@ fn db_scoped_encoding_state_does_not_leak_between_databases() {
 }
 
 #[test]
+fn db_scoped_object_access_metadata_does_not_leak_between_databases() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+    assert_command_response_in_db(&processor, "SET shared value", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared value", b"+OK\r\n", db9);
+
+    processor.set_key_idle_seconds(DbKeyRef::new(db0, b"shared"), 60);
+    processor.set_key_frequency(DbKeyRef::new(db0, b"shared"), 42);
+    processor.record_key_access(DbKeyRef::new(db9, b"shared"), true);
+
+    assert_command_response_in_db(&processor, "OBJECT FREQ shared", b":42\r\n", db0);
+    assert_command_response_in_db(&processor, "OBJECT FREQ shared", b":0\r\n", db9);
+
+    let db0_idle = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "OBJECT IDLETIME shared",
+        db0,
+    ));
+    let db9_idle = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "OBJECT IDLETIME shared",
+        db9,
+    ));
+    assert!(
+        db0_idle >= 59,
+        "db0 idle time should remain scoped: {db0_idle}"
+    );
+    assert!(
+        db9_idle <= 1,
+        "db9 idle time should reflect its own access: {db9_idle}"
+    );
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();
@@ -10579,7 +10616,9 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
-    let lru_before = processor.key_lru_millis(b"key").unwrap();
+    let lru_before = processor
+        .key_lru_millis(DbKeyRef::new(DbName::default(), b"key"))
+        .unwrap();
 
     thread::sleep(Duration::from_millis(5));
     response.clear();
@@ -10596,7 +10635,9 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
-    let lru_after_no_touch = processor.key_lru_millis(b"key").unwrap();
+    let lru_after_no_touch = processor
+        .key_lru_millis(DbKeyRef::new(DbName::default(), b"key"))
+        .unwrap();
     assert_eq!(lru_after_no_touch, lru_before);
 
     thread::sleep(Duration::from_millis(5));
@@ -10610,7 +10651,9 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
-    let lru_after_touch = processor.key_lru_millis(b"key").unwrap();
+    let lru_after_touch = processor
+        .key_lru_millis(DbKeyRef::new(DbName::default(), b"key"))
+        .unwrap();
     assert!(lru_after_touch > lru_after_no_touch);
 }
 

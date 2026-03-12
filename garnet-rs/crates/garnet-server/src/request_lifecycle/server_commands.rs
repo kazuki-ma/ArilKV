@@ -1923,8 +1923,9 @@ impl RequestProcessor {
                     ))
                 {
                     let len = object.payload.len();
-                    let lru = self.key_lru_millis(&key).unwrap_or(0);
-                    let idle = self.key_idle_seconds(&key).unwrap_or(0);
+                    let db_key = DbKeyRef::new(current_request_selected_db(), &key);
+                    let lru = self.key_lru_millis(db_key).unwrap_or(0);
+                    let idle = self.key_idle_seconds(db_key).unwrap_or(0);
                     let encoding = "quicklist";
                     let payload = format!(
                         "Value at:0x0 refcount:1 encoding:{encoding} serializedlength:{len} lru:{lru} lru_seconds_idle:{idle}{}",
@@ -1978,8 +1979,9 @@ impl RequestProcessor {
             } else {
                 return Err(RequestExecutionError::NoSuchKey);
             };
-            let lru = self.key_lru_millis(&key).unwrap_or(0);
-            let idle = self.key_idle_seconds(&key).unwrap_or(0);
+            let db_key = DbKeyRef::new(current_request_selected_db(), &key);
+            let lru = self.key_lru_millis(db_key).unwrap_or(0);
+            let idle = self.key_idle_seconds(db_key).unwrap_or(0);
             let quicklist_metadata = quicklist_debug_suffix(&encoding);
             let payload = format!(
                 "Value at:0x0 refcount:1 encoding:{encoding} serializedlength:{serialized_len} lru:{lru} lru_seconds_idle:{idle}{quicklist_metadata}"
@@ -2197,7 +2199,11 @@ impl RequestProcessor {
                 }
                 return Ok(());
             }
-            append_integer(response_out, self.key_idle_seconds(&key).unwrap_or(0));
+            append_integer(
+                response_out,
+                self.key_idle_seconds(DbKeyRef::new(current_request_selected_db(), &key))
+                    .unwrap_or(0),
+            );
             return Ok(());
         }
 
@@ -2215,7 +2221,10 @@ impl RequestProcessor {
             }
             append_integer(
                 response_out,
-                i64::from(self.key_frequency(&key).unwrap_or(0)),
+                i64::from(
+                    self.key_frequency(DbKeyRef::new(current_request_selected_db(), &key))
+                        .unwrap_or(0),
+                ),
             );
             return Ok(());
         }
@@ -2254,10 +2263,16 @@ impl RequestProcessor {
             let object_exists = self
                 .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_exists {
-                self.untrack_string_key(key.as_slice());
+                self.untrack_string_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if !object_exists {
-                self.untrack_object_key(key.as_slice());
+                self.untrack_object_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if !(string_exists || object_exists) {
                 continue;
@@ -2304,10 +2319,16 @@ impl RequestProcessor {
             let object_exists = self
                 .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_exists {
-                self.untrack_string_key(key.as_slice());
+                self.untrack_string_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if !object_exists {
-                self.untrack_object_key(key.as_slice());
+                self.untrack_object_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if string_exists || object_exists {
                 live_keys.push(key);
@@ -2409,10 +2430,16 @@ impl RequestProcessor {
             let object_exists = self
                 .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
             if !string_exists {
-                self.untrack_string_key(key.as_slice());
+                self.untrack_string_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if !object_exists {
-                self.untrack_object_key(key.as_slice());
+                self.untrack_object_key(DbKeyRef::new(
+                    current_request_selected_db(),
+                    key.as_slice(),
+                ));
             }
             if !(string_exists || object_exists) {
                 continue;
@@ -2456,7 +2483,7 @@ impl RequestProcessor {
         }
         let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))?
         else {
-            self.untrack_object_key(key);
+            self.untrack_object_key(DbKeyRef::new(current_request_selected_db(), key));
             return Ok(false);
         };
         Ok(scan_object_type_matches_filter(
@@ -4714,7 +4741,10 @@ impl RequestProcessor {
             || maxmemory_policy.eq_ignore_ascii_case(b"allkeys-lfu")
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lfu")
         {
-            keys.sort_by_key(|key| self.key_lru_millis(key.as_slice()).unwrap_or(0));
+            keys.sort_by_key(|key| {
+                self.key_lru_millis(DbKeyRef::new(current_request_selected_db(), key.as_slice()))
+                    .unwrap_or(0)
+            });
         } else if maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl") {
             let now = current_instant();
             keys.sort_by_key(|key| {
@@ -5012,12 +5042,18 @@ fn restore_from_dump_blob(
 
     if restored {
         if let Some(idle_time_seconds) = options.idle_time_seconds {
-            processor.set_key_idle_seconds(&key, idle_time_seconds);
+            processor.set_key_idle_seconds(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                idle_time_seconds,
+            );
         } else {
-            processor.record_key_access(&key, true);
+            processor.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
         }
         if let Some(frequency) = options.frequency {
-            processor.set_key_frequency(&key, frequency);
+            processor.set_key_frequency(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                frequency,
+            );
         }
         processor.notify_keyspace_event(
             current_request_selected_db(),

@@ -120,7 +120,7 @@ impl RequestProcessor {
                 let logical_key = DbKeyRef::new(db, &key);
                 self.set_string_expiration_deadline(logical_key, None);
                 self.clear_hash_field_expirations_for_key_in_shard(logical_key, shard_index);
-                self.untrack_object_key_in_shard(&key, shard_index);
+                self.untrack_object_key_in_shard(logical_key, shard_index);
                 self.clear_forced_list_quicklist_encoding(logical_key);
                 self.clear_forced_set_encoding_floor(logical_key);
                 self.clear_set_debug_ht_state(logical_key);
@@ -130,7 +130,7 @@ impl RequestProcessor {
             DeleteOperationStatus::NotFound => {
                 let logical_key = DbKeyRef::new(db, &key);
                 self.clear_hash_field_expirations_for_key_in_shard(logical_key, shard_index);
-                self.untrack_object_key_in_shard(&key, shard_index);
+                self.untrack_object_key_in_shard(logical_key, shard_index);
                 self.clear_forced_list_quicklist_encoding(logical_key);
                 self.clear_forced_set_encoding_floor(logical_key);
                 self.clear_set_debug_ht_state(logical_key);

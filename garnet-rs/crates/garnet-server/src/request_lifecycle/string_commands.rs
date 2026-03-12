@@ -173,7 +173,7 @@ impl RequestProcessor {
             if let Some(output) =
                 self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
             {
-                self.record_key_access(&key, false);
+                self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), false);
                 append_bulk_string(response_out, &output);
                 return Ok(());
             }
@@ -199,7 +199,7 @@ impl RequestProcessor {
         match status {
             ReadOperationStatus::FoundInMemory | ReadOperationStatus::FoundOnDisk => {
                 self.track_read_key_for_current_client(&key);
-                self.record_key_access(&key, false);
+                self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), false);
                 append_bulk_string(response_out, &output);
                 Ok(())
             }
@@ -1665,7 +1665,7 @@ impl RequestProcessor {
                 &key,
             ));
             self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-            self.record_key_access(&key, true);
+            self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
 
             if !string_exists && !object_exists {
                 self.notify_keyspace_event(
@@ -1834,7 +1834,10 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
         if object_exists {
-            self.untrack_object_key_in_shard(&key, shard_index);
+            self.untrack_object_key_in_shard(
+                DbKeyRef::new(current_request_selected_db(), &key),
+                shard_index,
+            );
         }
         self.clear_forced_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
         self.set_string_expiration_metadata_in_shard(
@@ -1844,7 +1847,7 @@ impl RequestProcessor {
         );
         self.track_string_key_in_shard(&key, shard_index);
         self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.record_key_access(&key, true);
+        self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
 
         if !string_exists && !object_exists {
             self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STRING, b"set", &key);
@@ -2158,7 +2161,7 @@ impl RequestProcessor {
             self.expire_key_if_needed(&key)?;
             if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
                 touched += 1;
-                self.record_key_access(&key, true);
+                self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
             }
         }
         append_integer(response_out, touched);
@@ -2971,7 +2974,10 @@ impl RequestProcessor {
         }
 
         if object_exists {
-            self.untrack_object_key_in_shard(&key_vec, shard_index);
+            self.untrack_object_key_in_shard(
+                DbKeyRef::new(current_request_selected_db(), &key_vec),
+                shard_index,
+            );
         }
         self.set_string_expiration_metadata_in_shard(
             DbKeyRef::new(current_request_selected_db(), &key_vec),
