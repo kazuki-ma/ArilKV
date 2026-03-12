@@ -781,7 +781,7 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
 
         self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-        self.active_expire_hash_fields_for_key(&key)?;
+        self.active_expire_hash_fields_for_key(DbKeyRef::new(current_request_selected_db(), &key))?;
 
         let Some(mut entry) = self.export_migration_entry(current_request_selected_db(), &key)?
         else {
@@ -4324,7 +4324,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let flush_mode = parse_flush_mode(args, "FLUSHDB", "FLUSHDB [ASYNC|SYNC]")?;
-        let removed_count = self.flush_current_db_keys()?;
+        let removed_count = self.flush_db_keys(current_request_selected_db())?;
         clear_tracking_invalidation_collection();
         self.invalidate_all_tracking_entries();
         if should_record_lazyfreed_for_flush_mode(flush_mode) {
@@ -4348,8 +4348,7 @@ impl RequestProcessor {
         Ok(())
     }
 
-    fn flush_current_db_keys(&self) -> Result<u64, RequestExecutionError> {
-        let selected_db = current_request_selected_db();
+    fn flush_db_keys(&self, selected_db: DbName) -> Result<u64, RequestExecutionError> {
         if !self.logical_db_uses_main_runtime(selected_db)? {
             self.materialize_set_hot_entries_for_db(selected_db)?;
             let Some(keys) = self.with_auxiliary_db_state_read(selected_db, |state| {
@@ -4367,21 +4366,12 @@ impl RequestProcessor {
 
             let mut deleted_count = 0u64;
             for key in keys {
-                self.expire_key_if_needed(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))?;
-                let string_deleted = self.delete_string_value(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))?;
-                let object_deleted = self
-                    .object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+                let db_key = DbKeyRef::new(selected_db, key.as_slice());
+                self.expire_key_if_needed(db_key)?;
+                let string_deleted = self.delete_string_value(db_key)?;
+                let object_deleted = self.object_delete(db_key)?;
                 if string_deleted && !object_deleted {
-                    self.bump_watch_version(DbKeyRef::new(
-                        current_request_selected_db(),
-                        key.as_slice(),
-                    ));
+                    self.bump_watch_version(db_key);
                 }
                 if string_deleted || object_deleted {
                     deleted_count = deleted_count.saturating_add(1);
@@ -4403,19 +4393,16 @@ impl RequestProcessor {
         }
 
         self.materialize_set_hot_entries_for_db(selected_db)?;
-        let mut keys: HashSet<RedisKey> = self
-            .string_keys_snapshot(current_request_selected_db())
-            .into_iter()
-            .collect();
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
         self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
 
         let mut deleted_count = 0u64;
 
         for key in keys {
-            if let Err(error) = self
-                .expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), key.as_slice()))
-            {
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
+            if let Err(error) = self.expire_key_if_needed(db_key) {
                 self.reset_lazyfree_pending_objects();
                 return Err(error);
             }
@@ -4439,15 +4426,10 @@ impl RequestProcessor {
                 }
             }
             if string_deleted {
-                self.remove_string_key_metadata(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.remove_string_key_metadata(db_key);
             }
 
-            let object_deleted = match self
-                .object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))
-            {
+            let object_deleted = match self.object_delete(db_key) {
                 Ok(value) => value,
                 Err(error) => {
                     self.reset_lazyfree_pending_objects();
@@ -4455,10 +4437,7 @@ impl RequestProcessor {
                 }
             };
             if string_deleted && !object_deleted {
-                self.bump_watch_version(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.bump_watch_version(db_key);
             }
             if string_deleted || object_deleted {
                 deleted_count = deleted_count.saturating_add(1);
@@ -4487,9 +4466,7 @@ impl RequestProcessor {
     fn flush_all_logical_databases(&self) -> Result<u64, RequestExecutionError> {
         let mut removed = 0u64;
         for db_index in 0..self.configured_databases() {
-            removed = removed.saturating_add(
-                self.with_selected_db(DbName::new(db_index), || self.flush_current_db_keys())?,
-            );
+            removed = removed.saturating_add(self.flush_db_keys(DbName::new(db_index))?);
         }
         clear_tracking_invalidation_collection();
         self.invalidate_all_tracking_entries();
@@ -4505,27 +4482,23 @@ impl RequestProcessor {
         Ok(i64::try_from(keys.len()).unwrap_or(i64::MAX))
     }
 
-    fn expiration_count_for_selected_db(&self) -> usize {
-        let selected_db = current_request_selected_db();
-        let mut keys: HashSet<RedisKey> =
-            self.string_keys_snapshot(selected_db).into_iter().collect();
-        keys.extend(self.object_keys_snapshot(selected_db));
+    fn expiration_count_for_db(&self, db: DbName) -> usize {
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot(db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(db));
         keys.into_iter()
             .filter(|key| {
-                self.expiration_unix_millis(DbKeyRef::new(selected_db, key.as_slice()))
+                self.expiration_unix_millis(DbKeyRef::new(db, key.as_slice()))
                     .is_some()
             })
             .count()
     }
 
-    fn info_key_count_for_selected_db(&self) -> usize {
-        let selected_db = current_request_selected_db();
-        let mut keys: HashSet<RedisKey> =
-            self.string_keys_snapshot(selected_db).into_iter().collect();
-        keys.extend(self.object_keys_snapshot(selected_db));
+    fn info_key_count_for_db(&self, db: DbName) -> usize {
+        let mut keys: HashSet<RedisKey> = self.string_keys_snapshot(db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(db));
         keys.into_iter()
             .filter(|key| {
-                let db_key = DbKeyRef::new(selected_db, key.as_slice());
+                let db_key = DbKeyRef::new(db, key.as_slice());
                 self.key_exists_any_without_expiring(db_key)
                     .unwrap_or(false)
                     || self.expiration_unix_millis(db_key).is_some()
@@ -4538,11 +4511,11 @@ impl RequestProcessor {
         let mut dbs = Vec::new();
         for db_index in 0..self.configured_databases() {
             let db = DbName::new(db_index);
-            let key_count = self.with_selected_db(db, || self.info_key_count_for_selected_db());
+            let key_count = self.info_key_count_for_db(db);
             if key_count == 0 {
                 continue;
             }
-            let expires = self.with_selected_db(db, || self.expiration_count_for_selected_db());
+            let expires = self.expiration_count_for_db(db);
             dbs.push((db, key_count, expires));
         }
 
@@ -4765,49 +4738,36 @@ impl RequestProcessor {
         let mut histograms_by_db = BTreeMap::new();
         let main_runtime_db = self.logical_db_for_main_runtime()?;
 
-        self.with_selected_db(main_runtime_db, || {
-            let mut keys: HashSet<RedisKey> = self
-                .string_keys_snapshot(current_request_selected_db())
-                .into_iter()
-                .collect();
-            keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let mut keys: HashSet<RedisKey> = self
+            .string_keys_snapshot(main_runtime_db)
+            .into_iter()
+            .collect();
+        keys.extend(self.object_keys_snapshot(main_runtime_db));
 
-            for key in keys {
-                self.expire_key_if_needed(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))?;
-                self.active_expire_hash_fields_for_key(key.as_slice())?;
+        for key in keys {
+            let db_key = DbKeyRef::new(main_runtime_db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
+            self.active_expire_hash_fields_for_key(db_key)?;
 
-                if let Some(value) = self.read_string_value(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))? {
-                    let length = super::string_commands::string_value_len_for_keysizes(
-                        self,
-                        value.as_slice(),
-                    );
-                    let bin_index = keysizes_histogram_bin_index(length);
-                    histograms[0][bin_index] += 1;
-                    continue;
-                }
-
-                let Some(object) =
-                    self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
-                else {
-                    continue;
-                };
-                let Some(histogram_entry) =
-                    keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
-                else {
-                    continue;
-                };
-                let bin_index = keysizes_histogram_bin_index(histogram_entry.length);
-                histograms[histogram_entry.histogram_type_index][bin_index] += 1;
+            if let Some(value) = self.read_string_value(db_key)? {
+                let length =
+                    super::string_commands::string_value_len_for_keysizes(self, value.as_slice());
+                let bin_index = keysizes_histogram_bin_index(length);
+                histograms[0][bin_index] += 1;
+                continue;
             }
 
-            Ok::<(), RequestExecutionError>(())
-        })?;
+            let Some(object) = self.object_read(db_key)? else {
+                continue;
+            };
+            let Some(histogram_entry) =
+                keysizes_object_histogram_type_and_len(object.object_type, &object.payload)?
+            else {
+                continue;
+            };
+            let bin_index = keysizes_histogram_bin_index(histogram_entry.length);
+            histograms[histogram_entry.histogram_type_index][bin_index] += 1;
+        }
 
         histograms_by_db.insert(main_runtime_db, histograms);
         for (db_index, keys) in self.auxiliary_db_keys_snapshot() {
@@ -4815,14 +4775,11 @@ impl RequestProcessor {
                 .entry(db_index)
                 .or_insert([[0u64; INFO_KEYSIZES_BIN_LABELS.len()]; KEYSIZES_HISTOGRAM_TYPE_COUNT]);
             for key in keys {
-                self.expire_key_if_needed(DbKeyRef::new(db_index, key.as_slice()))?;
-                self.with_selected_db(db_index, || {
-                    self.active_expire_hash_fields_for_key(key.as_slice())
-                })?;
+                let db_key = DbKeyRef::new(db_index, key.as_slice());
+                self.expire_key_if_needed(db_key)?;
+                self.active_expire_hash_fields_for_key(db_key)?;
 
-                if let Some(value) =
-                    self.read_string_value(DbKeyRef::new(db_index, key.as_slice()))?
-                {
+                if let Some(value) = self.read_string_value(db_key)? {
                     let length = super::string_commands::string_value_len_for_keysizes(
                         self,
                         value.as_slice(),
@@ -4832,8 +4789,7 @@ impl RequestProcessor {
                     continue;
                 }
 
-                let Some(object) = self.object_read(DbKeyRef::new(db_index, key.as_slice()))?
-                else {
+                let Some(object) = self.object_read(db_key)? else {
                     continue;
                 };
                 let Some(histogram_entry) =
@@ -4912,7 +4868,10 @@ impl RequestProcessor {
                 current_request_selected_db(),
                 key.as_slice(),
             ))?;
-            self.active_expire_hash_fields_for_key(key.as_slice())?;
+            self.active_expire_hash_fields_for_key(DbKeyRef::new(
+                current_request_selected_db(),
+                key.as_slice(),
+            ))?;
             if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
                 continue;
             }
