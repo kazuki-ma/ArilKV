@@ -7939,6 +7939,48 @@ fn swapdb_zero_and_nonzero_preserves_quicklist_encoding_and_debug_object_state()
 }
 
 #[test]
+fn swapdb_zero_and_nonzero_preserves_object_access_metadata() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db1 = DbName::new(1);
+
+    assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
+    assert_command_response_in_db(&processor, "SET shared value0", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared value1", b"+OK\r\n", db1);
+
+    processor.set_key_idle_seconds(DbKeyRef::new(db0, b"shared"), 60);
+    processor.set_key_frequency(DbKeyRef::new(db0, b"shared"), 42);
+    processor.record_key_access(DbKeyRef::new(db1, b"shared"), true);
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "SWAPDB 0 1", db0),
+        b"+OK\r\n"
+    );
+
+    assert_command_response_in_db(&processor, "OBJECT FREQ shared", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "OBJECT FREQ shared", b":42\r\n", db1);
+
+    let db0_idle = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "OBJECT IDLETIME shared",
+        db0,
+    ));
+    let db1_idle = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "OBJECT IDLETIME shared",
+        db1,
+    ));
+    assert!(
+        db0_idle <= 1,
+        "db0 idle time should swap with metadata: {db0_idle}"
+    );
+    assert!(
+        db1_idle >= 59,
+        "db1 idle time should swap with metadata: {db1_idle}"
+    );
+}
+
+#[test]
 fn swapdb_zero_and_nonzero_makes_blocked_list_waiter_ready_in_target_logical_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();

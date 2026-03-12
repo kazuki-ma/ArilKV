@@ -844,6 +844,127 @@ impl DbScopedKey {
     }
 }
 
+#[derive(Debug)]
+struct DbKeySetState {
+    by_db: HashMap<DbName, HashSet<RedisKey>>,
+}
+
+impl DbKeySetState {
+    fn insert(&mut self, key: DbKeyRef<'_>) {
+        self.by_db
+            .entry(key.db())
+            .or_default()
+            .insert(RedisKey::from(key.key()));
+    }
+
+    fn remove(&mut self, key: DbKeyRef<'_>) {
+        let Some((removed, remove_db)) = self.by_db.get_mut(&key.db()).map(|keys| {
+            let removed = keys.remove(key.key());
+            let remove_db = keys.is_empty();
+            (removed, remove_db)
+        }) else {
+            return;
+        };
+        let _ = removed;
+        if remove_db {
+            let _ = self.by_db.remove(&key.db());
+        }
+    }
+
+    fn contains(&self, key: DbKeyRef<'_>) -> bool {
+        self.by_db
+            .get(&key.db())
+            .is_some_and(|keys| keys.contains(key.key()))
+    }
+
+    fn clear_all(&mut self) {
+        self.by_db.clear();
+    }
+
+    fn swap_databases(&mut self, db1: DbName, db2: DbName) {
+        if db1 == db2 {
+            return;
+        }
+        let left = self.by_db.remove(&db1);
+        let right = self.by_db.remove(&db2);
+        if let Some(left) = left {
+            self.by_db.insert(db2, left);
+        }
+        if let Some(right) = right {
+            self.by_db.insert(db1, right);
+        }
+    }
+}
+
+impl Default for DbKeySetState {
+    fn default() -> Self {
+        Self {
+            by_db: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DbKeyMapState<T> {
+    by_db: HashMap<DbName, HashMap<RedisKey, T>>,
+}
+
+impl<T> DbKeyMapState<T> {
+    fn insert(&mut self, key: DbKeyRef<'_>, value: T) {
+        self.by_db
+            .entry(key.db())
+            .or_default()
+            .insert(RedisKey::from(key.key()), value);
+    }
+
+    fn remove(&mut self, key: DbKeyRef<'_>) -> Option<T> {
+        let (removed, remove_db) = self.by_db.get_mut(&key.db()).map(|values| {
+            let removed = values.remove(key.key());
+            let remove_db = values.is_empty();
+            (removed, remove_db)
+        })?;
+        if remove_db {
+            let _ = self.by_db.remove(&key.db());
+        }
+        removed
+    }
+
+    fn get(&self, key: DbKeyRef<'_>) -> Option<&T> {
+        self.by_db
+            .get(&key.db())
+            .and_then(|values| values.get(key.key()))
+    }
+
+    fn get_copied(&self, key: DbKeyRef<'_>) -> Option<T>
+    where
+        T: Copy,
+    {
+        self.get(key).copied()
+    }
+
+    fn swap_databases(&mut self, db1: DbName, db2: DbName) {
+        if db1 == db2 {
+            return;
+        }
+        let left = self.by_db.remove(&db1);
+        let right = self.by_db.remove(&db2);
+        if let Some(left) = left {
+            self.by_db.insert(db2, left);
+        }
+        if let Some(right) = right {
+            self.by_db.insert(db1, right);
+        }
+    }
+}
+
+impl<T> Default for DbKeyMapState<T> {
+    fn default() -> Self {
+        Self {
+            by_db: HashMap::new(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 #[repr(transparent)]
 pub struct ShardIndex(usize);
@@ -1127,13 +1248,13 @@ struct DbCatalog {
 }
 
 struct DbCatalogSideState {
-    forced_list_quicklist_keys: Mutex<HashSet<DbScopedKey>>,
-    forced_raw_string_keys: Mutex<HashSet<DbScopedKey>>,
-    forced_set_encoding_floors: Mutex<HashMap<DbScopedKey, SetEncodingFloor>>,
+    forced_list_quicklist_keys: Mutex<DbKeySetState>,
+    forced_raw_string_keys: Mutex<DbKeySetState>,
+    forced_set_encoding_floors: Mutex<DbKeyMapState<SetEncodingFloor>>,
     set_object_hot_state: Mutex<SetObjectHotState>,
-    set_debug_ht_state: Mutex<HashMap<DbScopedKey, SetDebugHtState>>,
-    key_lru_access_millis: Mutex<HashMap<DbScopedKey, u64>>,
-    key_lfu_frequency: Mutex<HashMap<DbScopedKey, u8>>,
+    set_debug_ht_state: Mutex<DbKeyMapState<SetDebugHtState>>,
+    key_lru_access_millis: Mutex<DbKeyMapState<u64>>,
+    key_lfu_frequency: Mutex<DbKeyMapState<u8>>,
 }
 
 const DEFAULT_STREAM_IDMP_DURATION_SECONDS: u64 = 100;
@@ -2255,13 +2376,13 @@ impl RequestProcessor {
                         .collect(),
                 }),
                 side_state: DbCatalogSideState {
-                    forced_list_quicklist_keys: Mutex::new(HashSet::new()),
-                    forced_raw_string_keys: Mutex::new(HashSet::new()),
-                    forced_set_encoding_floors: Mutex::new(HashMap::new()),
+                    forced_list_quicklist_keys: Mutex::new(DbKeySetState::default()),
+                    forced_raw_string_keys: Mutex::new(DbKeySetState::default()),
+                    forced_set_encoding_floors: Mutex::new(DbKeyMapState::default()),
                     set_object_hot_state: Mutex::new(SetObjectHotState::default()),
-                    set_debug_ht_state: Mutex::new(HashMap::new()),
-                    key_lru_access_millis: Mutex::new(HashMap::new()),
-                    key_lfu_frequency: Mutex::new(HashMap::new()),
+                    set_debug_ht_state: Mutex::new(DbKeyMapState::default()),
+                    key_lru_access_millis: Mutex::new(DbKeyMapState::default()),
+                    key_lfu_frequency: Mutex::new(DbKeyMapState::default()),
                 },
             },
             watch_versions: (0..WATCH_VERSION_MAP_SIZE)
@@ -3986,7 +4107,7 @@ impl RequestProcessor {
         }
         let now_millis = current_unix_time_millis().unwrap_or(0);
         if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            lru_state.insert(DbScopedKey::new(key.db(), key.key()), now_millis);
+            lru_state.insert(key, now_millis);
         }
     }
 
@@ -3994,12 +4115,11 @@ impl RequestProcessor {
         if key.key().is_empty() {
             return;
         }
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
         if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            let _ = lru_state.remove(&scoped_key);
+            let _ = lru_state.remove(key);
         }
         if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
-            let _ = lfu_state.remove(&scoped_key);
+            let _ = lfu_state.remove(key);
         }
     }
 
@@ -4007,9 +4127,7 @@ impl RequestProcessor {
         let Ok(lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() else {
             return None;
         };
-        lru_state
-            .get(&DbScopedKey::new(key.db(), key.key()))
-            .copied()
+        lru_state.get_copied(key)
     }
 
     pub(super) fn key_idle_seconds(&self, key: DbKeyRef<'_>) -> Option<i64> {
@@ -4027,7 +4145,7 @@ impl RequestProcessor {
         let idle_millis = idle_seconds.saturating_mul(1000);
         let lru_millis = now_millis.saturating_sub(idle_millis);
         if let Ok(mut lru_state) = self.db_catalog.side_state.key_lru_access_millis.lock() {
-            lru_state.insert(DbScopedKey::new(key.db(), key.key()), lru_millis);
+            lru_state.insert(key, lru_millis);
         }
     }
 
@@ -4036,7 +4154,7 @@ impl RequestProcessor {
             return;
         }
         if let Ok(mut lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() {
-            lfu_state.insert(DbScopedKey::new(key.db(), key.key()), frequency);
+            lfu_state.insert(key, frequency);
         }
     }
 
@@ -4044,9 +4162,7 @@ impl RequestProcessor {
         let Ok(lfu_state) = self.db_catalog.side_state.key_lfu_frequency.lock() else {
             return None;
         };
-        lfu_state
-            .get(&DbScopedKey::new(key.db(), key.key()))
-            .copied()
+        lfu_state.get_copied(key)
     }
 
     pub(super) fn scripting_enabled(&self) -> bool {
@@ -4694,19 +4810,19 @@ impl RequestProcessor {
 
     pub(super) fn force_list_quicklist_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
-            forced.insert(DbScopedKey::new(key.db(), key.key()));
+            forced.insert(key);
         }
     }
 
     pub(super) fn clear_forced_list_quicklist_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
-            let _ = forced.remove(&DbScopedKey::new(key.db(), key.key()));
+            forced.remove(key);
         }
     }
 
     pub(super) fn clear_all_forced_list_quicklist_encodings(&self) {
         if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
-            forced.clear();
+            forced.clear_all();
         }
     }
 
@@ -4715,7 +4831,7 @@ impl RequestProcessor {
             .side_state
             .forced_list_quicklist_keys
             .lock()
-            .map(|forced| forced.contains(&DbScopedKey::new(key.db(), key.key())))
+            .map(|forced| forced.contains(key))
             .unwrap_or(false)
     }
 
@@ -4724,36 +4840,34 @@ impl RequestProcessor {
             .side_state
             .forced_raw_string_keys
             .lock()
-            .map(|forced| forced.contains(&DbScopedKey::new(key.db(), key.key())))
+            .map(|forced| forced.contains(key))
             .unwrap_or(false)
     }
 
     pub(super) fn force_raw_string_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
-            forced.insert(DbScopedKey::new(key.db(), key.key()));
+            forced.insert(key);
         }
     }
 
     pub(super) fn clear_forced_raw_string_encoding(&self, key: DbKeyRef<'_>) {
         if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
-            let _ = forced.remove(&DbScopedKey::new(key.db(), key.key()));
+            forced.remove(key);
         }
     }
 
     pub(super) fn set_encoding_floor(&self, key: DbKeyRef<'_>) -> Option<SetEncodingFloor> {
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
         self.db_catalog
             .side_state
             .forced_set_encoding_floors
             .lock()
             .ok()
-            .and_then(|floors| floors.get(&scoped_key).copied())
+            .and_then(|floors| floors.get_copied(key))
     }
 
     pub(super) fn clear_forced_set_encoding_floor(&self, key: DbKeyRef<'_>) {
-        let scoped_key = DbScopedKey::new(key.db(), key.key());
         if let Ok(mut floors) = self.db_catalog.side_state.forced_set_encoding_floors.lock() {
-            let _ = floors.remove(&scoped_key);
+            let _ = floors.remove(key);
         }
     }
 
@@ -4825,7 +4939,7 @@ impl RequestProcessor {
 
     fn clear_set_debug_ht_state(&self, key: DbKeyRef<'_>) {
         if let Ok(mut states) = self.db_catalog.side_state.set_debug_ht_state.lock() {
-            let _ = states.remove(&DbScopedKey::new(key.db(), key.key()));
+            let _ = states.remove(key);
         }
     }
 
@@ -4837,11 +4951,12 @@ impl RequestProcessor {
 
         let bgsave_in_progress = self.rdb_bgsave_in_progress();
         if let Ok(mut states) = self.db_catalog.side_state.set_debug_ht_state.lock() {
-            let state = states
-                .entry(DbScopedKey::new(key.db(), key.key()))
-                .or_insert_with(|| SetDebugHtState::new(member_count));
+            let mut state = states
+                .get_copied(key)
+                .unwrap_or_else(|| SetDebugHtState::new(member_count));
             state.update_for_member_count(member_count, bgsave_in_progress);
             state.advance_rehash(member_count, bgsave_in_progress);
+            states.insert(key, state);
         }
     }
 
@@ -4855,7 +4970,7 @@ impl RequestProcessor {
             .set_debug_ht_state
             .lock()
             .ok()
-            .and_then(|states| states.get(&DbScopedKey::new(key.db(), key.key())).copied())
+            .and_then(|states| states.get_copied(key))
             .unwrap_or_else(|| SetDebugHtState::new(member_count))
             .snapshot()
     }
@@ -4877,11 +4992,10 @@ impl RequestProcessor {
         );
 
         if let Ok(mut floors) = self.db_catalog.side_state.forced_set_encoding_floors.lock() {
-            let scoped_key = DbScopedKey::new(key.db(), key.key());
             let previous = if replace_existing {
                 None
             } else {
-                floors.get(&scoped_key).copied()
+                floors.get_copied(key)
             };
             let next = match (previous, candidate) {
                 (Some(current), Some(candidate)) => Some(current.max(candidate)),
@@ -4890,9 +5004,9 @@ impl RequestProcessor {
                 (None, None) => None,
             };
             if let Some(next) = next {
-                floors.insert(scoped_key, next);
+                floors.insert(key, next);
             } else {
-                let _ = floors.remove(&scoped_key);
+                let _ = floors.remove(key);
             }
         }
     }

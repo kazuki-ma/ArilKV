@@ -842,18 +842,24 @@ impl RequestProcessor {
         self.invalidate_all_tracking_entries();
         self.swap_logical_db_storage_bindings(db1, db2)?;
         self.swap_set_hot_state_for_logical_db_pair(db1, db2);
-        self.swap_scoped_key_state(
-            &self.db_catalog.side_state.forced_list_quicklist_keys,
-            db1,
-            db2,
-        );
-        self.swap_scoped_key_state(&self.db_catalog.side_state.forced_raw_string_keys, db1, db2);
-        self.swap_scoped_key_map_state(
-            &self.db_catalog.side_state.forced_set_encoding_floors,
-            db1,
-            db2,
-        );
-        self.swap_scoped_key_map_state(&self.db_catalog.side_state.set_debug_ht_state, db1, db2);
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_list_quicklist_keys.lock() {
+            forced.swap_databases(db1, db2);
+        }
+        if let Ok(mut forced) = self.db_catalog.side_state.forced_raw_string_keys.lock() {
+            forced.swap_databases(db1, db2);
+        }
+        if let Ok(mut floors) = self.db_catalog.side_state.forced_set_encoding_floors.lock() {
+            floors.swap_databases(db1, db2);
+        }
+        if let Ok(mut states) = self.db_catalog.side_state.set_debug_ht_state.lock() {
+            states.swap_databases(db1, db2);
+        }
+        if let Ok(mut lru) = self.db_catalog.side_state.key_lru_access_millis.lock() {
+            lru.swap_databases(db1, db2);
+        }
+        if let Ok(mut lfu) = self.db_catalog.side_state.key_lfu_frequency.lock() {
+            lfu.swap_databases(db1, db2);
+        }
 
         Ok(())
     }
@@ -875,46 +881,6 @@ impl RequestProcessor {
         for key in &mut hot_state.lru {
             *key = Self::remap_scoped_key(key.clone(), db1, db2);
         }
-    }
-
-    fn swap_scoped_key_map_state<T: Clone>(
-        &self,
-        state: &std::sync::Mutex<HashMap<DbScopedKey, T>>,
-        db1: DbName,
-        db2: DbName,
-    ) {
-        let mut state = match state.lock() {
-            Ok(state) => state,
-            Err(_) => return,
-        };
-
-        let mut swapped = HashMap::new();
-        swapped.reserve(state.len());
-        for (key, value) in state.drain() {
-            let remapped_key = Self::remap_scoped_key(key, db1, db2);
-            let _ = swapped.insert(remapped_key, value);
-        }
-        *state = swapped;
-    }
-
-    fn swap_scoped_key_state(
-        &self,
-        state: &std::sync::Mutex<HashSet<DbScopedKey>>,
-        db1: DbName,
-        db2: DbName,
-    ) {
-        let mut state = match state.lock() {
-            Ok(state) => state,
-            Err(_) => return,
-        };
-
-        let mut swapped = HashSet::new();
-        swapped.reserve(state.len());
-        for key in state.drain() {
-            let remapped_key = Self::remap_scoped_key(key, db1, db2);
-            let _ = swapped.insert(remapped_key);
-        }
-        *state = swapped;
     }
 
     fn remap_scoped_key(key: DbScopedKey, db1: DbName, db2: DbName) -> DbScopedKey {
