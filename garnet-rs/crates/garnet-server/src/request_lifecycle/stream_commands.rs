@@ -49,7 +49,8 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let xadd_args = parse_xadd_arguments(args)?;
         let key = RedisKey::from(args[1]);
-        let loaded_stream = self.load_stream_object(&key)?;
+        let loaded_stream =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?;
         if loaded_stream.is_none() && xadd_args.nomkstream {
             if self.resp_protocol_version().is_resp3() {
                 append_null(response_out);
@@ -96,7 +97,7 @@ impl RequestProcessor {
                 stream.idmp_lookup(&idmp_spec.producer_id, &idmp_spec.iid, now_millis)
         {
             stream.iids_duplicates = stream.iids_duplicates.saturating_add(1);
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
             append_bulk_string(response_out, &existing_id.encode());
             return Ok(());
         }
@@ -114,7 +115,7 @@ impl RequestProcessor {
             let _ =
                 apply_xtrim_spec_to_stream(&mut stream, trim_spec, self.stream_node_max_entries());
         }
-        self.save_stream_object(&key, &stream)?;
+        self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STREAM, b"xadd", &key);
         append_bulk_string(response_out, &id.encode());
         Ok(())
@@ -128,13 +129,14 @@ impl RequestProcessor {
         ensure_min_arity(args, 3, "XDEL", "XDEL key id [id ...]")?;
 
         let key = RedisKey::from(args[1]);
-        let mut stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let mut removed = 0i64;
         for id in &args[2..] {
@@ -146,7 +148,7 @@ impl RequestProcessor {
             }
         }
 
-        self.save_stream_object(&key, &stream)?;
+        self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         if removed > 0 {
             self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STREAM, b"xdel", &key);
         }
@@ -167,7 +169,9 @@ impl RequestProcessor {
         )?;
         let parsed = parse_stream_ack_delete_arguments(args, 2)?;
         let key = RedisKey::from(args[1]);
-        let Some(mut stream) = self.load_stream_object(&key)? else {
+        let Some(mut stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_array_length(response_out, parsed.entry_ids.len());
             for _ in &parsed.entry_ids {
                 append_integer(response_out, -1);
@@ -210,7 +214,10 @@ impl RequestProcessor {
             if stream.entries.is_empty() && stream.groups.is_empty() {
                 let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else {
-                self.save_stream_object(&key, &stream)?;
+                self.save_stream_object(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    &stream,
+                )?;
             }
         }
         Ok(())
@@ -262,7 +269,8 @@ impl RequestProcessor {
                 }
             }
 
-            let loaded_stream = self.load_stream_object(&key)?;
+            let loaded_stream =
+                self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?;
             if loaded_stream.is_none() && !mkstream {
                 return Err(RequestExecutionError::XGroupKeyMustExist);
             }
@@ -280,7 +288,7 @@ impl RequestProcessor {
                 pending: BTreeMap::new(),
             };
             stream.groups.insert(group, group_state);
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
             self.notify_keyspace_event(
                 current_request_selected_db(),
                 NOTIFY_STREAM,
@@ -307,7 +315,9 @@ impl RequestProcessor {
                 }
                 entries_read = Some(parse_stream_entries_read(args[6])?);
             }
-            let Some(mut stream) = self.load_stream_object(&key)? else {
+            let Some(mut stream) =
+                self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            else {
                 return Err(RequestExecutionError::XGroupKeyMustExist);
             };
             let id = self.parse_xgroup_id_arg(args[4], &stream)?;
@@ -319,7 +329,7 @@ impl RequestProcessor {
             if let Some(parsed) = entries_read {
                 group_state.entries_read = parsed.map(|value| value.min(stream_entries_added));
             }
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
             self.notify_keyspace_event(
                 current_request_selected_db(),
                 NOTIFY_STREAM,
@@ -333,7 +343,9 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"DESTROY") {
             require_exact_arity(args, 4, "XGROUP", "XGROUP DESTROY key group")?;
             let key = RedisKey::from(args[2]);
-            let Some(mut stream) = self.load_stream_object(&key)? else {
+            let Some(mut stream) =
+                self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            else {
                 append_integer(response_out, 0);
                 return Ok(());
             };
@@ -345,7 +357,10 @@ impl RequestProcessor {
             if stream.entries.is_empty() && stream.groups.is_empty() {
                 let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else if removed == 1 {
-                self.save_stream_object(&key, &stream)?;
+                self.save_stream_object(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    &stream,
+                )?;
             }
             if removed == 1 {
                 self.notify_keyspace_event(
@@ -367,14 +382,16 @@ impl RequestProcessor {
                 "XGROUP CREATECONSUMER key group consumer",
             )?;
             let key = RedisKey::from(args[2]);
-            let Some(mut stream) = self.load_stream_object(&key)? else {
+            let Some(mut stream) =
+                self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            else {
                 return Err(RequestExecutionError::NoSuchKey);
             };
             if !stream.groups.contains_key(args[3]) {
                 return Err(RequestExecutionError::NoGroup);
             }
             let created = self.register_stream_consumer(&mut stream, &key, args[3], args[4]);
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
             append_integer(response_out, if created { 1 } else { 0 });
             return Ok(());
         }
@@ -382,7 +399,9 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"DELCONSUMER") {
             require_exact_arity(args, 5, "XGROUP", "XGROUP DELCONSUMER key group consumer")?;
             let key = RedisKey::from(args[2]);
-            let Some(mut stream) = self.load_stream_object(&key)? else {
+            let Some(mut stream) =
+                self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            else {
                 return Err(RequestExecutionError::NoSuchKey);
             };
             if !stream.groups.contains_key(args[3]) {
@@ -404,7 +423,10 @@ impl RequestProcessor {
                     b"xgroup-delconsumer",
                     &key,
                 );
-                self.save_stream_object(&key, &stream)?;
+                self.save_stream_object(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    &stream,
+                )?;
             }
             append_integer(response_out, removed_pending);
             return Ok(());
@@ -432,7 +454,9 @@ impl RequestProcessor {
             .cloned()
             .zip(parsed.stream_start_ids.iter().copied())
         {
-            let mut stream = match self.load_stream_object(&key)? {
+            let mut stream = match self
+                .load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+            {
                 Some(stream) => stream,
                 None => return Err(RequestExecutionError::NoGroup),
             };
@@ -522,7 +546,10 @@ impl RequestProcessor {
             };
 
             if stream_changed {
-                self.save_stream_object(&key, &stream)?;
+                self.save_stream_object(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    &stream,
+                )?;
             }
             if stream_should_record_rdb_change {
                 should_record_rdb_change = true;
@@ -648,7 +675,8 @@ impl RequestProcessor {
         for stream_index in 0..stream_count {
             let key = RedisKey::from(args[streams_index + stream_index]);
             let raw_id = args[streams_index + stream_count + stream_index];
-            let stream = self.load_stream_object(&key)?;
+            let stream =
+                self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?;
             let selection = if raw_id == b"$" {
                 let current_tail = stream
                     .as_ref()
@@ -724,7 +752,9 @@ impl RequestProcessor {
         }
         let key = RedisKey::from(args[1]);
         let group = args[2];
-        let Some(mut stream) = self.load_stream_object(&key)? else {
+        let Some(mut stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_integer(response_out, 0);
             return Ok(());
         };
@@ -739,7 +769,7 @@ impl RequestProcessor {
             }
         }
         if acked > 0 {
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         }
         append_integer(response_out, acked);
         Ok(())
@@ -759,7 +789,9 @@ impl RequestProcessor {
         let parsed = parse_stream_ack_delete_arguments(args, 3)?;
         let key = RedisKey::from(args[1]);
         let group = args[2];
-        let Some(mut stream) = self.load_stream_object(&key)? else {
+        let Some(mut stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             append_array_length(response_out, parsed.entry_ids.len());
             for _ in &parsed.entry_ids {
                 append_integer(response_out, -1);
@@ -821,7 +853,10 @@ impl RequestProcessor {
             if stream.entries.is_empty() && stream.groups.is_empty() {
                 let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else {
-                self.save_stream_object(&key, &stream)?;
+                self.save_stream_object(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    &stream,
+                )?;
             }
         }
         Ok(())
@@ -840,7 +875,9 @@ impl RequestProcessor {
         )?;
         let key = RedisKey::from(args[1]);
         let group = args[2];
-        let Some(stream) = self.load_stream_object(&key)? else {
+        let Some(stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             return Err(RequestExecutionError::NoGroup);
         };
         let Some(group_state) = stream.groups.get(group) else {
@@ -972,7 +1009,9 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let group = args[2];
         let consumer = args[3];
-        let Some(mut stream) = self.load_stream_object(&key)? else {
+        let Some(mut stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             return Err(RequestExecutionError::NoGroup);
         };
         if !stream.groups.contains_key(group) {
@@ -1135,7 +1174,7 @@ impl RequestProcessor {
         }
 
         if changed {
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         }
         if justid {
             append_stream_id_array(response_out, &claimed_ids);
@@ -1193,7 +1232,9 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        let Some(mut stream) = self.load_stream_object(&key)? else {
+        let Some(mut stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             return Err(RequestExecutionError::NoGroup);
         };
         if !stream.groups.contains_key(group) {
@@ -1297,7 +1338,7 @@ impl RequestProcessor {
         }
 
         if changed {
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         }
         append_array_length(response_out, 3);
         append_bulk_string(response_out, &next_cursor.encode());
@@ -1328,7 +1369,9 @@ impl RequestProcessor {
         let key = RedisKey::from(args[1]);
         let last_id = StreamId::parse(args[2]).ok_or(RequestExecutionError::InvalidStreamId)?;
         let options = parse_xsetid_options(args, 3, last_id)?;
-        let Some(stream) = self.load_stream_object(&key)? else {
+        let Some(stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             return Err(RequestExecutionError::NoSuchKey);
         };
         let mut stream = stream;
@@ -1358,7 +1401,7 @@ impl RequestProcessor {
         {
             stream.max_deleted_entry_id = max_deleted_entry_id;
         }
-        self.save_stream_object(&key, &stream)?;
+        self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         self.notify_keyspace_event(
             current_request_selected_db(),
             NOTIFY_STREAM,
@@ -1410,17 +1453,18 @@ impl RequestProcessor {
         }
 
         let key = RedisKey::from(args[2]);
-        let mut stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => return Err(RequestExecutionError::NoSuchKey),
-        };
+        let mut stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => return Err(RequestExecutionError::NoSuchKey),
+            };
         let previous_idmp_tracked = stream.idmp_tracked_count();
         let previous_producer_count = stream.idmp_producers.len();
         stream.expire_idmp_entries(current_unix_time_millis().unwrap_or(0));
         if previous_idmp_tracked != stream.idmp_tracked_count()
             || previous_producer_count != stream.idmp_producers.len()
         {
-            self.save_stream_object(&key, &stream)?;
+            self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         }
 
         let full = args.len() >= 4 && ascii_eq_ignore_case(args[3], b"FULL");
@@ -1485,10 +1529,11 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let key = RedisKey::from(args[2]);
-        let stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => return Err(RequestExecutionError::NoSuchKey),
-        };
+        let stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => return Err(RequestExecutionError::NoSuchKey),
+            };
 
         let resp3 = self.resp_protocol_version().is_resp3();
         append_array_length(response_out, stream.groups.len());
@@ -1526,10 +1571,11 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         let key = RedisKey::from(args[2]);
         let group = args[3];
-        let stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => return Err(RequestExecutionError::NoSuchKey),
-        };
+        let stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => return Err(RequestExecutionError::NoSuchKey),
+            };
         let Some(group_state) = stream.groups.get(group) else {
             return Err(RequestExecutionError::NoGroup);
         };
@@ -1567,7 +1613,7 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "XLEN", "XLEN key")?;
         let key = RedisKey::from(args[1]);
         let count = self
-            .load_stream_object(&key)?
+            .load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
             .map_or(0usize, |stream| stream.entries.len());
         append_integer(response_out, count as i64);
         Ok(())
@@ -1593,13 +1639,14 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let lower_bound = parse_stream_range_lower_bound(start)?;
         let upper_bound = parse_stream_range_upper_bound(end)?;
@@ -1629,13 +1676,14 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        let stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => {
-                append_array_length(response_out, 0);
-                return Ok(());
-            }
-        };
+        let stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => {
+                    append_array_length(response_out, 0);
+                    return Ok(());
+                }
+            };
 
         let lower_bound = parse_stream_range_lower_bound(start)?;
         let upper_bound = parse_stream_range_upper_bound(end)?;
@@ -1658,13 +1706,14 @@ impl RequestProcessor {
         )?;
         let key = RedisKey::from(args[1]);
         let spec = parse_xtrim_spec(args)?;
-        let mut stream = match self.load_stream_object(&key)? {
-            Some(stream) => stream,
-            None => {
-                append_integer(response_out, 0);
-                return Ok(());
-            }
-        };
+        let mut stream =
+            match self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))? {
+                Some(stream) => stream,
+                None => {
+                    append_integer(response_out, 0);
+                    return Ok(());
+                }
+            };
         let removed =
             apply_xtrim_spec_to_stream(&mut stream, &spec, self.stream_node_max_entries());
 
@@ -1672,7 +1721,10 @@ impl RequestProcessor {
             if stream.entries.is_empty() && stream.groups.is_empty() {
                 let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
             } else {
-                self.save_stream_object(&key, &stream)?;
+                self.save_stream_object(
+                    DbKeyRef::new(current_request_selected_db(), &key),
+                    &stream,
+                )?;
             }
             self.notify_keyspace_event(
                 current_request_selected_db(),
@@ -1699,7 +1751,9 @@ impl RequestProcessor {
 
         let parsed = parse_xcfgset_arguments(args)?;
         let key = RedisKey::from(args[1]);
-        let Some(mut stream) = self.load_stream_object(&key)? else {
+        let Some(mut stream) =
+            self.load_stream_object(DbKeyRef::new(current_request_selected_db(), &key))?
+        else {
             return Err(RequestExecutionError::NoSuchKey);
         };
 
@@ -1720,7 +1774,7 @@ impl RequestProcessor {
             stream.clear_idmp_history();
         }
 
-        self.save_stream_object(&key, &stream)?;
+        self.save_stream_object(DbKeyRef::new(current_request_selected_db(), &key), &stream)?;
         append_simple_string(response_out, b"OK");
         Ok(())
     }

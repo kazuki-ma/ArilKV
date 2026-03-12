@@ -2,7 +2,7 @@
 
 > **Last Updated**: 2026-03-12
 > **Current Phase**: Phase 11 — Performance Benchmarking
-> **Current Iteration**: 695
+> **Current Iteration**: 696
 
 ---
 
@@ -1606,3 +1606,39 @@ Current pending (`REQUESTED_WAITING`) count: `0`
 | 693 | 2026-03-12 | 11.483 support slice | DONE | Continued the explicit-DB execution-boundary cleanup through the list object-store lane and introduced a typed borrowed key wrapper inside `DbKeyRef`. Added `KeyRef` so `DbKeyRef` no longer stores raw `&[u8]` directly, changed `load_list_object` / `save_list_object` to require `DbKeyRef`, and rewired `list_commands.rs` plus the `SORT ... STORE` list sink in `string_commands.rs` to pass the logical DB explicitly at the command boundary. This removes another object-store helper family that previously rediscovered `selected_db` internally while keeping the external command surface unchanged. Validation: `make fmt`; targeted cargo tests for `list_commands_roundtrip_over_object_store`, `additional_list_commands_cover_common_redis_semantics`, and `sort_store_quicklist_debug_object_matches_external_scenario`; `make test-server` (`603 passed, 0 failed, 2 ignored; 23 passed; 1 passed`); command-coverage workflow rerun PASS with `redis_runtest_full_external` summary `ok=2262 err=0 timeout=0 ignore=374` at `garnet-rs/tests/interop/results/compatibility-report-20260312-160738/redis-runtest-external-full`. |
 | 694 | 2026-03-12 | 11.483 support slice | DONE | Continued the explicit-DB execution-boundary cleanup through the set object-store lane. Changed `load_set_object`, `load_set_object_payload`, `save_set_object`, `save_set_object_replacing_existing`, and `save_contiguous_i64_range_set_object` to require `DbKeyRef`, so set storage helpers no longer rediscover `selected_db` internally before touching object memory state. Rewired `set_commands.rs` to pass the logical DB explicitly at the command boundary for direct set commands and store-result paths, and updated the zset fallback path that reads a set as a zset-like input to use the same typed DB-scoped key boundary. Validation: `make fmt`; `make test-server` (`603 passed, 0 failed, 2 ignored; 23 passed; 1 passed`); command-coverage workflow rerun PASS with `redis_runtest_full_external` summary `ok=2262 err=0 timeout=0 ignore=374` at `garnet-rs/tests/interop/results/compatibility-report-20260312-172956/redis-runtest-external-full`. |
 | 695 | 2026-03-12 | 11.483 support slice | DONE | Continued the explicit-DB execution-boundary cleanup through the zset object-store lane and its geo consumers. Changed `load_zset_object` / `save_zset_object` to require `DbKeyRef`, rewired `zset_commands.rs` to pass the logical DB explicitly for direct zset commands, pop/store helpers, and set-as-zset fallback reads, and updated `geo_commands.rs` so geo reads/writes also cross the typed DB-scoped boundary instead of letting storage helpers rediscover `selected_db` internally. Validation: `make fmt`; `make test-server` (`603 passed, 0 failed, 2 ignored; 23 passed; 1 passed`); command-coverage workflow rerun PASS with `redis_runtest_full_external` summary `ok=2262 err=0 timeout=0 ignore=374` at `garnet-rs/tests/interop/results/compatibility-report-20260312-174418/redis-runtest-external-full`. |
+| 696 | 2026-03-12 | 11.483 support slice | DONE | Continued the explicit-DB execution-boundary cleanup through the stream object-store lane. Changed `load_stream_object` / `save_stream_object` to require `DbKeyRef`, rewired `stream_commands.rs` to pass the logical DB explicitly for stream reads, mutations, consumer-group operations, and blocking-related state transitions, and removed another large object-store family that previously rediscovered `selected_db` inside storage helpers before touching memory state. In the same tracker update, recorded the greenfield architecture backlog (`11.490`-`11.497`) plus a short appendix checklist so the next design iterations can start from concrete entry points instead of re-deriving the same sketch. Validation: `make fmt`; `make test-server` (`603 passed, 0 failed, 2 ignored; 23 passed; 1 passed`); command-coverage workflow rerun PASS with `redis_runtest_full_external` summary `ok=2262 err=0 timeout=0 ignore=374` at `garnet-rs/tests/interop/results/compatibility-report-20260312-190912/redis-runtest-external-full`. |
+| 697 | 2026-03-12 | 11.490 | TODO | Greenfield performance redesign: collapse the split string/object lookup path into a unified typed KV runtime so a command reaches the target value with one shard lookup and one overwrite coordination path. Acceptance: a written design explains the runtime shape, overwrite semantics, interaction with expiry/watch metadata, and migration path from the current dual-store architecture. |
+| 698 | 2026-03-12 | 11.491 | TODO | Greenfield performance redesign: replace command-rewrite-based replication/durability tracking with a typed mutation op-log pipeline that carries `applied`, `fsynced`, `replica_acked`, and `replica_durable` offsets in one ledger. Acceptance: a design doc covers `WAIT`, `WAITAOF`, script/function propagation, and replay semantics. |
+| 699 | 2026-03-12 | 11.492 | TODO | Greenfield performance redesign: move key-local side metadata (expiration bookkeeping, watch versioning, LFU/LRU, hot-state headers) closer to the owning entry/DB runtime instead of scattering it across separate side maps. Acceptance: a design compares cache-locality, mutation cost, and swap/migration semantics versus the current side-state layout. |
+| 700 | 2026-03-12 | 11.493 | TODO | Greenfield code-cleanliness redesign: split command execution into typed `KeyLocal`, `DbLocal`, and `Global` scopes so handlers cannot reach for ambient request-local DB state. Acceptance: a design defines the scope API, dispatch mapping, and how multi-key / cluster-routed commands fit into it. |
+| 701 | 2026-03-12 | 11.494 | TODO | Greenfield code-cleanliness redesign: make `DbRuntime` the sole first-class owner of per-DB state for all logical databases, with no DB0 special case and `SWAPDB` implemented as logical binding swap. Acceptance: a design covers memory layout, background tasks, migration, and O(1) swap semantics. |
+| 702 | 2026-03-12 | 11.495 | TODO | Greenfield code-cleanliness redesign: constrain raw `&[u8]` key handling to parse/I-O boundaries and standardize internal key APIs on typed `KeyRef` / `OwnedKey` / `DbKeyRef` / `DbScopedKey`. Acceptance: an API guideline and migration plan identify every remaining raw-key internal path and the target replacement type. |
+| 703 | 2026-03-12 | 11.496 | TODO | Greenfield control-plane redesign: split cluster/replication/durability control-plane state out of request handlers and serve `CLUSTER *`, `READONLY/READWRITE`, `FAILOVER`, and routing from one live topology snapshot source. Acceptance: a design describes ownership, refresh/update rules, and the request-path API used by both command handlers and background coordinators. |
+| 704 | 2026-03-12 | 11.497 | TODO | Greenfield performance redesign: keep set/zset/stream-like values in owner-thread typed mutable runtime objects rather than round-tripping through serialized object payloads on every mutation. Acceptance: a design covers object lifetime, snapshot/replication boundaries, background persistence hooks, and the expected CPU/cache benefits versus the current deserialize-mutate-reserialize model. |
+
+## Appendix: Little Detailed TODO For Next Iteration (removed after done)
+
+- `11.490` unified KV runtime:
+  - sketch a single in-memory entry shape with value kind, expiry/watch/access metadata, and overwrite semantics.
+  - identify which current `string_store` / `object_store` code paths disappear versus which stay as persistence adapters.
+- `11.491` typed mutation op-log:
+  - enumerate mutation record kinds needed for strings, objects, scripts/functions, expiry, and multi/exec.
+  - define the minimum offset ledger needed to make `WAIT` and `WAITAOF` exact.
+- `11.492` entry-local metadata:
+  - list current side-state maps and mark which can move into entry headers, DB-local arenas, or runtime-owned caches.
+  - call out which metadata must survive `SWAPDB`, replication, and persistence.
+- `11.493` command scopes:
+  - classify existing commands into `KeyLocal`, `DbLocal`, and `Global`.
+  - write the minimal handler trait/API needed so internal code cannot read ambient selected DB state.
+- `11.494` first-class `DbRuntime`:
+  - define the exact contents of one logical DB runtime and how DB0 becomes non-special.
+  - spell out how `SWAPDB`, flush, background expire, and migration interact with that owner object.
+- `11.495` typed key API:
+  - inventory remaining internal raw-key call paths after the current `DbKeyRef` cleanup.
+  - decide where `OwnedKey` is required versus where `KeyRef` is sufficient.
+- `11.496` live control plane:
+  - define one topology/replication snapshot source shared by `CLUSTER *`, `READONLY/READWRITE`, `FAILOVER`, and routing.
+  - list which fields must be authoritative versus derived/rendered.
+- `11.497` owner-thread mutable objects:
+  - identify which value families benefit first: `set`, `zset`, `stream`.
+  - define the boundary where mutable runtime objects are snapshotted into persistence/replication form.

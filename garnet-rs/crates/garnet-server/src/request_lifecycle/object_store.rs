@@ -536,14 +536,13 @@ impl RequestProcessor {
 
     pub(super) fn load_stream_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
     ) -> Result<Option<StreamObject>, RequestExecutionError> {
-        self.expire_key_if_needed(key)?;
-        let db_key = DbKeyRef::new(current_request_selected_db(), key);
-        let object = match self.object_read(db_key)? {
+        self.expire_key_if_needed_in_db(key.db(), key.key())?;
+        let object = match self.object_read(key)? {
             Some(object) => object,
             None => {
-                if self.key_exists(db_key)? {
+                if self.key_exists(key)? {
                     return Err(RequestExecutionError::WrongType);
                 }
                 return Ok(None);
@@ -561,17 +560,13 @@ impl RequestProcessor {
 
     pub(super) fn save_stream_object(
         &self,
-        key: &[u8],
+        key: DbKeyRef<'_>,
         stream: &StreamObject,
     ) -> Result<(), RequestExecutionError> {
         let mut stream_to_save = stream.clone();
         stream_to_save.ensure_node_sizes(self.stream_node_max_entries());
         let payload = serialize_stream_object_payload(&stream_to_save);
-        self.object_upsert(
-            DbKeyRef::new(current_request_selected_db(), key),
-            STREAM_OBJECT_TYPE_TAG,
-            &payload,
-        )
+        self.object_upsert(key, STREAM_OBJECT_TYPE_TAG, &payload)
     }
 }
 
