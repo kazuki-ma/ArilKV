@@ -1,5 +1,7 @@
 # AGENTS.md
 
+Repository rule: actively consume the remaining TODO backlog. When a tracked TODO is completed and verified, remove it from the active TODO list instead of leaving completed backlog items in place.
+
 ## Scope
 
 This file defines default collaboration and execution rules for repository work, especially `garnet-rs` implementation/performance tasks.
