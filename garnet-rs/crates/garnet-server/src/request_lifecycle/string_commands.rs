@@ -1058,6 +1058,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lcs(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1071,7 +1072,6 @@ impl RequestProcessor {
         let options = parse_lcs_options(args)?;
         let left_key = RedisKey::from(args[1]);
         let right_key = RedisKey::from(args[2]);
-        let selected_db = current_request_selected_db();
         let left_db_key = DbKeyRef::new(selected_db, &left_key);
         let right_db_key = DbKeyRef::new(selected_db, &right_key);
 
@@ -1121,22 +1121,25 @@ impl RequestProcessor {
 
     pub(super) fn handle_sort(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_sort_impl(args, response_out, false)
+        self.handle_sort_impl(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_sort_ro(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_sort_impl(args, response_out, true)
+        self.handle_sort_impl(selected_db, args, response_out, true)
     }
 
     fn handle_sort_impl(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         read_only: bool,
@@ -1150,7 +1153,6 @@ impl RequestProcessor {
         )?;
 
         let options = parse_sort_options(args, read_only)?;
-        let selected_db = current_request_selected_db();
         let source_key = RedisKey::from(args[1]);
         let mut elements = load_sort_elements(self, DbKeyRef::new(selected_db, &source_key))?;
 
@@ -1318,6 +1320,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_append(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1325,7 +1328,6 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let append_value = args[2];
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
@@ -1366,12 +1368,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_getex(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let action = parse_getex_action(args)?;
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
@@ -1433,6 +1435,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_incrbyfloat(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1444,7 +1447,6 @@ impl RequestProcessor {
             return Err(RequestExecutionError::IncrementWouldProduceNanOrInfinity);
         }
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
