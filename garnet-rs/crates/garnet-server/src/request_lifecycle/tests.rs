@@ -15566,6 +15566,86 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
 }
 
 #[test]
+fn stream_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response_in_db(
+        &processor,
+        "XADD shared 1-0 field zero",
+        b"$3\r\n1-0\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "XADD shared 1-0 field nine-a",
+        b"$3\r\n1-0\r\n",
+        db9,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "XADD shared 2-0 field nine-b",
+        b"$3\r\n2-0\r\n",
+        db9,
+    );
+
+    assert_command_response_in_db(&processor, "XLEN shared", b":1\r\n", db0);
+    assert_command_response_in_db(&processor, "XLEN shared", b":2\r\n", db9);
+
+    assert_command_response_in_db(&processor, "XTRIM shared MAXLEN = 1", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "XLEN shared", b":1\r\n", db0);
+    assert_command_response_in_db(&processor, "XLEN shared", b":1\r\n", db9);
+
+    assert_command_response_in_db(&processor, "XGROUP CREATE shared g0 0", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "XGROUP CREATE shared g9 0", b"+OK\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "XGROUP CREATECONSUMER shared g9 c9",
+        b":1\r\n",
+        db9,
+    );
+
+    let db0_groups = execute_command_line_in_db(&processor, "XINFO GROUPS shared", db0);
+    assert!(
+        db0_groups
+            .windows(b"$2\r\ng0\r\n".len())
+            .any(|window| window == b"$2\r\ng0\r\n")
+    );
+    assert!(
+        !db0_groups
+            .windows(b"$2\r\ng9\r\n".len())
+            .any(|window| window == b"$2\r\ng9\r\n")
+    );
+
+    let db9_groups = execute_command_line_in_db(&processor, "XINFO GROUPS shared", db9);
+    assert!(
+        db9_groups
+            .windows(b"$2\r\ng9\r\n".len())
+            .any(|window| window == b"$2\r\ng9\r\n")
+    );
+    assert!(
+        !db9_groups
+            .windows(b"$2\r\ng0\r\n".len())
+            .any(|window| window == b"$2\r\ng0\r\n")
+    );
+
+    let db9_consumers = execute_command_line_in_db(&processor, "XINFO CONSUMERS shared g9", db9);
+    assert!(
+        db9_consumers
+            .windows(b"$2\r\nc9\r\n".len())
+            .any(|window| window == b"$2\r\nc9\r\n")
+    );
+    assert_command_response_in_db(
+        &processor,
+        "XREADGROUP GROUP g9 c9 STREAMS shared >",
+        b"*1\r\n*2\r\n$6\r\nshared\r\n*1\r\n*2\r\n$3\r\n2-0\r\n*2\r\n$5\r\nfield\r\n$6\r\nnine-b\r\n",
+        db9,
+    );
+    assert_command_response_in_db(&processor, "XLEN shared", b":1\r\n", db0);
+}
+
+#[test]
 fn xsetid_help_and_partial_id_match_external_stream_scenarios() {
     let processor = RequestProcessor::new().unwrap();
 
