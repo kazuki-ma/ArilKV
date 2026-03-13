@@ -5422,6 +5422,7 @@ impl RequestProcessor {
         let _current_processor_scope = CurrentProcessorScope::enter(self as *const _);
 
         let command = dispatch_command_name(args[0]);
+        let selected_db = current_request_selected_db();
         let subcommand = args.get(1).copied();
         let command_mutating = command_is_effectively_mutating(command, subcommand);
         let slowlog_started_at = Instant::now();
@@ -5450,21 +5451,21 @@ impl RequestProcessor {
         }
 
         let execution_result = match command {
-            CommandId::Get => self.handle_get(args, response_out),
+            CommandId::Get => self.handle_get(selected_db, args, response_out),
             CommandId::Set => self.handle_set(args, response_out),
             CommandId::Setex => self.handle_setex(args, response_out),
             CommandId::Setnx => self.handle_setnx(args, response_out),
-            CommandId::Strlen => self.handle_strlen(args, response_out),
-            CommandId::Getrange => self.handle_getrange(args, response_out),
-            CommandId::Substr => self.handle_substr(args, response_out),
-            CommandId::Getbit => self.handle_getbit(args, response_out),
-            CommandId::Setbit => self.handle_setbit(args, response_out),
-            CommandId::Setrange => self.handle_setrange(args, response_out),
-            CommandId::Bitcount => self.handle_bitcount(args, response_out),
-            CommandId::Bitpos => self.handle_bitpos(args, response_out),
-            CommandId::Bitop => self.handle_bitop(args, response_out),
-            CommandId::Bitfield => self.handle_bitfield(args, response_out),
-            CommandId::BitfieldRo => self.handle_bitfield_ro(args, response_out),
+            CommandId::Strlen => self.handle_strlen(selected_db, args, response_out),
+            CommandId::Getrange => self.handle_getrange(selected_db, args, response_out),
+            CommandId::Substr => self.handle_substr(selected_db, args, response_out),
+            CommandId::Getbit => self.handle_getbit(selected_db, args, response_out),
+            CommandId::Setbit => self.handle_setbit(selected_db, args, response_out),
+            CommandId::Setrange => self.handle_setrange(selected_db, args, response_out),
+            CommandId::Bitcount => self.handle_bitcount(selected_db, args, response_out),
+            CommandId::Bitpos => self.handle_bitpos(selected_db, args, response_out),
+            CommandId::Bitop => self.handle_bitop(selected_db, args, response_out),
+            CommandId::Bitfield => self.handle_bitfield(selected_db, args, response_out),
+            CommandId::BitfieldRo => self.handle_bitfield_ro(selected_db, args, response_out),
             CommandId::Lcs => self.handle_lcs(args, response_out),
             CommandId::Sort => self.handle_sort(args, response_out),
             CommandId::SortRo => self.handle_sort_ro(args, response_out),
@@ -5483,8 +5484,8 @@ impl RequestProcessor {
             CommandId::Psetex => self.handle_psetex(args, response_out),
             CommandId::Digest => self.handle_digest(args, response_out),
             CommandId::Delex => self.handle_delex(args, response_out),
-            CommandId::Getset => self.handle_getset(args, response_out),
-            CommandId::Getdel => self.handle_getdel(args, response_out),
+            CommandId::Getset => self.handle_getset(selected_db, args, response_out),
+            CommandId::Getdel => self.handle_getdel(selected_db, args, response_out),
             CommandId::Msetex => self.handle_msetex(args, response_out),
             CommandId::Del => self.handle_del(args, response_out),
             CommandId::Rename => self.handle_rename(args, response_out),

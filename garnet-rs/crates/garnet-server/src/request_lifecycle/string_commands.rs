@@ -147,6 +147,7 @@ impl Default for PfSetState {
 impl RequestProcessor {
     pub(super) fn handle_get(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -155,7 +156,6 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
         let logically_expired =
@@ -222,13 +222,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_strlen(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "STRLEN", "STRLEN key")?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         if !self.logical_db_uses_main_runtime(selected_db)? {
             if let Some(output) = self.read_string_value(db_key)? {
@@ -276,22 +276,25 @@ impl RequestProcessor {
 
     pub(super) fn handle_getrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_getrange_like(args, response_out, false)
+        self.handle_getrange_like(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_substr(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_getrange_like(args, response_out, true)
+        self.handle_getrange_like(selected_db, args, response_out, true)
     }
 
     fn handle_getrange_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         substr_alias: bool,
@@ -306,7 +309,6 @@ impl RequestProcessor {
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let end = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         if !self.logical_db_uses_main_runtime(selected_db)? {
             if let Some(output) = self.read_string_value(db_key)? {
@@ -356,6 +358,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getbit(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -366,7 +369,6 @@ impl RequestProcessor {
         }
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         let Some(value) = self.read_string_value(db_key)? else {
@@ -390,6 +392,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_setbit(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -406,7 +409,6 @@ impl RequestProcessor {
             _ => return Err(RequestExecutionError::ValueOutOfRange),
         };
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         let expiration_unix_millis = self.expiration_unix_millis(db_key);
@@ -460,6 +462,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_setrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -471,7 +474,6 @@ impl RequestProcessor {
         let offset = usize::try_from(offset).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
         let new_segment = args[3];
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
@@ -517,6 +519,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitcount(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -546,7 +549,6 @@ impl RequestProcessor {
         };
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         let Some(value) = self.read_string_value(db_key)? else {
@@ -600,6 +602,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitpos(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -641,7 +644,6 @@ impl RequestProcessor {
         };
         let has_explicit_end = args.len() >= 5;
 
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         let Some(value) = self.read_string_value(db_key)? else {
@@ -725,6 +727,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -753,7 +756,6 @@ impl RequestProcessor {
         }
 
         let destination = RedisKey::from(args[2]);
-        let selected_db = current_request_selected_db();
         let destination_db_key = DbKeyRef::new(selected_db, &destination);
         let source_keys = args[3..].iter().map(|key| key.to_vec()).collect::<Vec<_>>();
         self.expire_key_if_needed(destination_db_key)?;
@@ -797,22 +799,25 @@ impl RequestProcessor {
 
     pub(super) fn handle_bitfield(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bitfield_impl(args, response_out, false)
+        self.handle_bitfield_impl(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_bitfield_ro(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bitfield_impl(args, response_out, true)
+        self.handle_bitfield_impl(selected_db, args, response_out, true)
     }
 
     fn handle_bitfield_impl(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         read_only: bool,
@@ -828,7 +833,6 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         let expiration_unix_millis = self.expiration_unix_millis(db_key);
@@ -1799,6 +1803,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getset(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1806,7 +1811,7 @@ impl RequestProcessor {
 
         let mut previous_value_response = Vec::new();
         let get_args: [&[u8]; 2] = [b"GET", args[1]];
-        self.handle_get(&get_args, &mut previous_value_response)?;
+        self.handle_get(selected_db, &get_args, &mut previous_value_response)?;
 
         let set_args: [&[u8]; 3] = [b"SET", args[1], args[2]];
         let mut set_response = Vec::new();
@@ -1818,6 +1823,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_getdel(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1825,7 +1831,7 @@ impl RequestProcessor {
 
         let get_args: [&[u8]; 2] = [b"GET", args[1]];
         let mut previous_value_response = Vec::new();
-        self.handle_get(&get_args, &mut previous_value_response)?;
+        self.handle_get(selected_db, &get_args, &mut previous_value_response)?;
         let is_null = previous_value_response.as_slice() == b"$-1\r\n"
             || previous_value_response.as_slice() == b"_\r\n";
         if is_null {
