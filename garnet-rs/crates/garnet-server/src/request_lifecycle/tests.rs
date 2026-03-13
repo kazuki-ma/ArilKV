@@ -7640,6 +7640,65 @@ fn string_rename_copy_and_multi_key_commands_are_scoped_by_selected_db_without_d
 }
 
 #[test]
+fn string_msetex_and_hyperloglog_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+
+    assert_command_integer(&processor, "MSETEX 2 k1 zero1 k2 zero2 EX 30", 1);
+    assert_command_response_in_db(
+        &processor,
+        "MSETEX 2 k1 nine1 k2 nine2 EX 30",
+        b":1\r\n",
+        db9,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "MGET k1 k2",
+        b"*2\r\n$5\r\nzero1\r\n$5\r\nzero2\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "MGET k1 k2",
+        b"*2\r\n$5\r\nnine1\r\n$5\r\nnine2\r\n",
+        db9,
+    );
+
+    assert_command_integer(&processor, "PFADD hll a b", 1);
+    assert_command_response_in_db(&processor, "PFADD hll c d", b":1\r\n", db9);
+
+    let db0_count =
+        parse_integer_response(&execute_command_line_in_db(&processor, "PFCOUNT hll", db0));
+    let db9_count =
+        parse_integer_response(&execute_command_line_in_db(&processor, "PFCOUNT hll", db9));
+    assert!(
+        db0_count >= 2,
+        "db0 pfcount should reflect db0 dataset: {db0_count}"
+    );
+    assert!(
+        db9_count >= 2,
+        "db9 pfcount should reflect db9 dataset: {db9_count}"
+    );
+    assert_ne!(db0_count, 0);
+    assert_ne!(db9_count, 0);
+
+    assert_command_response_in_db(&processor, "PFMERGE merged hll", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "EXISTS merged", b":0\r\n", db0);
+    let merged_count = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "PFCOUNT merged",
+        db9,
+    ));
+    assert!(
+        merged_count >= 2,
+        "merged HLL should stay inside db9: {merged_count}"
+    );
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();

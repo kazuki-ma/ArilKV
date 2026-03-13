@@ -1946,11 +1946,12 @@ impl RequestProcessor {
             .chunks_exact(2)
             .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
             .collect();
+        let selected_db = current_request_selected_db();
 
         for (key, _) in &key_value_pairs {
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), key))?;
-            let exists_any =
-                self.key_exists_any(DbKeyRef::new(current_request_selected_db(), key))?;
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
+            let exists_any = self.key_exists_any(db_key)?;
             if (options.only_if_absent && exists_any) || (options.only_if_present && !exists_any) {
                 append_integer(response_out, 0);
                 return Ok(());
@@ -1959,13 +1960,13 @@ impl RequestProcessor {
 
         for (key, value) in &key_value_pairs {
             let effective_expiration = if options.keep_ttl {
-                self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), key))
+                self.expiration_unix_millis(DbKeyRef::new(selected_db, key.as_slice()))
                     .and_then(expiration_metadata_from_unix_millis)
             } else {
                 options.expiration
             };
             self.write_multi_set_pair(
-                DbKeyRef::new(current_request_selected_db(), key),
+                DbKeyRef::new(selected_db, key.as_slice()),
                 value,
                 effective_expiration,
             )?;
