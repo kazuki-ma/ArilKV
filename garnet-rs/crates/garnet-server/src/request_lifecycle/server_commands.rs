@@ -1297,7 +1297,8 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "SAVE", "SAVE")?;
-        let snapshot = self.build_debug_reload_snapshot(false)?;
+        let selected_db = current_request_selected_db();
+        let snapshot = self.build_debug_reload_snapshot(selected_db, false)?;
         self.set_saved_rdb_snapshot(snapshot);
         self.reset_rdb_changes_since_last_save();
         append_simple_string(response_out, b"OK");
@@ -1316,7 +1317,8 @@ impl RequestProcessor {
                 return Err(RequestExecutionError::SyntaxError);
             }
         }
-        let snapshot = self.build_debug_reload_snapshot(false)?;
+        let selected_db = current_request_selected_db();
+        let snapshot = self.build_debug_reload_snapshot(selected_db, false)?;
         self.set_saved_rdb_snapshot(snapshot);
         self.start_bgsave();
         self.reset_rdb_changes_since_last_save();
@@ -1600,13 +1602,14 @@ impl RequestProcessor {
                 return Ok(());
             }
             if !noflush && !merge {
+                let selected_db = current_request_selected_db();
                 if !nosave {
-                    let snapshot = self.build_debug_reload_snapshot(false)?;
-                    self.reload_debug_snapshot_bytes(snapshot)?;
+                    let snapshot = self.build_debug_reload_snapshot(selected_db, false)?;
+                    self.reload_debug_snapshot_bytes(selected_db, snapshot)?;
                     append_simple_string(response_out, b"OK");
                     return Ok(());
                 }
-                if self.reload_debug_snapshot_source()? {
+                if self.reload_debug_snapshot_source(selected_db)? {
                     append_simple_string(response_out, b"OK");
                     return Ok(());
                 }
@@ -4830,6 +4833,8 @@ fn restore_from_dump_blob(
     )?;
 
     let key = RedisKey::from(args[1]);
+    let selected_db = current_request_selected_db();
+    let db_key = DbKeyRef::new(selected_db, &key);
     let ttl_input = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
     if ttl_input < 0 {
         return Err(RequestExecutionError::ValueOutOfRange);
@@ -4837,10 +4842,8 @@ fn restore_from_dump_blob(
     let dump_blob = args[3];
     let options = parse_restore_options(args, 4, command_name)?;
 
-    processor.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-    if !options.replace
-        && processor.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))?
-    {
+    processor.expire_key_if_needed(db_key)?;
+    if !options.replace && processor.key_exists_any(db_key)? {
         return Err(RequestExecutionError::BusyKey);
     }
     let value = decode_dump_blob(dump_blob).ok_or(RequestExecutionError::InvalidDumpPayload)?;
@@ -4848,21 +4851,19 @@ fn restore_from_dump_blob(
         MigrationValue::String(_) => None,
         MigrationValue::Object { object_type, .. } => Some(*object_type),
     };
-    let previous_string_exists =
-        processor.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+    let previous_string_exists = processor.key_exists(db_key)?;
     let previous_type = if previous_string_exists {
         None
     } else {
         processor
-            .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+            .object_read(db_key)?
             .map(|object| object.object_type)
     };
     let had_previous_value = previous_string_exists || previous_type.is_some();
 
     if options.replace {
-        processor
-            .delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let _ = processor.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+        processor.delete_string_key_for_migration(db_key)?;
+        let _ = processor.object_delete(db_key)?;
     }
 
     let ttl_u64 = u64::try_from(ttl_input).map_err(|_| RequestExecutionError::ValueOutOfRange)?;
@@ -4878,39 +4879,24 @@ fn restore_from_dump_blob(
         )
     };
 
-    let restored = restore_migration_value(processor, &key, value, expiration_unix_millis)?;
+    let restored =
+        restore_migration_value(processor, selected_db, &key, value, expiration_unix_millis)?;
 
     if restored {
         if let Some(idle_time_seconds) = options.idle_time_seconds {
-            processor.set_key_idle_seconds(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                idle_time_seconds,
-            );
+            processor.set_key_idle_seconds(db_key, idle_time_seconds);
         } else {
-            processor.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
+            processor.record_key_access(db_key, true);
         }
         if let Some(frequency) = options.frequency {
-            processor.set_key_frequency(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                frequency,
-            );
+            processor.set_key_frequency(db_key, frequency);
         }
-        processor.notify_keyspace_event(
-            current_request_selected_db(),
-            NOTIFY_GENERIC,
-            b"restore",
-            &key,
-        );
+        processor.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"restore", &key);
         if had_previous_value {
-            processor.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_OVERWRITTEN,
-                b"overwritten",
-                &key,
-            );
+            processor.notify_keyspace_event(selected_db, NOTIFY_OVERWRITTEN, b"overwritten", &key);
             if previous_type != restored_type {
                 processor.notify_keyspace_event(
-                    current_request_selected_db(),
+                    selected_db,
                     NOTIFY_TYPE_CHANGED,
                     b"type_changed",
                     &key,
@@ -4925,6 +4911,7 @@ fn restore_from_dump_blob(
 
 fn restore_migration_value(
     processor: &RequestProcessor,
+    db: DbName,
     key: &[u8],
     value: MigrationValue,
     expiration_unix_millis: Option<u64>,
@@ -4936,27 +4923,21 @@ fn restore_migration_value(
     match value {
         MigrationValue::String(raw) => {
             processor.upsert_string_value_for_migration(
-                DbKeyRef::new(current_request_selected_db(), key),
+                DbKeyRef::new(db, key),
                 raw.as_slice(),
                 expiration_unix_millis,
             )?;
-            let _ = processor.object_delete(DbKeyRef::new(current_request_selected_db(), key))?;
+            let _ = processor.object_delete(DbKeyRef::new(db, key))?;
         }
         MigrationValue::Object {
             object_type,
             payload,
         } => {
-            processor.delete_string_key_for_migration(DbKeyRef::new(
-                current_request_selected_db(),
-                key,
-            ))?;
-            processor.object_upsert(
-                DbKeyRef::new(current_request_selected_db(), key),
-                object_type,
-                &payload,
-            )?;
+            let db_key = DbKeyRef::new(db, key);
+            processor.delete_string_key_for_migration(db_key)?;
+            processor.object_upsert(db_key, object_type, &payload)?;
             processor.set_string_expiration_deadline(
-                DbKeyRef::new(current_request_selected_db(), key),
+                db_key,
                 expiration_unix_millis.and_then(instant_from_unix_millis),
             );
         }
@@ -4992,27 +4973,32 @@ struct DebugReloadHashFieldExpiration {
 impl RequestProcessor {
     pub(crate) fn build_debug_reload_snapshot(
         &self,
+        db: DbName,
         functions_only: bool,
     ) -> Result<Vec<u8>, RequestExecutionError> {
         let entries = if functions_only {
             Vec::new()
         } else {
-            self.collect_debug_reload_snapshot_entries()?
+            self.collect_debug_reload_snapshot_entries(db)?
         };
         let function_payload = self.dump_function_registry()?;
         Ok(encode_debug_reload_snapshot(&entries, &function_payload))
     }
 
-    pub(crate) fn reload_debug_snapshot_source(&self) -> Result<bool, RequestExecutionError> {
+    pub(crate) fn reload_debug_snapshot_source(
+        &self,
+        db: DbName,
+    ) -> Result<bool, RequestExecutionError> {
         let snapshot_bytes = match self.read_debug_reload_snapshot_source()? {
             Some(snapshot_bytes) => snapshot_bytes,
             None => return Ok(false),
         };
-        self.reload_debug_snapshot_bytes(snapshot_bytes)
+        self.reload_debug_snapshot_bytes(db, snapshot_bytes)
     }
 
     pub(crate) fn reload_debug_snapshot_bytes(
         &self,
+        db: DbName,
         snapshot_bytes: Vec<u8>,
     ) -> Result<bool, RequestExecutionError> {
         let Some(decoded) = decode_debug_reload_snapshot(&snapshot_bytes) else {
@@ -5028,6 +5014,7 @@ impl RequestProcessor {
                 .ok_or(RequestExecutionError::InvalidDumpPayload)?;
             let restored = restore_migration_value(
                 self,
+                db,
                 entry.key.as_slice(),
                 value,
                 entry.expiration_unix_millis,
@@ -5044,7 +5031,7 @@ impl RequestProcessor {
                     })
                     .collect::<Vec<_>>();
                 self.restore_hash_field_expirations_for_key(
-                    DbKeyRef::new(current_request_selected_db(), entry.key.as_slice()),
+                    DbKeyRef::new(db, entry.key.as_slice()),
                     &hash_field_expirations,
                 );
             }
@@ -5056,26 +5043,20 @@ impl RequestProcessor {
 
     fn collect_debug_reload_snapshot_entries(
         &self,
+        db: DbName,
     ) -> Result<Vec<DebugReloadSnapshotEntry>, RequestExecutionError> {
-        self.materialize_set_hot_entries_for_db(current_request_selected_db())?;
+        self.materialize_set_hot_entries_for_db(db)?;
         let mut keys = std::collections::BTreeSet::new();
-        keys.extend(self.string_keys_snapshot(current_request_selected_db()));
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        keys.extend(self.string_keys_snapshot(db));
+        keys.extend(self.object_keys_snapshot(db));
 
         let mut entries = Vec::with_capacity(keys.len());
         for key in keys {
-            self.expire_key_if_needed(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ))?;
+            let db_key = DbKeyRef::new(db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
 
-            if let Some(stored_value) = self
-                .read_string_value(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
-            {
-                let expiration_unix_millis = self.expiration_unix_millis(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+            if let Some(stored_value) = self.read_string_value(db_key)? {
+                let expiration_unix_millis = self.expiration_unix_millis(db_key);
                 let dump_blob = encode_dump_blob(MigrationValue::String(stored_value.into()));
                 entries.push(DebugReloadSnapshotEntry {
                     key: key.to_vec(),
@@ -5086,26 +5067,18 @@ impl RequestProcessor {
                 continue;
             }
 
-            if let Some(object) =
-                self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
-            {
-                let expiration_unix_millis = self.expiration_unix_millis(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+            if let Some(object) = self.object_read(db_key)? {
+                let expiration_unix_millis = self.expiration_unix_millis(db_key);
                 let hash_field_expirations = if object.object_type == HASH_OBJECT_TYPE_TAG {
-                    self.snapshot_hash_field_expirations_for_key(DbKeyRef::new(
-                        current_request_selected_db(),
-                        key.as_slice(),
-                    ))
-                    .into_iter()
-                    .map(
-                        |(field, expiration_unix_millis)| DebugReloadHashFieldExpiration {
-                            field: field.as_ref().to_vec(),
-                            expiration_unix_millis,
-                        },
-                    )
-                    .collect()
+                    self.snapshot_hash_field_expirations_for_key(db_key)
+                        .into_iter()
+                        .map(
+                            |(field, expiration_unix_millis)| DebugReloadHashFieldExpiration {
+                                field: field.as_ref().to_vec(),
+                                expiration_unix_millis,
+                            },
+                        )
+                        .collect()
                 } else {
                     Vec::new()
                 };

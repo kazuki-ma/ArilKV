@@ -314,7 +314,7 @@ impl RedisReplicationCoordinator {
         let snapshot = self
             .inner
             .processor
-            .build_debug_reload_snapshot(functions_only)?;
+            .build_debug_reload_snapshot(DbName::default(), functions_only)?;
         let mut response = Vec::with_capacity(64 + snapshot.len());
         response.extend_from_slice(format!("${}\r\n", snapshot.len()).as_bytes());
         response.extend_from_slice(&snapshot);

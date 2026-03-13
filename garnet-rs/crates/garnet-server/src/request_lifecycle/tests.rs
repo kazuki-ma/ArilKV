@@ -7846,6 +7846,28 @@ fn server_commands_are_scoped_by_selected_db_without_db0_fallback() {
         "DUMP should read the selected logical DB"
     );
 
+    assert_command_response_in_db(&processor, "SET restore zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET restore nine", b"+OK\r\n", db9);
+    let restore_payload =
+        parse_bulk_payload(&execute_command_line_in_db(&processor, "DUMP restore", db9)).unwrap();
+    assert_command_response_in_db(&processor, "DEL restore", b":1\r\n", db9);
+    assert_eq!(
+        execute_command_args_in_db(
+            &processor,
+            &[
+                b"RESTORE",
+                b"restore",
+                b"0",
+                restore_payload.as_slice(),
+                b"REPLACE"
+            ],
+            db9,
+        ),
+        b"+OK\r\n"
+    );
+    assert_command_response_in_db(&processor, "GET restore", b"$4\r\nzero\r\n", db0);
+    assert_command_response_in_db(&processor, "GET restore", b"$4\r\nnine\r\n", db9);
+
     let dataset_digest_db0 = execute_command_line_in_db(&processor, "DEBUG DIGEST", db0);
     let dataset_digest_db9 = execute_command_line_in_db(&processor, "DEBUG DIGEST", db9);
     assert_ne!(
