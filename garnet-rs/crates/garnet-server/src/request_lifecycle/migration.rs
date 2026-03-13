@@ -123,14 +123,14 @@ impl RequestProcessor {
         slot_keys.into_iter().map(RedisKey::into_vec).collect()
     }
 
-    pub fn migrate_slot_to(
+    pub(crate) fn migrate_slot_to(
         &self,
         target: &RequestProcessor,
+        selected_db: DbName,
         slot: garnet_cluster::SlotNumber,
         max_keys: usize,
         delete_source: bool,
     ) -> Result<usize, RequestExecutionError> {
-        let selected_db = current_request_selected_db();
         let keys = self.migration_keys_for_slot(selected_db, slot, max_keys);
         self.migrate_keys_to(target, selected_db, selected_db, &keys, delete_source)
     }

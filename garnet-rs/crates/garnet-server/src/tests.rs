@@ -12693,7 +12693,7 @@ async fn cluster_live_slot_migration_transfers_data_and_updates_redirections() {
     send_and_expect(&mut node2, &get_key, b"$-1\r\n").await;
 
     let moved = source_processor
-        .migrate_slot_to(&target_processor, slot, 16, true)
+        .migrate_slot_to(&target_processor, DbName::default(), slot, 16, true)
         .unwrap();
     assert_eq!(moved, 1);
 

@@ -132,7 +132,6 @@ thread_local! {
             client_no_touch: false,
             client_id: None,
             in_transaction: false,
-            selected_db: DbName::new(0),
             tracking_reads_enabled: false,
         })
     };
@@ -158,7 +157,6 @@ struct RequestExecutionContext {
     client_no_touch: bool,
     client_id: Option<ClientId>,
     in_transaction: bool,
-    selected_db: DbName,
     tracking_reads_enabled: bool,
 }
 
@@ -231,11 +229,6 @@ fn current_request_client_id() -> Option<ClientId> {
 #[inline]
 fn current_request_in_transaction() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().in_transaction)
-}
-
-#[inline]
-fn current_request_selected_db() -> DbName {
-    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db)
 }
 
 #[inline]
@@ -5302,10 +5295,11 @@ impl RequestProcessor {
         &self,
         args: &[ArgSlice],
         response_out: &mut Vec<u8>,
+        selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
         let mut arg_bytes = Vec::with_capacity(args.len());
         extend_arg_bytes_from_slices(args, &mut arg_bytes);
-        self.execute_bytes_in_current_context(&arg_bytes, response_out)
+        self.execute_bytes_in_db(&arg_bytes, response_out, selected_db)
     }
 
     pub(crate) fn execute_in_db(
@@ -5330,28 +5324,9 @@ impl RequestProcessor {
             client_no_touch,
             client_id,
             in_transaction,
-            selected_db,
             tracking_reads_enabled: false,
         });
-        self.execute_in_current_context(args, response_out)
-    }
-
-    pub(crate) fn with_selected_db<T>(&self, selected_db: DbName, f: impl FnOnce() -> T) -> T {
-        let previous = REQUEST_EXECUTION_CONTEXT.with(|state| {
-            let mut context = state.get();
-            let previous = context;
-            context.selected_db = selected_db;
-            state.set(context);
-            previous
-        });
-        struct Reset(RequestExecutionContext);
-        impl Drop for Reset {
-            fn drop(&mut self) {
-                REQUEST_EXECUTION_CONTEXT.with(|state| state.set(self.0));
-            }
-        }
-        let _reset = Reset(previous);
-        f()
+        self.execute_in_current_context(args, response_out, selected_db)
     }
 
     pub(crate) fn execute_with_client_no_touch_in_transaction_in_db(
@@ -5410,10 +5385,11 @@ impl RequestProcessor {
         Ok(state.thread_id != std::thread::current().id())
     }
 
-    fn execute_bytes_in_current_context(
+    fn execute_bytes_in_db(
         &self,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
+        selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
         if args.is_empty() {
             return Err(RequestExecutionError::UnknownCommand);
@@ -5422,7 +5398,6 @@ impl RequestProcessor {
         let _current_processor_scope = CurrentProcessorScope::enter(self as *const _);
 
         let command = dispatch_command_name(args[0]);
-        let selected_db = current_request_selected_db();
         let subcommand = args.get(1).copied();
         let command_mutating = command_is_effectively_mutating(command, subcommand);
         let slowlog_started_at = Instant::now();
@@ -5652,12 +5627,12 @@ impl RequestProcessor {
             CommandId::Flushall => self.handle_flushall(args, response_out),
             CommandId::Function => self.handle_function(args, response_out),
             CommandId::Script => self.handle_script(args, response_out),
-            CommandId::Eval => self.handle_eval(args, response_out),
-            CommandId::EvalRo => self.handle_eval_ro(args, response_out),
-            CommandId::Evalsha => self.handle_evalsha(args, response_out),
-            CommandId::EvalshaRo => self.handle_evalsha_ro(args, response_out),
-            CommandId::Fcall => self.handle_fcall(args, response_out),
-            CommandId::FcallRo => self.handle_fcall_ro(args, response_out),
+            CommandId::Eval => self.handle_eval(selected_db, args, response_out),
+            CommandId::EvalRo => self.handle_eval_ro(selected_db, args, response_out),
+            CommandId::Evalsha => self.handle_evalsha(selected_db, args, response_out),
+            CommandId::EvalshaRo => self.handle_evalsha_ro(selected_db, args, response_out),
+            CommandId::Fcall => self.handle_fcall(selected_db, args, response_out),
+            CommandId::FcallRo => self.handle_fcall_ro(selected_db, args, response_out),
             CommandId::Config => self.handle_config(selected_db, args, response_out),
             CommandId::Command => self.handle_command(args, response_out),
             CommandId::Dump => self.handle_dump(selected_db, args, response_out),

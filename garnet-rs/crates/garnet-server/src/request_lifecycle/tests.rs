@@ -996,13 +996,13 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
 
     processor
         .object_upsert(
-            DbKeyRef::new(current_request_selected_db(), b"obj"),
+            DbKeyRef::new(DbName::default(), b"obj"),
             ObjectTypeTag::Hash,
             b"payload",
         )
         .unwrap();
     let object = processor
-        .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
+        .object_read(DbKeyRef::new(DbName::default(), b"obj"))
         .unwrap()
         .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Hash);
@@ -1040,7 +1040,7 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
 
     assert!(
         processor
-            .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
+            .object_read(DbKeyRef::new(DbName::default(), b"obj"))
             .unwrap()
             .is_none()
     );
@@ -1318,7 +1318,9 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
-    let moved = source.migrate_slot_to(&target, slot, 16, true).unwrap();
+    let moved = source
+        .migrate_slot_to(&target, DbName::default(), slot, 16, true)
+        .unwrap();
     assert_eq!(moved, 2);
 
     response.clear();
@@ -3761,7 +3763,7 @@ fn sadd_uses_contiguous_range_encoding_for_canonical_integer_sequences() {
     }
 
     let object = processor
-        .object_read(DbKeyRef::new(current_request_selected_db(), b"numbers"))
+        .object_read(DbKeyRef::new(DbName::default(), b"numbers"))
         .unwrap()
         .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Set);
@@ -3795,7 +3797,7 @@ fn sadd_falls_back_from_contiguous_range_encoding_for_non_canonical_members() {
     );
 
     let object = processor
-        .object_read(DbKeyRef::new(current_request_selected_db(), b"numbers"))
+        .object_read(DbKeyRef::new(DbName::default(), b"numbers"))
         .unwrap()
         .unwrap();
     assert!(matches!(
@@ -12051,143 +12053,137 @@ fn pfdebug_encoding_and_strlen_follow_sparse_dense_transitions() {
 fn hyperloglog_sparse_thresholds_match_external_scenario_in_auxiliary_db() {
     let processor = RequestProcessor::new().unwrap();
 
-    processor.with_selected_db(DbName::new(9), || {
-        for sparse_max_bytes in [100usize, 500, 3_000] {
+    for sparse_max_bytes in [100usize, 500, 3_000] {
+        assert_command_response_in_db(
+            &processor,
+            &format!("CONFIG SET hll-sparse-max-bytes {sparse_max_bytes}"),
+            b"+OK\r\n",
+            DbName::new(9),
+        );
+        let _ = execute_command_line_in_db(&processor, "DEL hll", DbName::new(9));
+        assert_command_response_in_db(&processor, "PFADD hll", b":1\r\n", DbName::new(9));
+
+        let mut logical_len = parse_integer_response(&execute_command_line_in_db(
+            &processor,
+            "STRLEN hll",
+            DbName::new(9),
+        )) as usize;
+        let mut element_index = 0usize;
+        let mut guard = 0usize;
+
+        while logical_len <= sparse_max_bytes {
             assert_command_response_in_db(
                 &processor,
-                &format!("CONFIG SET hll-sparse-max-bytes {sparse_max_bytes}"),
-                b"+OK\r\n",
+                "PFDEBUG ENCODING hll",
+                b"$6\r\nsparse\r\n",
                 DbName::new(9),
             );
-            let _ = execute_command_line_in_db(&processor, "DEL hll", DbName::new(9));
-            assert_command_response_in_db(&processor, "PFADD hll", b":1\r\n", DbName::new(9));
 
-            let mut logical_len = parse_integer_response(&execute_command_line_in_db(
+            let mut command = String::from("PFADD hll");
+            for _ in 0..10 {
+                command.push(' ');
+                command.push_str(&format!("elem:{sparse_max_bytes}:{element_index}"));
+                element_index += 1;
+            }
+            let _ = execute_command_line_in_db(&processor, &command, DbName::new(9));
+            logical_len = parse_integer_response(&execute_command_line_in_db(
                 &processor,
                 "STRLEN hll",
                 DbName::new(9),
             )) as usize;
-            let mut element_index = 0usize;
-            let mut guard = 0usize;
-
-            while logical_len <= sparse_max_bytes {
-                assert_command_response_in_db(
-                    &processor,
-                    "PFDEBUG ENCODING hll",
-                    b"$6\r\nsparse\r\n",
-                    DbName::new(9),
-                );
-
-                let mut command = String::from("PFADD hll");
-                for _ in 0..10 {
-                    command.push(' ');
-                    command.push_str(&format!("elem:{sparse_max_bytes}:{element_index}"));
-                    element_index += 1;
-                }
-                let _ = execute_command_line_in_db(&processor, &command, DbName::new(9));
-                logical_len = parse_integer_response(&execute_command_line_in_db(
-                    &processor,
-                    "STRLEN hll",
-                    DbName::new(9),
-                )) as usize;
-                guard += 1;
-                assert!(guard < 1_000, "HLL sparse threshold test did not converge");
-            }
-
-            assert_command_response_in_db(
-                &processor,
-                "PFDEBUG ENCODING hll",
-                b"$5\r\ndense\r\n",
-                DbName::new(9),
-            );
+            guard += 1;
+            assert!(guard < 1_000, "HLL sparse threshold test did not converge");
         }
-    });
+
+        assert_command_response_in_db(
+            &processor,
+            "PFDEBUG ENCODING hll",
+            b"$5\r\ndense\r\n",
+            DbName::new(9),
+        );
+    }
 }
 
 #[test]
 fn hyperloglog_sparse_stress_matches_external_scenario_in_auxiliary_db() {
     let processor = RequestProcessor::new().unwrap();
 
-    processor.with_selected_db(DbName::new(9), || {
+    assert_command_response_in_db(
+        &processor,
+        "CONFIG SET hll-sparse-max-bytes 3000",
+        b"+OK\r\n",
+        DbName::new(9),
+    );
+
+    for case_index in 0..128usize {
+        let _ = execute_command_line_in_db(&processor, "DEL hll1 hll2", DbName::new(9));
+
+        let element_count = (case_index * 37) % 100;
+        let mut pfadd_hll1 = String::from("PFADD hll1");
+        let mut pfadd_hll2 = String::from("PFADD hll2");
+        for element_index in 0..element_count {
+            let element = format!("stress:{case_index}:{element_index}");
+            pfadd_hll1.push(' ');
+            pfadd_hll1.push_str(&element);
+            pfadd_hll2.push(' ');
+            pfadd_hll2.push_str(&element);
+        }
+
+        assert_command_response_in_db(&processor, "PFADD hll2", b":1\r\n", DbName::new(9));
         assert_command_response_in_db(
             &processor,
-            "CONFIG SET hll-sparse-max-bytes 3000",
+            "PFDEBUG TODENSE hll2",
             b"+OK\r\n",
             DbName::new(9),
         );
+        let _ = execute_command_line_in_db(&processor, &pfadd_hll1, DbName::new(9));
+        let _ = execute_command_line_in_db(&processor, &pfadd_hll2, DbName::new(9));
 
-        for case_index in 0..128usize {
-            let _ = execute_command_line_in_db(&processor, "DEL hll1 hll2", DbName::new(9));
-
-            let element_count = (case_index * 37) % 100;
-            let mut pfadd_hll1 = String::from("PFADD hll1");
-            let mut pfadd_hll2 = String::from("PFADD hll2");
-            for element_index in 0..element_count {
-                let element = format!("stress:{case_index}:{element_index}");
-                pfadd_hll1.push(' ');
-                pfadd_hll1.push_str(&element);
-                pfadd_hll2.push(' ');
-                pfadd_hll2.push_str(&element);
-            }
-
-            assert_command_response_in_db(&processor, "PFADD hll2", b":1\r\n", DbName::new(9));
-            assert_command_response_in_db(
-                &processor,
-                "PFDEBUG TODENSE hll2",
-                b"+OK\r\n",
-                DbName::new(9),
-            );
-            let _ = execute_command_line_in_db(&processor, &pfadd_hll1, DbName::new(9));
-            let _ = execute_command_line_in_db(&processor, &pfadd_hll2, DbName::new(9));
-
-            assert_command_response_in_db(
-                &processor,
-                "PFDEBUG ENCODING hll1",
-                b"$6\r\nsparse\r\n",
-                DbName::new(9),
-            );
-            assert_command_response_in_db(
-                &processor,
-                "PFDEBUG ENCODING hll2",
-                b"$5\r\ndense\r\n",
-                DbName::new(9),
-            );
-            let hll1_count = execute_command_line_in_db(&processor, "PFCOUNT hll1", DbName::new(9));
-            let hll2_count = execute_command_line_in_db(&processor, "PFCOUNT hll2", DbName::new(9));
-            assert_eq!(hll1_count, hll2_count);
-        }
-    });
+        assert_command_response_in_db(
+            &processor,
+            "PFDEBUG ENCODING hll1",
+            b"$6\r\nsparse\r\n",
+            DbName::new(9),
+        );
+        assert_command_response_in_db(
+            &processor,
+            "PFDEBUG ENCODING hll2",
+            b"$5\r\ndense\r\n",
+            DbName::new(9),
+        );
+        let hll1_count = execute_command_line_in_db(&processor, "PFCOUNT hll1", DbName::new(9));
+        let hll2_count = execute_command_line_in_db(&processor, "PFCOUNT hll2", DbName::new(9));
+        assert_eq!(hll1_count, hll2_count);
+    }
 }
 
 #[test]
 fn hyperloglog_cache_invalidation_matches_external_scenario_in_auxiliary_db() {
     let processor = RequestProcessor::new().unwrap();
 
-    processor.with_selected_db(DbName::new(9), || {
-        let _ = execute_command_line_in_db(&processor, "DEL hll", DbName::new(9));
-        assert_command_response_in_db(&processor, "PFADD hll a b c", b":1\r\n", DbName::new(9));
-        let _ = execute_command_line_in_db(&processor, "PFCOUNT hll", DbName::new(9));
-        assert_command_response_in_db(
-            &processor,
-            "GETRANGE hll 15 15",
-            b"$1\r\n\x00\r\n",
-            DbName::new(9),
-        );
-        assert_command_response_in_db(&processor, "PFADD hll a b c", b":0\r\n", DbName::new(9));
-        assert_command_response_in_db(
-            &processor,
-            "GETRANGE hll 15 15",
-            b"$1\r\n\x00\r\n",
-            DbName::new(9),
-        );
-        assert_command_response_in_db(&processor, "PFADD hll 1 2 3", b":1\r\n", DbName::new(9));
-        assert_command_response_in_db(
-            &processor,
-            "GETRANGE hll 15 15",
-            b"$1\r\n\x80\r\n",
-            DbName::new(9),
-        );
-    });
+    let _ = execute_command_line_in_db(&processor, "DEL hll", DbName::new(9));
+    assert_command_response_in_db(&processor, "PFADD hll a b c", b":1\r\n", DbName::new(9));
+    let _ = execute_command_line_in_db(&processor, "PFCOUNT hll", DbName::new(9));
+    assert_command_response_in_db(
+        &processor,
+        "GETRANGE hll 15 15",
+        b"$1\r\n\x00\r\n",
+        DbName::new(9),
+    );
+    assert_command_response_in_db(&processor, "PFADD hll a b c", b":0\r\n", DbName::new(9));
+    assert_command_response_in_db(
+        &processor,
+        "GETRANGE hll 15 15",
+        b"$1\r\n\x00\r\n",
+        DbName::new(9),
+    );
+    assert_command_response_in_db(&processor, "PFADD hll 1 2 3", b":1\r\n", DbName::new(9));
+    assert_command_response_in_db(
+        &processor,
+        "GETRANGE hll 15 15",
+        b"$1\r\n\x80\r\n",
+        DbName::new(9),
+    );
 }
 
 #[test]
@@ -12195,15 +12191,13 @@ fn db_key_ref_reads_are_scoped_by_explicit_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
-    processor.with_selected_db(DbName::new(9), || {
-        assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
-        assert_command_response_in_db(
-            &processor,
-            "HSET obj field value",
-            b":1\r\n",
-            DbName::new(9),
-        );
-    });
+    assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
+    assert_command_response_in_db(
+        &processor,
+        "HSET obj field value",
+        b":1\r\n",
+        DbName::new(9),
+    );
 
     let db0_string = processor
         .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
@@ -12233,15 +12227,13 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
     let processor = RequestProcessor::new().unwrap();
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
-    processor.with_selected_db(DbName::new(9), || {
-        assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
-        assert_command_response_in_db(
-            &processor,
-            "SET ttlkey value PX 5000",
-            b"+OK\r\n",
-            DbName::new(9),
-        );
-    });
+    assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
+    assert_command_response_in_db(
+        &processor,
+        "SET ttlkey value PX 5000",
+        b"+OK\r\n",
+        DbName::new(9),
+    );
 
     processor
         .write_string_value(
@@ -12334,9 +12326,7 @@ fn db_key_ref_object_mutations_are_scoped_by_explicit_db_without_db0_fallback() 
     let processor = RequestProcessor::new().unwrap();
 
     assert_command_response(&processor, "HSET obj field db0", b":1\r\n");
-    processor.with_selected_db(DbName::new(9), || {
-        assert_command_response_in_db(&processor, "HSET obj field db9", b":1\r\n", DbName::new(9));
-    });
+    assert_command_response_in_db(&processor, "HSET obj field db9", b":1\r\n", DbName::new(9));
 
     let mut replacement = std::collections::BTreeMap::new();
     replacement.insert(b"field".to_vec(), b"db9-updated".to_vec());
@@ -12387,9 +12377,7 @@ fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback(
     let processor = RequestProcessor::new().unwrap();
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
-    processor.with_selected_db(DbName::new(9), || {
-        assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
-    });
+    assert_command_response_in_db(&processor, "SET shared db9", b"+OK\r\n", DbName::new(9));
 
     let deadline = current_instant() + std::time::Duration::from_secs(30);
     processor
@@ -12439,9 +12427,7 @@ fn db_key_ref_hash_field_expiration_metadata_is_scoped_by_explicit_db_without_db
     let processor = RequestProcessor::new().unwrap();
 
     assert_command_response(&processor, "HSET hash field db0", b":1\r\n");
-    processor.with_selected_db(DbName::new(9), || {
-        assert_command_response_in_db(&processor, "HSET hash field db9", b":1\r\n", DbName::new(9));
-    });
+    assert_command_response_in_db(&processor, "HSET hash field db9", b":1\r\n", DbName::new(9));
 
     let expiration_unix_millis = current_unix_time_millis().unwrap() + 30_000;
     processor.set_hash_field_expiration_unix_millis(

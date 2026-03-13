@@ -540,6 +540,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_eval(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -554,6 +555,7 @@ impl RequestProcessor {
         let key_end = key_start + key_count;
         let _ = self.cache_script(script);
         self.execute_lua_script(
+            selected_db,
             script,
             &args[key_start..key_end],
             &args[key_end..],
@@ -566,6 +568,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_eval_ro(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -580,6 +583,7 @@ impl RequestProcessor {
         let key_end = key_start + key_count;
         let _ = self.cache_script(script);
         self.execute_lua_script(
+            selected_db,
             script,
             &args[key_start..key_end],
             &args[key_end..],
@@ -592,6 +596,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_evalsha(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -606,6 +611,7 @@ impl RequestProcessor {
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_script(
+            selected_db,
             &script,
             &args[key_start..key_end],
             &args[key_end..],
@@ -618,6 +624,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_evalsha_ro(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -632,6 +639,7 @@ impl RequestProcessor {
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_script(
+            selected_db,
             &script,
             &args[key_start..key_end],
             &args[key_end..],
@@ -644,6 +652,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_fcall(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -665,6 +674,7 @@ impl RequestProcessor {
             ScriptMutability::ReadWrite
         };
         self.execute_lua_function(
+            selected_db,
             &function_target.library_source,
             function_name,
             &args[key_start..key_end],
@@ -679,6 +689,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_fcall_ro(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -698,6 +709,7 @@ impl RequestProcessor {
         let key_start = 3;
         let key_end = key_start + key_count;
         self.execute_lua_function(
+            selected_db,
             &function_target.library_source,
             function_name,
             &args[key_start..key_end],
@@ -1385,6 +1397,7 @@ impl RequestProcessor {
 
     fn execute_lua_script(
         &self,
+        selected_db: DbName,
         script: &[u8],
         keys: &[&[u8]],
         argv: &[&[u8]],
@@ -1492,6 +1505,7 @@ impl RequestProcessor {
             let call_resp_protocol = Rc::clone(&script_resp_protocol);
             let call_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
+                    selected_db,
                     lua,
                     values,
                     mutability,
@@ -1503,6 +1517,7 @@ impl RequestProcessor {
             let pcall_resp_protocol = Rc::clone(&script_resp_protocol);
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
+                    selected_db,
                     lua,
                     values,
                     mutability,
@@ -1675,6 +1690,7 @@ impl RequestProcessor {
     #[allow(clippy::too_many_arguments)]
     fn execute_lua_function(
         &self,
+        selected_db: DbName,
         library_source: &[u8],
         function_name: &[u8],
         keys: &[&[u8]],
@@ -1761,6 +1777,7 @@ impl RequestProcessor {
             let load_call_resp_protocol = Rc::clone(&load_resp_protocol);
             let call_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
+                    selected_db,
                     lua,
                     values,
                     mutability,
@@ -1772,6 +1789,7 @@ impl RequestProcessor {
             let load_pcall_resp_protocol = Rc::clone(&load_resp_protocol);
             let pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
+                    selected_db,
                     lua,
                     values,
                     mutability,
@@ -1885,6 +1903,7 @@ impl RequestProcessor {
             let runtime_call_resp_protocol = Rc::clone(&runtime_resp_protocol);
             let runtime_call_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
+                    selected_db,
                     lua,
                     values,
                     mutability,
@@ -1896,6 +1915,7 @@ impl RequestProcessor {
             let runtime_pcall_resp_protocol = Rc::clone(&runtime_resp_protocol);
             let runtime_pcall_fn = scope.create_function(move |lua, values: MultiValue| {
                 self.execute_lua_redis_call(
+                    selected_db,
                     lua,
                     values,
                     mutability,
@@ -2073,6 +2093,7 @@ impl RequestProcessor {
 
     fn execute_lua_redis_call(
         &self,
+        selected_db: DbName,
         lua: &Lua,
         values: MultiValue,
         mutability: ScriptMutability,
@@ -2138,7 +2159,7 @@ impl RequestProcessor {
         self.record_command_call(arg_refs[0]);
         let execution = self.with_resp_protocol_version_override(call_resp_protocol, || {
             let mut response = Vec::new();
-            let result = self.execute_bytes_in_current_context(&arg_refs, &mut response);
+            let result = self.execute_bytes_in_db(&arg_refs, &mut response, selected_db);
             (result, response)
         });
         let (execution_result, response) = execution;
@@ -2168,7 +2189,7 @@ impl RequestProcessor {
             }
             other => {
                 self.enqueue_script_replication_effect(
-                    current_request_selected_db(),
+                    selected_db,
                     command,
                     encode_script_call_frame(&arg_refs),
                     response,
