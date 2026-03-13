@@ -4468,20 +4468,18 @@ impl RequestProcessor {
 
     fn estimated_used_memory_bytes(&self) -> Result<u64, RequestExecutionError> {
         const ESTIMATED_BASE_MEMORY_BYTES: u64 = 1024;
+        let selected_db = current_request_selected_db();
 
         let mut total_bytes = ESTIMATED_BASE_MEMORY_BYTES;
         total_bytes = total_bytes.saturating_add(self.used_memory_vm_functions());
 
-        let mut keys: HashSet<RedisKey> = self
-            .string_keys_snapshot(current_request_selected_db())
-            .into_iter()
-            .collect();
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
 
         for key in keys {
-            if let Some(value) = self
-                .read_string_value(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
-            {
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
+            if let Some(value) = self.read_string_value(db_key)? {
                 total_bytes = total_bytes.saturating_add(
                     u64::try_from(estimate_string_memory_usage_bytes(key.len(), value.len()))
                         .unwrap_or(u64::MAX),
@@ -4489,9 +4487,7 @@ impl RequestProcessor {
                 continue;
             }
 
-            if let Some(object) =
-                self.object_read(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?
-            {
+            if let Some(object) = self.object_read(db_key)? {
                 let estimated_payload_bytes = estimate_object_payload_memory_usage_bytes(&object);
                 total_bytes = total_bytes.saturating_add(
                     u64::try_from(estimate_memory_usage_bytes(
@@ -4570,8 +4566,9 @@ impl RequestProcessor {
         &self,
         maxmemory_policy: &[u8],
     ) -> Result<bool, RequestExecutionError> {
-        let mut keys: Vec<RedisKey> = self.string_keys_snapshot(current_request_selected_db());
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let selected_db = current_request_selected_db();
+        let mut keys: Vec<RedisKey> = self.string_keys_snapshot(selected_db);
+        keys.extend(self.object_keys_snapshot(selected_db));
         if keys.is_empty() {
             return Ok(false);
         }
@@ -4583,11 +4580,8 @@ impl RequestProcessor {
         if policy_is_volatile {
             let now = current_instant();
             keys.retain(|key| {
-                self.string_expiration_deadline(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))
-                .is_some_and(|deadline| deadline > now)
+                self.string_expiration_deadline(DbKeyRef::new(selected_db, key.as_slice()))
+                    .is_some_and(|deadline| deadline > now)
             });
             if keys.is_empty() {
                 return Ok(false);
@@ -4600,23 +4594,21 @@ impl RequestProcessor {
             || maxmemory_policy.eq_ignore_ascii_case(b"volatile-lfu")
         {
             keys.sort_by_key(|key| {
-                self.key_lru_millis(DbKeyRef::new(current_request_selected_db(), key.as_slice()))
+                self.key_lru_millis(DbKeyRef::new(selected_db, key.as_slice()))
                     .unwrap_or(0)
             });
         } else if maxmemory_policy.eq_ignore_ascii_case(b"volatile-ttl") {
             let now = current_instant();
             keys.sort_by_key(|key| {
-                self.string_expiration_deadline(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))
-                .map_or(u128::MAX, |deadline| {
-                    deadline.saturating_duration_since(now).as_millis()
-                })
+                self.string_expiration_deadline(DbKeyRef::new(selected_db, key.as_slice()))
+                    .map_or(u128::MAX, |deadline| {
+                        deadline.saturating_duration_since(now).as_millis()
+                    })
             });
         }
 
         for key in keys {
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
             let shard_index = self.string_store_shard_index_for_key(key.as_slice());
             let mut string_deleted = false;
             {
@@ -4636,28 +4628,16 @@ impl RequestProcessor {
                 }
             }
             if string_deleted {
-                self.remove_string_key_metadata_in_shard(
-                    DbKeyRef::new(current_request_selected_db(), key.as_slice()),
-                    shard_index,
-                );
+                self.remove_string_key_metadata_in_shard(db_key, shard_index);
             }
-            let object_deleted =
-                self.object_delete(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let object_deleted = self.object_delete(db_key)?;
             if !string_deleted && !object_deleted {
                 continue;
             }
             if string_deleted || object_deleted {
-                self.bump_watch_version_server_origin(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.bump_watch_version_server_origin(db_key);
             }
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_EVICTED,
-                b"evicted",
-                key.as_slice(),
-            );
+            self.notify_keyspace_event(selected_db, NOTIFY_EVICTED, b"evicted", key.as_slice());
             return Ok(true);
         }
         Ok(false)
