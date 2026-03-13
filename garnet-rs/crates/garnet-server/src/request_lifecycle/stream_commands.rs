@@ -40,11 +40,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_xadd(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let xadd_args = parse_xadd_arguments(args)?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let loaded_stream = self.load_stream_object(DbKeyRef::new(selected_db, &key))?;
         if loaded_stream.is_none() && xadd_args.nomkstream {
@@ -119,12 +119,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_xdel(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "XDEL", "XDEL key id [id ...]")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let mut stream = match self.load_stream_object(DbKeyRef::new(selected_db, &key))? {
             Some(stream) => stream,
@@ -154,6 +154,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xdelex(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -164,7 +165,6 @@ impl RequestProcessor {
             "XDELEX key [KEEPREF|DELREF|ACKED] IDS numids id [id ...]",
         )?;
         let parsed = parse_stream_ack_delete_arguments(args, 2)?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let Some(mut stream) = self.load_stream_object(DbKeyRef::new(selected_db, &key))? else {
             append_array_length(response_out, parsed.entry_ids.len());
@@ -217,6 +217,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xgroup(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -227,7 +228,6 @@ impl RequestProcessor {
             "XGROUP <CREATE|SETID|DESTROY> key group [id]",
         )?;
         let subcommand = args[1];
-        let selected_db = current_request_selected_db();
 
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "XGROUP|HELP", "XGROUP HELP")?;
@@ -400,11 +400,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_xreadgroup(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let parsed = parse_xreadgroup_arguments(args)?;
-        let selected_db = current_request_selected_db();
         let blocking_client_id = parsed
             .block_millis
             .and_then(|_| current_request_client_id());
@@ -570,6 +570,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xread(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -580,7 +581,6 @@ impl RequestProcessor {
             "XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key ...] id [id ...]",
         )?;
 
-        let selected_db = current_request_selected_db();
         let mut count = usize::MAX;
         let mut block_requested = false;
         let mut index = 1usize;
@@ -706,11 +706,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_xack(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 4, "XACK", "XACK key group id [id ...]")?;
-        let selected_db = current_request_selected_db();
         let mut parsed_ids = Vec::with_capacity(args.len().saturating_sub(3));
         for id_arg in &args[3..] {
             parsed_ids.push(StreamId::parse(id_arg).ok_or(RequestExecutionError::InvalidStreamId)?);
@@ -740,6 +740,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xackdel(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -750,7 +751,6 @@ impl RequestProcessor {
             "XACKDEL key group [KEEPREF|DELREF|ACKED] IDS numids id [id ...]",
         )?;
         let parsed = parse_stream_ack_delete_arguments(args, 3)?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let group = args[2];
         let Some(mut stream) = self.load_stream_object(DbKeyRef::new(selected_db, &key))? else {
@@ -823,6 +823,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xpending(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -832,7 +833,6 @@ impl RequestProcessor {
             "XPENDING",
             "XPENDING key group [IDLE min-idle-time] start end count [consumer]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let group = args[2];
         let Some(stream) = self.load_stream_object(DbKeyRef::new(selected_db, &key))? else {
@@ -955,6 +955,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xclaim(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -964,7 +965,6 @@ impl RequestProcessor {
             "XCLAIM",
             "XCLAIM key group consumer min-idle-time id [id ...] [options]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let group = args[2];
         let consumer = args[3];
@@ -1147,6 +1147,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xautoclaim(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1156,7 +1157,6 @@ impl RequestProcessor {
             "XAUTOCLAIM",
             "XAUTOCLAIM key group consumer min-idle-time start [COUNT count] [JUSTID]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let group = args[2];
         let consumer = args[3];
@@ -1313,6 +1313,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xsetid(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1322,7 +1323,6 @@ impl RequestProcessor {
             "XSETID",
             "XSETID key last-id [ENTRIESADDED entries-added] [MAXDELETEDID max-id]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let last_id = StreamId::parse(args[2]).ok_or(RequestExecutionError::InvalidStreamId)?;
         let options = parse_xsetid_options(args, 3, last_id)?;
@@ -1364,6 +1364,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xinfo(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1374,7 +1375,6 @@ impl RequestProcessor {
             "XINFO <subcommand> [<arg> [value] [opt] ...]",
         )?;
         let subcommand = args[1];
-        let selected_db = current_request_selected_db();
 
         if ascii_eq_ignore_case(subcommand, b"HELP") {
             require_exact_arity(args, 2, "XINFO|HELP", "XINFO HELP")?;
@@ -1557,11 +1557,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_xlen(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "XLEN", "XLEN key")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let count = self
             .load_stream_object(DbKeyRef::new(selected_db, &key))?
@@ -1572,6 +1572,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1581,7 +1582,6 @@ impl RequestProcessor {
             "XRANGE",
             "XRANGE key start end [COUNT count]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let start = args[2];
         let end = args[3];
@@ -1609,6 +1609,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xrevrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1618,7 +1619,6 @@ impl RequestProcessor {
             "XREVRANGE",
             "XREVRANGE key end start [COUNT count]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let end = args[2];
         let start = args[3];
@@ -1646,6 +1646,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xtrim(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1655,7 +1656,6 @@ impl RequestProcessor {
             "XTRIM",
             "XTRIM key MAXLEN|MINID [=|~] threshold [LIMIT count]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let spec = parse_xtrim_spec(args)?;
         let mut stream = match self.load_stream_object(DbKeyRef::new(selected_db, &key))? {
@@ -1682,6 +1682,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_xcfgset(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1693,7 +1694,6 @@ impl RequestProcessor {
         )?;
 
         let parsed = parse_xcfgset_arguments(args)?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let Some(mut stream) = self.load_stream_object(DbKeyRef::new(selected_db, &key))? else {
             return Err(RequestExecutionError::NoSuchKey);

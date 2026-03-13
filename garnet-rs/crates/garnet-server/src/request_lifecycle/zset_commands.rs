@@ -4,6 +4,7 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_zadd(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -15,7 +16,6 @@ impl RequestProcessor {
         )?;
         let options = parse_zadd_options(args)?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let mut score_member_pairs =
@@ -112,12 +112,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrem(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let mut zset = match self.load_zset_object(db_key)? {
@@ -152,6 +152,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -161,7 +162,6 @@ impl RequestProcessor {
             "ZRANGE",
             "ZRANGE key min max [BYSCORE|BYLEX] [REV] [WITHSCORES] [LIMIT offset count]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let left = args[2];
@@ -188,6 +188,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrevrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -208,7 +209,6 @@ impl RequestProcessor {
             false
         };
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -241,28 +241,30 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangebyscore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebyscore_like(args, response_out, false)
+        self.handle_zrangebyscore_like(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zrevrangebyscore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebyscore_like(args, response_out, true)
+        self.handle_zrangebyscore_like(selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_zscore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "ZSCORE", "ZSCORE key member")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let member = args[2];
@@ -300,12 +302,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_zcard(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ZCARD", "ZCARD key")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let count = self
@@ -317,12 +319,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_zcount(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
@@ -345,11 +347,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_zlexcount(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -368,27 +370,29 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangebylex(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebylex_like(args, response_out, false)
+        self.handle_zrangebylex_like(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zrevrangebylex(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrangebylex_like(args, response_out, true)
+        self.handle_zrangebylex_like(selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_zremrangebylex(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -426,6 +430,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zintercard(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -435,7 +440,6 @@ impl RequestProcessor {
             "ZINTERCARD",
             "ZINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let selected_db = current_request_selected_db();
         let num_keys = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::AtLeastOneInputKey {
@@ -482,11 +486,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_zdiff(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZDIFF", "ZDIFF numkeys key [key ...] [WITHSCORES]")?;
-        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zdiff")?;
         let with_scores = parse_zdiff_withscores(args, parsed_keys.option_start)?;
         let diff = compute_zdiff(self, selected_db, &parsed_keys.keys)?;
@@ -502,6 +506,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zdiffstore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -511,7 +516,6 @@ impl RequestProcessor {
             "ZDIFFSTORE",
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
-        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zdiffstore")?;
         if parsed_keys.option_start != args.len() {
@@ -525,6 +529,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zinter(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -534,7 +539,6 @@ impl RequestProcessor {
             "ZINTER",
             "ZINTER numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
-        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zinter")?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -561,6 +565,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zinterstore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -570,7 +575,6 @@ impl RequestProcessor {
             "ZINTERSTORE",
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zinterstore")?;
         let combine_options = parse_zset_combine_options(
@@ -593,6 +597,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zunion(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -602,7 +607,6 @@ impl RequestProcessor {
             "ZUNION",
             "ZUNION numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
-        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zunion")?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -629,6 +633,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zunionstore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -638,7 +643,6 @@ impl RequestProcessor {
             "ZUNIONSTORE",
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zunionstore")?;
         let combine_options = parse_zset_combine_options(
@@ -661,6 +665,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zmpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -670,7 +675,6 @@ impl RequestProcessor {
             "ZMPOP",
             "ZMPOP numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
-        let selected_db = current_request_selected_db();
         let parsed_keys = parse_zmpop_numkeys_and_keys(args, 1)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
         self.handle_zmpop_like(
@@ -684,6 +688,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_bzmpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -693,7 +698,6 @@ impl RequestProcessor {
             "BZMPOP",
             "BZMPOP timeout numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
-        let selected_db = current_request_selected_db();
         parse_blocking_timeout_seconds(args, 1)?;
         let parsed_keys = parse_zmpop_numkeys_and_keys(args, 2)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
@@ -708,6 +712,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrangestore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -717,7 +722,6 @@ impl RequestProcessor {
             "ZRANGESTORE",
             "ZRANGESTORE dst src min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]",
         )?;
-        let selected_db = current_request_selected_db();
         let destination = RedisKey::from(args[1]);
         let source = RedisKey::from(args[2]);
         let source_db_key = DbKeyRef::new(selected_db, &source);
@@ -738,6 +742,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zscan(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -748,7 +753,6 @@ impl RequestProcessor {
             "ZSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -780,28 +784,30 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrank(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrank_like(args, response_out, false)
+        self.handle_zrank_like(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zrevrank(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zrank_like(args, response_out, true)
+        self.handle_zrank_like(selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_zincrby(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let increment =
@@ -827,11 +833,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebyrank(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -870,11 +876,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_zremrangebyscore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
@@ -912,6 +918,7 @@ impl RequestProcessor {
 
     fn handle_zrangebyscore_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         reverse: bool,
@@ -931,7 +938,6 @@ impl RequestProcessor {
             },
         )?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let left_bound =
@@ -982,6 +988,7 @@ impl RequestProcessor {
 
     fn handle_zrangebylex_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         reverse: bool,
@@ -1001,7 +1008,6 @@ impl RequestProcessor {
             },
         )?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let left_bound = parse_zlex_bound(args[2])
@@ -1056,11 +1062,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_zmscore(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let zset = self.load_zset_object(db_key)?;
@@ -1092,6 +1098,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_zrandmember(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1102,7 +1109,6 @@ impl RequestProcessor {
             "ZRANDMEMBER",
             "ZRANDMEMBER key [count [WITHSCORES]]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -1201,38 +1207,43 @@ impl RequestProcessor {
 
     pub(super) fn handle_zpopmin(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zpop_like(args, response_out, false)
+        self.handle_zpop_like(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_zpopmax(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_zpop_like(args, response_out, true)
+        self.handle_zpop_like(selected_db, args, response_out, true)
     }
 
     pub(super) fn handle_bzpopmin(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bzpop_like(args, response_out, false)
+        self.handle_bzpop_like(selected_db, args, response_out, false)
     }
 
     pub(super) fn handle_bzpopmax(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_bzpop_like(args, response_out, true)
+        self.handle_bzpop_like(selected_db, args, response_out, true)
     }
 
     fn handle_zrank_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         reverse: bool,
@@ -1257,7 +1268,6 @@ impl RequestProcessor {
             false
         };
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let member = args[2];
@@ -1311,6 +1321,7 @@ impl RequestProcessor {
 
     fn handle_zpop_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         pop_max: bool,
@@ -1326,7 +1337,6 @@ impl RequestProcessor {
                 "ZPOPMIN key [count]"
             },
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let count: i64 = if args.len() == 3 {
             parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?
@@ -1382,6 +1392,7 @@ impl RequestProcessor {
 
     fn handle_bzpop_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         pop_max: bool,
@@ -1396,7 +1407,6 @@ impl RequestProcessor {
                 "BZPOPMIN key [key ...] timeout"
             },
         )?;
-        let selected_db = current_request_selected_db();
         let timeout_index = args.len() - 1;
         parse_blocking_timeout_seconds(args, timeout_index)?;
 

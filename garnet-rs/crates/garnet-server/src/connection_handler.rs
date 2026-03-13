@@ -1822,6 +1822,7 @@ pub(crate) async fn handle_connection(
                                         match transaction_runtime_abort_reason(
                                             &processor,
                                             &replication,
+                                            client_state.selected_db,
                                             &transaction.queued_frames,
                                             max_resp_arguments,
                                         ) {
@@ -2053,9 +2054,10 @@ pub(crate) async fn handle_connection(
                             }
                             continue;
                         }
-                        match processor
-                            .should_reject_mutating_command_for_maxmemory(command_mutating)
-                        {
+                        match processor.should_reject_mutating_command_for_maxmemory(
+                            client_state.selected_db,
+                            command_mutating,
+                        ) {
                             Ok(true) => {
                                 transaction.aborted = true;
                                 append_error_line(
@@ -3265,6 +3267,7 @@ enum TransactionRuntimeAbortReason {
 fn transaction_runtime_abort_reason(
     processor: &RequestProcessor,
     replication: &RedisReplicationCoordinator,
+    selected_db: DbName,
     queued_frames: &[Vec<u8>],
     max_resp_arguments: usize,
 ) -> Result<Option<TransactionRuntimeAbortReason>, RequestExecutionError> {
@@ -3318,7 +3321,7 @@ fn transaction_runtime_abort_reason(
     {
         return Ok(Some(TransactionRuntimeAbortReason::NoReplicas));
     }
-    if processor.should_reject_mutating_command_for_maxmemory(has_mutating_command)? {
+    if processor.should_reject_mutating_command_for_maxmemory(selected_db, has_mutating_command)? {
         return Ok(Some(TransactionRuntimeAbortReason::Oom));
     }
     Ok(None)

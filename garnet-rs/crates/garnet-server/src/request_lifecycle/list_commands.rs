@@ -6,12 +6,12 @@ use super::*;
 impl RequestProcessor {
     pub(super) fn handle_lpush(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSH", "LPUSH key value [value ...]")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let mut list = self.load_list_object(db_key)?.unwrap_or_default();
@@ -26,12 +26,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpush(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSH", "RPUSH key value [value ...]")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let mut list = self.load_list_object(db_key)?.unwrap_or_default();
@@ -46,22 +46,25 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_pop_like(args, response_out, ListSide::Left, "LPOP")
+        self.handle_pop_like(selected_db, args, response_out, ListSide::Left, "LPOP")
     }
 
     pub(super) fn handle_rpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        self.handle_pop_like(args, response_out, ListSide::Right, "RPOP")
+        self.handle_pop_like(selected_db, args, response_out, ListSide::Right, "RPOP")
     }
 
     fn handle_pop_like(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
         side: ListSide,
@@ -75,7 +78,6 @@ impl RequestProcessor {
         ensure_one_of_arities(args, &[2, 3], command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
         let db_key = DbKeyRef::new(selected_db, &key);
         let count = if args.len() == 3 {
             let parsed = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -182,12 +184,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_lrange(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LRANGE", "LRANGE key start stop")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -233,12 +235,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_llen(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "LLEN", "LLEN key")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let length = self
@@ -250,11 +252,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_lindex(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "LINDEX", "LINDEX key index")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -284,6 +286,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpos(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -293,7 +296,6 @@ impl RequestProcessor {
             "LPOS",
             "LPOS key element [RANK rank] [COUNT num-matches] [MAXLEN len]",
         )?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let element = args[2];
@@ -373,11 +375,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_lset(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LSET", "LSET key index element")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let index = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -415,11 +417,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_ltrim(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LTRIM", "LTRIM key start stop")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -475,11 +477,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_lpushx(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "LPUSHX", "LPUSHX key value [value ...]")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let Some(mut list) = self.load_list_object(db_key)? else {
@@ -497,11 +499,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpushx(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "RPUSHX", "RPUSHX key value [value ...]")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let Some(mut list) = self.load_list_object(db_key)? else {
@@ -519,11 +521,11 @@ impl RequestProcessor {
 
     pub(super) fn handle_lrem(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "LREM", "LREM key count element")?;
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let count = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -585,12 +587,12 @@ impl RequestProcessor {
 
     pub(super) fn handle_linsert(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 5, "LINSERT", "LINSERT key BEFORE|AFTER pivot element")?;
 
-        let selected_db = current_request_selected_db();
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let position = args[2];
@@ -622,6 +624,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lmove(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -633,7 +636,6 @@ impl RequestProcessor {
         )?;
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
-        let selected_db = current_request_selected_db();
         let source_side = parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -650,6 +652,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_rpoplpush(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -657,7 +660,6 @@ impl RequestProcessor {
 
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
-        let selected_db = current_request_selected_db();
         self.handle_lmove_like(
             selected_db,
             &source,
@@ -670,6 +672,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_lmpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -683,7 +686,6 @@ impl RequestProcessor {
         if parsed_keys.option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let selected_db = current_request_selected_db();
         let side = parse_list_side(args[parsed_keys.option_start])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, parsed_keys.option_start + 1)?;
@@ -692,6 +694,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_blmpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -706,7 +709,6 @@ impl RequestProcessor {
         if parsed_keys.option_start >= args.len() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        let selected_db = current_request_selected_db();
         let side = parse_list_side(args[parsed_keys.option_start])
             .ok_or(RequestExecutionError::SyntaxError)?;
         let count = parse_list_count_option(args, parsed_keys.option_start + 1)?;
@@ -715,13 +717,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_blpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "BLPOP", "BLPOP key [key ...] timeout")?;
         let timeout_index = args.len() - 1;
         parse_blocking_timeout_seconds(args, timeout_index)?;
-        let selected_db = current_request_selected_db();
         let keys = args[1..timeout_index]
             .iter()
             .map(|key| key.to_vec())
@@ -731,13 +733,13 @@ impl RequestProcessor {
 
     pub(super) fn handle_brpop(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "BRPOP", "BRPOP key [key ...] timeout")?;
         let timeout_index = args.len() - 1;
         parse_blocking_timeout_seconds(args, timeout_index)?;
-        let selected_db = current_request_selected_db();
         let keys = args[1..timeout_index]
             .iter()
             .map(|key| key.to_vec())
@@ -747,6 +749,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_blmove(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -758,7 +761,6 @@ impl RequestProcessor {
         )?;
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
-        let selected_db = current_request_selected_db();
         let source_side = parse_list_side(args[3]).ok_or(RequestExecutionError::SyntaxError)?;
         let destination_side =
             parse_list_side(args[4]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -775,6 +777,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_brpoplpush(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -786,7 +789,6 @@ impl RequestProcessor {
         )?;
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
-        let selected_db = current_request_selected_db();
         parse_blocking_timeout_seconds(args, 3)?;
         self.handle_lmove_like(
             selected_db,
