@@ -1504,21 +1504,17 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let value = args[2];
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
-        self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
+        self.expire_key_if_needed_in_shard(selected_db, &key, shard_index)?;
         crate::debug_sync_point!("request_processor.handle_set.before_store_lock");
 
-        let selected_db = current_request_selected_db();
         if !self.logical_db_uses_main_runtime(selected_db)? {
-            let old_string_value = self
-                .read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
-                .unwrap_or_default();
-            let string_exists = !old_string_value.is_empty()
-                || self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let object_exists = self
-                .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-                .is_some();
+            let old_string_value = self.read_string_value(db_key)?.unwrap_or_default();
+            let string_exists = !old_string_value.is_empty() || self.key_exists(db_key)?;
+            let object_exists = self.object_read(db_key)?.is_some();
 
             if options.return_old_value && object_exists {
                 return Err(RequestExecutionError::WrongType);
@@ -1554,15 +1550,14 @@ impl RequestProcessor {
             }
 
             let preserved_expiration = if options.keep_ttl {
-                self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
-                    .map(|unix_millis| {
-                        let deadline =
-                            instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
-                        ExpirationMetadata {
-                            deadline,
-                            unix_millis: TimestampMillis::new(unix_millis),
-                        }
-                    })
+                self.expiration_unix_millis(db_key).map(|unix_millis| {
+                    let deadline =
+                        instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
+                    ExpirationMetadata {
+                        deadline,
+                        unix_millis: TimestampMillis::new(unix_millis),
+                    }
+                })
             } else {
                 None
             };
@@ -1580,50 +1575,27 @@ impl RequestProcessor {
                 entry.hash_field_expirations.clear();
             })?;
 
-            self.clear_forced_raw_string_encoding(DbKeyRef::new(
-                current_request_selected_db(),
-                &key,
-            ));
-            self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-            self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
+            self.clear_forced_raw_string_encoding(db_key);
+            self.bump_watch_version(db_key);
+            self.record_key_access(db_key, true);
 
             if !string_exists && !object_exists {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_STRING,
-                    b"set",
-                    &key,
-                );
-                self.notify_keyspace_event(current_request_selected_db(), NOTIFY_NEW, b"new", &key);
+                self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
+                self.notify_keyspace_event(selected_db, NOTIFY_NEW, b"new", &key);
             } else {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_OVERWRITTEN,
-                    b"overwritten",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_OVERWRITTEN, b"overwritten", &key);
                 if object_exists {
                     self.notify_keyspace_event(
-                        current_request_selected_db(),
+                        selected_db,
                         NOTIFY_TYPE_CHANGED,
                         b"type_changed",
                         &key,
                     );
                 }
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_STRING,
-                    b"set",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
             }
             if effective_expiration.is_some() {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"expire",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"expire", &key);
             }
 
             if options.return_old_value {
@@ -1659,9 +1631,7 @@ impl RequestProcessor {
             ReadOperationStatus::RetryLater => return Err(RequestExecutionError::StorageBusy),
         };
 
-        let object_exists = self
-            .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-            .is_some();
+        let object_exists = self.object_read(db_key)?.is_some();
 
         // SET GET on a non-string key returns WRONGTYPE and aborts.
         if options.return_old_value && object_exists {
@@ -1698,15 +1668,13 @@ impl RequestProcessor {
         }
 
         let preserved_expiration = if options.keep_ttl {
-            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
-                .map(|unix_millis| {
-                    let deadline =
-                        instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
-                    ExpirationMetadata {
-                        deadline,
-                        unix_millis: TimestampMillis::new(unix_millis),
-                    }
-                })
+            self.expiration_unix_millis(db_key).map(|unix_millis| {
+                let deadline = instant_from_unix_millis(unix_millis).unwrap_or_else(Instant::now);
+                ExpirationMetadata {
+                    deadline,
+                    unix_millis: TimestampMillis::new(unix_millis),
+                }
+            })
         } else {
             None
         };
@@ -1743,7 +1711,7 @@ impl RequestProcessor {
             }
         }
         if object_exists {
-            let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let _ = self.object_delete(db_key)?;
         }
         // Explicit drops to end borrows before subsequent metadata locks.
         #[allow(clippy::drop_non_drop)]
@@ -1754,48 +1722,26 @@ impl RequestProcessor {
         crate::debug_sync_point!("request_processor.handle_set.before_metadata_locks");
 
         if object_exists {
-            self.untrack_object_key_in_shard(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                shard_index,
-            );
+            self.untrack_object_key_in_shard(db_key, shard_index);
         }
-        self.clear_forced_raw_string_encoding(DbKeyRef::new(current_request_selected_db(), &key));
-        self.set_string_expiration_metadata_in_shard(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            shard_index,
-            effective_expiration,
-        );
+        self.clear_forced_raw_string_encoding(db_key);
+        self.set_string_expiration_metadata_in_shard(db_key, shard_index, effective_expiration);
         self.track_string_key_in_shard(&key, shard_index);
-        self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
+        self.bump_watch_version(db_key);
+        self.record_key_access(db_key, true);
 
         if !string_exists && !object_exists {
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STRING, b"set", &key);
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_NEW, b"new", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_NEW, b"new", &key);
         } else {
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_OVERWRITTEN,
-                b"overwritten",
-                &key,
-            );
+            self.notify_keyspace_event(selected_db, NOTIFY_OVERWRITTEN, b"overwritten", &key);
             if object_exists {
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_TYPE_CHANGED,
-                    b"type_changed",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_TYPE_CHANGED, b"type_changed", &key);
             }
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_STRING, b"set", &key);
+            self.notify_keyspace_event(selected_db, NOTIFY_STRING, b"set", &key);
         }
         if effective_expiration.is_some() {
-            self.notify_keyspace_event(
-                current_request_selected_db(),
-                NOTIFY_GENERIC,
-                b"expire",
-                &key,
-            );
+            self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"expire", &key);
         }
 
         // TLA+ : ServerProcessSetApply
@@ -1902,9 +1848,11 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "DIGEST", "DIGEST key")?;
 
         let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
         let logically_expired =
-            self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
+            self.expire_key_if_needed_in_shard(selected_db, &key, shard_index)?;
         if logically_expired {
             if self.resp_protocol_version().is_resp3() {
                 append_null(response_out);
@@ -1914,13 +1862,11 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        if let Some(value) =
-            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
-        {
+        if let Some(value) = self.read_string_value(db_key)? {
             append_bulk_string(response_out, &string_digest_hex_bytes(&value));
             return Ok(());
         }
-        if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+        if self.object_key_exists(db_key)? {
             return Err(RequestExecutionError::WrongType);
         }
 
@@ -1949,12 +1895,12 @@ impl RequestProcessor {
         }
 
         let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
-        self.expire_key_if_needed_in_shard(current_request_selected_db(), &key, shard_index)?;
+        self.expire_key_if_needed_in_shard(selected_db, &key, shard_index)?;
 
-        if let Some(value) =
-            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
-        {
+        if let Some(value) = self.read_string_value(db_key)? {
             let condition = parse_delex_condition(args[2], args[3])?;
             if !string_write_condition_matches(Some(value.as_slice()), &condition)? {
                 append_integer(response_out, 0);
@@ -1964,7 +1910,7 @@ impl RequestProcessor {
             self.handle_del(&translated, response_out)?;
             return Ok(());
         }
-        if self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))? {
+        if self.object_key_exists(db_key)? {
             return Err(RequestExecutionError::KeyShouldBeStringForConditionalDelete);
         }
 
@@ -2033,34 +1979,29 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "DEL", "DEL key [key ...]")?;
 
         let keys: Vec<Vec<u8>> = args[1..].iter().map(|arg| arg.to_vec()).collect();
+        let selected_db = current_request_selected_db();
 
         for key in &keys {
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), key))?;
+            self.expire_key_if_needed(DbKeyRef::new(selected_db, key.as_slice()))?;
         }
 
         let mut deleted = 0i64;
         for key in keys {
-            let string_deleted =
-                self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let object_deleted =
-                match self.object_delete(DbKeyRef::new(current_request_selected_db(), &key)) {
-                    Ok(value) => value,
-                    Err(error) => {
-                        self.reset_lazyfree_pending_objects();
-                        return Err(error);
-                    }
-                };
+            let db_key = DbKeyRef::new(selected_db, &key);
+            let string_deleted = self.delete_string_value(db_key)?;
+            let object_deleted = match self.object_delete(db_key) {
+                Ok(value) => value,
+                Err(error) => {
+                    self.reset_lazyfree_pending_objects();
+                    return Err(error);
+                }
+            };
             if string_deleted || object_deleted {
                 deleted += 1;
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", &key);
             }
             if string_deleted && !object_deleted {
-                self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
+                self.bump_watch_version(db_key);
             }
         }
 
@@ -2076,12 +2017,14 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "TOUCH", "TOUCH key [key ...]")?;
 
         let mut touched = 0i64;
+        let selected_db = current_request_selected_db();
         for arg in &args[1..] {
             let key = arg.to_vec();
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
+            if self.key_exists_any(db_key)? {
                 touched += 1;
-                self.record_key_access(DbKeyRef::new(current_request_selected_db(), &key), true);
+                self.record_key_access(db_key, true);
             }
         }
         append_integer(response_out, touched);
@@ -2096,9 +2039,10 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "UNLINK", "UNLINK key [key ...]")?;
 
         let keys: Vec<Vec<u8>> = args[1..].iter().map(|arg| arg.to_vec()).collect();
+        let selected_db = current_request_selected_db();
 
         for key in &keys {
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), key))?;
+            self.expire_key_if_needed(DbKeyRef::new(selected_db, key.as_slice()))?;
         }
 
         self.set_lazyfree_pending_objects(u64::try_from(keys.len()).unwrap_or(u64::MAX));
@@ -2106,19 +2050,13 @@ impl RequestProcessor {
         let mut deleted = 0i64;
         let mut lazyfreed = 0u64;
         for key in keys {
-            let object_lazyfree_weight = self.unlink_object_lazyfree_weight(&key)?;
-            let string_deleted =
-                self.delete_string_value(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let object_deleted =
-                self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let db_key = DbKeyRef::new(selected_db, &key);
+            let object_lazyfree_weight = self.unlink_object_lazyfree_weight(db_key)?;
+            let string_deleted = self.delete_string_value(db_key)?;
+            let object_deleted = self.object_delete(db_key)?;
             if string_deleted || object_deleted {
                 deleted += 1;
-                self.notify_keyspace_event(
-                    current_request_selected_db(),
-                    NOTIFY_GENERIC,
-                    b"del",
-                    &key,
-                );
+                self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"del", &key);
                 if string_deleted {
                     lazyfreed = lazyfreed.saturating_add(1);
                 } else if object_deleted {
@@ -2126,7 +2064,7 @@ impl RequestProcessor {
                 }
             }
             if string_deleted && !object_deleted {
-                self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
+                self.bump_watch_version(db_key);
             }
         }
 
@@ -2136,9 +2074,11 @@ impl RequestProcessor {
         Ok(())
     }
 
-    fn unlink_object_lazyfree_weight(&self, key: &[u8]) -> Result<u64, RequestExecutionError> {
-        let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))?
-        else {
+    fn unlink_object_lazyfree_weight(
+        &self,
+        db_key: DbKeyRef<'_>,
+    ) -> Result<u64, RequestExecutionError> {
+        let Some(object) = self.object_read(db_key)? else {
             return Ok(0);
         };
         if object.object_type != STREAM_OBJECT_TYPE_TAG {

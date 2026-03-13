@@ -7529,6 +7529,55 @@ fn string_advanced_commands_are_scoped_by_selected_db_without_db0_fallback() {
 }
 
 #[test]
+fn string_write_and_delete_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+
+    assert_command_response_in_db(&processor, "SET shared zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared nine", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "GETSET shared newer", b"$4\r\nnine\r\n", db9);
+    assert_command_response_in_db(&processor, "GET shared", b"$4\r\nzero\r\n", db0);
+    assert_command_response_in_db(&processor, "GET shared", b"$5\r\nnewer\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET victim alive", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET victim dead", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "GETDEL victim", b"$4\r\ndead\r\n", db9);
+    assert_command_response_in_db(&processor, "GET victim", b"$5\r\nalive\r\n", db0);
+    assert_command_response_in_db(&processor, "GET victim", b"$-1\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET doomed stay", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET doomed go", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "DELEX doomed IFEQ go", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET doomed", b"$4\r\nstay\r\n", db0);
+    assert_command_response_in_db(&processor, "GET doomed", b"$-1\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET digest alpha", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET digest omega", b"+OK\r\n", db9);
+    let db0_digest = execute_command_line_in_db(&processor, "DIGEST digest", db0);
+    let db9_digest = execute_command_line_in_db(&processor, "DIGEST digest", db9);
+    assert_ne!(db0_digest, db9_digest, "digest must stay DB-scoped");
+
+    assert_command_response_in_db(&processor, "SET gone keep", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET gone drop", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "DEL gone", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "EXISTS gone", b":1\r\n", db0);
+    assert_command_response_in_db(&processor, "EXISTS gone", b":0\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET unlinkme keep", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET unlinkme drop", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "UNLINK unlinkme", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET unlinkme", b"$4\r\nkeep\r\n", db0);
+    assert_command_response_in_db(&processor, "GET unlinkme", b"$-1\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET touchme yes", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "TOUCH touchme", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "TOUCH touchme", b":1\r\n", db9);
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();
