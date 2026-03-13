@@ -775,16 +775,17 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "MOVE", "MOVE key db")?;
         let target_db = parse_configured_db_name_arg(args[2], self.configured_databases())?;
-        if target_db == super::current_request_selected_db() {
+        let selected_db = current_request_selected_db();
+        if target_db == selected_db {
             return Err(RequestExecutionError::SourceDestinationObjectsSame);
         }
         let key = RedisKey::from(args[1]);
+        let db_key = DbKeyRef::new(selected_db, &key);
 
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-        self.active_expire_hash_fields_for_key(DbKeyRef::new(current_request_selected_db(), &key))?;
+        self.expire_key_if_needed(db_key)?;
+        self.active_expire_hash_fields_for_key(db_key)?;
 
-        let Some(mut entry) = self.export_migration_entry(current_request_selected_db(), &key)?
-        else {
+        let Some(mut entry) = self.export_migration_entry(selected_db, &key)? else {
             append_integer(response_out, 0);
             return Ok(());
         };
@@ -797,8 +798,8 @@ impl RequestProcessor {
 
         entry.key = key.clone().into();
         self.import_migration_entry(target_db, &entry)?;
-        self.delete_string_key_for_migration(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let _ = self.object_delete(DbKeyRef::new(current_request_selected_db(), &key))?;
+        self.delete_string_key_for_migration(db_key)?;
+        let _ = self.object_delete(db_key)?;
 
         append_integer(response_out, 1);
         Ok(())
@@ -1445,20 +1446,18 @@ impl RequestProcessor {
         }
 
         let key = RedisKey::from(args[2]);
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
+        self.expire_key_if_needed(db_key)?;
 
-        if let Some(value) =
-            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
-        {
+        if let Some(value) = self.read_string_value(db_key)? {
             append_integer(
                 response_out,
                 estimate_string_memory_usage_bytes(key.len(), value.len()),
             );
             return Ok(());
         }
-        if let Some(object) =
-            self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-        {
+        if let Some(object) = self.object_read(db_key)? {
             append_integer(
                 response_out,
                 estimate_memory_usage_bytes(key.len(), object.payload.len()),
@@ -1554,21 +1553,19 @@ impl RequestProcessor {
             } else {
                 0
             };
+            let selected_db = current_request_selected_db();
 
             for index in 0..key_count {
                 let key_name = encode_debug_populate_key_name(key_prefix, index);
                 let key = RedisKey::from(key_name.as_slice());
-                self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-                if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+                let db_key = DbKeyRef::new(selected_db, &key);
+                self.expire_key_if_needed(db_key)?;
+                if self.key_exists_any(db_key)? {
                     continue;
                 }
 
                 let value = encode_debug_populate_value(index, value_size);
-                self.upsert_string_value_for_migration(
-                    DbKeyRef::new(current_request_selected_db(), &key),
-                    value.as_slice(),
-                    None,
-                )?;
+                self.upsert_string_value_for_migration(db_key, value.as_slice(), None)?;
             }
 
             append_simple_string(response_out, b"OK");
@@ -1623,14 +1620,17 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"DIGEST-VALUE") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG DIGEST-VALUE key")?;
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            let digest = self.debug_digest_value_for_key(&key)?;
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
+            let digest = self.debug_digest_value_for_key(db_key)?;
             append_bulk_string(response_out, &digest);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DIGEST") {
             require_exact_arity(args, 2, "DEBUG", "DEBUG DIGEST")?;
-            let digest = self.debug_dataset_digest()?;
+            let selected_db = current_request_selected_db();
+            let digest = self.debug_dataset_digest(selected_db)?;
             append_bulk_string(response_out, &digest);
             return Ok(());
         }
@@ -1646,14 +1646,14 @@ impl RequestProcessor {
             };
 
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
 
-            let object = match self
-                .object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-            {
+            let object = match self.object_read(db_key)? {
                 Some(object) => object,
                 None => {
-                    if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+                    if self.key_exists_any(db_key)? {
                         append_error(
                             response_out,
                             b"ERR The value stored at the specified key is not represented using an hash table",
@@ -1672,18 +1672,12 @@ impl RequestProcessor {
             let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
             let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
-                self.set_encoding_floor(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))
+                self.set_encoding_floor(db_key)
             } else {
                 None
             };
             let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
-                && self.has_hash_field_expirations_for_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                && self.has_hash_field_expirations_for_key(db_key);
 
             let encoding = object_encoding_name(
                 object.object_type,
@@ -1710,10 +1704,7 @@ impl RequestProcessor {
                 storage_failure("debug.htstats-key", "failed to decode set payload")
             })?;
             let member_count = payload.member_count();
-            let snapshot = self.set_debug_ht_stats_snapshot(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                member_count,
-            );
+            let snapshot = self.set_debug_ht_stats_snapshot(db_key, member_count);
             let stats = format_set_debug_ht_stats_payload(snapshot, member_count, full);
             if self.resp_protocol_version().is_resp3() {
                 append_verbatim_string(response_out, b"txt", &stats);
@@ -1819,10 +1810,12 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"OBJECT") {
             require_exact_arity(args, 3, "DEBUG", "DEBUG OBJECT key")?;
             let key = RedisKey::from(args[2]);
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
             let allow_expired_debug_access =
                 !self.active_expire_enabled() || self.allow_access_expired();
             if !allow_expired_debug_access {
-                self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+                self.expire_key_if_needed(db_key)?;
             }
             let list_max = self.list_max_listpack_size.load(Ordering::Acquire);
             let list_compress_depth = self.list_compress_depth();
@@ -1834,20 +1827,17 @@ impl RequestProcessor {
                 format!(" ql_listpack_max:{list_max} ql_compressed:{ql_compressed}")
             };
             let string_value = with_expired_data_access(allow_expired_debug_access, || {
-                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))
+                self.read_string_value(db_key)
             })?;
             let object_value = if string_value.is_some() {
                 None
             } else {
-                self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
+                self.object_read(db_key)?
             };
             let (encoding, serialized_len) = if let Some(value) = string_value {
                 let enc = String::from_utf8_lossy(string_encoding_name(
                     &value,
-                    self.string_encoding_is_forced_raw(DbKeyRef::new(
-                        current_request_selected_db(),
-                        key.as_slice(),
-                    )),
+                    self.string_encoding_is_forced_raw(db_key),
                 ))
                 .into_owned();
                 let len = value.len();
@@ -1856,13 +1846,9 @@ impl RequestProcessor {
                 // Check forced-quicklist flag so DEBUG OBJECT is consistent
                 // with OBJECT ENCODING for lists with oversized elements.
                 if object.object_type == LIST_OBJECT_TYPE_TAG
-                    && self.list_quicklist_encoding_is_forced(DbKeyRef::new(
-                        current_request_selected_db(),
-                        &key,
-                    ))
+                    && self.list_quicklist_encoding_is_forced(db_key)
                 {
                     let len = object.payload.len();
-                    let db_key = DbKeyRef::new(current_request_selected_db(), &key);
                     let lru = self.key_lru_millis(db_key).unwrap_or(0);
                     let idle = self.key_idle_seconds(db_key).unwrap_or(0);
                     let encoding = "quicklist";
@@ -1885,18 +1871,12 @@ impl RequestProcessor {
                 let set_max_lp_value = self.set_max_listpack_value.load(Ordering::Acquire);
                 let set_max_is = self.set_max_intset_entries.load(Ordering::Acquire);
                 let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
-                    self.set_encoding_floor(DbKeyRef::new(
-                        current_request_selected_db(),
-                        key.as_slice(),
-                    ))
+                    self.set_encoding_floor(db_key)
                 } else {
                     None
                 };
                 let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
-                    && self.has_hash_field_expirations_for_key(DbKeyRef::new(
-                        current_request_selected_db(),
-                        key.as_slice(),
-                    ));
+                    && self.has_hash_field_expirations_for_key(db_key);
                 let enc = match object_encoding_name(
                     object.object_type,
                     &object.payload,
@@ -1918,7 +1898,6 @@ impl RequestProcessor {
             } else {
                 return Err(RequestExecutionError::NoSuchKey);
             };
-            let db_key = DbKeyRef::new(current_request_selected_db(), &key);
             let lru = self.key_lru_millis(db_key).unwrap_or(0);
             let idle = self.key_idle_seconds(db_key).unwrap_or(0);
             let quicklist_metadata = quicklist_debug_suffix(&encoding);
@@ -2042,23 +2021,16 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT ENCODING key")?;
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            if let Some(value) =
-                self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
-            {
-                let encoding = string_encoding_name(
-                    &value,
-                    self.string_encoding_is_forced_raw(DbKeyRef::new(
-                        current_request_selected_db(),
-                        key.as_slice(),
-                    )),
-                );
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
+            if let Some(value) = self.read_string_value(db_key)? {
+                let encoding =
+                    string_encoding_name(&value, self.string_encoding_is_forced_raw(db_key));
                 append_bulk_string(response_out, encoding);
                 return Ok(());
             }
-            let Some(object) =
-                self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-            else {
+            let Some(object) = self.object_read(db_key)? else {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -2067,10 +2039,7 @@ impl RequestProcessor {
                 return Ok(());
             };
             if object.object_type == LIST_OBJECT_TYPE_TAG
-                && self.list_quicklist_encoding_is_forced(DbKeyRef::new(
-                    current_request_selected_db(),
-                    &key,
-                ))
+                && self.list_quicklist_encoding_is_forced(db_key)
             {
                 append_bulk_string(response_out, b"quicklist");
                 return Ok(());
@@ -2083,18 +2052,12 @@ impl RequestProcessor {
             let set_max_listpack_value = self.set_max_listpack_value.load(Ordering::Acquire);
             let set_max_intset_entries = self.set_max_intset_entries.load(Ordering::Acquire);
             let set_encoding_floor = if object.object_type == SET_OBJECT_TYPE_TAG {
-                self.set_encoding_floor(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ))
+                self.set_encoding_floor(db_key)
             } else {
                 None
             };
             let hash_has_field_expirations = object.object_type == HASH_OBJECT_TYPE_TAG
-                && self.has_hash_field_expirations_for_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                && self.has_hash_field_expirations_for_key(db_key);
             let encoding = object_encoding_name(
                 object.object_type,
                 &object.payload,
@@ -2115,8 +2078,10 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"REFCOUNT") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT REFCOUNT key")?;
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            if self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
+            if self.key_exists_any(db_key)? {
                 append_integer(response_out, 1);
             } else if resp3 {
                 append_null(response_out);
@@ -2129,8 +2094,10 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"IDLETIME") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT IDLETIME key")?;
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
+            if !self.key_exists_any(db_key)? {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -2138,19 +2105,17 @@ impl RequestProcessor {
                 }
                 return Ok(());
             }
-            append_integer(
-                response_out,
-                self.key_idle_seconds(DbKeyRef::new(current_request_selected_db(), &key))
-                    .unwrap_or(0),
-            );
+            append_integer(response_out, self.key_idle_seconds(db_key).unwrap_or(0));
             return Ok(());
         }
 
         if ascii_eq_ignore_case(subcommand, b"FREQ") {
             require_exact_arity(args, 3, "OBJECT", "OBJECT FREQ key")?;
             let key = RedisKey::from(args[2]);
-            self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-            if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+            let selected_db = current_request_selected_db();
+            let db_key = DbKeyRef::new(selected_db, &key);
+            self.expire_key_if_needed(db_key)?;
+            if !self.key_exists_any(db_key)? {
                 if resp3 {
                     append_null(response_out);
                 } else {
@@ -2160,10 +2125,7 @@ impl RequestProcessor {
             }
             append_integer(
                 response_out,
-                i64::from(
-                    self.key_frequency(DbKeyRef::new(current_request_selected_db(), &key))
-                        .unwrap_or(0),
-                ),
+                i64::from(self.key_frequency(db_key).unwrap_or(0)),
             );
             return Ok(());
         }
@@ -2179,19 +2141,16 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "KEYS", "KEYS pattern")?;
         let pattern = args[1];
         let allow_access_expired = self.allow_access_expired();
+        let selected_db = current_request_selected_db();
 
-        let mut keys: HashSet<RedisKey> = self
-            .string_keys_snapshot(current_request_selected_db())
-            .into_iter()
-            .collect();
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
 
         let mut matched = Vec::new();
         for key in keys {
-            self.expire_key_if_needed(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ))?;
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
 
             if allow_access_expired {
                 if redis_glob_match(pattern, key.as_slice(), CaseSensitivity::Sensitive, 0) {
@@ -2200,21 +2159,13 @@ impl RequestProcessor {
                 continue;
             }
 
-            let string_exists =
-                self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
-            let object_exists = self
-                .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let string_exists = self.key_exists(db_key)?;
+            let object_exists = self.object_key_exists(db_key)?;
             if !string_exists {
-                self.untrack_string_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.untrack_string_key(db_key);
             }
             if !object_exists {
-                self.untrack_object_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.untrack_object_key(db_key);
             }
             if !(string_exists || object_exists) {
                 continue;
@@ -2237,12 +2188,11 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "RANDOMKEY", "RANDOMKEY")?;
+        let selected_db = current_request_selected_db();
 
-        let mut keys: HashSet<RedisKey> = self
-            .string_keys_snapshot(current_request_selected_db())
-            .into_iter()
-            .collect();
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
         let expire_paused = self.is_expire_action_paused();
 
         let mut live_keys = Vec::new();
@@ -2254,26 +2204,16 @@ impl RequestProcessor {
                 live_keys.push(key);
                 continue;
             }
-            self.expire_key_if_needed(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ))?;
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
 
-            let string_exists =
-                self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
-            let object_exists = self
-                .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let string_exists = self.key_exists(db_key)?;
+            let object_exists = self.object_key_exists(db_key)?;
             if !string_exists {
-                self.untrack_string_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.untrack_string_key(db_key);
             }
             if !object_exists {
-                self.untrack_object_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.untrack_object_key(db_key);
             }
             if string_exists || object_exists {
                 live_keys.push(key);
@@ -2316,6 +2256,7 @@ impl RequestProcessor {
         // means an unknown type was given.
         let mut type_filter: Option<Option<ScanTypeFilter>> = None;
         let mut index = 2usize;
+        let selected_db = current_request_selected_db();
         while index < args.len() {
             let token = args[index];
             if ascii_eq_ignore_case(token, b"MATCH") {
@@ -2351,11 +2292,9 @@ impl RequestProcessor {
             return Err(RequestExecutionError::SyntaxError);
         }
 
-        let mut keys: HashSet<RedisKey> = self
-            .string_keys_snapshot(current_request_selected_db())
-            .into_iter()
-            .collect();
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+        let mut keys: HashSet<RedisKey> =
+            self.string_keys_snapshot(selected_db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(selected_db));
 
         let mut matched = Vec::new();
         for key in keys {
@@ -2369,25 +2308,15 @@ impl RequestProcessor {
                 continue;
             }
 
-            self.expire_key_if_needed(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ))?;
-            let string_exists =
-                self.key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
-            let object_exists = self
-                .object_key_exists(DbKeyRef::new(current_request_selected_db(), key.as_slice()))?;
+            let db_key = DbKeyRef::new(selected_db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
+            let string_exists = self.key_exists(db_key)?;
+            let object_exists = self.object_key_exists(db_key)?;
             if !string_exists {
-                self.untrack_string_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.untrack_string_key(db_key);
             }
             if !object_exists {
-                self.untrack_object_key(DbKeyRef::new(
-                    current_request_selected_db(),
-                    key.as_slice(),
-                ));
+                self.untrack_object_key(db_key);
             }
             if !(string_exists || object_exists) {
                 continue;
@@ -2399,6 +2328,7 @@ impl RequestProcessor {
                     continue;
                 };
                 if !self.scan_key_matches_type_filter(
+                    selected_db,
                     key.as_slice(),
                     string_exists,
                     object_exists,
@@ -2418,6 +2348,7 @@ impl RequestProcessor {
 
     fn scan_key_matches_type_filter(
         &self,
+        db: DbName,
         key: &[u8],
         string_exists: bool,
         object_exists: bool,
@@ -2429,9 +2360,9 @@ impl RequestProcessor {
         if string_exists || !object_exists {
             return Ok(false);
         }
-        let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))?
-        else {
-            self.untrack_object_key(DbKeyRef::new(current_request_selected_db(), key));
+        let db_key = DbKeyRef::new(db, key);
+        let Some(object) = self.object_read(db_key)? else {
+            self.untrack_object_key(db_key);
             return Ok(false);
         };
         Ok(scan_object_type_matches_filter(
@@ -2938,19 +2869,17 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "DUMP", "DUMP key")?;
         let key = RedisKey::from(args[1]);
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-        if let Some(value) =
-            self.read_string_value(DbKeyRef::new(current_request_selected_db(), &key))?
-        {
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
+        self.expire_key_if_needed(db_key)?;
+        if let Some(value) = self.read_string_value(db_key)? {
             append_bulk_string(
                 response_out,
                 &encode_dump_blob(MigrationValue::String(value.into())),
             );
             return Ok(());
         }
-        if let Some(object) =
-            self.object_read(DbKeyRef::new(current_request_selected_db(), &key))?
-        {
+        if let Some(object) = self.object_read(db_key)? {
             append_bulk_string(
                 response_out,
                 &encode_dump_blob(MigrationValue::Object {
@@ -4838,14 +4767,15 @@ impl RequestProcessor {
         Ok(payload)
     }
 
-    fn debug_digest_value_for_key(&self, key: &[u8]) -> Result<Vec<u8>, RequestExecutionError> {
-        if let Some(value) =
-            self.read_string_value(DbKeyRef::new(current_request_selected_db(), key))?
-        {
+    fn debug_digest_value_for_key(
+        &self,
+        db_key: DbKeyRef<'_>,
+    ) -> Result<Vec<u8>, RequestExecutionError> {
+        if let Some(value) = self.read_string_value(db_key)? {
             return Ok(fnv_hex_digest(1, &value));
         }
 
-        if let Some(object) = self.object_read(DbKeyRef::new(current_request_selected_db(), key))? {
+        if let Some(object) = self.object_read(db_key)? {
             let encoded = object.encode();
             return Ok(fnv_hex_digest(2, encoded.as_slice()));
         }
@@ -4853,29 +4783,21 @@ impl RequestProcessor {
         Ok(fnv_hex_digest(0, b""))
     }
 
-    fn debug_dataset_digest(&self) -> Result<Vec<u8>, RequestExecutionError> {
-        let mut keys: Vec<RedisKey> = self
-            .string_keys_snapshot(current_request_selected_db())
-            .into_iter()
-            .collect();
-        keys.extend(self.object_keys_snapshot(current_request_selected_db()));
+    fn debug_dataset_digest(&self, db: DbName) -> Result<Vec<u8>, RequestExecutionError> {
+        let mut keys: Vec<RedisKey> = self.string_keys_snapshot(db).into_iter().collect();
+        keys.extend(self.object_keys_snapshot(db));
         keys.sort();
         keys.dedup();
 
         let mut combined = Vec::new();
         for key in keys {
-            self.expire_key_if_needed(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ))?;
-            self.active_expire_hash_fields_for_key(DbKeyRef::new(
-                current_request_selected_db(),
-                key.as_slice(),
-            ))?;
-            if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), key.as_slice()))? {
+            let db_key = DbKeyRef::new(db, key.as_slice());
+            self.expire_key_if_needed(db_key)?;
+            self.active_expire_hash_fields_for_key(db_key)?;
+            if !self.key_exists_any(db_key)? {
                 continue;
             }
-            let digest = self.debug_digest_value_for_key(key.as_slice())?;
+            let digest = self.debug_digest_value_for_key(db_key)?;
             combined.extend_from_slice(&(key.len() as u64).to_le_bytes());
             combined.extend_from_slice(key.as_slice());
             combined.extend_from_slice(&(digest.len() as u64).to_le_bytes());

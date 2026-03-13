@@ -7743,6 +7743,118 @@ fn string_expiration_commands_are_scoped_by_selected_db_without_db0_fallback() {
 }
 
 #[test]
+fn server_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db1 = DbName::new(1);
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+
+    assert_command_response_in_db(&processor, "SET move zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET move nine", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "MOVE move 1", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET move", b"$4\r\nzero\r\n", db0);
+    assert_command_response_in_db(&processor, "GET move", b"$-1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET move", b"$4\r\nnine\r\n", db1);
+
+    assert_command_response_in_db(&processor, "SET mem tiny", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET mem much-longer-value", b"+OK\r\n", db9);
+    let memory_db0 = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "MEMORY USAGE mem",
+        db0,
+    ));
+    let memory_db9 = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "MEMORY USAGE mem",
+        db9,
+    ));
+    assert!(
+        memory_db9 > memory_db0,
+        "db9 memory usage should reflect db9 payload only: db0={memory_db0} db9={memory_db9}"
+    );
+
+    assert_command_response_in_db(&processor, "SET digest zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET digest nine", b"+OK\r\n", db9);
+    let digest_db0 = execute_command_line_in_db(&processor, "DEBUG DIGEST-VALUE digest", db0);
+    let digest_db9 = execute_command_line_in_db(&processor, "DEBUG DIGEST-VALUE digest", db9);
+    assert_ne!(
+        digest_db0, digest_db9,
+        "DEBUG DIGEST-VALUE should use the selected logical DB"
+    );
+
+    assert_command_response_in_db(&processor, "DEBUG POPULATE 2 scoped 8", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "EXISTS scoped:0 scoped:1", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "EXISTS scoped:0 scoped:1", b":2\r\n", db9);
+
+    assert_command_response_in_db(&processor, "FLUSHDB", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "FLUSHDB", b"+OK\r\n", db9);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET set-max-listpack-value 1",
+        b"+OK\r\n",
+    );
+    assert_command_response_in_db(&processor, "SADD inspect 1 2", b":2\r\n", db0);
+    assert_command_response_in_db(&processor, "SADD inspect aa bb", b":2\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING inspect",
+        b"$6\r\nintset\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "OBJECT ENCODING inspect",
+        b"$9\r\nhashtable\r\n",
+        db9,
+    );
+
+    assert_command_response_in_db(&processor, "SET scan:zero value", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET scan:nine value", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "KEYS scan:*", b"*1\r\n$9\r\nscan:zero\r\n", db0);
+    assert_command_response_in_db(&processor, "KEYS scan:*", b"*1\r\n$9\r\nscan:nine\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "SCAN 0 MATCH scan:* TYPE string",
+        b"*2\r\n$1\r\n0\r\n*1\r\n$9\r\nscan:zero\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "SCAN 0 MATCH scan:* TYPE string",
+        b"*2\r\n$1\r\n0\r\n*1\r\n$9\r\nscan:nine\r\n",
+        db9,
+    );
+
+    assert_command_response_in_db(&processor, "FLUSHDB", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "FLUSHDB", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "SET only0 value", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET only9 value", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "RANDOMKEY", b"$5\r\nonly0\r\n", db0);
+    assert_command_response_in_db(&processor, "RANDOMKEY", b"$5\r\nonly9\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET dump same-zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET dump same-nine", b"+OK\r\n", db9);
+    let dump_db0 =
+        parse_bulk_payload(&execute_command_line_in_db(&processor, "DUMP dump", db0)).unwrap();
+    let dump_db9 =
+        parse_bulk_payload(&execute_command_line_in_db(&processor, "DUMP dump", db9)).unwrap();
+    assert_ne!(
+        dump_db0, dump_db9,
+        "DUMP should read the selected logical DB"
+    );
+
+    let dataset_digest_db0 = execute_command_line_in_db(&processor, "DEBUG DIGEST", db0);
+    let dataset_digest_db9 = execute_command_line_in_db(&processor, "DEBUG DIGEST", db9);
+    assert_ne!(
+        dataset_digest_db0, dataset_digest_db9,
+        "DEBUG DIGEST should use the selected logical DB"
+    );
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();

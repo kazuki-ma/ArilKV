@@ -3143,7 +3143,8 @@ impl RequestProcessor {
         require_exact_arity(args, 2, command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        let db_key = DbKeyRef::new(current_request_selected_db(), &key);
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
         if !self.key_exists_any(db_key)? {
