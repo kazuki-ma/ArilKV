@@ -996,13 +996,19 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
 
     processor
         .object_upsert(
-            DbKeyRef::new(current_request_selected_db(), b"obj"),
+            DbKeyRef::new(
+                REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db),
+                b"obj",
+            ),
             ObjectTypeTag::Hash,
             b"payload",
         )
         .unwrap();
     let object = processor
-        .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
+        .object_read(DbKeyRef::new(
+            REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db),
+            b"obj",
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Hash);
@@ -1040,7 +1046,10 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
 
     assert!(
         processor
-            .object_read(DbKeyRef::new(current_request_selected_db(), b"obj"))
+            .object_read(DbKeyRef::new(
+                REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db),
+                b"obj"
+            ))
             .unwrap()
             .is_none()
     );
@@ -3761,7 +3770,10 @@ fn sadd_uses_contiguous_range_encoding_for_canonical_integer_sequences() {
     }
 
     let object = processor
-        .object_read(DbKeyRef::new(current_request_selected_db(), b"numbers"))
+        .object_read(DbKeyRef::new(
+            REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db),
+            b"numbers",
+        ))
         .unwrap()
         .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Set);
@@ -3795,7 +3807,10 @@ fn sadd_falls_back_from_contiguous_range_encoding_for_non_canonical_members() {
     );
 
     let object = processor
-        .object_read(DbKeyRef::new(current_request_selected_db(), b"numbers"))
+        .object_read(DbKeyRef::new(
+            REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db),
+            b"numbers",
+        ))
         .unwrap()
         .unwrap();
     assert!(matches!(

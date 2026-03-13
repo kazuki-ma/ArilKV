@@ -1510,7 +1510,7 @@ impl RequestProcessor {
 
         let key = RedisKey::from(args[1]);
         let value = args[2];
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
         let options = parse_set_options(args)?;
@@ -1856,7 +1856,7 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "DIGEST", "DIGEST key")?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
         let logically_expired =
@@ -1903,7 +1903,7 @@ impl RequestProcessor {
         }
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.expire_key_if_needed_in_shard(selected_db, &key, shard_index)?;
@@ -1954,7 +1954,7 @@ impl RequestProcessor {
             .chunks_exact(2)
             .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
             .collect();
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
 
         for (key, _) in &key_value_pairs {
             let db_key = DbKeyRef::new(selected_db, key.as_slice());
@@ -1992,7 +1992,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "DEL", "DEL key [key ...]")?;
 
         let keys: Vec<Vec<u8>> = args[1..].iter().map(|arg| arg.to_vec()).collect();
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
 
         for key in &keys {
             self.expire_key_if_needed(DbKeyRef::new(selected_db, key.as_slice()))?;
@@ -2030,7 +2030,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "TOUCH", "TOUCH key [key ...]")?;
 
         let mut touched = 0i64;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         for arg in &args[1..] {
             let key = arg.to_vec();
             let db_key = DbKeyRef::new(selected_db, &key);
@@ -2052,7 +2052,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "UNLINK", "UNLINK key [key ...]")?;
 
         let keys: Vec<Vec<u8>> = args[1..].iter().map(|arg| arg.to_vec()).collect();
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
 
         for key in &keys {
             self.expire_key_if_needed(DbKeyRef::new(selected_db, key.as_slice()))?;
@@ -2137,7 +2137,7 @@ impl RequestProcessor {
         require_exact_arity(args, 3, command, expected)?;
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
-        let selected_db = super::current_request_selected_db();
+        let selected_db = super::REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let source_db_key = DbKeyRef::new(selected_db, &source);
         let destination_db_key = DbKeyRef::new(selected_db, &destination);
 
@@ -2204,7 +2204,7 @@ impl RequestProcessor {
         )?;
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
-        let source_db = super::current_request_selected_db();
+        let source_db = super::REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let source_db_key = DbKeyRef::new(source_db, &source);
 
         let mut replace = false;
@@ -2331,7 +2331,7 @@ impl RequestProcessor {
         delta: i64,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, key);
         self.expire_key_if_needed(db_key)?;
         if !self.key_exists(db_key)? && self.object_key_exists(db_key)? {
@@ -2417,7 +2417,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "EXISTS", "EXISTS key [key ...]")?;
 
         let mut exists = 0i64;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         for arg in &args[1..] {
             let key = arg.to_vec();
             let db_key = DbKeyRef::new(selected_db, &key);
@@ -2439,7 +2439,7 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "TYPE", "TYPE key")?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         if self.key_exists(db_key)? {
@@ -2463,7 +2463,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 2, "MGET", "MGET key [key ...]")?;
 
         let resp3 = self.resp_protocol_version().is_resp3();
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         append_array_length(response_out, args.len() - 1);
         for arg in &args[1..] {
             let key = arg.to_vec();
@@ -2487,7 +2487,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 3, 1, "MSET", "MSET key value [key value ...]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         for pair in args[1..].chunks_exact(2) {
             let key = pair[0].to_vec();
             let value = pair[1].to_vec();
@@ -2510,7 +2510,7 @@ impl RequestProcessor {
             .map(|pair| (pair[0].to_vec(), pair[1].to_vec()))
             .collect();
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         for (key, _) in &key_value_pairs {
             let db_key = DbKeyRef::new(selected_db, key.as_slice());
             self.expire_key_if_needed(db_key)?;
@@ -2533,7 +2533,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFADD", "PFADD key element [element ...]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let key_ref = DbKeyRef::new(selected_db, &key);
         let existing = load_pf_set_for_key(self, key_ref)?;
@@ -2574,7 +2574,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "PFCOUNT", "PFCOUNT key [key ...]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let mut union_registers = [0u8; PFDEBUG_REGISTER_COUNT];
         let mut single_key_state_update = None::<(Vec<u8>, PfSetState)>;
         for key_arg in &args[1..] {
@@ -2610,7 +2610,7 @@ impl RequestProcessor {
             "PFMERGE",
             "PFMERGE destkey sourcekey [sourcekey ...]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let destination_ref = DbKeyRef::new(selected_db, &destination);
         let mut merged = load_pf_set_for_key(self, destination_ref)?.unwrap_or_default();
@@ -2653,7 +2653,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"ENCODING") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG ENCODING key")?;
-            let selected_db = current_request_selected_db();
+            let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
             let key = RedisKey::from(args[2]);
             let encoding = if load_pf_set_for_key(self, DbKeyRef::new(selected_db, &key))?
                 .map(|state| state.encoding == HllEncoding::Dense)
@@ -2668,7 +2668,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"TODENSE") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG TODENSE key")?;
-            let selected_db = current_request_selected_db();
+            let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
             let key = RedisKey::from(args[2]);
             let key_ref = DbKeyRef::new(selected_db, &key);
             let mut state = load_pf_set_for_key(self, key_ref)?.unwrap_or_default();
@@ -2679,7 +2679,7 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"GETREG") {
             require_exact_arity(args, 3, "PFDEBUG", "PFDEBUG GETREG key")?;
-            let selected_db = current_request_selected_db();
+            let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
             let key = RedisKey::from(args[2]);
             let state =
                 load_pf_set_for_key(self, DbKeyRef::new(selected_db, &key))?.unwrap_or_default();
@@ -2864,7 +2864,7 @@ impl RequestProcessor {
         };
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
 
         self.expire_key_if_needed(db_key)?;
@@ -2948,7 +2948,7 @@ impl RequestProcessor {
 
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
 
         self.expire_key_if_needed(db_key)?;
@@ -3084,7 +3084,7 @@ impl RequestProcessor {
         require_exact_arity(args, 2, command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
@@ -3151,7 +3151,7 @@ impl RequestProcessor {
         require_exact_arity(args, 2, command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
 
@@ -3207,7 +3207,7 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "PERSIST", "PERSIST key")?;
 
         let key = RedisKey::from(args[1]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let db_key = DbKeyRef::new(selected_db, &key);
         self.expire_key_if_needed(db_key)?;
         let string_exists = self.key_exists(db_key)?;

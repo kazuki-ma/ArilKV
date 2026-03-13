@@ -234,11 +234,6 @@ fn current_request_in_transaction() -> bool {
 }
 
 #[inline]
-fn current_request_selected_db() -> DbName {
-    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db)
-}
-
-#[inline]
 fn current_request_tracking_reads_enabled() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().tracking_reads_enabled)
 }
@@ -5422,7 +5417,7 @@ impl RequestProcessor {
         let _current_processor_scope = CurrentProcessorScope::enter(self as *const _);
 
         let command = dispatch_command_name(args[0]);
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let subcommand = args.get(1).copied();
         let command_mutating = command_is_effectively_mutating(command, subcommand);
         let slowlog_started_at = Instant::now();

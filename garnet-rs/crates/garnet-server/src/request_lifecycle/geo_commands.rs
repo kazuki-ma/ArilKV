@@ -134,7 +134,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 5, "GEOADD", GEOADD_USAGE)?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let key_ref = DbKeyRef::new(selected_db, &key);
         let parsed_options = parse_geoadd_options(args, 2)?;
@@ -223,7 +223,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "GEOPOS", GEOPOS_USAGE)?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = args[1];
         let zset = self.load_zset_object(DbKeyRef::new(selected_db, key))?;
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -279,7 +279,7 @@ impl RequestProcessor {
 
         let key = args[1];
         let resp3 = self.resp_protocol_version().is_resp3();
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let zset = match self.load_zset_object(DbKeyRef::new(selected_db, key))? {
             Some(entries) => entries,
             None => {
@@ -350,7 +350,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "GEOHASH", GEOHASH_USAGE)?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = args[1];
         let zset = self.load_zset_object(DbKeyRef::new(selected_db, key))?;
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -471,7 +471,7 @@ impl RequestProcessor {
             any: radius_options.any,
             store_dist: radius_options.store_dist,
         };
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
@@ -517,7 +517,7 @@ impl RequestProcessor {
             any: radius_options.any,
             store_dist: radius_options.store_dist,
         };
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
             self,
@@ -537,7 +537,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 7, "GEOSEARCH", GEOSEARCH_USAGE)?;
         let options = parse_geosearch_options(args, 2, true, false)?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let source_key = args[1];
         let resp3 = self.resp_protocol_version().is_resp3();
         execute_geo_query(
@@ -559,7 +559,7 @@ impl RequestProcessor {
         ensure_min_arity(args, 8, "GEOSEARCHSTORE", GEOSEARCHSTORE_USAGE)?;
         let options = parse_geosearch_options(args, 3, false, true)?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination_key = RedisKey::from(args[1]);
         let source_key = args[2];
         let resp3 = self.resp_protocol_version().is_resp3();

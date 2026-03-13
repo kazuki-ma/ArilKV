@@ -15,7 +15,7 @@ impl RequestProcessor {
         )?;
         let options = parse_zadd_options(args)?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let mut score_member_pairs =
@@ -117,7 +117,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZREM", "ZREM key member [member ...]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let mut zset = match self.load_zset_object(db_key)? {
@@ -161,7 +161,7 @@ impl RequestProcessor {
             "ZRANGE",
             "ZRANGE key min max [BYSCORE|BYLEX] [REV] [WITHSCORES] [LIMIT offset count]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let left = args[2];
@@ -208,7 +208,7 @@ impl RequestProcessor {
             false
         };
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -262,7 +262,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "ZSCORE", "ZSCORE key member")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let member = args[2];
@@ -305,7 +305,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "ZCARD", "ZCARD key")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let count = self
@@ -322,7 +322,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZCOUNT", "ZCOUNT key min max")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
@@ -349,7 +349,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZLEXCOUNT", "ZLEXCOUNT key min max")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -388,7 +388,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYLEX", "ZREMRANGEBYLEX key min max")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zlex_bound(args[2]).ok_or(RequestExecutionError::SyntaxError)?;
@@ -435,7 +435,7 @@ impl RequestProcessor {
             "ZINTERCARD",
             "ZINTERCARD numkeys key [key ...] [LIMIT limit]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let num_keys = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if num_keys == 0 {
             return Err(RequestExecutionError::AtLeastOneInputKey {
@@ -486,7 +486,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZDIFF", "ZDIFF numkeys key [key ...] [WITHSCORES]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zdiff")?;
         let with_scores = parse_zdiff_withscores(args, parsed_keys.option_start)?;
         let diff = compute_zdiff(self, selected_db, &parsed_keys.keys)?;
@@ -511,7 +511,7 @@ impl RequestProcessor {
             "ZDIFFSTORE",
             "ZDIFFSTORE destination numkeys key [key ...]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zdiffstore")?;
         if parsed_keys.option_start != args.len() {
@@ -534,7 +534,7 @@ impl RequestProcessor {
             "ZINTER",
             "ZINTER numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zinter")?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -570,7 +570,7 @@ impl RequestProcessor {
             "ZINTERSTORE",
             "ZINTERSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zinterstore")?;
         let combine_options = parse_zset_combine_options(
@@ -602,7 +602,7 @@ impl RequestProcessor {
             "ZUNION",
             "ZUNION numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX] [WITHSCORES]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 1, "zunion")?;
         let combine_options = parse_zset_combine_options(
             args,
@@ -638,7 +638,7 @@ impl RequestProcessor {
             "ZUNIONSTORE",
             "ZUNIONSTORE destination numkeys key [key ...] [WEIGHTS w [w ...]] [AGGREGATE SUM|MIN|MAX]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let parsed_keys = parse_zset_numkeys_and_keys(args, 2, "zunionstore")?;
         let combine_options = parse_zset_combine_options(
@@ -670,7 +670,7 @@ impl RequestProcessor {
             "ZMPOP",
             "ZMPOP numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let parsed_keys = parse_zmpop_numkeys_and_keys(args, 1)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
         self.handle_zmpop_like(
@@ -693,7 +693,7 @@ impl RequestProcessor {
             "BZMPOP",
             "BZMPOP timeout numkeys key [key ...] <MIN|MAX> [COUNT count]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         parse_blocking_timeout_seconds(args, 1)?;
         let parsed_keys = parse_zmpop_numkeys_and_keys(args, 2)?;
         let pop_options = parse_zmpop_direction_and_count(args, parsed_keys.option_start)?;
@@ -717,7 +717,7 @@ impl RequestProcessor {
             "ZRANGESTORE",
             "ZRANGESTORE dst src min max [BYSCORE|BYLEX] [REV] [LIMIT offset count]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let source = RedisKey::from(args[2]);
         let source_db_key = DbKeyRef::new(selected_db, &source);
@@ -748,7 +748,7 @@ impl RequestProcessor {
             "ZSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -801,7 +801,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZINCRBY", "ZINCRBY key increment member")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let increment =
@@ -831,7 +831,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYRANK", "ZREMRANGEBYRANK key start stop")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let start = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -874,7 +874,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "ZREMRANGEBYSCORE", "ZREMRANGEBYSCORE key min max")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let min = parse_zscore_bound(args[2]).ok_or(RequestExecutionError::ValueNotFloat)?;
@@ -931,7 +931,7 @@ impl RequestProcessor {
             },
         )?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let left_bound =
@@ -1001,7 +1001,7 @@ impl RequestProcessor {
             },
         )?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let left_bound = parse_zlex_bound(args[2])
@@ -1060,7 +1060,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "ZMSCORE", "ZMSCORE key member [member ...]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let zset = self.load_zset_object(db_key)?;
@@ -1102,7 +1102,7 @@ impl RequestProcessor {
             "ZRANDMEMBER",
             "ZRANDMEMBER key [count [WITHSCORES]]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -1257,7 +1257,7 @@ impl RequestProcessor {
             false
         };
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let member = args[2];
@@ -1326,7 +1326,7 @@ impl RequestProcessor {
                 "ZPOPMIN key [count]"
             },
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let count: i64 = if args.len() == 3 {
             parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?
@@ -1396,7 +1396,7 @@ impl RequestProcessor {
                 "BZPOPMIN key [key ...] timeout"
             },
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let timeout_index = args.len() - 1;
         parse_blocking_timeout_seconds(args, timeout_index)?;
 

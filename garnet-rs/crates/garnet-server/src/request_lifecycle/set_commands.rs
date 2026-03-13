@@ -8,7 +8,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SADD", "SADD key member [member ...]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let inserted = self.with_set_hot_entry(db_key, |entry| {
@@ -55,7 +55,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SREM", "SREM key member [member ...]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let (removed, delete_key) = self.with_set_hot_entry(db_key, |entry| {
@@ -102,7 +102,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SMEMBERS", "SMEMBERS key")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -137,7 +137,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "SISMEMBER", "SISMEMBER key member")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let member = args[2];
@@ -160,7 +160,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "SCARD", "SCARD key")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let len = self.with_set_hot_entry(db_key, |entry| {
@@ -187,7 +187,7 @@ impl RequestProcessor {
             "SSCAN key cursor [MATCH pattern] [COUNT count]",
         )?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
@@ -259,7 +259,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "SMISMEMBER", "SMISMEMBER key member [member ...]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let set = self.load_set_object(db_key)?;
@@ -282,7 +282,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SRANDMEMBER", "SRANDMEMBER key [count]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -381,7 +381,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "SPOP", "SPOP key [count]")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let key = RedisKey::from(args[1]);
         let db_key = DbKeyRef::new(selected_db, &key);
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -475,7 +475,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "SMOVE", "SMOVE source destination member")?;
 
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let source = RedisKey::from(args[1]);
         let destination = RedisKey::from(args[2]);
         let source_db_key = DbKeyRef::new(selected_db, &source);
@@ -531,7 +531,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SUNION", "SUNION key [key ...]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let keys = collect_set_keys(args, 1);
         let union = compute_sunion(self, selected_db, &keys)?;
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -545,7 +545,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SINTER", "SINTER key [key ...]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let keys = collect_set_keys(args, 1);
         let inter = compute_sinter(self, selected_db, &keys)?;
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -599,7 +599,7 @@ impl RequestProcessor {
             .iter()
             .map(|key| key.to_vec())
             .collect();
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let inter = compute_sinter(self, selected_db, &keys)?;
         let mut cardinality = inter.len();
         if limit > 0 {
@@ -615,7 +615,7 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 2, "SDIFF", "SDIFF key [key ...]")?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let keys = collect_set_keys(args, 1);
         let diff = compute_sdiff(self, selected_db, &keys)?;
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -634,7 +634,7 @@ impl RequestProcessor {
             "SUNIONSTORE",
             "SUNIONSTORE destination key [key ...]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let union = compute_sunion(self, selected_db, &keys)?;
@@ -654,7 +654,7 @@ impl RequestProcessor {
             "SINTERSTORE",
             "SINTERSTORE destination key [key ...]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let inter = compute_sinter(self, selected_db, &keys)?;
@@ -674,7 +674,7 @@ impl RequestProcessor {
             "SDIFFSTORE",
             "SDIFFSTORE destination key [key ...]",
         )?;
-        let selected_db = current_request_selected_db();
+        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
         let destination = RedisKey::from(args[1]);
         let keys = collect_set_keys(args, 2);
         let diff = compute_sdiff(self, selected_db, &keys)?;
