@@ -7578,6 +7578,68 @@ fn string_write_and_delete_commands_are_scoped_by_selected_db_without_db0_fallba
 }
 
 #[test]
+fn string_rename_copy_and_multi_key_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+
+    assert_command_response_in_db(&processor, "SET count 5", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET count 10", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "INCRBY count 2", b":12\r\n", db9);
+    assert_command_response_in_db(&processor, "GET count", b"$1\r\n5\r\n", db0);
+    assert_command_response_in_db(&processor, "GET count", b"$2\r\n12\r\n", db9);
+
+    assert_command_response_in_db(&processor, "MSET k1 zero1 k2 zero2", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "MSET k1 nine1 k2 nine2", b"+OK\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "MGET k1 k2 missing",
+        b"*3\r\n$5\r\nzero1\r\n$5\r\nzero2\r\n$-1\r\n",
+        db0,
+    );
+    assert_command_response_in_db(
+        &processor,
+        "MGET k1 k2 missing",
+        b"*3\r\n$5\r\nnine1\r\n$5\r\nnine2\r\n$-1\r\n",
+        db9,
+    );
+    assert_command_response_in_db(&processor, "MSETNX k3 blocked", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "MSETNX k1 denied", b":0\r\n", db9);
+    assert_command_response_in_db(&processor, "GET k3", b"$-1\r\n", db0);
+    assert_command_response_in_db(&processor, "GET k3", b"$7\r\nblocked\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET src zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET src nine", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "SET dst stay", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "RENAME src dst", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "GET src", b"$4\r\nzero\r\n", db0);
+    assert_command_response_in_db(&processor, "GET dst", b"$4\r\nstay\r\n", db0);
+    assert_command_response_in_db(&processor, "GET src", b"$-1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET dst", b"$4\r\nnine\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET copyme zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET copyme nine", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "COPY copyme copied", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET copied", b"$-1\r\n", db0);
+    assert_command_response_in_db(&processor, "GET copied", b"$4\r\nnine\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "COPY copyme copied DB 0 REPLACE",
+        b":1\r\n",
+        db9,
+    );
+    assert_command_response_in_db(&processor, "GET copied", b"$4\r\nnine\r\n", db0);
+    assert_command_response_in_db(&processor, "GET copied", b"$4\r\nnine\r\n", db9);
+
+    assert_command_response_in_db(&processor, "TYPE copied", b"+string\r\n", db0);
+    assert_command_response_in_db(&processor, "TYPE missing", b"+none\r\n", db9);
+    assert_command_response_in_db(&processor, "EXISTS copied missing", b":1\r\n", db0);
+    assert_command_response_in_db(&processor, "EXISTS copied missing", b":1\r\n", db9);
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();
