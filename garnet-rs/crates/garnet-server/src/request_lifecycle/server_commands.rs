@@ -1349,19 +1349,29 @@ impl RequestProcessor {
     pub(super) fn handle_readonly(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "READONLY", "READONLY")?;
-        Err(RequestExecutionError::ClusterSupportDisabled)
+        if self.cluster_config_store().is_none() {
+            return Err(RequestExecutionError::ClusterSupportDisabled);
+        }
+        super::set_request_cluster_read_only_effect(true);
+        append_simple_string(response_out, b"OK");
+        Ok(())
     }
 
     pub(super) fn handle_readwrite(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 1, "READWRITE", "READWRITE")?;
-        Err(RequestExecutionError::ClusterSupportDisabled)
+        if self.cluster_config_store().is_none() {
+            return Err(RequestExecutionError::ClusterSupportDisabled);
+        }
+        super::set_request_cluster_read_only_effect(false);
+        append_simple_string(response_out, b"OK");
+        Ok(())
     }
 
     pub(super) fn handle_reset(

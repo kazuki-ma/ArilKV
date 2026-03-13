@@ -19885,6 +19885,47 @@ fn cluster_snapshot_commands_use_attached_live_topology_in_request_lifecycle() {
 }
 
 #[test]
+fn readonly_and_readwrite_emit_cluster_read_only_connection_effects() {
+    let processor = RequestProcessor::new().unwrap();
+    processor.attach_cluster_config_store(Arc::new(ClusterConfigStore::new(
+        ClusterConfig::new_local("node-1", "127.0.0.1", 7001),
+    )));
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let readonly = b"*1\r\n$8\r\nREADONLY\r\n";
+    let meta = parse_resp_command_arg_slices(readonly, &mut args).unwrap();
+    let readonly_effects = processor
+        .execute_with_client_context_and_effects_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+            false,
+            DbName::default(),
+        )
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+    assert_eq!(readonly_effects.cluster_read_only, Some(true));
+
+    response.clear();
+    let readwrite = b"*1\r\n$9\r\nREADWRITE\r\n";
+    let meta = parse_resp_command_arg_slices(readwrite, &mut args).unwrap();
+    let readwrite_effects = processor
+        .execute_with_client_context_and_effects_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            None,
+            false,
+            DbName::default(),
+        )
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
+    assert_eq!(readwrite_effects.cluster_read_only, Some(false));
+}
+
+#[test]
 fn acl_deluser_genpass_log_save_load_stubs() {
     let processor = RequestProcessor::new().unwrap();
 

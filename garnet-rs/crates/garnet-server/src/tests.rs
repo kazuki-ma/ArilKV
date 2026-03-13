@@ -11266,11 +11266,20 @@ async fn cluster_mode_readonly_and_readwrite_return_ok() {
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
-    let cluster_store = Arc::new(ClusterConfigStore::new(ClusterConfig::new_local(
-        "node-1",
-        "127.0.0.1",
-        addr.port(),
-    )));
+    let key = b"replica-read-key";
+    let slot = redis_hash_slot(key);
+    let mut cluster_config = ClusterConfig::new_local("node-1", "127.0.0.1", addr.port())
+        .set_local_worker_role(WorkerRole::Replica)
+        .unwrap()
+        .set_worker_replica_of(LOCAL_WORKER_ID, "node-2")
+        .unwrap();
+    let (next, remote_id) = cluster_config
+        .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+        .unwrap();
+    cluster_config = next
+        .set_slot_state(slot, remote_id, SlotState::Stable)
+        .unwrap();
+    let cluster_store = Arc::new(ClusterConfigStore::new(cluster_config));
 
     let server_metrics = Arc::clone(&metrics);
     let server_cluster = Arc::clone(&cluster_store);
@@ -11289,6 +11298,13 @@ async fn cluster_mode_readonly_and_readwrite_return_ok() {
     });
 
     let mut client = TcpStream::connect(addr).await.unwrap();
+    let expected_moved = format!("-MOVED {} 10.0.0.2:6380\r\n", slot);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", key]),
+        expected_moved.as_bytes(),
+    )
+    .await;
     send_and_expect(
         &mut client,
         &encode_resp_command(&[b"READONLY"]),
@@ -11297,8 +11313,33 @@ async fn cluster_mode_readonly_and_readwrite_return_ok() {
     .await;
     send_and_expect(
         &mut client,
+        &encode_resp_command(&[b"GET", key]),
+        b"$-1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", key, b"value"]),
+        expected_moved.as_bytes(),
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
         &encode_resp_command(&[b"READWRITE"]),
-        b"+OK\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"GET", key]),
+        expected_moved.as_bytes(),
     )
     .await;
 
@@ -14239,7 +14280,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
     )
     .unwrap();
     let direct_set = execute_processor_frame(&processor, &set_frame);
-    assert_eq!(routed_set, direct_set);
+    assert_eq!(routed_set.frame_response, direct_set);
 
     let get_frame = encode_resp_command(&[b"GET", b"k"]);
     let get_owned_args = owned_frame_args_from_frame(&get_frame);
@@ -14252,7 +14293,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
     )
     .unwrap();
     let direct_get = execute_processor_frame(&processor, &get_frame);
-    assert_eq!(routed_get, direct_get);
+    assert_eq!(routed_get.frame_response, direct_get);
 }
 
 #[test]

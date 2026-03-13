@@ -134,6 +134,7 @@ thread_local! {
             client_id: None,
             in_transaction: false,
             tracking_reads_enabled: false,
+            connection_effects: RequestConnectionEffects::NONE,
         })
     };
     static TRACKING_INVALIDATION_STACK: RefCell<Vec<Vec<RedisKey>>> = const {
@@ -154,11 +155,35 @@ thread_local! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct RequestConnectionEffects {
+    pub(crate) cluster_read_only: Option<bool>,
+}
+
+impl RequestConnectionEffects {
+    const NONE: Self = Self {
+        cluster_read_only: None,
+    };
+
+    pub(crate) fn merge_from(&mut self, other: Self) {
+        if other.cluster_read_only.is_some() {
+            self.cluster_read_only = other.cluster_read_only;
+        }
+    }
+}
+
+impl Default for RequestConnectionEffects {
+    fn default() -> Self {
+        Self::NONE
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct RequestExecutionContext {
     client_no_touch: bool,
     client_id: Option<ClientId>,
     in_transaction: bool,
     tracking_reads_enabled: bool,
+    connection_effects: RequestConnectionEffects,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -235,6 +260,20 @@ fn current_request_in_transaction() -> bool {
 #[inline]
 fn current_request_tracking_reads_enabled() -> bool {
     REQUEST_EXECUTION_CONTEXT.with(|state| state.get().tracking_reads_enabled)
+}
+
+#[inline]
+fn current_request_connection_effects() -> RequestConnectionEffects {
+    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().connection_effects)
+}
+
+#[inline]
+fn set_request_cluster_read_only_effect(enabled: bool) {
+    REQUEST_EXECUTION_CONTEXT.with(|state| {
+        let mut context = state.get();
+        context.connection_effects.cluster_read_only = Some(enabled);
+        state.set(context);
+    });
 }
 
 #[inline]
@@ -5334,15 +5373,40 @@ impl RequestProcessor {
         in_transaction: bool,
         selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
-        let _scope = RequestExecutionContextScope::enter(RequestExecutionContext {
+        self.execute_with_client_context_and_effects_in_db(
+            args,
+            response_out,
+            client_no_touch,
+            client_id,
+            in_transaction,
+            selected_db,
+        )
+        .map(|_| ())
+    }
+
+    pub(crate) fn execute_with_client_context_and_effects_in_db(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+        in_transaction: bool,
+        selected_db: DbName,
+    ) -> Result<RequestConnectionEffects, RequestExecutionError> {
+        let scope = RequestExecutionContextScope::enter(RequestExecutionContext {
             client_no_touch,
             client_id,
             in_transaction,
             tracking_reads_enabled: false,
+            connection_effects: RequestConnectionEffects::NONE,
         });
-        self.execute_in_current_context(args, response_out, selected_db)
+        let execution = self.execute_in_current_context(args, response_out, selected_db);
+        let connection_effects = current_request_connection_effects();
+        drop(scope);
+        execution.map(|_| connection_effects)
     }
 
+    #[cfg(test)]
     pub(crate) fn execute_with_client_no_touch_in_transaction_in_db(
         &self,
         args: &[ArgSlice],
@@ -5351,7 +5415,25 @@ impl RequestProcessor {
         client_id: Option<ClientId>,
         selected_db: DbName,
     ) -> Result<(), RequestExecutionError> {
-        self.execute_with_client_context_in_db(
+        self.execute_with_client_no_touch_in_transaction_and_effects_in_db(
+            args,
+            response_out,
+            client_no_touch,
+            client_id,
+            selected_db,
+        )
+        .map(|_| ())
+    }
+
+    pub(crate) fn execute_with_client_no_touch_in_transaction_and_effects_in_db(
+        &self,
+        args: &[ArgSlice],
+        response_out: &mut Vec<u8>,
+        client_no_touch: bool,
+        client_id: Option<ClientId>,
+        selected_db: DbName,
+    ) -> Result<RequestConnectionEffects, RequestExecutionError> {
+        self.execute_with_client_context_and_effects_in_db(
             args,
             response_out,
             client_no_touch,

@@ -13,6 +13,7 @@ use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
 use crate::request_lifecycle::DbName;
+use crate::request_lifecycle::RequestConnectionEffects;
 use crate::request_lifecycle::ShardIndex;
 use crate::request_lifecycle::WatchedKey;
 
@@ -87,6 +88,7 @@ pub(crate) struct TransactionExecutionOutcome {
     pub(crate) items: Vec<ExecutedTransactionItem>,
     pub(crate) selected_db_after_exec: DbName,
     pub(crate) pending_replication_transition: Option<QueuedReplicationTransition>,
+    pub(crate) connection_effects_after_exec: RequestConnectionEffects,
 }
 
 pub(crate) fn execute_transaction_queue(
@@ -114,6 +116,7 @@ pub(crate) fn execute_transaction_queue(
         items,
         selected_db_after_exec,
         pending_replication_transition,
+        connection_effects_after_exec,
     } = owner_thread_pool
         .execute_sync(owner_shard, move || {
             execute_transaction_queue_on_owner_thread(
@@ -136,6 +139,7 @@ pub(crate) fn execute_transaction_queue(
             ],
             selected_db_after_exec: selected_db,
             pending_replication_transition: None,
+            connection_effects_after_exec: RequestConnectionEffects::default(),
         });
 
     responses.push(b'*');
@@ -149,6 +153,7 @@ pub(crate) fn execute_transaction_queue(
         items,
         selected_db_after_exec,
         pending_replication_transition,
+        connection_effects_after_exec,
     }
 }
 
@@ -204,6 +209,7 @@ fn execute_transaction_queue_on_owner_thread(
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     let mut items = Vec::with_capacity(queued.len());
     let mut pending_replication_transition = None;
+    let mut connection_effects_after_exec = RequestConnectionEffects::default();
     let mut transaction_selected_db = selected_db;
     processor.begin_tracking_invalidation_batch();
     for frame in queued {
@@ -239,14 +245,15 @@ fn execute_transaction_queue_on_owner_thread(
                 }
                 // SAFETY: parsed ArgSlice values reference bytes in `frame` for this scope.
                 let command = unsafe { dispatch_from_arg_slices(&args[..meta.argument_count]) };
-                match processor.execute_with_client_no_touch_in_transaction_in_db(
+                match processor.execute_with_client_no_touch_in_transaction_and_effects_in_db(
                     &args[..meta.argument_count],
                     &mut item_response,
                     client_no_touch,
                     client_id,
                     transaction_selected_db,
                 ) {
-                    Ok(()) => {
+                    Ok(connection_effects) => {
+                        connection_effects_after_exec.merge_from(connection_effects);
                         if command == CommandId::Select
                             && let Some(next_db) =
                                 parse_transaction_select_db(&args[..meta.argument_count], processor)
@@ -273,6 +280,7 @@ fn execute_transaction_queue_on_owner_thread(
         items,
         selected_db_after_exec: transaction_selected_db,
         pending_replication_transition,
+        connection_effects_after_exec,
     }
 }
 

@@ -44,6 +44,7 @@ use crate::command_spec::command_is_scripting_family;
 use crate::command_spec::command_is_write_pause_affected_with_script;
 use crate::command_spec::command_transaction_control;
 use crate::command_spec::eval_script_shebang_flags;
+use crate::connection_owner_routing::OwnedExecutionOutcome;
 use crate::connection_owner_routing::OwnerThreadExecutionError;
 use crate::connection_owner_routing::RoutedExecutionError;
 use crate::connection_owner_routing::capture_owned_frame_args;
@@ -69,6 +70,7 @@ use crate::request_lifecycle::ClientUnblockMode;
 use crate::request_lifecycle::DbKeyRef;
 use crate::request_lifecycle::DbName;
 use crate::request_lifecycle::RedisKey;
+use crate::request_lifecycle::RequestConnectionEffects;
 use crate::request_lifecycle::RespProtocolVersion;
 use crate::request_lifecycle::WatchedKey;
 
@@ -569,6 +571,15 @@ impl ClientConnectionState {
     }
 }
 
+fn apply_request_connection_effects(
+    client_state: &mut ClientConnectionState,
+    connection_effects: RequestConnectionEffects,
+) {
+    if let Some(cluster_read_only) = connection_effects.cluster_read_only {
+        client_state.cluster_read_only = cluster_read_only;
+    }
+}
+
 fn apply_reset_command_side_effects(
     metrics: &ServerMetrics,
     processor: &RequestProcessor,
@@ -1002,37 +1013,6 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
-            if (command == CommandId::Readonly || command == CommandId::Readwrite)
-                && !transaction.in_multi
-            {
-                if argument_count != 1 {
-                    append_wrong_arity_error_for_command(&mut responses, command);
-                } else if cluster_config.is_none() {
-                    append_error_line(
-                        &mut responses,
-                        b"ERR This instance has cluster support disabled",
-                    );
-                } else {
-                    client_state.cluster_read_only = command == CommandId::Readonly;
-                    append_simple_string(&mut responses, b"OK");
-                }
-                disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
-                    &mut responses,
-                    response_mark,
-                    &mut client_state,
-                    command,
-                    command_outcome,
-                    commands_processed,
-                );
-                consumed += frame_bytes_consumed;
-                if disconnect_after_write {
-                    break;
-                }
-                continue;
-            }
-
             if command == CommandId::Select && !transaction.in_multi {
                 if argument_count != 2 {
                     append_wrong_arity_error_for_command(&mut responses, command);
@@ -1316,6 +1296,7 @@ pub(crate) async fn handle_connection(
                     command,
                     allow_asking_once,
                     client_state.cluster_read_only,
+                    command_mutating,
                 )?;
                 if consume_asking {
                     allow_asking_once = false;
@@ -1440,6 +1421,11 @@ pub(crate) async fn handle_connection(
                                                 }
                                                 client_state.selected_db =
                                                     transaction_outcome.selected_db_after_exec;
+                                                apply_request_connection_effects(
+                                                    &mut client_state,
+                                                    transaction_outcome
+                                                        .connection_effects_after_exec,
+                                                );
                                                 metrics.set_client_selected_db(
                                                     client_id,
                                                     client_state.selected_db,
@@ -1980,6 +1966,10 @@ pub(crate) async fn handle_connection(
                                     &blocking_outcome.frame_response,
                                     &metrics,
                                 );
+                                apply_request_connection_effects(
+                                    &mut client_state,
+                                    blocking_outcome.connection_effects,
+                                );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);
                                 if command_uses_script_effect_replication(command) {
                                     replication_frames = take_script_effect_replication_frames(
@@ -2247,7 +2237,7 @@ async fn execute_frame_on_owner_thread_async(
     client_no_touch: bool,
     client_id: Option<ClientId>,
     selected_db: DbName,
-) -> Result<Vec<u8>, OwnerThreadExecutionError> {
+) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
     if command_is_scripting_family(command) {
         let owned_args =
             capture_owned_frame_args(frame, args).map_err(map_routed_error_to_owner)?;
@@ -2327,6 +2317,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 )
                 .to_vec(),
                 should_replicate: false,
+                connection_effects: RequestConnectionEffects::default(),
             });
         }
         if blocking_request && blocking_client_disconnected(stream).await {
@@ -2342,6 +2333,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 )
                 .to_vec(),
                 should_replicate: false,
+                connection_effects: RequestConnectionEffects::default(),
             });
         }
 
@@ -2364,6 +2356,7 @@ async fn execute_blocking_frame_on_owner_thread(
             return Ok(BlockingExecutionOutcome {
                 frame_response: response,
                 should_replicate: false,
+                connection_effects: RequestConnectionEffects::default(),
             });
         }
 
@@ -2398,6 +2391,7 @@ async fn execute_blocking_frame_on_owner_thread(
                         )
                         .to_vec(),
                         should_replicate: false,
+                        connection_effects: RequestConnectionEffects::default(),
                     });
                 }
                 let remaining = deadline_time.duration_since(now);
@@ -2431,6 +2425,7 @@ async fn execute_blocking_frame_on_owner_thread(
                         )
                         .to_vec(),
                         should_replicate: false,
+                        connection_effects: RequestConnectionEffects::default(),
                     });
                 }
 
@@ -2458,7 +2453,7 @@ async fn execute_blocking_frame_on_owner_thread(
 
         let pre_string_len =
             pre_string_len_for_mutation_detection(processor, command, args, selected_db);
-        let frame_response = match execute_frame_on_owner_thread_async(
+        let owned_execution = match execute_frame_on_owner_thread_async(
             processor,
             owner_thread_pool,
             args,
@@ -2470,15 +2465,18 @@ async fn execute_blocking_frame_on_owner_thread(
         )
         .await
         {
-            Ok(response) => response,
+            Ok(outcome) => outcome,
             Err(OwnerThreadExecutionError::Request(RequestExecutionError::WrongType))
                 if blocked && ignore_wrongtype_while_blocked(command) =>
             {
-                blocking_empty_response_for_command(
-                    command,
-                    processor.resp_protocol_version().is_resp3(),
-                )
-                .to_vec()
+                OwnedExecutionOutcome {
+                    frame_response: blocking_empty_response_for_command(
+                        command,
+                        processor.resp_protocol_version().is_resp3(),
+                    )
+                    .to_vec(),
+                    connection_effects: RequestConnectionEffects::default(),
+                }
             }
             Err(error) => {
                 clear_blocking_request_state(
@@ -2494,6 +2492,8 @@ async fn execute_blocking_frame_on_owner_thread(
                 return Err(error);
             }
         };
+        let frame_response = owned_execution.frame_response;
+        let connection_effects = owned_execution.connection_effects;
 
         let should_replicate = if blocking_request {
             command_mutating && !is_blocking_empty_response(&frame_response)
@@ -2515,6 +2515,7 @@ async fn execute_blocking_frame_on_owner_thread(
             return Ok(BlockingExecutionOutcome {
                 frame_response,
                 should_replicate,
+                connection_effects,
             });
         }
 
@@ -2541,6 +2542,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 return Ok(BlockingExecutionOutcome {
                     frame_response,
                     should_replicate,
+                    connection_effects,
                 });
             }
 
@@ -2569,6 +2571,7 @@ async fn execute_blocking_frame_on_owner_thread(
 struct BlockingExecutionOutcome {
     frame_response: Vec<u8>,
     should_replicate: bool,
+    connection_effects: RequestConnectionEffects,
 }
 
 fn blocking_empty_retry_should_sleep(command: CommandId) -> bool {
