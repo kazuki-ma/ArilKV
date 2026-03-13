@@ -5164,6 +5164,57 @@ fn zset_commands_roundtrip_over_object_store() {
 }
 
 #[test]
+fn zset_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZADD shared 1 one 2 two", db0),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZADD shared 5 five 6 six", db9),
+        b":2\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZRANGE shared 0 -1 WITHSCORES", db0),
+        b"*4\r\n$3\r\none\r\n$1\r\n1\r\n$3\r\ntwo\r\n$1\r\n2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZRANGE shared 0 -1 WITHSCORES", db9),
+        b"*4\r\n$4\r\nfive\r\n$1\r\n5\r\n$3\r\nsix\r\n$1\r\n6\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZRANGESTORE out shared 0 -1", db9),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "EXISTS out", db0),
+        b":0\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "EXISTS out", db9),
+        b":1\r\n".to_vec()
+    );
+
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZREMRANGEBYSCORE shared 0 10", db9),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZCARD shared", db0),
+        b":2\r\n".to_vec()
+    );
+    assert_eq!(
+        execute_command_line_in_db(&processor, "ZCARD shared", db9),
+        b":0\r\n".to_vec()
+    );
+}
+
+#[test]
 fn zadd_supports_option_flags_and_incr_mode() {
     let processor = RequestProcessor::new().unwrap();
 
