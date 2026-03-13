@@ -7699,6 +7699,50 @@ fn string_msetex_and_hyperloglog_commands_are_scoped_by_selected_db_without_db0_
 }
 
 #[test]
+fn string_expiration_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+
+    assert_command_response_in_db(&processor, "SET shared zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared nine", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "EXPIRE shared 60", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "TTL shared", b":-1\r\n", db0);
+
+    let db9_ttl =
+        parse_integer_response(&execute_command_line_in_db(&processor, "TTL shared", db9));
+    assert!(db9_ttl > 0, "db9 TTL should remain positive: {db9_ttl}");
+
+    assert_command_response_in_db(&processor, "PERSIST shared", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "TTL shared", b":-1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET shared", b"$4\r\nzero\r\n", db0);
+    assert_command_response_in_db(&processor, "GET shared", b"$4\r\nnine\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET abs zero", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET abs nine", b"+OK\r\n", db9);
+    let expire_at_secs = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs()
+        + 120;
+    let expire_at_command = format!("EXPIREAT abs {expire_at_secs}");
+    assert_command_response_in_db(&processor, &expire_at_command, b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "EXPIRETIME abs", b":-1\r\n", db0);
+
+    let db9_expiretime = parse_integer_response(&execute_command_line_in_db(
+        &processor,
+        "EXPIRETIME abs",
+        db9,
+    ));
+    assert!(
+        db9_expiretime >= expire_at_secs as i64 - 1,
+        "db9 EXPIRETIME should be set in db9 only: {db9_expiretime}"
+    );
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();

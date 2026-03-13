@@ -2856,11 +2856,12 @@ impl RequestProcessor {
         };
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
 
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let object_exists =
-            self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+        self.expire_key_if_needed(db_key)?;
+        let string_exists = self.key_exists(db_key)?;
+        let object_exists = self.object_key_exists(db_key)?;
         if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -2880,8 +2881,7 @@ impl RequestProcessor {
             now_unix_millis,
             overflow_error,
         )?;
-        let current_expiration_unix_millis =
-            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
+        let current_expiration_unix_millis = self.expiration_unix_millis(db_key);
         if !should_apply_expire_condition(
             options,
             current_expiration_unix_millis,
@@ -2893,7 +2893,7 @@ impl RequestProcessor {
 
         if target_unix_millis <= now_unix_millis {
             return self.expire_existing_key_immediately(
-                &key,
+                db_key,
                 string_exists,
                 object_exists,
                 response_out,
@@ -2904,33 +2904,20 @@ impl RequestProcessor {
         let deadline = instant_from_unix_millis(unix_millis).ok_or(overflow_error)?;
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.set_string_expiration_metadata_in_shard(
-            DbKeyRef::new(current_request_selected_db(), &key),
+            db_key,
             shard_index,
             Some(ExpirationMetadata {
                 deadline,
                 unix_millis: TimestampMillis::new(unix_millis),
             }),
         );
-        if string_exists
-            && !self.rewrite_existing_value_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                Some(unix_millis),
-            )?
-        {
-            self.set_string_expiration_deadline(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                None,
-            );
+        if string_exists && !self.rewrite_existing_value_expiration(db_key, Some(unix_millis))? {
+            self.set_string_expiration_deadline(db_key, None);
             append_integer(response_out, 0);
             return Ok(());
         }
-        self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(
-            current_request_selected_db(),
-            NOTIFY_GENERIC,
-            b"expire",
-            &key,
-        );
+        self.bump_watch_version(db_key);
+        self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"expire", &key);
         append_integer(response_out, 1);
         Ok(())
     }
@@ -2953,11 +2940,12 @@ impl RequestProcessor {
 
         let amount = parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let key = RedisKey::from(args[1]);
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
 
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let object_exists =
-            self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+        self.expire_key_if_needed(db_key)?;
+        let string_exists = self.key_exists(db_key)?;
+        let object_exists = self.object_key_exists(db_key)?;
         if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
@@ -2969,8 +2957,7 @@ impl RequestProcessor {
         let target_unix_millis = compute_absolute_expire_target_unix_millis(amount, milliseconds)?;
         let now_unix_millis =
             i128::from(current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?);
-        let current_expiration_unix_millis =
-            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key));
+        let current_expiration_unix_millis = self.expiration_unix_millis(db_key);
         if !should_apply_expire_condition(
             options,
             current_expiration_unix_millis,
@@ -2982,7 +2969,7 @@ impl RequestProcessor {
 
         if target_unix_millis <= now_unix_millis {
             return self.expire_existing_key_immediately(
-                &key,
+                db_key,
                 string_exists,
                 object_exists,
                 response_out,
@@ -2995,60 +2982,47 @@ impl RequestProcessor {
             instant_from_unix_millis(unix_millis).ok_or(RequestExecutionError::ValueNotInteger)?;
         let shard_index = self.string_store_shard_index_for_key(&key);
         self.set_string_expiration_metadata_in_shard(
-            DbKeyRef::new(current_request_selected_db(), &key),
+            db_key,
             shard_index,
             Some(ExpirationMetadata {
                 deadline,
                 unix_millis: TimestampMillis::new(unix_millis),
             }),
         );
-        if string_exists
-            && !self.rewrite_existing_value_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                Some(unix_millis),
-            )?
-        {
-            self.set_string_expiration_deadline(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                None,
-            );
+        if string_exists && !self.rewrite_existing_value_expiration(db_key, Some(unix_millis))? {
+            self.set_string_expiration_deadline(db_key, None);
             append_integer(response_out, 0);
             return Ok(());
         }
-        self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(
-            current_request_selected_db(),
-            NOTIFY_GENERIC,
-            b"expire",
-            &key,
-        );
+        self.bump_watch_version(db_key);
+        self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"expire", &key);
         append_integer(response_out, 1);
         Ok(())
     }
 
     fn expire_existing_key_immediately(
         &self,
-        key: &[u8],
+        db_key: DbKeyRef<'_>,
         string_exists: bool,
         object_exists: bool,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         let string_deleted = if string_exists {
-            self.delete_string_value(DbKeyRef::new(current_request_selected_db(), key))?
+            self.delete_string_value(db_key)?
         } else {
             false
         };
 
         let object_deleted = if object_exists {
-            self.object_delete(DbKeyRef::new(current_request_selected_db(), key))?
+            self.object_delete(db_key)?
         } else {
             false
         };
         if string_deleted || object_deleted {
             if string_deleted && !object_deleted {
-                self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), key));
+                self.bump_watch_version(db_key);
             }
-            self.notify_keyspace_event(current_request_selected_db(), NOTIFY_GENERIC, b"del", key);
+            self.notify_keyspace_event(db_key.db(), NOTIFY_GENERIC, b"del", db_key.key());
             append_integer(response_out, 1);
         } else {
             append_integer(response_out, 0);
@@ -3102,20 +3076,20 @@ impl RequestProcessor {
         require_exact_arity(args, 2, command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
+        self.expire_key_if_needed(db_key)?;
 
-        if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+        if !self.key_exists_any(db_key)? {
             append_integer(response_out, -2);
             return Ok(());
         }
 
-        if let Some(expiration_unix_millis) =
-            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
-        {
+        if let Some(expiration_unix_millis) = self.expiration_unix_millis(db_key) {
             let now_unix_millis =
                 current_unix_time_millis().ok_or(RequestExecutionError::ValueNotInteger)?;
             if expiration_unix_millis <= now_unix_millis {
-                self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+                self.expire_key_if_needed(db_key)?;
                 append_integer(response_out, -2);
                 return Ok(());
             }
@@ -3131,14 +3105,14 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        match self.string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key)) {
+        match self.string_expiration_deadline(db_key) {
             None => {
                 append_integer(response_out, -1);
             }
             Some(deadline) => {
                 let now = current_instant();
                 if deadline <= now {
-                    self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+                    self.expire_key_if_needed(db_key)?;
                     append_integer(response_out, -2);
                     return Ok(());
                 }
@@ -3169,16 +3143,15 @@ impl RequestProcessor {
         require_exact_arity(args, 2, command, expected)?;
 
         let key = RedisKey::from(args[1]);
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let db_key = DbKeyRef::new(current_request_selected_db(), &key);
+        self.expire_key_if_needed(db_key)?;
 
-        if !self.key_exists_any(DbKeyRef::new(current_request_selected_db(), &key))? {
+        if !self.key_exists_any(db_key)? {
             append_integer(response_out, -2);
             return Ok(());
         }
 
-        if let Some(expiration_unix_millis) =
-            self.expiration_unix_millis(DbKeyRef::new(current_request_selected_db(), &key))
-        {
+        if let Some(expiration_unix_millis) = self.expiration_unix_millis(db_key) {
             let value = if milliseconds {
                 expiration_unix_millis.min(i64::MAX as u64) as i64
             } else {
@@ -3188,14 +3161,14 @@ impl RequestProcessor {
             return Ok(());
         }
 
-        match self.string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key)) {
+        match self.string_expiration_deadline(db_key) {
             None => {
                 append_integer(response_out, -1);
             }
             Some(deadline) => {
                 let now = current_instant();
                 if deadline <= now {
-                    self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
+                    self.expire_key_if_needed(db_key)?;
                     append_integer(response_out, -2);
                     return Ok(());
                 }
@@ -3225,44 +3198,29 @@ impl RequestProcessor {
         require_exact_arity(args, 2, "PERSIST", "PERSIST key")?;
 
         let key = RedisKey::from(args[1]);
-        self.expire_key_if_needed(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let string_exists = self.key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
-        let object_exists =
-            self.object_key_exists(DbKeyRef::new(current_request_selected_db(), &key))?;
+        let selected_db = current_request_selected_db();
+        let db_key = DbKeyRef::new(selected_db, &key);
+        self.expire_key_if_needed(db_key)?;
+        let string_exists = self.key_exists(db_key)?;
+        let object_exists = self.object_key_exists(db_key)?;
         if !string_exists && !object_exists {
             append_integer(response_out, 0);
             return Ok(());
         }
 
-        if self
-            .string_expiration_deadline(DbKeyRef::new(current_request_selected_db(), &key))
-            .is_none()
-        {
+        if self.string_expiration_deadline(db_key).is_none() {
             append_integer(response_out, 0);
             return Ok(());
         }
-        self.set_string_expiration_deadline(
-            DbKeyRef::new(current_request_selected_db(), &key),
-            None,
-        );
+        self.set_string_expiration_deadline(db_key, None);
 
-        if string_exists
-            && !self.rewrite_existing_value_expiration(
-                DbKeyRef::new(current_request_selected_db(), &key),
-                None,
-            )?
-        {
+        if string_exists && !self.rewrite_existing_value_expiration(db_key, None)? {
             append_integer(response_out, 0);
             return Ok(());
         }
 
-        self.bump_watch_version(DbKeyRef::new(current_request_selected_db(), &key));
-        self.notify_keyspace_event(
-            current_request_selected_db(),
-            NOTIFY_GENERIC,
-            b"persist",
-            &key,
-        );
+        self.bump_watch_version(db_key);
+        self.notify_keyspace_event(selected_db, NOTIFY_GENERIC, b"persist", &key);
         append_integer(response_out, 1);
         Ok(())
     }

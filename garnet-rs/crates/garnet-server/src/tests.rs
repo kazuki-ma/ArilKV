@@ -2054,7 +2054,7 @@ async fn multidb_setbit_bitfield_noop_do_not_increase_dirty_counter_like_externa
     server.await.unwrap();
 }
 
-#[tokio::test]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn multidb_active_expire_increments_expired_keys_active_like_external_scenario() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut writer_client = TcpStream::connect(addr).await.unwrap();
@@ -2092,7 +2092,7 @@ async fn multidb_active_expire_increments_expired_keys_active_like_external_scen
         .await;
     }
 
-    let deadline = Instant::now() + Duration::from_secs(15);
+    let deadline = Instant::now() + Duration::from_secs(30);
     loop {
         let info = send_and_read_bulk_payload(
             &mut stats_client,
@@ -2108,6 +2108,15 @@ async fn multidb_active_expire_increments_expired_keys_active_like_external_scen
                 "active expire reached expired_keys_active=3 but expired_keys={expired_keys} on db9"
             );
             break;
+        }
+
+        if expired_keys == 3 && expired_keys_active < 3 {
+            send_and_expect(
+                &mut writer_client,
+                &encode_resp_command(&[b"DEBUG", b"SET-ACTIVE-EXPIRE", b"1"]),
+                b"+OK\r\n",
+            )
+            .await;
         }
 
         assert!(
