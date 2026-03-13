@@ -7453,6 +7453,34 @@ fn db_scoped_object_access_metadata_does_not_leak_between_databases() {
 }
 
 #[test]
+fn string_read_and_bit_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+    assert_command_response_in_db(&processor, "SET shared hello", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared world", b"+OK\r\n", db9);
+
+    assert_command_response_in_db(&processor, "GET shared", b"$5\r\nhello\r\n", db0);
+    assert_command_response_in_db(&processor, "GET shared", b"$5\r\nworld\r\n", db9);
+    assert_command_response_in_db(&processor, "STRLEN shared", b":5\r\n", db0);
+    assert_command_response_in_db(&processor, "STRLEN shared", b":5\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SETRANGE shared 5 !", b":6\r\n", db9);
+    assert_command_response_in_db(&processor, "GETRANGE shared 0 -1", b"$5\r\nhello\r\n", db0);
+    assert_command_response_in_db(&processor, "GETRANGE shared 0 -1", b"$6\r\nworld!\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SETBIT bits 0 1", b":0\r\n", db9);
+    assert_command_response_in_db(&processor, "GETBIT bits 0", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "GETBIT bits 0", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "BITCOUNT bits", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "BITCOUNT bits", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "BITPOS bits 1", b":-1\r\n", db0);
+    assert_command_response_in_db(&processor, "BITPOS bits 1", b":0\r\n", db9);
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();
