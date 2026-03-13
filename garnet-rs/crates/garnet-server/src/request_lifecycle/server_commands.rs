@@ -941,6 +941,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_client(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -1055,7 +1056,7 @@ impl RequestProcessor {
             let client_id = super::current_request_client_id()
                 .map(u64::from)
                 .unwrap_or(1);
-            let selected_db = usize::from(super::current_request_selected_db());
+            let selected_db = usize::from(selected_db);
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
             let lib_name = self
@@ -1140,7 +1141,7 @@ impl RequestProcessor {
             let client_id = super::current_request_client_id()
                 .map(u64::from)
                 .unwrap_or(1);
-            let selected_db = usize::from(super::current_request_selected_db());
+            let selected_db = usize::from(selected_db);
             let client_name = self.client_name.lock().unwrap_or_else(|e| e.into_inner());
             let name_str = String::from_utf8_lossy(&client_name);
             let lib_name = self
