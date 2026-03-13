@@ -7481,6 +7481,54 @@ fn string_read_and_bit_commands_are_scoped_by_selected_db_without_db0_fallback()
 }
 
 #[test]
+fn string_advanced_commands_are_scoped_by_selected_db_without_db0_fallback() {
+    let processor = RequestProcessor::new().unwrap();
+    let db0 = DbName::default();
+    let db9 = DbName::new(9);
+
+    assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
+
+    assert_command_response_in_db(&processor, "SET shared alpha", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET shared beta", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "APPEND shared !", b":5\r\n", db9);
+    assert_command_response_in_db(&processor, "GET shared", b"$5\r\nalpha\r\n", db0);
+    assert_command_response_in_db(&processor, "GET shared", b"$5\r\nbeta!\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET ttl zero EX 60", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET ttl nine EX 60", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "GETEX ttl PERSIST", b"$4\r\nnine\r\n", db9);
+    let db0_pttl = parse_integer_response(&execute_command_line_in_db(&processor, "PTTL ttl", db0));
+    assert!(db0_pttl > 0, "db0 ttl should remain intact: {db0_pttl}");
+    assert_command_response_in_db(&processor, "PTTL ttl", b":-1\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET num 1.25", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET num 2.5", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "INCRBYFLOAT num 0.5", b"$1\r\n3\r\n", db9);
+    assert_command_response_in_db(&processor, "GET num", b"$4\r\n1.25\r\n", db0);
+    assert_command_response_in_db(&processor, "GET num", b"$1\r\n3\r\n", db9);
+
+    assert_command_response_in_db(&processor, "BITFIELD bf SET u8 0 255", b"*1\r\n:0\r\n", db9);
+    assert_command_response_in_db(&processor, "BITFIELD bf GET u8 0", b"*1\r\n:0\r\n", db0);
+    assert_command_response_in_db(&processor, "BITFIELD bf GET u8 0", b"*1\r\n:255\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET src1 A", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET src2 B", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET dest X", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET src1 a", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "SET src2 b", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "BITOP OR dest src1 src2", b":1\r\n", db9);
+    assert_command_response_in_db(&processor, "GET dest", b"$1\r\nX\r\n", db0);
+    assert_command_response_in_db(&processor, "GET dest", b"$1\r\nc\r\n", db9);
+
+    assert_command_response_in_db(&processor, "SET lcs1 abc", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET lcs2 xyz", b"+OK\r\n", db0);
+    assert_command_response_in_db(&processor, "SET lcs1 ohmytext", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "SET lcs2 mynewtext", b"+OK\r\n", db9);
+    assert_command_response_in_db(&processor, "LCS lcs1 lcs2 LEN", b":0\r\n", db0);
+    assert_command_response_in_db(&processor, "LCS lcs1 lcs2 LEN", b":6\r\n", db9);
+}
+
+#[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
     let db0 = DbName::default();
