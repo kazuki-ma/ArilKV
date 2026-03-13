@@ -3,6 +3,11 @@
 
 use super::object_store::list_listpack_compatible;
 use super::*;
+use crate::cluster_live_view::append_cluster_info_snapshot;
+use crate::cluster_live_view::append_cluster_myid_snapshot;
+use crate::cluster_live_view::append_cluster_nodes_snapshot;
+use crate::cluster_live_view::append_cluster_shards_snapshot;
+use crate::cluster_live_view::append_cluster_slots_snapshot;
 use crate::command_spec::ArityPolicy;
 use crate::command_spec::KeyAccessPattern;
 use crate::command_spec::command_arity_policy;
@@ -3355,37 +3360,61 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"INFO") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER INFO")?;
-            let info_payload =
-                b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_slots_ok:16384\r\ncluster_slots_pfail:0\r\ncluster_slots_fail:0\r\ncluster_known_nodes:1\r\ncluster_size:1\r\ncluster_current_epoch:1\r\ncluster_my_epoch:1\r\ncluster_stats_messages_sent:0\r\ncluster_stats_messages_received:0\r\ntotal_cluster_links_buffer_limit_exceeded:0\r\n";
-            if self.resp_protocol_version().is_resp3() {
-                append_verbatim_string(response_out, b"txt", info_payload);
+            if let Some(cluster_store) = self.cluster_config_store() {
+                let snapshot = cluster_store.load();
+                append_cluster_info_snapshot(
+                    response_out,
+                    snapshot.as_ref(),
+                    self.resp_protocol_version(),
+                );
             } else {
-                append_bulk_string(response_out, info_payload);
+                let info_payload =
+                    b"cluster_state:ok\r\ncluster_slots_assigned:16384\r\ncluster_slots_ok:16384\r\ncluster_slots_pfail:0\r\ncluster_slots_fail:0\r\ncluster_known_nodes:1\r\ncluster_size:1\r\ncluster_current_epoch:1\r\ncluster_my_epoch:1\r\ncluster_stats_messages_sent:0\r\ncluster_stats_messages_received:0\r\ntotal_cluster_links_buffer_limit_exceeded:0\r\n";
+                if self.resp_protocol_version().is_resp3() {
+                    append_verbatim_string(response_out, b"txt", info_payload);
+                } else {
+                    append_bulk_string(response_out, info_payload);
+                }
             }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"MYID") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER MYID")?;
-            append_bulk_string(response_out, b"0000000000000000000000000000000000000000");
+            if let Some(cluster_store) = self.cluster_config_store() {
+                let snapshot = cluster_store.load();
+                append_cluster_myid_snapshot(response_out, snapshot.as_ref());
+            } else {
+                append_bulk_string(response_out, b"0000000000000000000000000000000000000000");
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"NODES") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER NODES")?;
-            append_bulk_string(
-                response_out,
-                b"0000000000000000000000000000000000000000 127.0.0.1:6379@16379 myself,master - 0 0 1 connected 0-16383\n",
-            );
+            if let Some(cluster_store) = self.cluster_config_store() {
+                let snapshot = cluster_store.load();
+                append_cluster_nodes_snapshot(response_out, snapshot.as_ref());
+            } else {
+                append_bulk_string(
+                    response_out,
+                    b"0000000000000000000000000000000000000000 127.0.0.1:6379@16379 myself,master - 0 0 1 connected 0-16383\n",
+                );
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"SLOTS") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER SLOTS")?;
-            append_array_length(response_out, 1);
-            append_array_length(response_out, 3);
-            append_integer(response_out, 0);
-            append_integer(response_out, 16_383);
-            append_array_length(response_out, 2);
-            append_bulk_string(response_out, b"127.0.0.1");
-            append_integer(response_out, 6379);
+            if let Some(cluster_store) = self.cluster_config_store() {
+                let snapshot = cluster_store.load();
+                append_cluster_slots_snapshot(response_out, snapshot.as_ref());
+            } else {
+                append_array_length(response_out, 1);
+                append_array_length(response_out, 3);
+                append_integer(response_out, 0);
+                append_integer(response_out, 16_383);
+                append_array_length(response_out, 2);
+                append_bulk_string(response_out, b"127.0.0.1");
+                append_integer(response_out, 6379);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"SAVECONFIG") {
@@ -3435,24 +3464,29 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"SHARDS") {
             require_exact_arity(args, 2, "CLUSTER", "CLUSTER SHARDS")?;
-            // Return a single shard covering all slots with this node.
-            append_array_length(response_out, 1);
-            append_array_length(response_out, 4);
-            append_bulk_string(response_out, b"slots");
-            append_array_length(response_out, 2);
-            append_integer(response_out, 0);
-            append_integer(response_out, 16_383);
-            append_bulk_string(response_out, b"nodes");
-            append_array_length(response_out, 1);
-            append_array_length(response_out, 8);
-            append_bulk_string(response_out, b"id");
-            append_bulk_string(response_out, b"0000000000000000000000000000000000000000");
-            append_bulk_string(response_out, b"port");
-            append_integer(response_out, 6379);
-            append_bulk_string(response_out, b"ip");
-            append_bulk_string(response_out, b"127.0.0.1");
-            append_bulk_string(response_out, b"role");
-            append_bulk_string(response_out, b"master");
+            if let Some(cluster_store) = self.cluster_config_store() {
+                let snapshot = cluster_store.load();
+                append_cluster_shards_snapshot(response_out, snapshot.as_ref());
+            } else {
+                // Return a single shard covering all slots with this node.
+                append_array_length(response_out, 1);
+                append_array_length(response_out, 4);
+                append_bulk_string(response_out, b"slots");
+                append_array_length(response_out, 2);
+                append_integer(response_out, 0);
+                append_integer(response_out, 16_383);
+                append_bulk_string(response_out, b"nodes");
+                append_array_length(response_out, 1);
+                append_array_length(response_out, 8);
+                append_bulk_string(response_out, b"id");
+                append_bulk_string(response_out, b"0000000000000000000000000000000000000000");
+                append_bulk_string(response_out, b"port");
+                append_integer(response_out, 6379);
+                append_bulk_string(response_out, b"ip");
+                append_bulk_string(response_out, b"127.0.0.1");
+                append_bulk_string(response_out, b"role");
+                append_bulk_string(response_out, b"master");
+            }
             return Ok(());
         }
         Err(RequestExecutionError::ClusterSupportDisabled)

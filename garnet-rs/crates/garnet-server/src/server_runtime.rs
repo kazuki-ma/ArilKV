@@ -118,6 +118,9 @@ where
         processor.set_config_value(b"bind", local_addr.ip().to_string().into_bytes());
         processor.set_config_value(b"port", local_addr.port().to_string().into_bytes());
     }
+    if let Some(cluster_config_store) = cluster_config.as_ref() {
+        processor.attach_cluster_config_store(Arc::clone(cluster_config_store));
+    }
 
     let mut tasks = JoinSet::new();
     let owner_thread_pool = build_owner_thread_pool(&processor)?;

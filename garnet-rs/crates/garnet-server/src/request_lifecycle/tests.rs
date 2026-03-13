@@ -6,7 +6,13 @@ use crate::testkit::assert_command_integer;
 use crate::testkit::assert_command_response;
 use crate::testkit::assert_command_response_in_db;
 use crate::testkit::execute_command_line;
+use garnet_cluster::ClusterConfig;
+use garnet_cluster::ClusterConfigStore;
+use garnet_cluster::LOCAL_WORKER_ID;
 use garnet_cluster::SlotNumber;
+use garnet_cluster::SlotState;
+use garnet_cluster::Worker;
+use garnet_cluster::WorkerRole;
 use garnet_common::parse_resp_command_arg_slices;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
 use std::sync::Arc;
@@ -19830,6 +19836,52 @@ fn client_info_kill_caching_reply_and_config_rewrite_stubs() {
 
     // RESP3 keeps the same error shape.
     assert_command_error(&processor, "COMMAND DOCS", b"-ERR unknown subcommand\r\n");
+}
+
+#[test]
+fn cluster_snapshot_commands_use_attached_live_topology_in_request_lifecycle() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut cluster_config = ClusterConfig::new_local("node-1", "127.0.0.1", 7001);
+    let (next, remote_id) = cluster_config
+        .add_worker(Worker::new("node-2", "10.0.0.2", 6380, WorkerRole::Primary))
+        .unwrap();
+    cluster_config = next;
+    cluster_config = cluster_config
+        .set_slot_state(SlotNumber::new(0), LOCAL_WORKER_ID, SlotState::Stable)
+        .unwrap();
+    cluster_config = cluster_config
+        .set_slot_state(SlotNumber::new(1), remote_id, SlotState::Stable)
+        .unwrap();
+    processor.attach_cluster_config_store(Arc::new(ClusterConfigStore::new(cluster_config)));
+
+    let info = execute_command_line(&processor, "CLUSTER INFO").unwrap();
+    let info_text = String::from_utf8_lossy(&info);
+    assert!(info_text.contains("cluster_state:fail"));
+    assert!(info_text.contains("cluster_slots_assigned:2"));
+    assert!(info_text.contains("cluster_known_nodes:2"));
+
+    let myid = execute_command_line(&processor, "CLUSTER MYID").unwrap();
+    assert_eq!(myid, b"$6\r\nnode-1\r\n");
+
+    let nodes = execute_command_line(&processor, "CLUSTER NODES").unwrap();
+    let nodes_text = String::from_utf8_lossy(&nodes);
+    assert!(nodes_text.contains("node-1 127.0.0.1:7001@17001 myself,master"));
+    assert!(nodes_text.contains("node-2 10.0.0.2:6380@16380 master"));
+    assert!(nodes_text.contains(" connected 0"));
+    assert!(nodes_text.contains(" connected 1"));
+
+    let slots = execute_command_line(&processor, "CLUSTER SLOTS").unwrap();
+    let slots_text = String::from_utf8_lossy(&slots);
+    assert!(slots.starts_with(b"*2\r\n"));
+    assert!(slots_text.contains("$6\r\nnode-1\r\n"));
+    assert!(slots_text.contains("$6\r\nnode-2\r\n"));
+
+    let shards = execute_command_line(&processor, "CLUSTER SHARDS").unwrap();
+    let shards_text = String::from_utf8_lossy(&shards);
+    assert!(shards.starts_with(b"*2\r\n"));
+    assert!(shards_text.contains("$5\r\nslots\r\n"));
+    assert!(shards_text.contains("$5\r\nnodes\r\n"));
+    assert!(shards_text.contains("$7\r\nreplica\r\n") || shards_text.contains("$6\r\nmaster\r\n"));
 }
 
 #[test]

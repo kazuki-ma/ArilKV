@@ -18,6 +18,7 @@ use crate::debug_concurrency::LockClass;
 use crate::debug_concurrency::OrderedMutex;
 use crate::debug_concurrency::OrderedMutexGuard;
 use crate::dispatch_command_name;
+use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
 use std::cell::Cell;
@@ -2291,6 +2292,7 @@ pub struct RequestProcessor {
     client_lib_name: Mutex<Vec<u8>>,
     /// CLIENT SETINFO LIB-VER value (empty = not set).
     client_lib_ver: Mutex<Vec<u8>>,
+    cluster_config_store: OnceLock<Arc<ClusterConfigStore>>,
     server_metrics: OnceLock<Arc<crate::ServerMetrics>>,
 }
 
@@ -2596,6 +2598,7 @@ impl RequestProcessor {
             client_reply_mode: AtomicU8::new(CLIENT_REPLY_ON),
             client_lib_name: Mutex::new(Vec::new()),
             client_lib_ver: Mutex::new(Vec::new()),
+            cluster_config_store: OnceLock::new(),
             server_metrics: OnceLock::new(),
         })
     }
@@ -2806,6 +2809,17 @@ impl RequestProcessor {
         }
         RespProtocolVersion::from_u8(self.resp_protocol_version.load(Ordering::Acquire))
             .unwrap_or(RespProtocolVersion::Resp2)
+    }
+
+    pub(crate) fn attach_cluster_config_store(
+        &self,
+        cluster_config_store: Arc<ClusterConfigStore>,
+    ) {
+        let _ = self.cluster_config_store.set(cluster_config_store);
+    }
+
+    pub(super) fn cluster_config_store(&self) -> Option<&ClusterConfigStore> {
+        self.cluster_config_store.get().map(Arc::as_ref)
     }
 
     pub(super) fn emit_resp3_zset_pairs(&self) -> bool {

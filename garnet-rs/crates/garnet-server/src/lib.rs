@@ -6,6 +6,7 @@ static GLOBAL_ALLOCATOR: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 pub mod aof_replay;
 mod cluster_control_plane;
+mod cluster_live_view;
 pub mod command_dispatch;
 pub mod command_spec;
 mod connection_handler;
