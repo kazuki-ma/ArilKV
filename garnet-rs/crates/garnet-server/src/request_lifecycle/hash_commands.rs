@@ -19,7 +19,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_paired_arity_after(args, 4, 2, "HSET", "HSET key field value [field value ...]")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         if !self.has_hash_field_expirations_for_key(key) {
             if args.len() == 4 {
@@ -61,7 +61,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HGET", "HGET key field")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2];
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -109,7 +109,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HDEL", "HDEL key field [field ...]")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         if !self.has_hash_field_expirations_for_key(key) {
             if args.len() == 3 {
@@ -158,7 +158,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HGETALL", "HGETALL key")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let resp3 = self.resp_protocol_version().is_resp3();
         if !self.has_hash_field_expirations_for_key(key) {
@@ -226,7 +226,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HLEN", "HLEN key")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let len = self
             .load_hash_object(key)?
@@ -243,7 +243,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 3, "HMGET", "HMGET key field [field ...]")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let mut hash = self.load_hash_object(key)?;
         if let Some(hash_mut) = hash.as_mut() {
@@ -283,7 +283,7 @@ impl RequestProcessor {
             "HMSET key field value [field value ...]",
         )?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         if !self.has_hash_field_expirations_for_key(key) {
             self.handle_hmset_batch_fast_path(key, &args[2..], response_out)?;
@@ -316,7 +316,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "HSETNX", "HSETNX key field value")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let mut hash = self.load_hash_object(key)?.unwrap_or_default();
         let field = args[2].to_vec();
@@ -341,7 +341,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HEXISTS", "HEXISTS key field")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2];
         let mut hash = match self.load_hash_object(key)? {
@@ -367,7 +367,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HKEYS", "HKEYS key")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let hash = match self.load_hash_object(key)? {
             Some(hash) => hash,
@@ -390,7 +390,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 2, "HVALS", "HVALS key")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let hash = match self.load_hash_object(key)? {
             Some(hash) => hash,
@@ -413,7 +413,7 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "HSTRLEN", "HSTRLEN key field")?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2];
         let mut hash = match self.load_hash_object(key)? {
@@ -444,7 +444,7 @@ impl RequestProcessor {
             "HSCAN key cursor [MATCH pattern] [COUNT count] [NOVALUES]",
         )?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let cursor = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
         let scan_options = parse_scan_match_count_options(args, 3)?;
@@ -519,7 +519,7 @@ impl RequestProcessor {
         require_exact_arity(args, 4, "HINCRBY", "HINCRBY key field increment")?;
 
         let increment = parse_i64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(key)?.unwrap_or_default();
@@ -551,7 +551,7 @@ impl RequestProcessor {
         if !increment.is_finite() {
             return Err(RequestExecutionError::ValueIsNanOrInfinity);
         }
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let field = args[2].to_vec();
         let mut hash = self.load_hash_object(key)?.unwrap_or_default();
@@ -586,7 +586,7 @@ impl RequestProcessor {
             "HRANDFIELD key [count [WITHVALUES]]",
         )?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let mut hash = self.load_hash_object(key)?;
         if let Some(hash_mut) = hash.as_mut() {
@@ -724,7 +724,7 @@ impl RequestProcessor {
             "HSETEX key [FNX|FXX] [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|KEEPTTL] FIELDS num field value [field value ...]",
         )?;
 
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let expire_options = parse_hsetex_options(args)?;
         let field_values = collect_hash_field_values(
@@ -818,7 +818,7 @@ impl RequestProcessor {
             "HGETEX",
             "HGETEX key [EX seconds|PX milliseconds|EXAT unix-time-seconds|PXAT milliseconds-unix-time|PERSIST] FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let expire_options = parse_hgetex_options(args)?;
         let fields = collect_hash_fields(
@@ -919,7 +919,7 @@ impl RequestProcessor {
             "HGETDEL",
             "HGETDEL key FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let fields = parse_hgetdel_fields(args)?;
         let resp3 = self.resp_protocol_version().is_resp3();
@@ -1001,7 +1001,7 @@ impl RequestProcessor {
             "HEXPIRE",
             "HEXPIRE key seconds [NX|XX|GT|LT] FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
             key,
@@ -1039,7 +1039,7 @@ impl RequestProcessor {
             "HPEXPIRE",
             "HPEXPIRE key milliseconds [NX|XX|GT|LT] FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
             key,
@@ -1070,7 +1070,7 @@ impl RequestProcessor {
             "HPEXPIREAT",
             "HPEXPIREAT key milliseconds-unix-time [NX|XX|GT|LT] FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
             key,
@@ -1107,7 +1107,7 @@ impl RequestProcessor {
             "HEXPIREAT",
             "HEXPIREAT key unix-time-seconds [NX|XX|GT|LT] FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         self.handle_hash_field_expire_common(
             key,
@@ -1130,7 +1130,7 @@ impl RequestProcessor {
             "HPERSIST",
             "HPERSIST key FIELDS num field [field ...]",
         )?;
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let fields = parse_hash_fields(
             args,
@@ -1252,7 +1252,7 @@ impl RequestProcessor {
         command_usage: &'static str,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let fields = parse_hash_fields(args, 2, command_name, command_usage)?;
         let mut hash = match self.load_hash_object(key)? {
@@ -1300,7 +1300,7 @@ impl RequestProcessor {
         command_usage: &'static str,
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
-        let selected_db = REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db);
+        let selected_db = current_request_selected_db();
         let key = DbKeyRef::new(selected_db, args[1]);
         let fields = parse_hash_fields(args, 2, command_name, command_usage)?;
         let mut hash = match self.load_hash_object(key)? {

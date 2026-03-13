@@ -2168,7 +2168,7 @@ impl RequestProcessor {
             }
             other => {
                 self.enqueue_script_replication_effect(
-                    REQUEST_EXECUTION_CONTEXT.with(|state| state.get().selected_db),
+                    current_request_selected_db(),
                     command,
                     encode_script_call_frame(&arg_refs),
                     response,
