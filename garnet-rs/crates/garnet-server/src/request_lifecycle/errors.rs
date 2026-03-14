@@ -92,6 +92,7 @@ pub enum RequestExecutionError {
     InvalidSecondDbIndex,
     DbIndexOutOfRange,
     SourceDestinationObjectsSame,
+    WaitAofReplicaMode,
     WaitAofAppendOnlyDisabled,
     ClusterSupportDisabled,
     FunctionLibraryAlreadyExists,
@@ -364,6 +365,10 @@ impl RequestExecutionError {
             Self::SourceDestinationObjectsSame => append_error(
                 response_out,
                 "ERR source and destination objects are the same",
+            ),
+            Self::WaitAofReplicaMode => append_error(
+                response_out,
+                "ERR WAITAOF cannot be used with replica instances. Please also note that writes to replicas are just local and are not propagated.",
             ),
             Self::WaitAofAppendOnlyDisabled => append_error(
                 response_out,

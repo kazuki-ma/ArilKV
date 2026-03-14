@@ -25,6 +25,7 @@ use tokio::net::TcpStream;
 use tokio::sync::broadcast;
 use tokio::task::yield_now;
 use tokio::time::sleep;
+use tsavorite::AofOffset;
 
 use crate::AclUserProfile;
 use crate::ClientId;
@@ -599,6 +600,37 @@ async fn materialize_wait_response_if_needed(
     );
 }
 
+async fn materialize_waitaof_response_if_needed(
+    processor: &RequestProcessor,
+    response_out: &mut Vec<u8>,
+    connection_effects: RequestConnectionEffects,
+    local_aof_wait_target_offset_for_connection: u64,
+) {
+    let Some(waitaof_request) = connection_effects.waitaof_request else {
+        return;
+    };
+    if waitaof_request.requested_local > 0 && !processor.appendonly_enabled() {
+        response_out.clear();
+        RequestExecutionError::WaitAofAppendOnlyDisabled.append_resp_error(response_out);
+        return;
+    }
+
+    let local_target_offset = AofOffset::new(local_aof_wait_target_offset_for_connection);
+    let local_acknowledged =
+        if waitaof_request.requested_replicas == 0 && waitaof_request.requested_local > 0 {
+            processor
+                .wait_for_local_aof_fsync(local_target_offset, waitaof_request.timeout_millis)
+                .await
+        } else {
+            processor.local_aof_fsync_satisfied(local_target_offset)
+        };
+
+    response_out.clear();
+    append_array_length_frame(response_out, 2);
+    append_integer_frame(response_out, i64::from(local_acknowledged));
+    append_integer_frame(response_out, 0);
+}
+
 fn materialize_failover_if_needed(
     replication: &RedisReplicationCoordinator,
     connection_effects: RequestConnectionEffects,
@@ -687,6 +719,7 @@ pub(crate) async fn handle_connection(
     let mut disconnect_after_write = false;
     let mut monitor_receiver: Option<broadcast::Receiver<Vec<u8>>> = None;
     let mut wait_target_offset_for_connection = 0u64;
+    let mut local_aof_wait_target_offset_for_connection = 0u64;
     let mut replica_rdb_functions_only = false;
 
     loop {
@@ -1381,10 +1414,20 @@ pub(crate) async fn handle_connection(
                                                     )
                                                 {
                                                     wait_target_offset_for_connection =
-                                                        wait_target_offset;
+                                                        wait_target_offset.replication_offset;
                                                     metrics.set_client_wait_target_offset(
                                                         client_id,
                                                         wait_target_offset_for_connection,
+                                                    );
+                                                    local_aof_wait_target_offset_for_connection =
+                                                        wait_target_offset
+                                                            .local_aof_append_offset
+                                                            .map(u64::from)
+                                                            .unwrap_or(0);
+                                                    metrics
+                                                        .set_client_local_aof_wait_target_offset(
+                                                        client_id,
+                                                        local_aof_wait_target_offset_for_connection,
                                                     );
                                                 }
                                                 client_state.selected_db =
@@ -1880,6 +1923,7 @@ pub(crate) async fn handle_connection(
                                 client_id,
                                 client_state.selected_db,
                                 wait_target_offset_for_connection,
+                                local_aof_wait_target_offset_for_connection,
                                 &mut stream,
                                 resumed_blocking_command_after_pause,
                             )
@@ -2008,6 +2052,10 @@ pub(crate) async fn handle_connection(
                                 processor.record_rdb_change(1);
                                 let published = replication.publish_write_frame(&del_frame);
                                 wait_target_offset_for_connection = published.replication_offset;
+                                local_aof_wait_target_offset_for_connection = published
+                                    .local_aof_append_offset
+                                    .map(u64::from)
+                                    .unwrap_or(0);
                                 published_replication_write = true;
                             }
                         }
@@ -2017,6 +2065,10 @@ pub(crate) async fn handle_connection(
                                 processor.record_rdb_change(1);
                                 let published = replication.publish_write_frame(frame_to_replicate);
                                 wait_target_offset_for_connection = published.replication_offset;
+                                local_aof_wait_target_offset_for_connection = published
+                                    .local_aof_append_offset
+                                    .map(u64::from)
+                                    .unwrap_or(0);
                                 published_replication_write = true;
                             }
                         }
@@ -2024,6 +2076,10 @@ pub(crate) async fn handle_connection(
                             metrics.set_client_wait_target_offset(
                                 client_id,
                                 wait_target_offset_for_connection,
+                            );
+                            metrics.set_client_local_aof_wait_target_offset(
+                                client_id,
+                                local_aof_wait_target_offset_for_connection,
                             );
                         }
                         if wait_for_blocking_progress {
@@ -2053,7 +2109,15 @@ pub(crate) async fn handle_connection(
                 processor.record_rdb_change(1);
                 let published = replication.publish_write_frame(frame);
                 wait_target_offset_for_connection = published.replication_offset;
+                local_aof_wait_target_offset_for_connection = published
+                    .local_aof_append_offset
+                    .map(u64::from)
+                    .unwrap_or(0);
                 metrics.set_client_wait_target_offset(client_id, wait_target_offset_for_connection);
+                metrics.set_client_local_aof_wait_target_offset(
+                    client_id,
+                    local_aof_wait_target_offset_for_connection,
+                );
             }
             commands_processed =
                 command_execution_delta(&processor, execution_count_before, command);
@@ -2266,6 +2330,7 @@ async fn execute_blocking_frame_on_owner_thread(
     client_id: ClientId,
     selected_db: DbName,
     wait_target_offset_for_connection: u64,
+    local_aof_wait_target_offset_for_connection: u64,
     stream: &mut TcpStream,
     resumed_blocking_command_after_pause: bool,
 ) -> Result<BlockingExecutionOutcome, OwnerThreadExecutionError> {
@@ -2485,6 +2550,13 @@ async fn execute_blocking_frame_on_owner_thread(
             &mut frame_response,
             connection_effects,
             wait_target_offset_for_connection,
+        )
+        .await;
+        materialize_waitaof_response_if_needed(
+            processor,
+            &mut frame_response,
+            connection_effects,
+            local_aof_wait_target_offset_for_connection,
         )
         .await;
 
@@ -2995,7 +3067,7 @@ fn publish_transaction_replication_frames(
     replication: &RedisReplicationCoordinator,
     transaction_outcome: &TransactionExecutionOutcome,
     max_resp_arguments: usize,
-) -> Option<u64> {
+) -> Option<crate::redis_replication::PublishedWriteFrontiers> {
     if transaction_outcome.pending_replication_transition.is_some() {
         return None;
     }
@@ -3086,21 +3158,21 @@ fn publish_transaction_replication_frames(
         let _ = replication.publish_write_frame(&multi_frame);
     }
 
-    let mut last_replication_offset = None;
+    let mut last_published = None;
     for (selected_db, replication_frame) in &replication_frames {
         publish_select_if_needed(replication, *selected_db);
         processor.record_rdb_change(1);
         let published = replication.publish_write_frame(replication_frame);
-        last_replication_offset = Some(published.replication_offset);
+        last_published = Some(published);
     }
 
     if replication_frames.len() > 1 {
         let exec_frame = encode_resp_frame_slices(&[b"EXEC"]);
         processor.record_rdb_change(1);
         let published = replication.publish_write_frame(&exec_frame);
-        last_replication_offset = Some(published.replication_offset);
+        last_published = Some(published);
     }
-    last_replication_offset
+    last_published
 }
 
 fn command_uses_script_effect_replication(command: CommandId) -> bool {
@@ -6110,7 +6182,7 @@ mod tests {
             .execute_in_db(
                 &load_args[..load_meta.argument_count],
                 &mut load_response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert!(load_response.starts_with(b"$40\r\n"));
@@ -6128,7 +6200,7 @@ mod tests {
             parse_resp_command_arg_slices(&evalsha_frame, &mut evalsha_args).unwrap();
         let rewritten = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Evalsha,
             &evalsha_args[..evalsha_meta.argument_count],
             b"$2\r\nv1\r\n",
@@ -6164,12 +6236,12 @@ mod tests {
             .execute_in_db(
                 &set_ex_args[..set_ex_meta.argument_count],
                 &mut set_ex_response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         let rewritten_set = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Set,
             &set_ex_args[..set_ex_meta.argument_count],
             &set_ex_response,
@@ -6195,12 +6267,12 @@ mod tests {
             .execute_in_db(
                 &getex_persist_args[..getex_persist_meta.argument_count],
                 &mut getex_persist_response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         let rewritten_persist = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Getex,
             &getex_persist_args[..getex_persist_meta.argument_count],
             &getex_persist_response,
@@ -6222,7 +6294,7 @@ mod tests {
             .execute_in_db(
                 &set_args[..set_meta.argument_count],
                 &mut set_response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(set_response, b"+OK\r\n");
@@ -6246,12 +6318,12 @@ mod tests {
             .execute_in_db(
                 &getex_expired_args[..getex_expired_meta.argument_count],
                 &mut getex_expired_response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         let rewritten_del = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Getex,
             &getex_expired_args[..getex_expired_meta.argument_count],
             &getex_expired_response,
@@ -6283,7 +6355,7 @@ mod tests {
 
         let rewritten = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Lmpop,
             &lmpop_args[..lmpop_meta.argument_count],
             lmpop_response,
@@ -6319,7 +6391,7 @@ mod tests {
 
         let rewritten = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Zmpop,
             &zmpop_args[..zmpop_meta.argument_count],
             zmpop_response,
@@ -6355,7 +6427,7 @@ mod tests {
             .execute_in_db(
                 &args[..sadd_partial_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b":4\r\n");
@@ -6367,7 +6439,7 @@ mod tests {
             .execute_in_db(
                 &args[..spop_partial_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         let expected_members =
@@ -6375,7 +6447,7 @@ mod tests {
         assert_eq!(expected_members.len(), 2);
         let rewritten_srem = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Spop,
             &args[..spop_partial_meta.argument_count],
             &response,
@@ -6411,7 +6483,7 @@ mod tests {
             .execute_in_db(
                 &args[..sadd_resp3_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b":3\r\n");
@@ -6423,7 +6495,7 @@ mod tests {
             .execute_in_db(
                 &args[..spop_resp3_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert!(
@@ -6433,7 +6505,7 @@ mod tests {
         );
         let rewritten_resp3 = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Spop,
             &args[..spop_resp3_meta.argument_count],
             &response,
@@ -6463,7 +6535,7 @@ mod tests {
             .execute_in_db(
                 &args[..sadd_del_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b":5\r\n");
@@ -6475,12 +6547,12 @@ mod tests {
             .execute_in_db(
                 &args[..spop_del_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         let rewritten_del = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Spop,
             &args[..spop_del_meta.argument_count],
             &response,
@@ -6507,7 +6579,7 @@ mod tests {
             .execute_in_db(
                 &args[..config_lazyfree_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
@@ -6523,7 +6595,7 @@ mod tests {
             .execute_in_db(
                 &args[..sadd_unlink_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b":65\r\n");
@@ -6535,12 +6607,12 @@ mod tests {
             .execute_in_db(
                 &args[..spop_unlink_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         let rewritten_unlink = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Spop,
             &args[..spop_unlink_meta.argument_count],
             &response,
@@ -6568,7 +6640,7 @@ mod tests {
             .execute_in_db(
                 &args[..set_key1_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
@@ -6593,13 +6665,13 @@ mod tests {
             .execute_in_db(
                 &args[..restore_key1_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
         let rewritten_del = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Restore,
             &args[..restore_key1_meta.argument_count],
             &response,
@@ -6626,7 +6698,7 @@ mod tests {
             .execute_in_db(
                 &args[..config_lazyfree_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
@@ -6638,7 +6710,7 @@ mod tests {
             .execute_in_db(
                 &args[..set_key2_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
@@ -6657,13 +6729,13 @@ mod tests {
             .execute_in_db(
                 &args[..restore_key2_meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
         let rewritten_unlink = replication_frame_for_command(
             &processor,
-            DbName::default(),
+            DbName::fixture(),
             CommandId::Restore,
             &args[..restore_key2_meta.argument_count],
             &response,

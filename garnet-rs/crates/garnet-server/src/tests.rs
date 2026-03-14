@@ -8388,6 +8388,126 @@ async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enable
 }
 
 #[tokio::test]
+async fn waitaof_local_times_out_before_everysec_fsync_like_external_wait_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "garnet-waitaof-everysec-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    processor.set_config_value(b"appendonly", b"yes".to_vec());
+    processor.set_config_value(b"appendfsync", b"everysec".to_vec());
+    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
+    processor.set_config_value(b"appendfilename", b"waitaof-everysec.aof".to_vec());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"waitaof:everysec", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let reply = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"50"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&reply), vec![0, 0]);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+    let _ = std::fs::remove_file(temp_dir.join("waitaof-everysec.aof"));
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
+async fn waitaof_local_succeeds_after_always_fsync_write_like_external_wait_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+    let temp_dir = std::env::temp_dir().join(format!(
+        "garnet-waitaof-always-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    processor.set_config_value(b"appendonly", b"yes".to_vec());
+    processor.set_config_value(b"appendfsync", b"always".to_vec());
+    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
+    processor.set_config_value(b"appendfilename", b"waitaof-always.aof".to_vec());
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            listener,
+            1024,
+            server_metrics,
+            async move {
+                let _ = shutdown_rx.await;
+            },
+            None,
+            processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"waitaof:always", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let reply = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"WAITAOF", b"1", b"0", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&reply), vec![1, 0]);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+    let _ = std::fs::remove_file(temp_dir.join("waitaof-always.aof"));
+    let _ = std::fs::remove_dir_all(temp_dir);
+}
+
+#[tokio::test]
 async fn wait_times_out_without_downstream_replicas() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -13215,7 +13335,7 @@ async fn cluster_live_slot_migration_transfers_data_and_updates_redirections() {
     send_and_expect(&mut node2, &get_key, b"$-1\r\n").await;
 
     let moved = source_processor
-        .migrate_slot_to(&target_processor, DbName::default(), slot, 16, true)
+        .migrate_slot_to(&target_processor, DbName::fixture(), slot, 16, true)
         .unwrap();
     assert_eq!(moved, 1);
 
@@ -14757,7 +14877,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
         &set_owned_args,
         false,
         None,
-        crate::request_lifecycle::DbName::default(),
+        crate::request_lifecycle::DbName::fixture(),
     )
     .unwrap();
     let direct_set = execute_processor_frame(&processor, &set_frame);
@@ -14770,7 +14890,7 @@ fn execute_owned_frame_args_via_processor_matches_direct_execution() {
         &get_owned_args,
         false,
         None,
-        crate::request_lifecycle::DbName::default(),
+        crate::request_lifecycle::DbName::fixture(),
     )
     .unwrap();
     let direct_get = execute_processor_frame(&processor, &get_frame);
@@ -17965,7 +18085,7 @@ fn execute_processor_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     response

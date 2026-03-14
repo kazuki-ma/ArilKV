@@ -1407,18 +1407,56 @@ impl RequestProcessor {
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 4, "WAITAOF", "WAITAOF numlocal numreplicas timeout")?;
         let numlocal = parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let numreplicas = parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let timeout_millis =
+            parse_u64_ascii(args[3]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if numlocal > 1 {
             return Err(RequestExecutionError::ValueOutOfRange);
         }
-        if numlocal > 0 {
+        if self
+            .replication_coordinator()
+            .is_some_and(|replication| replication.is_replica_mode())
+        {
+            return Err(RequestExecutionError::WaitAofReplicaMode);
+        }
+        let appendonly_enabled = self.appendonly_enabled();
+        if numlocal > 0 && !appendonly_enabled {
             return Err(RequestExecutionError::WaitAofAppendOnlyDisabled);
         }
-        // WAITAOF returns an array of two integers: [numlocal_synced, numreplicas_synced]
-        append_array_length(response_out, 2);
-        append_integer(response_out, 0);
-        append_integer(response_out, 0);
+        let local_target_offset = current_request_client_id()
+            .and_then(|client_id| {
+                self.server_metrics
+                    .get()
+                    .and_then(|metrics| metrics.client_local_aof_wait_target_offset(client_id))
+            })
+            .map(tsavorite::AofOffset::new)
+            .unwrap_or_else(|| tsavorite::AofOffset::new(0));
+        let local_acknowledged =
+            if appendonly_enabled && self.local_aof_fsync_satisfied(local_target_offset) {
+                1
+            } else {
+                0
+            };
+        let replica_acknowledged = 0;
+        if (local_acknowledged >= numlocal && replica_acknowledged >= numreplicas)
+            || self.current_thread_running_script()
+            || current_request_in_transaction()
+            || current_request_client_id().is_none()
+            || numreplicas > 0
+        {
+            append_array_length(response_out, 2);
+            append_integer(
+                response_out,
+                i64::try_from(local_acknowledged).unwrap_or(i64::MAX),
+            );
+            append_integer(
+                response_out,
+                i64::try_from(replica_acknowledged).unwrap_or(i64::MAX),
+            );
+            return Ok(());
+        }
+
+        set_request_waitaof_effect(numlocal, numreplicas, timeout_millis);
         Ok(())
     }
 

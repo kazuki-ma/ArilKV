@@ -229,6 +229,7 @@ struct ClientRuntimeInfo {
     /// Last time the reply buffer peak window was reset.
     reply_buffer_peak_last_reset: Instant,
     wait_target_offset: u64,
+    local_aof_wait_target_offset: u64,
     replica_listen_port: Option<u16>,
     selected_db: DbName,
     client_type: ClientTypeFilter,
@@ -324,6 +325,7 @@ impl ClientRuntimeInfo {
             reply_buffer_peak: 0,
             reply_buffer_peak_last_reset: now,
             wait_target_offset: 0,
+            local_aof_wait_target_offset: 0,
             replica_listen_port: None,
             selected_db: DbName::db0(),
             client_type: ClientTypeFilter::Normal,
@@ -685,6 +687,27 @@ impl ServerMetrics {
             clients
                 .get(&client_id)
                 .map(|client| client.wait_target_offset)
+        })
+    }
+
+    pub(crate) fn set_client_local_aof_wait_target_offset(
+        &self,
+        client_id: ClientId,
+        wait_target: u64,
+    ) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.local_aof_wait_target_offset = wait_target;
+            client.last_activity = Instant::now();
+        }
+    }
+
+    pub(crate) fn client_local_aof_wait_target_offset(&self, client_id: ClientId) -> Option<u64> {
+        self.clients.lock().ok().and_then(|clients| {
+            clients
+                .get(&client_id)
+                .map(|client| client.local_aof_wait_target_offset)
         })
     }
 

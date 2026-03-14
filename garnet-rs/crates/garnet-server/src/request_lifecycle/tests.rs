@@ -495,7 +495,7 @@ fn execute_frame(processor: &RequestProcessor, frame: &[u8]) -> Vec<u8> {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     response
@@ -517,7 +517,7 @@ fn execute_frame_with_client(
             client_no_touch,
             Some(client_id),
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     response
@@ -733,7 +733,7 @@ fn executes_set_then_get_roundtrip() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -745,7 +745,7 @@ fn executes_set_then_get_roundtrip() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -855,12 +855,12 @@ fn sharded_string_metadata_tracks_keys_and_expiration_per_shard() {
 
     assert!(
         processor
-            .string_expiration_deadline(DbKeyRef::new(DbName::default(), &key_a))
+            .string_expiration_deadline(DbKeyRef::new(DbName::fixture(), &key_a))
             .is_some()
     );
     assert!(
         processor
-            .string_expiration_deadline(DbKeyRef::new(DbName::default(), &key_b))
+            .string_expiration_deadline(DbKeyRef::new(DbName::fixture(), &key_b))
             .is_none()
     );
     assert_eq!(processor.string_expiration_count_for_shard(shard_a), 1);
@@ -937,7 +937,7 @@ fn set_and_get_supports_1kb_payload_without_storage_failure() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -949,7 +949,7 @@ fn set_and_get_supports_1kb_payload_without_storage_failure() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -975,7 +975,7 @@ fn set_and_get_supports_50kb_key_for_keyspace_regression() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -990,7 +990,7 @@ fn set_and_get_supports_50kb_key_for_keyspace_regression() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n1\r\n");
@@ -1002,13 +1002,13 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
 
     processor
         .object_upsert(
-            DbKeyRef::new(DbName::default(), b"obj"),
+            DbKeyRef::new(DbName::fixture(), b"obj"),
             ObjectTypeTag::Hash,
             b"payload",
         )
         .unwrap();
     let object = processor
-        .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+        .object_read(DbKeyRef::new(DbName::fixture(), b"obj"))
         .unwrap()
         .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Hash);
@@ -1022,7 +1022,7 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -1039,14 +1039,14 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     assert!(
         processor
-            .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+            .object_read(DbKeyRef::new(DbName::fixture(), b"obj"))
             .unwrap()
             .is_none()
     );
@@ -1057,7 +1057,7 @@ fn object_store_roundtrip_respects_redis_type_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nstr\r\n");
@@ -1076,20 +1076,20 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     let entry = source
-        .export_migration_entry(DbName::default(), b"key")
+        .export_migration_entry(DbName::fixture(), b"key")
         .unwrap()
         .expect("source key should be exportable");
     assert!(matches!(&entry.value, MigrationValue::String(value) if value.as_slice() == b"value"));
     assert!(entry.expiration_unix_millis.is_some());
 
     target
-        .import_migration_entry(DbName::default(), &entry)
+        .import_migration_entry(DbName::fixture(), &entry)
         .unwrap();
 
     response.clear();
@@ -1099,7 +1099,7 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -1111,7 +1111,7 @@ fn migration_entry_roundtrip_preserves_string_and_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let ttl = parse_integer_response(&response);
@@ -1132,7 +1132,7 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -1140,8 +1140,8 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
     let moved = source
         .migrate_keys_to(
             &target,
-            DbName::default(),
-            DbName::default(),
+            DbName::fixture(),
+            DbName::fixture(),
             &[b"key".to_vec()],
             true,
         )
@@ -1155,7 +1155,7 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -1166,7 +1166,7 @@ fn migrate_keys_to_transfers_string_and_deletes_source() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -1204,7 +1204,7 @@ fn migration_entry_roundtrip_preserves_string_and_expiration_in_nonzero_db() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -1235,7 +1235,7 @@ fn migrate_keys_to_transfers_object_value() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -1243,8 +1243,8 @@ fn migrate_keys_to_transfers_object_value() {
     let moved = source
         .migrate_keys_to(
             &target,
-            DbName::default(),
-            DbName::default(),
+            DbName::fixture(),
+            DbName::fixture(),
             &[b"key".to_vec()],
             true,
         )
@@ -1258,7 +1258,7 @@ fn migrate_keys_to_transfers_object_value() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -1269,7 +1269,7 @@ fn migrate_keys_to_transfers_object_value() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -1295,7 +1295,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -1307,7 +1307,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -1319,13 +1319,13 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     let moved = source
-        .migrate_slot_to(&target, DbName::default(), slot, 16, true)
+        .migrate_slot_to(&target, DbName::fixture(), slot, 16, true)
         .unwrap();
     assert_eq!(moved, 2);
 
@@ -1336,7 +1336,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -1348,7 +1348,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$7\r\nvalue-c\r\n");
@@ -1360,7 +1360,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -1371,7 +1371,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$7\r\nvalue-a\r\n");
@@ -1382,7 +1382,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$7\r\nvalue-b\r\n");
@@ -1393,7 +1393,7 @@ fn migrate_slot_to_moves_only_slot_matched_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -1411,7 +1411,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -1423,7 +1423,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -1435,7 +1435,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$2\r\nv2\r\n");
@@ -1447,7 +1447,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -1459,7 +1459,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -1474,7 +1474,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -1486,7 +1486,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -1497,7 +1497,7 @@ fn hash_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -2150,7 +2150,7 @@ fn hash_hgetall_preserves_payload_order_across_restore_match_external_scenarios(
         .execute_in_db(
             &fields[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -2204,7 +2204,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -2216,7 +2216,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -2228,7 +2228,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$2\r\nv1\r\n$-1\r\n");
@@ -2240,7 +2240,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -2252,7 +2252,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -2264,7 +2264,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -2276,7 +2276,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nf1\r\n$2\r\nf2\r\n$2\r\nf3\r\n");
@@ -2288,7 +2288,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$2\r\nv3\r\n");
@@ -2300,7 +2300,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -2312,7 +2312,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -2324,7 +2324,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-3\r\n");
@@ -2337,7 +2337,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -2349,7 +2349,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -2363,7 +2363,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\n2.5\r\n");
@@ -2375,7 +2375,7 @@ fn additional_hash_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n6\r\n");
@@ -2463,7 +2463,7 @@ fn hash_field_expiration_extension_commands_cover_ttl_expiretime_and_persist() {
 #[test]
 fn hash_field_expiration_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response_in_db(&processor, "HSET shared field db0", b":1\r\n", db0);
@@ -2626,7 +2626,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -2638,7 +2638,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -2650,7 +2650,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
@@ -2663,7 +2663,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*8\r\n"));
@@ -2678,7 +2678,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n*2\r\n"));
@@ -2691,7 +2691,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n$"));
@@ -2705,7 +2705,7 @@ fn hrandfield_supports_count_withvalues_and_resp3_shape() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*4\r\n"));
@@ -2723,7 +2723,7 @@ fn hash_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -2735,7 +2735,7 @@ fn hash_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -2752,7 +2752,7 @@ fn hash_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -2806,7 +2806,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -2818,7 +2818,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -2830,7 +2830,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$1\r\nb\r\n$1\r\na\r\n$1\r\nc\r\n");
@@ -2842,7 +2842,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\nb\r\n");
@@ -2854,7 +2854,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\nc\r\n");
@@ -2865,7 +2865,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\na\r\n");
@@ -2876,7 +2876,7 @@ fn list_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -2918,7 +2918,7 @@ fn lrange_supports_negative_indexes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":4\r\n");
@@ -2930,7 +2930,7 @@ fn lrange_supports_negative_indexes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\nb\r\n$1\r\nc\r\n");
@@ -2948,7 +2948,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -2960,7 +2960,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -2972,7 +2972,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\na\r\n");
@@ -2984,7 +2984,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\nc\r\n");
@@ -2996,7 +2996,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -3008,7 +3008,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -3020,7 +3020,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":4\r\n");
@@ -3032,7 +3032,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -3044,7 +3044,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -3056,7 +3056,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -3068,7 +3068,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\ny\r\n$1\r\nz\r\n");
@@ -3165,7 +3165,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3179,7 +3179,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3193,7 +3193,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -3277,7 +3277,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3294,7 +3294,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3309,7 +3309,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3324,7 +3324,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3339,7 +3339,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3350,7 +3350,7 @@ fn additional_list_commands_cover_common_redis_semantics() {
 #[test]
 fn list_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_eq!(
@@ -3497,7 +3497,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3512,7 +3512,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3526,7 +3526,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3540,7 +3540,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3554,7 +3554,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3568,7 +3568,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3582,7 +3582,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3596,7 +3596,7 @@ fn blocking_and_mpop_list_commands_cover_redis_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3616,7 +3616,7 @@ fn list_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -3628,7 +3628,7 @@ fn list_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3645,7 +3645,7 @@ fn list_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -3668,7 +3668,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -3680,7 +3680,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -3692,7 +3692,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -3704,7 +3704,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\na\r\n$1\r\nb\r\n");
@@ -3716,7 +3716,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -3727,7 +3727,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*1\r\n$1\r\nb\r\n");
@@ -3739,7 +3739,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -3750,7 +3750,7 @@ fn set_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -3769,7 +3769,7 @@ fn sadd_uses_contiguous_range_encoding_for_canonical_integer_sequences() {
     }
 
     let object = processor
-        .object_read(DbKeyRef::new(DbName::default(), b"numbers"))
+        .object_read(DbKeyRef::new(DbName::fixture(), b"numbers"))
         .unwrap()
         .unwrap();
     assert_eq!(object.object_type, ObjectTypeTag::Set);
@@ -3803,7 +3803,7 @@ fn sadd_falls_back_from_contiguous_range_encoding_for_non_canonical_members() {
     );
 
     let object = processor
-        .object_read(DbKeyRef::new(DbName::default(), b"numbers"))
+        .object_read(DbKeyRef::new(DbName::fixture(), b"numbers"))
         .unwrap()
         .unwrap();
     assert!(matches!(
@@ -3933,7 +3933,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":4\r\n");
@@ -3945,7 +3945,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -3957,7 +3957,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":4\r\n");
@@ -3969,7 +3969,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n:1\r\n:0\r\n:1\r\n");
@@ -3981,7 +3981,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
@@ -3993,7 +3993,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -4005,7 +4005,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -4017,7 +4017,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
@@ -4029,7 +4029,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -4041,7 +4041,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -4053,7 +4053,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -4065,7 +4065,7 @@ fn additional_set_commands_cover_common_redis_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4085,7 +4085,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -4097,7 +4097,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -4109,7 +4109,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -4215,7 +4215,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4236,7 +4236,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4255,7 +4255,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4272,7 +4272,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4291,7 +4291,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4309,7 +4309,7 @@ fn set_algebra_commands_cover_union_intersection_difference_and_store_variants()
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4332,7 +4332,7 @@ fn set_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -4344,7 +4344,7 @@ fn set_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -4367,7 +4367,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -4379,7 +4379,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n1\r\n");
@@ -4391,7 +4391,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -4403,7 +4403,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -4415,7 +4415,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -4427,7 +4427,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -4439,7 +4439,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -4451,7 +4451,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n3\r\n");
@@ -4462,7 +4462,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -4474,7 +4474,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
@@ -4486,7 +4486,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -4501,7 +4501,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -4517,7 +4517,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -4529,7 +4529,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$3\r\ntwo\r\n$3\r\none\r\n");
@@ -5022,7 +5022,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$1\r\n3\r\n$-1\r\n$1\r\n2\r\n");
@@ -5034,7 +5034,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -5047,7 +5047,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*4\r\n"));
@@ -5062,7 +5062,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -5074,7 +5074,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$1\r\na\r\n$1\r\n1\r\n");
@@ -5086,7 +5086,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -5101,7 +5101,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -5113,7 +5113,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -5128,7 +5128,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -5142,7 +5142,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5154,7 +5154,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5165,7 +5165,7 @@ fn zset_commands_roundtrip_over_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -5174,7 +5174,7 @@ fn zset_commands_roundtrip_over_object_store() {
 #[test]
 fn zset_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_eq!(
@@ -5274,7 +5274,7 @@ fn zset_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5286,7 +5286,7 @@ fn zset_commands_return_wrongtype_for_string_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -5309,7 +5309,7 @@ fn executes_incr_command() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5319,7 +5319,7 @@ fn executes_incr_command() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -5337,7 +5337,7 @@ fn incr_returns_wrongtype_for_object_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5349,7 +5349,7 @@ fn incr_returns_wrongtype_for_object_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -5372,7 +5372,7 @@ fn executes_incrby_and_decrby_commands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":5\r\n");
@@ -5384,7 +5384,7 @@ fn executes_incrby_and_decrby_commands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -5408,7 +5408,7 @@ fn exists_counts_duplicates_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5420,7 +5420,7 @@ fn exists_counts_duplicates_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5432,7 +5432,7 @@ fn exists_counts_duplicates_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -5450,7 +5450,7 @@ fn type_reports_string_object_and_none() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5462,7 +5462,7 @@ fn type_reports_string_object_and_none() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -5474,7 +5474,7 @@ fn type_reports_string_object_and_none() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+string\r\n");
@@ -5486,7 +5486,7 @@ fn type_reports_string_object_and_none() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+set\r\n");
@@ -5498,7 +5498,7 @@ fn type_reports_string_object_and_none() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+none\r\n");
@@ -5516,7 +5516,7 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5528,7 +5528,7 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
@@ -5540,7 +5540,7 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5552,7 +5552,7 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*1\r\n$-1\r\n");
@@ -5564,7 +5564,7 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5576,7 +5576,7 @@ fn mset_and_mget_support_multi_key_and_object_replacement() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nstr\r\n");
@@ -5593,7 +5593,7 @@ fn executes_del_command() {
         .execute_in_db(
             &args[..set_meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -5604,7 +5604,7 @@ fn executes_del_command() {
         .execute_in_db(
             &args[..del_meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5642,7 +5642,7 @@ fn del_removes_object_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5654,7 +5654,7 @@ fn del_removes_object_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5666,7 +5666,7 @@ fn del_removes_object_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -5684,7 +5684,7 @@ fn key_can_be_recreated_after_delete() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5696,7 +5696,7 @@ fn key_can_be_recreated_after_delete() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5708,7 +5708,7 @@ fn key_can_be_recreated_after_delete() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5720,7 +5720,7 @@ fn key_can_be_recreated_after_delete() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$7\r\nupdated\r\n");
@@ -5738,7 +5738,7 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5750,7 +5750,7 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5762,7 +5762,7 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -5774,7 +5774,7 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5786,7 +5786,7 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -5798,7 +5798,7 @@ fn rename_moves_value_and_renamenx_respects_existing_destination() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$6\r\nvalue2\r\n");
@@ -5816,7 +5816,7 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -5827,7 +5827,7 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5839,7 +5839,7 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5851,7 +5851,7 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
@@ -5866,7 +5866,7 @@ fn rename_moves_ttl_and_missing_source_returns_no_such_key() {
     let error = processor.execute_in_db(
         &args[..meta.argument_count],
         &mut response,
-        DbName::default(),
+        DbName::fixture(),
     );
     assert_eq!(error, Err(RequestExecutionError::NoSuchKey));
 }
@@ -5883,7 +5883,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -5894,7 +5894,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5906,7 +5906,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5918,7 +5918,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -5930,7 +5930,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let ttl_value = std::str::from_utf8(&response[1..response.len() - 2])
@@ -5946,7 +5946,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -5957,7 +5957,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -5969,7 +5969,7 @@ fn copy_copies_string_and_ttl_with_replace() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -5987,7 +5987,7 @@ fn set_supports_nx_and_xx_conditions() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -5999,7 +5999,7 @@ fn set_supports_nx_and_xx_conditions() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6011,7 +6011,7 @@ fn set_supports_nx_and_xx_conditions() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6029,7 +6029,7 @@ fn set_nx_and_xx_respect_object_key_existence() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6041,7 +6041,7 @@ fn set_nx_and_xx_respect_object_key_existence() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6053,7 +6053,7 @@ fn set_nx_and_xx_respect_object_key_existence() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6065,7 +6065,7 @@ fn set_nx_and_xx_respect_object_key_existence() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nstr\r\n");
@@ -6077,7 +6077,7 @@ fn set_nx_and_xx_respect_object_key_existence() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -6100,7 +6100,7 @@ fn set_with_px_expires_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6114,7 +6114,7 @@ fn set_with_px_expires_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6132,7 +6132,7 @@ fn expiration_scan_removes_expired_keys_in_background_style() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6148,7 +6148,7 @@ fn expiration_scan_removes_expired_keys_in_background_style() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6166,7 +6166,7 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6178,7 +6178,7 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6194,7 +6194,7 @@ fn expiration_scan_removes_expired_object_keys_in_background_style() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6253,7 +6253,7 @@ fn set_returns_error_for_invalid_expire_time() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -6353,7 +6353,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6365,7 +6365,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
@@ -6377,7 +6377,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6389,7 +6389,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let remaining = parse_integer_response(&response);
@@ -6402,7 +6402,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6414,7 +6414,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6426,7 +6426,7 @@ fn expire_ttl_and_pexpire_commands_work() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
@@ -6444,7 +6444,7 @@ fn set_after_expire_and_del_recreates_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6456,7 +6456,7 @@ fn set_after_expire_and_del_recreates_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6468,7 +6468,7 @@ fn set_after_expire_and_del_recreates_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6480,7 +6480,7 @@ fn set_after_expire_and_del_recreates_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6492,7 +6492,7 @@ fn set_after_expire_and_del_recreates_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nbar\r\n");
@@ -6510,7 +6510,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6522,7 +6522,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
@@ -6534,7 +6534,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6546,7 +6546,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let remaining = parse_integer_response(&response);
@@ -6559,7 +6559,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6570,7 +6570,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
@@ -6582,7 +6582,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6594,7 +6594,7 @@ fn expire_ttl_and_persist_apply_to_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -6612,7 +6612,7 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -6624,7 +6624,7 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
@@ -6636,7 +6636,7 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -6648,7 +6648,7 @@ fn expire_and_ttl_on_missing_key_follow_redis_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
@@ -6807,7 +6807,7 @@ fn expireat_and_expiretime_use_unix_seconds() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6822,7 +6822,7 @@ fn expireat_and_expiretime_use_unix_seconds() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6834,7 +6834,7 @@ fn expireat_and_expiretime_use_unix_seconds() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let absolute_secs = parse_integer_response(&response);
@@ -6853,7 +6853,7 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-2\r\n");
@@ -6865,7 +6865,7 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6877,7 +6877,7 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
@@ -6892,7 +6892,7 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6903,7 +6903,7 @@ fn pexpireat_and_pexpiretime_report_expected_codes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let absolute_millis = parse_integer_response(&response);
@@ -6922,7 +6922,7 @@ fn expire_with_invalid_timeout_returns_integer_error() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -6945,7 +6945,7 @@ fn persist_removes_existing_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -6957,7 +6957,7 @@ fn persist_removes_existing_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -6969,7 +6969,7 @@ fn persist_removes_existing_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
@@ -6980,7 +6980,7 @@ fn persist_removes_existing_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -6992,7 +6992,7 @@ fn persist_removes_existing_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -7010,7 +7010,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -7022,7 +7022,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7034,7 +7034,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let dump_payload = parse_bulk_payload(&response).expect("dump payload must exist");
@@ -7046,7 +7046,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -7058,7 +7058,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7070,7 +7070,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -7082,7 +7082,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -7095,7 +7095,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -7108,7 +7108,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7120,7 +7120,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let ttl = parse_integer_response(&response);
@@ -7135,7 +7135,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7147,7 +7147,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -7169,7 +7169,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7185,7 +7185,7 @@ fn dump_restore_and_restore_asking_roundtrip_string_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -7281,7 +7281,7 @@ fn dbsize_counts_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7293,7 +7293,7 @@ fn dbsize_counts_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -7305,7 +7305,7 @@ fn dbsize_counts_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -7341,7 +7341,7 @@ fn lazy_expire_tracks_replication_delete_keys_on_read_access() {
     assert_command_response(&processor, "GET lazy:key", b"$-1\r\n");
     let queued = processor.take_lazy_expired_keys_for_replication();
     assert_eq!(queued.len(), 1);
-    assert_eq!(queued[0].db, DbName::default());
+    assert_eq!(queued[0].db, DbName::fixture());
     assert_eq!(queued[0].key.as_slice(), b"lazy:key");
     assert!(
         processor
@@ -7392,7 +7392,7 @@ fn script_replication_effects_preserve_selected_db() {
 #[test]
 fn db_scoped_encoding_state_does_not_leak_between_databases() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7426,7 +7426,7 @@ fn db_scoped_encoding_state_does_not_leak_between_databases() {
 #[test]
 fn db_scoped_object_access_metadata_does_not_leak_between_databases() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7463,7 +7463,7 @@ fn db_scoped_object_access_metadata_does_not_leak_between_databases() {
 #[test]
 fn string_read_and_bit_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7491,7 +7491,7 @@ fn string_read_and_bit_commands_are_scoped_by_selected_db_without_db0_fallback()
 #[test]
 fn string_advanced_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7539,7 +7539,7 @@ fn string_advanced_commands_are_scoped_by_selected_db_without_db0_fallback() {
 #[test]
 fn string_write_and_delete_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7588,7 +7588,7 @@ fn string_write_and_delete_commands_are_scoped_by_selected_db_without_db0_fallba
 #[test]
 fn string_rename_copy_and_multi_key_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7650,7 +7650,7 @@ fn string_rename_copy_and_multi_key_commands_are_scoped_by_selected_db_without_d
 #[test]
 fn string_msetex_and_hyperloglog_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7709,7 +7709,7 @@ fn string_msetex_and_hyperloglog_commands_are_scoped_by_selected_db_without_db0_
 #[test]
 fn string_expiration_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7753,7 +7753,7 @@ fn string_expiration_commands_are_scoped_by_selected_db_without_db0_fallback() {
 #[test]
 fn server_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db1 = DbName::new(1);
     let db9 = DbName::new(9);
 
@@ -7887,7 +7887,7 @@ fn server_commands_are_scoped_by_selected_db_without_db0_fallback() {
 #[test]
 fn watch_versions_are_scoped_by_explicit_db() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "CONFIG SET databases 10", b"+OK\r\n");
@@ -7905,7 +7905,7 @@ fn watch_versions_are_scoped_by_explicit_db() {
 #[test]
 fn capture_watched_key_expires_only_target_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response(&processor, "SET shared db0", b"+OK\r\n");
@@ -7952,7 +7952,7 @@ fn flushdb_clears_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7964,7 +7964,7 @@ fn flushdb_clears_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -7976,7 +7976,7 @@ fn flushdb_clears_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -7988,7 +7988,7 @@ fn flushdb_clears_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -8006,7 +8006,7 @@ fn flushall_clears_keys_across_string_and_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -8018,7 +8018,7 @@ fn flushall_clears_keys_across_string_and_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -8030,7 +8030,7 @@ fn flushall_clears_keys_across_string_and_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -8042,7 +8042,7 @@ fn flushall_clears_keys_across_string_and_object_store() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -8099,7 +8099,7 @@ fn flushall_default_in_transaction_context_does_not_record_lazyfree() {
             &mut response,
             false,
             None,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -8126,7 +8126,7 @@ fn info_dbsize_and_command_responses_are_generated() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -8137,7 +8137,7 @@ fn info_dbsize_and_command_responses_are_generated() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -8149,7 +8149,7 @@ fn info_dbsize_and_command_responses_are_generated() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -8172,7 +8172,7 @@ fn info_dbsize_and_command_responses_are_generated() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*"));
@@ -8418,7 +8418,7 @@ fn info_keysizes_keeps_db0_histogram_when_current_client_selected_db_is_nonzero(
     let db1 = DbName::new(1);
 
     assert_eq!(
-        execute_command_line_in_db(&processor, "RPUSH l1 1 2 3 4", DbName::default()),
+        execute_command_line_in_db(&processor, "RPUSH l1 1 2 3 4", DbName::fixture()),
         b":4\r\n"
     );
     assert_eq!(
@@ -8491,7 +8491,7 @@ fn swapdb_non_zero_databases_swap_content_with_matching_key_names() {
 #[test]
 fn swapdb_zero_and_nonzero_databases_swap_content_with_matching_key_names() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db1 = DbName::new(1);
     let run = |command: &str, selected_db: DbName| -> Vec<u8> {
         match crate::testkit::execute_command_line_in_db(&processor, command, selected_db) {
@@ -8526,7 +8526,7 @@ fn swapdb_zero_and_nonzero_databases_swap_content_with_matching_key_names() {
 #[test]
 fn swapdb_zero_and_nonzero_preserves_quicklist_encoding_and_debug_object_state() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db1 = DbName::new(1);
     let large_quicklist_value = vec![b'x'; 8192];
 
@@ -8613,7 +8613,7 @@ fn swapdb_zero_and_nonzero_preserves_quicklist_encoding_and_debug_object_state()
 #[test]
 fn swapdb_zero_and_nonzero_preserves_object_access_metadata() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db1 = DbName::new(1);
 
     assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
@@ -8655,7 +8655,7 @@ fn swapdb_zero_and_nonzero_preserves_object_access_metadata() {
 #[test]
 fn swapdb_zero_and_nonzero_preserves_dirty_set_hot_state() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db1 = DbName::new(1);
 
     assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
@@ -8679,7 +8679,7 @@ fn swapdb_zero_and_nonzero_preserves_dirty_set_hot_state() {
 #[test]
 fn swapdb_zero_and_nonzero_makes_blocked_list_waiter_ready_in_target_logical_db() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db1 = DbName::new(1);
     let client_id = ClientId::new(9001);
     let wait_key = BlockingWaitKey::new(
@@ -8740,7 +8740,7 @@ fn swapdb_emits_global_tracking_invalidation() {
 
     assert_command_response(&processor, "CONFIG SET databases 2", b"+OK\r\n");
     assert_eq!(
-        execute_command_line_in_db(&processor, "SET left a", DbName::default()),
+        execute_command_line_in_db(&processor, "SET left a", DbName::fixture()),
         b"+OK\r\n"
     );
     assert_eq!(
@@ -9198,7 +9198,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -9210,7 +9210,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9222,7 +9222,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b":"));
@@ -9235,7 +9235,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9247,7 +9247,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b":"));
@@ -9260,7 +9260,7 @@ fn memory_usage_reports_positive_values_and_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*13\r\n"));
@@ -9283,7 +9283,7 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -9294,7 +9294,7 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -9305,7 +9305,7 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -9316,7 +9316,7 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -9327,7 +9327,7 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*3\r\n"));
@@ -9342,7 +9342,7 @@ fn keys_returns_glob_matches_across_string_and_object_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*4\r\n"));
@@ -9360,7 +9360,7 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -9372,7 +9372,7 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9384,7 +9384,7 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9398,7 +9398,7 @@ fn randomkey_returns_existing_keys_and_null_for_empty_db() {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         if response == b"$3\r\nfoo\r\n" {
@@ -9602,7 +9602,7 @@ fn setex_sets_value_with_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9614,7 +9614,7 @@ fn setex_sets_value_with_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -9626,7 +9626,7 @@ fn setex_sets_value_with_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b":"));
@@ -9649,7 +9649,7 @@ fn setnx_sets_only_when_key_absent() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9661,7 +9661,7 @@ fn setnx_sets_only_when_key_absent() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -9673,7 +9673,7 @@ fn setnx_sets_only_when_key_absent() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\none\r\n");
@@ -9691,7 +9691,7 @@ fn strlen_returns_zero_for_missing_and_length_for_string() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -9703,7 +9703,7 @@ fn strlen_returns_zero_for_missing_and_length_for_string() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9715,7 +9715,7 @@ fn strlen_returns_zero_for_missing_and_length_for_string() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":5\r\n");
@@ -9733,7 +9733,7 @@ fn getrange_and_substr_return_expected_slices() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9745,7 +9745,7 @@ fn getrange_and_substr_return_expected_slices() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$4\r\n2345\r\n");
@@ -9757,7 +9757,7 @@ fn getrange_and_substr_return_expected_slices() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\n789\r\n");
@@ -9769,7 +9769,7 @@ fn getrange_and_substr_return_expected_slices() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\n123\r\n");
@@ -9787,7 +9787,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -9799,7 +9799,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -9811,7 +9811,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -9822,7 +9822,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9834,7 +9834,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\ncbc\r\n");
@@ -9846,7 +9846,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":11\r\n");
@@ -9859,7 +9859,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":4\r\n");
@@ -9871,7 +9871,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -9899,7 +9899,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9911,7 +9911,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -9923,7 +9923,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9935,7 +9935,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\nA\r\n");
@@ -9947,7 +9947,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9958,7 +9958,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\na\r\n");
@@ -9970,7 +9970,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -9981,7 +9981,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n \r\n");
@@ -9993,7 +9993,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -10004,7 +10004,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n\xbe\r\n");
@@ -10016,7 +10016,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -10027,7 +10027,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n \r\n");
@@ -10039,7 +10039,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -10050,7 +10050,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n\x00\r\n");
@@ -10062,7 +10062,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -10073,7 +10073,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n \r\n");
@@ -10085,7 +10085,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -10096,7 +10096,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\nA\r\n");
@@ -10109,7 +10109,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -10121,7 +10121,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -10133,7 +10133,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":6\r\n");
@@ -10145,7 +10145,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -10157,7 +10157,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -10170,7 +10170,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -10184,7 +10184,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -10198,7 +10198,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -10212,7 +10212,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -10226,7 +10226,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -10239,7 +10239,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -10256,7 +10256,7 @@ fn getbit_setbit_setrange_and_bitcount_follow_string_semantics() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .err()
         .unwrap();
@@ -10685,7 +10685,7 @@ fn psetex_sets_value_with_millisecond_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -10697,7 +10697,7 @@ fn psetex_sets_value_with_millisecond_expiration() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let ttl_millis = parse_integer_response(&response);
@@ -10716,7 +10716,7 @@ fn getset_returns_old_value_and_overwrites_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -10728,7 +10728,7 @@ fn getset_returns_old_value_and_overwrites_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\none\r\n");
@@ -10740,7 +10740,7 @@ fn getset_returns_old_value_and_overwrites_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\ntwo\r\n");
@@ -10758,7 +10758,7 @@ fn getdel_returns_value_then_removes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -10770,7 +10770,7 @@ fn getdel_returns_value_then_removes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -10782,7 +10782,7 @@ fn getdel_returns_value_then_removes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -10793,7 +10793,7 @@ fn getdel_returns_value_then_removes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -10811,7 +10811,7 @@ fn append_and_incrbyfloat_update_string_values() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -10823,7 +10823,7 @@ fn append_and_incrbyfloat_update_string_values() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -10835,7 +10835,7 @@ fn append_and_incrbyfloat_update_string_values() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nabc\r\n");
@@ -10847,7 +10847,7 @@ fn append_and_incrbyfloat_update_string_values() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$4\r\n1.25\r\n");
@@ -10859,7 +10859,7 @@ fn append_and_incrbyfloat_update_string_values() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$1\r\n2\r\n");
@@ -10883,7 +10883,7 @@ fn getex_updates_expiration_and_persist() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -10895,7 +10895,7 @@ fn getex_updates_expiration_and_persist() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -10907,7 +10907,7 @@ fn getex_updates_expiration_and_persist() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let ttl_millis = parse_integer_response(&response);
@@ -10920,7 +10920,7 @@ fn getex_updates_expiration_and_persist() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -10932,7 +10932,7 @@ fn getex_updates_expiration_and_persist() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":-1\r\n");
@@ -10950,7 +10950,7 @@ fn getex_exat_in_the_past_returns_value_and_deletes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -10962,7 +10962,7 @@ fn getex_exat_in_the_past_returns_value_and_deletes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
@@ -10974,7 +10974,7 @@ fn getex_exat_in_the_past_returns_value_and_deletes_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -10992,7 +10992,7 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -11004,7 +11004,7 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -11016,7 +11016,7 @@ fn msetnx_sets_only_when_all_keys_are_absent() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$2\r\nv1\r\n$2\r\nv2\r\n$-1\r\n");
@@ -11283,7 +11283,7 @@ fn touch_and_unlink_count_existing_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11295,7 +11295,7 @@ fn touch_and_unlink_count_existing_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11307,7 +11307,7 @@ fn touch_and_unlink_count_existing_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -11319,7 +11319,7 @@ fn touch_and_unlink_count_existing_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -11331,7 +11331,7 @@ fn touch_and_unlink_count_existing_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -11349,13 +11349,13 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
 
     let lru_before = processor
-        .key_lru_millis(DbKeyRef::new(DbName::default(), b"key"))
+        .key_lru_millis(DbKeyRef::new(DbName::fixture(), b"key"))
         .unwrap();
 
     thread::sleep(Duration::from_millis(5));
@@ -11369,12 +11369,12 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
             true,
             None,
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
     let lru_after_no_touch = processor
-        .key_lru_millis(DbKeyRef::new(DbName::default(), b"key"))
+        .key_lru_millis(DbKeyRef::new(DbName::fixture(), b"key"))
         .unwrap();
     assert_eq!(lru_after_no_touch, lru_before);
 
@@ -11385,12 +11385,12 @@ fn execute_with_client_no_touch_is_scoped_per_request() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\nvalue\r\n");
     let lru_after_touch = processor
-        .key_lru_millis(DbKeyRef::new(DbName::default(), b"key"))
+        .key_lru_millis(DbKeyRef::new(DbName::fixture(), b"key"))
         .unwrap();
     assert!(lru_after_touch > lru_after_no_touch);
 }
@@ -11481,7 +11481,7 @@ fn command_getkeys_getkeysandflags_list_and_info_cover_introspection_paths() {
         .execute_in_db(
             &large_args[..getkeys_meta.argument_count],
             &mut getkeys_response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(parse_bulk_array_payloads(&getkeys_response), expected_keys);
@@ -11733,7 +11733,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -11745,7 +11745,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -11757,7 +11757,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -11769,7 +11769,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -11781,7 +11781,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -11793,7 +11793,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -11805,7 +11805,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -11817,7 +11817,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11829,7 +11829,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":4\r\n");
@@ -11841,7 +11841,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11853,7 +11853,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -11866,7 +11866,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -11878,7 +11878,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11890,7 +11890,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -11902,7 +11902,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$6\r\nsparse\r\n");
@@ -11914,7 +11914,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*16384\r\n"));
@@ -11926,7 +11926,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11938,7 +11938,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11950,7 +11950,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b":"));
@@ -11962,7 +11962,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -11975,7 +11975,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -11987,7 +11987,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12000,7 +12000,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12012,7 +12012,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12024,7 +12024,7 @@ fn pfadd_pfcount_pfmerge_pfdebug_and_pfselftest_cover_basic_paths() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12206,7 +12206,7 @@ fn db_key_ref_reads_are_scoped_by_explicit_db_without_db0_fallback() {
     );
 
     let db0_string = processor
-        .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+        .read_string_value(DbKeyRef::new(DbName::fixture(), b"shared"))
         .unwrap()
         .unwrap();
     let db9_string = processor
@@ -12218,7 +12218,7 @@ fn db_key_ref_reads_are_scoped_by_explicit_db_without_db0_fallback() {
 
     assert!(
         processor
-            .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+            .object_read(DbKeyRef::new(DbName::fixture(), b"obj"))
             .unwrap()
             .is_none()
     );
@@ -12250,7 +12250,7 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
         .unwrap();
     assert_eq!(
         processor
-            .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+            .read_string_value(DbKeyRef::new(DbName::fixture(), b"shared"))
             .unwrap()
             .unwrap(),
         b"db0"
@@ -12270,7 +12270,7 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
     );
     assert_eq!(
         processor
-            .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+            .read_string_value(DbKeyRef::new(DbName::fixture(), b"shared"))
             .unwrap()
             .unwrap(),
         b"db0"
@@ -12289,7 +12289,7 @@ fn db_key_ref_mutations_and_ttl_reads_are_scoped_by_explicit_db_without_db0_fall
     );
     assert!(
         processor
-            .expiration_unix_millis(DbKeyRef::new(DbName::default(), b"ttlkey"))
+            .expiration_unix_millis(DbKeyRef::new(DbName::fixture(), b"ttlkey"))
             .is_none()
     );
 }
@@ -12314,7 +12314,7 @@ fn execute_in_db_scopes_command_invocation_without_db0_fallback() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -12347,7 +12347,7 @@ fn db_key_ref_object_mutations_are_scoped_by_explicit_db_without_db0_fallback() 
         .unwrap();
 
     let db0_payload = processor
-        .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+        .object_read(DbKeyRef::new(DbName::fixture(), b"obj"))
         .unwrap()
         .unwrap();
     let db0_hash = deserialize_hash_object_payload(&db0_payload.payload).unwrap();
@@ -12372,7 +12372,7 @@ fn db_key_ref_object_mutations_are_scoped_by_explicit_db_without_db0_fallback() 
     );
     assert!(
         processor
-            .object_read(DbKeyRef::new(DbName::default(), b"obj"))
+            .object_read(DbKeyRef::new(DbName::fixture(), b"obj"))
             .unwrap()
             .is_some()
     );
@@ -12391,7 +12391,7 @@ fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback(
 
     assert!(
         processor
-            .string_expiration_deadline(DbKeyRef::new(DbName::default(), b"shared"))
+            .string_expiration_deadline(DbKeyRef::new(DbName::fixture(), b"shared"))
             .is_none()
     );
     assert!(
@@ -12404,7 +12404,7 @@ fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback(
 
     assert_eq!(
         processor
-            .read_string_value(DbKeyRef::new(DbName::default(), b"shared"))
+            .read_string_value(DbKeyRef::new(DbName::fixture(), b"shared"))
             .unwrap()
             .unwrap(),
         b"db0"
@@ -12418,7 +12418,7 @@ fn db_key_ref_expiration_metadata_is_scoped_by_explicit_db_without_db0_fallback(
     );
     assert!(
         processor
-            .string_expiration_deadline(DbKeyRef::new(DbName::default(), b"shared"))
+            .string_expiration_deadline(DbKeyRef::new(DbName::fixture(), b"shared"))
             .is_none()
     );
     assert!(
@@ -12444,7 +12444,7 @@ fn db_key_ref_hash_field_expiration_metadata_is_scoped_by_explicit_db_without_db
 
     assert!(
         processor
-            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::default(), b"hash"), b"field")
+            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::fixture(), b"hash"), b"field")
             .is_none()
     );
     assert_eq!(
@@ -12461,7 +12461,7 @@ fn db_key_ref_hash_field_expiration_metadata_is_scoped_by_explicit_db_without_db
 
     assert!(
         processor
-            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::default(), b"hash"), b"field")
+            .hash_field_expiration_unix_millis(DbKeyRef::new(DbName::fixture(), b"hash"), b"field")
             .is_none()
     );
     assert!(
@@ -12506,7 +12506,7 @@ fn quit_and_time_commands_return_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12518,7 +12518,7 @@ fn quit_and_time_commands_return_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let tokens: Vec<&str> = std::str::from_utf8(&response)
@@ -12545,7 +12545,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let first_lastsave = parse_integer_response(&response);
@@ -12557,7 +12557,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(parse_integer_response(&response), first_lastsave);
@@ -12569,7 +12569,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12585,7 +12585,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12601,7 +12601,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     // HELLO returns a map (%7) in RESP3 with server info.
@@ -12621,7 +12621,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+RESET\r\n");
@@ -12637,7 +12637,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -12650,7 +12650,7 @@ fn server_mode_and_reset_commands_follow_expected_responses() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12672,7 +12672,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12688,7 +12688,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12700,7 +12700,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12713,7 +12713,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12729,7 +12729,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -12741,7 +12741,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12753,7 +12753,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12766,7 +12766,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -12778,7 +12778,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -12790,7 +12790,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12802,7 +12802,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let response_str = String::from_utf8_lossy(&response);
@@ -12826,7 +12826,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(
@@ -12842,7 +12842,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -12854,7 +12854,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12866,7 +12866,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12878,7 +12878,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12890,7 +12890,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12902,7 +12902,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12914,7 +12914,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n");
@@ -12926,7 +12926,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -12938,7 +12938,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n:0\r\n:0\r\n");
@@ -12950,7 +12950,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -12966,7 +12966,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -12978,7 +12978,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+Background saving started\r\n");
@@ -12990,7 +12990,7 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -13165,7 +13165,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -13177,7 +13177,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*11\r\n"));
@@ -13191,7 +13191,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*15\r\n"));
@@ -13205,7 +13205,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -13221,7 +13221,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -13233,7 +13233,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -13245,7 +13245,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -13257,7 +13257,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -13271,7 +13271,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -13283,7 +13283,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -13295,7 +13295,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -13307,7 +13307,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -13319,7 +13319,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*12\r\n"));
@@ -13331,7 +13331,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -13344,7 +13344,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -13357,7 +13357,7 @@ fn latency_module_and_slowlog_commands_cover_supported_subcommands() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -13484,7 +13484,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$7\r\ndefault\r\n");
@@ -13496,7 +13496,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*1\r\n$7\r\ndefault\r\n");
@@ -13508,7 +13508,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -13520,7 +13520,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let slot = SlotNumber::new(u16::try_from(parse_integer_response(&response)).unwrap());
@@ -13533,7 +13533,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let cluster_info_text = std::str::from_utf8(&response).unwrap();
@@ -13546,7 +13546,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -13559,7 +13559,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -13571,7 +13571,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -14180,7 +14180,7 @@ fn pubsub_unsubscribe_inside_transaction_context_uses_client_id() {
             &mut response,
             false,
             Some(client),
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     // After removing bar, 2 subscriptions remain (foo, baz).
@@ -14199,7 +14199,7 @@ fn pubsub_unsubscribe_inside_transaction_context_uses_client_id() {
             &mut response,
             false,
             Some(client),
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     // After removing baz, 1 subscription remains (foo).
@@ -14657,7 +14657,7 @@ fn georadius_family_supports_query_and_store_paths() {
 #[test]
 fn geo_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_eq!(
@@ -14718,7 +14718,7 @@ fn migrate_command_validates_arguments_before_remote_execution() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -14732,7 +14732,7 @@ fn migrate_command_validates_arguments_before_remote_execution() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -14788,7 +14788,7 @@ fn function_flush_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -14807,7 +14807,7 @@ fn debug_set_active_expire_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -14820,7 +14820,7 @@ fn debug_set_active_expire_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -14927,7 +14927,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -14941,7 +14941,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -14955,7 +14955,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$5\r\n3.141\r\n");
@@ -14966,7 +14966,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -14977,7 +14977,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*6\r\n:0\r\n:0\r\n:1\r\n:1\r\n:2\r\n:0\r\n");
@@ -14988,7 +14988,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*3\r\n:0\r\n:1\r\n:2\r\n");
@@ -14999,7 +14999,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -15010,7 +15010,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -15021,7 +15021,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$25\r\nThis is a verbatim\nstring\r\n");
@@ -15034,7 +15034,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(
@@ -15048,7 +15048,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"(1234567999999999999999999999999999999\r\n");
@@ -15059,7 +15059,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b",3.141\r\n");
@@ -15070,7 +15070,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"_\r\n");
@@ -15081,7 +15081,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"%3\r\n:0\r\n#f\r\n:1\r\n#t\r\n:2\r\n#f\r\n");
@@ -15092,7 +15092,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"~3\r\n:0\r\n:1\r\n:2\r\n");
@@ -15103,7 +15103,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"#t\r\n");
@@ -15114,7 +15114,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"#f\r\n");
@@ -15125,7 +15125,7 @@ fn debug_protocol_subcommands_cover_resp2_and_resp3_shapes() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"=29\r\ntxt:This is a verbatim\nstring\r\n");
@@ -15143,7 +15143,7 @@ fn object_encoding_and_refcount_report_basic_metadata() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":3\r\n");
@@ -15155,7 +15155,7 @@ fn object_encoding_and_refcount_report_basic_metadata() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$8\r\nlistpack\r\n");
@@ -15167,7 +15167,7 @@ fn object_encoding_and_refcount_report_basic_metadata() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -15179,7 +15179,7 @@ fn object_encoding_and_refcount_report_basic_metadata() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*11\r\n"));
@@ -15202,7 +15202,7 @@ fn object_freq_returns_zero_for_existing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15214,7 +15214,7 @@ fn object_freq_returns_zero_for_existing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -15232,7 +15232,7 @@ fn object_freq_returns_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -15250,7 +15250,7 @@ fn object_idletime_returns_integer_for_existing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15262,7 +15262,7 @@ fn object_idletime_returns_integer_for_existing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     // Should return a non-negative integer in `:N\r\n` format
@@ -15294,7 +15294,7 @@ fn object_idletime_returns_null_for_missing_key() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$-1\r\n");
@@ -15313,7 +15313,7 @@ fn object_encoding_distinguishes_string_types() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15325,7 +15325,7 @@ fn object_encoding_distinguishes_string_types() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nint\r\n");
@@ -15338,7 +15338,7 @@ fn object_encoding_distinguishes_string_types() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15349,7 +15349,7 @@ fn object_encoding_distinguishes_string_types() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$6\r\nembstr\r\n");
@@ -15362,7 +15362,7 @@ fn object_encoding_distinguishes_string_types() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15373,7 +15373,7 @@ fn object_encoding_distinguishes_string_types() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\nraw\r\n");
@@ -15391,7 +15391,7 @@ fn debug_digest_value_matches_for_equal_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15403,7 +15403,7 @@ fn debug_digest_value_matches_for_equal_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -15415,7 +15415,7 @@ fn debug_digest_value_matches_for_equal_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let digest_a_response = response.clone();
@@ -15428,7 +15428,7 @@ fn debug_digest_value_matches_for_equal_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, digest_a_response);
@@ -15440,7 +15440,7 @@ fn debug_digest_value_matches_for_equal_payloads() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$16\r\n"));
@@ -15458,7 +15458,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -15470,7 +15470,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -15483,7 +15483,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"$"));
@@ -15494,7 +15494,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":2\r\n");
@@ -15506,7 +15506,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*2\r\n"));
@@ -15519,7 +15519,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let xrange_head = response.clone();
@@ -15532,7 +15532,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*1\r\n"));
@@ -15546,7 +15546,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15558,7 +15558,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15570,7 +15570,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -15581,7 +15581,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -15593,7 +15593,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*"));
@@ -15605,7 +15605,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     let source_info = response.clone();
@@ -15619,7 +15619,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":1\r\n");
@@ -15631,7 +15631,7 @@ fn stream_commands_support_copy_and_xinfo_full_digest() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, source_info);
@@ -15656,7 +15656,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -15667,7 +15667,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -15679,7 +15679,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15692,7 +15692,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*32\r\n"));
@@ -15717,7 +15717,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -15732,7 +15732,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     // Redis 8+ returns a 15-field FULL map = 30-element array.
@@ -15753,7 +15753,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"%16\r\n"));
@@ -15767,7 +15767,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*1\r\n*12\r\n"));
@@ -15786,7 +15786,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -15800,7 +15800,7 @@ fn xinfo_stream_returns_structured_summary_with_entries_and_groups() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -15820,7 +15820,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\n1-0\r\n");
@@ -15833,7 +15833,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$3\r\n2-0\r\n");
@@ -15846,7 +15846,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15858,7 +15858,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*1\r\n"));
@@ -15876,7 +15876,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*-1\r\n");
@@ -15888,7 +15888,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b":0\r\n");
@@ -15900,7 +15900,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*4\r\n:0\r\n$-1\r\n$-1\r\n*0\r\n");
@@ -15913,7 +15913,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -15926,7 +15926,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -15938,7 +15938,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert!(response.starts_with(b"*3\r\n"));
@@ -15951,7 +15951,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -15963,7 +15963,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -15976,7 +15976,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -15986,7 +15986,7 @@ fn stream_commands_cover_xread_xpending_xclaim_xautoclaim_xack_and_xsetid() {
 #[test]
 fn stream_commands_are_scoped_by_selected_db_without_db0_fallback() {
     let processor = RequestProcessor::new().unwrap();
-    let db0 = DbName::default();
+    let db0 = DbName::fixture();
     let db9 = DbName::new(9);
 
     assert_command_response_in_db(
@@ -16192,7 +16192,7 @@ fn xpending_accepts_idle_filter() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -16203,7 +16203,7 @@ fn xpending_accepts_idle_filter() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -16225,7 +16225,7 @@ fn xpending_accepts_idle_filter() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -16248,7 +16248,7 @@ fn xpending_accepts_idle_filter() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -16261,7 +16261,7 @@ fn xpending_accepts_idle_filter() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     assert!(matches!(err, RequestExecutionError::SyntaxError));
@@ -16347,7 +16347,7 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -16361,7 +16361,7 @@ fn xtrim_supports_maxlen_minid_and_limit_options() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
@@ -16461,7 +16461,7 @@ fn script_flush_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -16479,7 +16479,7 @@ fn script_flush_sync_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -16618,7 +16618,7 @@ fn script_load_exists_evalsha_and_flush_when_enabled() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap_err();
     error.append_resp_error(&mut response);
@@ -17847,7 +17847,7 @@ fn config_resetstat_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -17871,7 +17871,7 @@ fn config_get_known_and_unknown_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*2\r\n$10\r\nappendonly\r\n$2\r\nno\r\n");
@@ -17883,7 +17883,7 @@ fn config_get_known_and_unknown_keys() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"*0\r\n");
@@ -17981,7 +17981,7 @@ fn config_set_notify_keyspace_events_empty_disables() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -18088,7 +18088,7 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -18101,7 +18101,7 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert!(response == b":1\r\n" || response == b":0\r\n");
@@ -18114,7 +18114,7 @@ fn config_set_zset_max_ziplist_entries_changes_object_encoding() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$8\r\nskiplist\r\n");
@@ -18133,7 +18133,7 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -18147,7 +18147,7 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
     }
@@ -18159,7 +18159,7 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$9\r\nquicklist\r\n");
@@ -18172,7 +18172,7 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -18183,7 +18183,7 @@ fn config_set_list_max_ziplist_size_changes_list_object_encoding() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"$8\r\nlistpack\r\n");
@@ -18290,7 +18290,7 @@ fn config_resetstat_clears_stats_and_returns_ok() {
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -18942,7 +18942,7 @@ fn sort_store_quicklist_debug_object_matches_external_scenario() {
         .execute_in_db(
             &lpush_args[..lpush_meta.argument_count],
             &mut lpush_response,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(lpush_response, b":6000\r\n");
@@ -19904,7 +19904,7 @@ fn readonly_and_readwrite_emit_cluster_read_only_connection_effects() {
             false,
             None,
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -19920,7 +19920,7 @@ fn readonly_and_readwrite_emit_cluster_read_only_connection_effects() {
             false,
             None,
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
@@ -19942,7 +19942,7 @@ fn wait_emits_connection_wait_effects_on_command_path() {
             false,
             Some(ClientId::new(7)),
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .unwrap();
 
@@ -19954,6 +19954,58 @@ fn wait_emits_connection_wait_effects_on_command_path() {
             timeout_millis: 10,
         })
     );
+}
+
+#[tokio::test]
+async fn waitaof_emits_connection_effects_on_command_path_when_local_fsync_lags() {
+    let processor = RequestProcessor::new().unwrap();
+    let metrics = Arc::new(crate::ServerMetrics::default());
+    processor.attach_metrics(Arc::clone(&metrics));
+    processor.set_config_value(b"appendonly", b"yes".to_vec());
+    processor.set_config_value(b"appendfsync", b"everysec".to_vec());
+    let temp_dir = std::env::temp_dir().join(format!(
+        "garnet-waitaof-effect-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
+    processor.set_config_value(b"appendfilename", b"waitaof-effect.aof".to_vec());
+    processor.ensure_live_aof_durability_runtime().unwrap();
+
+    let client_id = metrics.register_client(None, None);
+    metrics.set_client_local_aof_wait_target_offset(client_id, 1);
+
+    let mut args = [ArgSlice::EMPTY; 5];
+    let mut response = Vec::new();
+    let waitaof = b"*4\r\n$7\r\nWAITAOF\r\n$1\r\n1\r\n$1\r\n0\r\n$2\r\n50\r\n";
+    let meta = parse_resp_command_arg_slices(waitaof, &mut args).unwrap();
+    let effects = processor
+        .execute_with_client_context_and_effects_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            Some(client_id),
+            false,
+            DbName::fixture(),
+        )
+        .unwrap();
+
+    assert!(response.is_empty());
+    assert_eq!(
+        effects.waitaof_request,
+        Some(WaitAofRequestEffect {
+            requested_local: 1,
+            requested_replicas: 0,
+            timeout_millis: 50,
+        })
+    );
+
+    let aof_path = temp_dir.join("waitaof-effect.aof");
+    let _ = std::fs::remove_file(aof_path);
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[test]
@@ -21473,7 +21525,7 @@ fn xadd_idmp_basic_and_auto_match_external_stream_scenarios() {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap_err();
         err.append_resp_error(&mut response);

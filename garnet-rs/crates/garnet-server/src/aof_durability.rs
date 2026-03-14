@@ -166,6 +166,35 @@ impl LiveAofDurabilityRuntime {
         }
     }
 
+    pub(crate) async fn wait_for_fsync_offset_at_least(
+        &self,
+        target_offset: AofOffset,
+        timeout: Option<Duration>,
+    ) -> bool {
+        if self.snapshot().fsync_offset >= target_offset {
+            return true;
+        }
+        let deadline = timeout.map(|timeout| tokio::time::Instant::now() + timeout);
+        loop {
+            let notified = self.frontier_notify.notified();
+            if let Some(deadline) = deadline {
+                let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+                if remaining.is_zero() {
+                    return self.snapshot().fsync_offset >= target_offset;
+                }
+                if tokio::time::timeout(remaining, notified).await.is_err() {
+                    return self.snapshot().fsync_offset >= target_offset;
+                }
+            } else {
+                notified.await;
+            }
+
+            if self.snapshot().fsync_offset >= target_offset {
+                return true;
+            }
+        }
+    }
+
     fn publish_local_append_offset(&self, offset: AofOffset) {
         self.local_append_offset
             .fetch_max(u64::from(offset), Ordering::AcqRel);
@@ -209,7 +238,10 @@ async fn run_live_aof_writer_task(
         }
         AppendFsyncPolicy::Everysec => {
             let mut pending_fsync_offset = None;
-            let mut interval = tokio::time::interval(config.everysec_interval);
+            let mut interval = tokio::time::interval_at(
+                tokio::time::Instant::now() + config.everysec_interval,
+                config.everysec_interval,
+            );
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
@@ -379,6 +411,49 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn live_aof_runtime_everysec_policy_does_not_fsync_before_first_tick() {
+        let path = temp_aof_path("everysec-no-early-fsync");
+        let runtime = LiveAofDurabilityRuntime::start(
+            LiveAofDurabilityConfig::new(path.clone(), AppendFsyncPolicy::Everysec)
+                .with_everysec_interval(Duration::from_millis(100)),
+        )
+        .unwrap();
+        let frame = b"*1\r\n$4\r\nPING\r\n";
+        let expected_offset = u64::try_from(4 + frame.len()).unwrap();
+        let publish_target = runtime.publish_frame(frame);
+        assert_eq!(
+            publish_target,
+            LocalAofPublishTarget {
+                append_offset: AofOffset::new(expected_offset),
+            }
+        );
+
+        let reached_early = runtime
+            .wait_for_fsync_offset_at_least(
+                publish_target.append_offset,
+                Some(Duration::from_millis(10)),
+            )
+            .await;
+        assert!(
+            !reached_early,
+            "everysec policy should not fsync before the first interval elapses"
+        );
+
+        let reached_late = runtime
+            .wait_for_fsync_offset_at_least(
+                publish_target.append_offset,
+                Some(Duration::from_secs(1)),
+            )
+            .await;
+        assert!(
+            reached_late,
+            "everysec policy never advanced fsync frontier"
+        );
+
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
     async fn live_aof_runtime_bootstraps_frontiers_from_existing_aof_tail() {
         let path = temp_aof_path("bootstrap");
         let mut writer = AofWriter::open(&path, AofWriterConfig { flush_every_ops: 1 }).unwrap();
@@ -426,6 +501,30 @@ mod tests {
             reached,
             "timed out waiting for bootstrapped frontier advance"
         );
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn live_aof_runtime_waits_for_fsync_offset_target() {
+        let path = temp_aof_path("wait-fsync");
+        let runtime = LiveAofDurabilityRuntime::start(
+            LiveAofDurabilityConfig::new(path.clone(), AppendFsyncPolicy::Everysec)
+                .with_everysec_interval(Duration::from_millis(10)),
+        )
+        .unwrap();
+
+        let frame = b"*1\r\n$4\r\nPING\r\n";
+        let publish_target = runtime.publish_frame(frame);
+        let reached = runtime
+            .wait_for_fsync_offset_at_least(
+                publish_target.append_offset,
+                Some(Duration::from_secs(1)),
+            )
+            .await;
+        assert!(reached, "timed out waiting for fsync frontier target");
+        let snapshot = runtime.snapshot();
+        assert!(snapshot.fsync_offset >= publish_target.append_offset);
+
         let _ = fs::remove_file(path);
     }
 }

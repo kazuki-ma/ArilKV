@@ -168,6 +168,13 @@ pub(crate) struct WaitRequestEffect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WaitAofRequestEffect {
+    pub(crate) requested_local: u64,
+    pub(crate) requested_replicas: u64,
+    pub(crate) timeout_millis: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct FailoverRequestEffect {
     pub(crate) target_replica_id: Option<u64>,
     pub(crate) timeout_millis: Option<u64>,
@@ -178,6 +185,7 @@ pub(crate) struct FailoverRequestEffect {
 pub(crate) struct RequestConnectionEffects {
     pub(crate) cluster_read_only: Option<bool>,
     pub(crate) wait_request: Option<WaitRequestEffect>,
+    pub(crate) waitaof_request: Option<WaitAofRequestEffect>,
     pub(crate) failover_request: Option<FailoverRequestEffect>,
 }
 
@@ -185,6 +193,7 @@ impl RequestConnectionEffects {
     const NONE: Self = Self {
         cluster_read_only: None,
         wait_request: None,
+        waitaof_request: None,
         failover_request: None,
     };
 
@@ -194,6 +203,9 @@ impl RequestConnectionEffects {
         }
         if other.wait_request.is_some() {
             self.wait_request = other.wait_request;
+        }
+        if other.waitaof_request.is_some() {
+            self.waitaof_request = other.waitaof_request;
         }
         if other.failover_request.is_some() {
             self.failover_request = other.failover_request;
@@ -311,6 +323,19 @@ fn set_request_wait_effect(requested_replicas: u64, timeout_millis: u64) {
     REQUEST_EXECUTION_CONTEXT.with(|state| {
         let mut context = state.get();
         context.connection_effects.wait_request = Some(WaitRequestEffect {
+            requested_replicas,
+            timeout_millis,
+        });
+        state.set(context);
+    });
+}
+
+#[inline]
+fn set_request_waitaof_effect(requested_local: u64, requested_replicas: u64, timeout_millis: u64) {
+    REQUEST_EXECUTION_CONTEXT.with(|state| {
+        let mut context = state.get();
+        context.connection_effects.waitaof_request = Some(WaitAofRequestEffect {
+            requested_local,
             requested_replicas,
             timeout_millis,
         });
@@ -3962,11 +3987,47 @@ impl RequestProcessor {
             .map(|runtime| runtime.snapshot())
     }
 
+    pub(crate) fn appendonly_enabled(&self) -> bool {
+        self.live_aof_durability_config().is_some()
+    }
+
     pub(crate) fn publish_local_aof_frame(&self, frame: &[u8]) -> Option<AofOffset> {
         let Some(runtime) = self.aof_durability_runtime.get() else {
             return None;
         };
         Some(runtime.publish_frame(frame).append_offset)
+    }
+
+    pub(crate) fn local_aof_fsync_satisfied(&self, target_offset: AofOffset) -> bool {
+        if !self.appendonly_enabled() {
+            return false;
+        }
+        if u64::from(target_offset) == 0 {
+            return true;
+        }
+        self.local_aof_frontiers_snapshot()
+            .is_some_and(|snapshot| snapshot.fsync_offset >= target_offset)
+    }
+
+    pub(crate) async fn wait_for_local_aof_fsync(
+        &self,
+        target_offset: AofOffset,
+        timeout_millis: u64,
+    ) -> bool {
+        if self.local_aof_fsync_satisfied(target_offset) {
+            return true;
+        }
+        let Some(runtime) = self.aof_durability_runtime.get() else {
+            return false;
+        };
+        let timeout = if timeout_millis == 0 {
+            None
+        } else {
+            Some(Duration::from_millis(timeout_millis))
+        };
+        runtime
+            .wait_for_fsync_offset_at_least(target_offset, timeout)
+            .await
     }
 
     pub(crate) fn slowlog_len(&self) -> usize {
