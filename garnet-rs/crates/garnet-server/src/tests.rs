@@ -8540,6 +8540,243 @@ async fn failover_rejects_unknown_target_even_with_connected_replica() {
 }
 
 #[tokio::test]
+async fn cluster_failover_command_updates_source_and_target_redirections() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let key = b"cluster-failover-key".to_vec();
+    let slot = redis_hash_slot(&key);
+
+    let mut master_config = ClusterConfig::new_local("node-1", "127.0.0.1", master_addr.port());
+    let (next, replica_id_in_master) = master_config
+        .add_worker(Worker::new(
+            "node-3",
+            "127.0.0.1",
+            replica_addr.port(),
+            WorkerRole::Replica,
+        ))
+        .unwrap();
+    master_config = next
+        .set_worker_replica_of(replica_id_in_master, "node-1")
+        .unwrap()
+        .set_slot_state(slot, LOCAL_WORKER_ID, SlotState::Stable)
+        .unwrap();
+
+    let mut replica_config = ClusterConfig::new_local("node-3", "127.0.0.1", replica_addr.port())
+        .set_local_worker_role(WorkerRole::Replica)
+        .unwrap()
+        .set_worker_replica_of(LOCAL_WORKER_ID, "node-1")
+        .unwrap();
+    let (next, master_id_in_replica) = replica_config
+        .add_worker(Worker::new(
+            "node-1",
+            "127.0.0.1",
+            master_addr.port(),
+            WorkerRole::Primary,
+        ))
+        .unwrap();
+    replica_config = next
+        .set_slot_state(slot, master_id_in_replica, SlotState::Stable)
+        .unwrap();
+
+    let master_store = Arc::new(ClusterConfigStore::new(master_config));
+    let replica_store = Arc::new(ClusterConfigStore::new(replica_config));
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_cluster = Arc::clone(&master_store);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            Some(master_cluster),
+        )
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_cluster = Arc::clone(&replica_store);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster(
+            replica_listener,
+            1024,
+            replica_metrics_task,
+            async move {
+                let _ = replica_shutdown_rx.await;
+            },
+            Some(replica_cluster),
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let replication_info =
+        wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+    assert!(
+        String::from_utf8_lossy(&replication_info)
+            .contains(format!("port={}", replica_addr.port()).as_str()),
+        "INFO REPLICATION did not expose replica listening port: {}",
+        String::from_utf8_lossy(&replication_info)
+    );
+
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"READONLY"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", &key, b"seed"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut replicated = false;
+    for _ in 0..50 {
+        let observed = send_and_read_bulk_payload(
+            &mut replica_client,
+            &encode_resp_command(&[b"GET", &key]),
+            Duration::from_millis(250),
+        )
+        .await;
+        if observed == b"seed" {
+            replicated = true;
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(
+        replicated,
+        "replica did not expose the slot value through READONLY before cluster FAILOVER"
+    );
+
+    let acknowledged = send_and_read_integer(
+        &mut master_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe the downstream replica before cluster FAILOVER, got {acknowledged}"
+    );
+
+    let replica_port = replica_addr.port().to_string();
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[
+            b"FAILOVER",
+            b"TO",
+            b"127.0.0.1",
+            replica_port.as_bytes(),
+            b"TIMEOUT",
+            b"2000",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    wait_until(
+        || {
+            let master_snapshot = master_store.load();
+            let replica_snapshot = replica_store.load();
+            master_snapshot.local_worker().unwrap().role == WorkerRole::Replica
+                && master_snapshot.slot_assigned_owner(slot).unwrap() == replica_id_in_master
+                && master_snapshot.worker(replica_id_in_master).unwrap().role == WorkerRole::Primary
+                && master_snapshot
+                    .local_worker()
+                    .unwrap()
+                    .replica_of_node_id
+                    .as_deref()
+                    == Some("node-3")
+                && replica_snapshot.local_worker().unwrap().role == WorkerRole::Primary
+                && replica_snapshot.slot_assigned_owner(slot).unwrap() == LOCAL_WORKER_ID
+                && replica_snapshot.worker(master_id_in_replica).unwrap().role
+                    == WorkerRole::Replica
+                && replica_snapshot
+                    .worker(master_id_in_replica)
+                    .unwrap()
+                    .replica_of_node_id
+                    .as_deref()
+                    == Some("node-3")
+        },
+        Duration::from_secs(5),
+    )
+    .await;
+
+    let moved_to_replica = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, replica_addr.port());
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"GET", &key]),
+        moved_to_replica.as_bytes(),
+    )
+    .await;
+
+    let moved_to_master = format!("-MOVED {} 127.0.0.1:{}\r\n", slot, master_addr.port());
+    let mut promoted_value = None;
+    for attempt in 0..120 {
+        let value = format!("cluster-after-{attempt}");
+        let request = encode_resp_command(&[b"SET", &key, value.as_bytes()]);
+        replica_client.write_all(&request).await.unwrap();
+        let mut response = [0u8; 128];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(250),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if &response[..bytes_read] == b"+OK\r\n" {
+            promoted_value = Some(value);
+            break;
+        }
+        assert_eq!(
+            &response[..bytes_read],
+            moved_to_master.as_bytes(),
+            "unexpected cluster FAILOVER target response before promotion"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+    let promoted_value =
+        promoted_value.expect("cluster FAILOVER target was not promoted to writable master");
+
+    let expected_promoted_get = format!("${}\r\n{}\r\n", promoted_value.len(), promoted_value);
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"GET", &key]),
+        expected_promoted_get.as_bytes(),
+    )
+    .await;
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enabled() {
     let temp_dir = std::env::temp_dir().join(format!(
         "garnet-live-aof-integration-{}",

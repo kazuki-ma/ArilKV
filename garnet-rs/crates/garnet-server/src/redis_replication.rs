@@ -19,6 +19,10 @@ use crate::redis_replication::protocol::read_line;
 use crate::redis_replication::protocol::starts_with_ascii_no_case;
 use crate::redis_replication::protocol::write_resp_command;
 use crate::request_lifecycle::DbName;
+use garnet_cluster::FailoverPlan;
+use garnet_cluster::LOCAL_WORKER_ID;
+use garnet_cluster::Worker;
+use garnet_cluster::WorkerRole;
 use garnet_common::ArgSlice;
 use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
@@ -237,6 +241,7 @@ impl RedisReplicationCoordinator {
     }
 
     pub(crate) async fn become_master(&self) {
+        publish_cluster_manual_failover_promotion(&self.inner);
         self.inner.is_replica_mode.store(false, Ordering::Relaxed);
         self.inner.upstream_link_up.store(false, Ordering::Relaxed);
         self.inner
@@ -256,6 +261,7 @@ impl RedisReplicationCoordinator {
     }
 
     pub(crate) async fn become_replica(&self, host: String, port: u16) {
+        publish_cluster_manual_failover_demotion(&self.inner, &host, port);
         self.inner.is_replica_mode.store(true, Ordering::Relaxed);
         self.inner.upstream_link_up.store(false, Ordering::Relaxed);
         self.inner
@@ -731,6 +737,93 @@ fn endpoint_matches_host(endpoint: &DownstreamReplicaEndpoint, requested_host: &
         return endpoint.host == "127.0.0.1" || endpoint.host == "::1";
     }
     false
+}
+
+fn worker_endpoint_matches(worker: &Worker, requested_host: &str, requested_port: u16) -> bool {
+    if worker.port != requested_port {
+        return false;
+    }
+    if worker.host.eq_ignore_ascii_case(requested_host) {
+        return true;
+    }
+    if requested_host.eq_ignore_ascii_case("localhost") {
+        return worker.host == "127.0.0.1" || worker.host == "::1";
+    }
+    if worker.host.eq_ignore_ascii_case("localhost") {
+        return requested_host == "127.0.0.1" || requested_host == "::1";
+    }
+    false
+}
+
+fn publish_cluster_manual_failover_promotion(inner: &ReplicationInner) {
+    let Some(cluster_store) = inner.processor.cluster_config_store() else {
+        return;
+    };
+    let current = cluster_store.load();
+    let Ok(local_worker) = current.local_worker() else {
+        return;
+    };
+    if local_worker.role != WorkerRole::Replica {
+        return;
+    }
+    let Some(failed_primary_node_id) = local_worker.replica_of_node_id.as_deref() else {
+        return;
+    };
+    let Some(failed_primary_worker_id) = current
+        .workers()
+        .iter()
+        .find(|worker| worker.node_id == failed_primary_node_id)
+        .map(|worker| worker.id)
+    else {
+        return;
+    };
+    let plan = FailoverPlan {
+        failed_primary_worker_id,
+        promoted_worker_id: LOCAL_WORKER_ID,
+        promoted_replication_offset: local_worker.replication_offset,
+    };
+    let Ok(updated) = current.apply_failover_plan(&plan) else {
+        return;
+    };
+    cluster_store.publish(updated);
+}
+
+fn publish_cluster_manual_failover_demotion(
+    inner: &ReplicationInner,
+    target_host: &str,
+    target_port: u16,
+) {
+    let Some(cluster_store) = inner.processor.cluster_config_store() else {
+        return;
+    };
+    let current = cluster_store.load();
+    let Ok(local_worker) = current.local_worker() else {
+        return;
+    };
+    if local_worker.role != WorkerRole::Primary {
+        return;
+    }
+    let local_node_id = local_worker.node_id.clone();
+    let Some(target_worker) = current.workers().iter().find(|worker| {
+        worker_endpoint_matches(worker, target_host, target_port) && worker.id != LOCAL_WORKER_ID
+    }) else {
+        return;
+    };
+    if target_worker.role != WorkerRole::Replica {
+        return;
+    }
+    if target_worker.replica_of_node_id.as_deref() != Some(local_node_id.as_str()) {
+        return;
+    }
+    let plan = FailoverPlan {
+        failed_primary_worker_id: LOCAL_WORKER_ID,
+        promoted_worker_id: target_worker.id,
+        promoted_replication_offset: target_worker.replication_offset,
+    };
+    let Ok(updated) = current.apply_failover_plan(&plan) else {
+        return;
+    };
+    cluster_store.publish(updated);
 }
 
 fn clear_manual_failover_state(inner: &ReplicationInner, abort_requested: &Arc<AtomicBool>) {
