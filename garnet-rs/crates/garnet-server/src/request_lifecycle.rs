@@ -12,6 +12,10 @@
 
 use crate::ClientId;
 use crate::CommandId;
+use crate::aof_durability::AppendFsyncPolicy;
+use crate::aof_durability::LiveAofDurabilityConfig;
+use crate::aof_durability::LiveAofDurabilityRuntime;
+use crate::aof_durability::LocalAofFrontiersSnapshot;
 use crate::command_spec::command_allowed_while_script_busy;
 use crate::command_spec::command_is_effectively_mutating;
 use crate::debug_concurrency::LockClass;
@@ -29,6 +33,7 @@ use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::collections::VecDeque;
+use std::io;
 use std::process::Child;
 use std::process::Command;
 use std::process::Stdio;
@@ -2385,6 +2390,7 @@ pub struct RequestProcessor {
     cluster_config_store: OnceLock<Arc<ClusterConfigStore>>,
     server_metrics: OnceLock<Arc<crate::ServerMetrics>>,
     replication_coordinator: OnceLock<Arc<RedisReplicationCoordinator>>,
+    aof_durability_runtime: OnceLock<Arc<LiveAofDurabilityRuntime>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2692,6 +2698,7 @@ impl RequestProcessor {
             cluster_config_store: OnceLock::new(),
             server_metrics: OnceLock::new(),
             replication_coordinator: OnceLock::new(),
+            aof_durability_runtime: OnceLock::new(),
         })
     }
 
@@ -3917,6 +3924,41 @@ impl RequestProcessor {
         self.replication_coordinator.get().map(Arc::as_ref)
     }
 
+    pub(crate) fn ensure_live_aof_durability_runtime(
+        &self,
+    ) -> io::Result<Option<Arc<LiveAofDurabilityRuntime>>> {
+        if let Some(runtime) = self.aof_durability_runtime.get() {
+            return Ok(Some(Arc::clone(runtime)));
+        }
+        let Some(config) = self.live_aof_durability_config() else {
+            return Ok(None);
+        };
+        let runtime = LiveAofDurabilityRuntime::start(config)?;
+        if self
+            .aof_durability_runtime
+            .set(Arc::clone(&runtime))
+            .is_err()
+            && let Some(existing) = self.aof_durability_runtime.get()
+        {
+            return Ok(Some(Arc::clone(existing)));
+        }
+        Ok(Some(runtime))
+    }
+
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub(crate) fn local_aof_frontiers_snapshot(&self) -> Option<LocalAofFrontiersSnapshot> {
+        self.aof_durability_runtime
+            .get()
+            .map(|runtime| runtime.snapshot())
+    }
+
+    pub(crate) fn publish_local_aof_frame(&self, frame: &[u8]) {
+        let Some(runtime) = self.aof_durability_runtime.get() else {
+            return;
+        };
+        runtime.publish_frame(frame);
+    }
+
     pub(crate) fn slowlog_len(&self) -> usize {
         self.slowlog_entries
             .lock()
@@ -4004,6 +4046,33 @@ impl RequestProcessor {
             .and_then(|value| std::str::from_utf8(value).ok())
             .and_then(|value| value.parse::<usize>().ok())
             .unwrap_or(128)
+    }
+
+    fn live_aof_durability_config(&self) -> Option<LiveAofDurabilityConfig> {
+        let Ok(values) = self.config_overrides.lock() else {
+            return None;
+        };
+        let appendonly_enabled = values
+            .get(b"appendonly".as_slice())
+            .is_some_and(|value| value.eq_ignore_ascii_case(b"yes"));
+        if !appendonly_enabled {
+            return None;
+        }
+        let fsync_policy = values
+            .get(b"appendfsync".as_slice())
+            .and_then(|value| AppendFsyncPolicy::parse(value))
+            .unwrap_or(AppendFsyncPolicy::Everysec);
+        let dir = values
+            .get(b"dir".as_slice())
+            .cloned()
+            .unwrap_or_else(default_config_dir_value);
+        let appendfilename = values
+            .get(b"appendfilename".as_slice())
+            .cloned()
+            .unwrap_or_else(|| b"appendonly.aof".to_vec());
+        let mut path = std::path::PathBuf::from(String::from_utf8_lossy(&dir).into_owned());
+        path.push(String::from_utf8_lossy(&appendfilename).into_owned());
+        Some(LiveAofDurabilityConfig::new(path, fsync_policy))
     }
 
     fn slowlog_client_metadata(&self, client_id: Option<ClientId>) -> (Vec<u8>, Vec<u8>) {

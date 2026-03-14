@@ -1,4 +1,5 @@
 use super::*;
+use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::RespProtocolVersion;
 use garnet_cluster::AsyncGossipEngine;
 use garnet_cluster::ChannelReplicationTransport;
@@ -8323,6 +8324,62 @@ async fn failover_rejects_unknown_target_even_with_connected_replica() {
     let _ = replica_shutdown_tx.send(());
     master_server.await.unwrap();
     replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enabled() {
+    let temp_dir = std::env::temp_dir().join(format!(
+        "garnet-live-aof-integration-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&temp_dir).unwrap();
+
+    let processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    processor.set_config_value(b"appendonly", b"yes".to_vec());
+    processor.set_config_value(b"appendfsync", b"always".to_vec());
+    processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
+    processor.set_config_value(b"appendfilename", b"integration.aof".to_vec());
+    let runtime = processor
+        .ensure_live_aof_durability_runtime()
+        .unwrap()
+        .unwrap();
+
+    let owner_thread_pool = build_owner_thread_pool(&processor).unwrap();
+    let replication = RedisReplicationCoordinator::new(Arc::clone(&processor), owner_thread_pool);
+    let frame = encode_resp_command(&[b"SET", b"aof:key", b"value"]);
+    let expected_offset = u64::try_from(4 + frame.len()).unwrap();
+
+    replication.publish_write_frame(&frame);
+
+    let reached = runtime
+        .wait_for_frontiers_at_least(
+            crate::aof_durability::LocalAofFrontiersSnapshot {
+                append_offset: tsavorite::AofOffset::new(expected_offset),
+                fsync_offset: tsavorite::AofOffset::new(expected_offset),
+            },
+            Duration::from_secs(1),
+        )
+        .await;
+    assert!(reached, "timed out waiting for local AOF frontier");
+    assert_eq!(replication.current_master_repl_offset(), frame.len() as u64);
+    assert_eq!(
+        processor.local_aof_frontiers_snapshot(),
+        Some(crate::aof_durability::LocalAofFrontiersSnapshot {
+            append_offset: tsavorite::AofOffset::new(expected_offset),
+            fsync_offset: tsavorite::AofOffset::new(expected_offset),
+        })
+    );
+
+    let aof_path = temp_dir.join("integration.aof");
+    let mut reader = tsavorite::AofReader::open(&aof_path).unwrap();
+    assert_eq!(reader.replay_all_tolerant().unwrap(), vec![frame]);
+
+    let _ = std::fs::remove_file(aof_path);
+    let _ = std::fs::remove_dir_all(temp_dir);
 }
 
 #[tokio::test]

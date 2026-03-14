@@ -237,6 +237,7 @@ impl RedisReplicationCoordinator {
         self.inner
             .master_repl_offset
             .fetch_add(frame.len() as u64, Ordering::Relaxed);
+        self.inner.processor.publish_local_aof_frame(frame);
         let _ = self.inner.downstream_tx.send(Arc::from(frame.to_vec()));
     }
 
