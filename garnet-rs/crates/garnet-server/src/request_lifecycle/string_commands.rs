@@ -2917,6 +2917,9 @@ impl RequestProcessor {
             );
         }
 
+        if object_exists && !string_exists {
+            self.materialize_auxiliary_hot_set_entry_if_present(db_key)?;
+        }
         let unix_millis = u64::try_from(target_unix_millis).map_err(|_| overflow_error)?;
         let deadline = instant_from_unix_millis(unix_millis).ok_or(overflow_error)?;
         let shard_index = self.string_store_shard_index_for_key(&key);
@@ -2993,6 +2996,9 @@ impl RequestProcessor {
             );
         }
 
+        if object_exists && !string_exists {
+            self.materialize_auxiliary_hot_set_entry_if_present(db_key)?;
+        }
         let unix_millis = u64::try_from(target_unix_millis)
             .map_err(|_| RequestExecutionError::ValueNotInteger)?;
         let deadline =

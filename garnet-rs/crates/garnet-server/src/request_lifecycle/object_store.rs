@@ -1,6 +1,55 @@
 use super::*;
 
 impl RequestProcessor {
+    fn serialized_set_hot_payload_snapshot(&self, key: DbKeyRef<'_>) -> Option<Vec<u8>> {
+        let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
+            return None;
+        };
+        let payload = {
+            let db_state = hot_state.by_db.get(&key.db())?;
+            let entry = db_state.entries.get(key.key())?;
+            Self::serialize_set_hot_payload(&entry.payload)
+        };
+        hot_state.touch(key);
+        Some(payload)
+    }
+
+    pub(super) fn clear_removed_auxiliary_key_side_state(&self, key: DbKeyRef<'_>) {
+        let _ = self.take_set_hot_entry(key);
+        self.clear_key_access(key);
+        self.clear_forced_raw_string_encoding(key);
+        self.clear_forced_list_quicklist_encoding(key);
+        self.clear_forced_set_encoding_floor(key);
+        self.clear_set_debug_ht_state(key);
+    }
+
+    pub(super) fn materialize_auxiliary_hot_set_entry_if_present(
+        &self,
+        key: DbKeyRef<'_>,
+    ) -> Result<(), RequestExecutionError> {
+        if self.logical_db_uses_main_runtime(key.db())? {
+            return Ok(());
+        }
+        if self
+            .auxiliary_value_snapshot(key.db(), key.key())
+            .and_then(|entry| entry.value)
+            .is_some()
+        {
+            return Ok(());
+        }
+        let Some(payload) = self.serialized_set_hot_payload_snapshot(key) else {
+            return Ok(());
+        };
+        let _ = self.with_auxiliary_db_state(key.db(), true, |state| {
+            let entry = state.entries.entry(RedisKey::from(key.key())).or_default();
+            entry.value = Some(MigrationValue::Object {
+                object_type: SET_OBJECT_TYPE_TAG,
+                payload,
+            });
+        })?;
+        Ok(())
+    }
+
     fn object_upsert_raw(
         &self,
         key: DbKeyRef<'_>,
@@ -100,9 +149,7 @@ impl RequestProcessor {
                 true
             })?;
             if deleted.unwrap_or(false) {
-                self.clear_forced_list_quicklist_encoding(key);
-                self.clear_forced_set_encoding_floor(key);
-                self.clear_set_debug_ht_state(key);
+                self.clear_removed_auxiliary_key_side_state(key);
                 self.bump_watch_version(key);
                 return Ok(true);
             }
@@ -241,16 +288,7 @@ impl RequestProcessor {
     }
 
     fn set_hot_payload_for_object_read(&self, key: DbKeyRef<'_>) -> Option<Vec<u8>> {
-        let Ok(mut hot_state) = self.db_catalog.side_state.set_object_hot_state.lock() else {
-            return None;
-        };
-        let payload = {
-            let db_state = hot_state.by_db.get(&key.db())?;
-            let entry = db_state.entries.get(key.key())?;
-            Self::serialize_set_hot_payload(&entry.payload)
-        };
-        hot_state.touch(key);
-        Some(payload)
+        self.serialized_set_hot_payload_snapshot(key)
     }
 
     pub(super) fn with_set_hot_entry<R>(

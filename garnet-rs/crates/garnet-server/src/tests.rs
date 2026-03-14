@@ -2132,6 +2132,86 @@ async fn multidb_active_expire_increments_expired_keys_active_like_external_scen
 }
 
 #[tokio::test]
+async fn latency_of_expire_events_are_collected_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(30);
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"latency-monitor-threshold", b"20"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut client, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+
+    let populate = encode_resp_command(&[
+        b"EVAL",
+        b"local i = 0; while (i < tonumber(ARGV[1])) do redis.call('sadd', KEYS[1], i); i = i + 1; end",
+        b"1",
+        b"mybigkey",
+        b"1000000",
+    ]);
+    client.write_all(&populate).await.unwrap();
+    let populate_response = read_resp_value_with_timeout(&mut client, timeout).await;
+    assert!(
+        !matches!(populate_response, RespSocketValue::Error(_)),
+        "EVAL populate should succeed, got {populate_response:?}",
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"PEXPIRE", b"mybigkey", b"50"]),
+        b":1\r\n",
+    )
+    .await;
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let dbsize = send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"DBSIZE"]),
+            Duration::from_secs(1),
+        )
+        .await;
+        if dbsize == 0 {
+            break;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "dbsize did not reach zero after active expire for DB9 large set",
+        );
+        sleep(Duration::from_millis(100)).await;
+    }
+
+    let latest = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"LATENCY", b"LATEST"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        resp_socket_contains_bulk(&latest, b"expire-cycle"),
+        "LATENCY LATEST should include expire-cycle after active expire, got {latest:?}",
+    );
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"latency-monitor-threshold", b"200"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn multidb_debug_reload_preserves_mixed_dataset_with_hash_field_expirations_like_external_other_scenario()
  {
     let (addr, shutdown_tx, server) = start_test_server().await;

@@ -227,6 +227,7 @@ impl RequestProcessor {
             else {
                 continue;
             };
+            self.clear_removed_auxiliary_key_side_state(DbKeyRef::new(logical_db, key.as_slice()));
             self.notify_keyspace_event(logical_db, NOTIFY_EXPIRED, b"expired", key.as_slice());
             self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(
                 logical_db,
@@ -402,7 +403,7 @@ impl RequestProcessor {
         let db = key.db();
         let key_bytes = key.key();
         if !self.logical_db_uses_main_runtime(db)? {
-            return Ok(self
+            let deleted = self
                 .with_auxiliary_db_state(db, false, |state| {
                     let Some(entry) = state.entries.get_mut(key_bytes) else {
                         return false;
@@ -416,7 +417,11 @@ impl RequestProcessor {
                     let _ = state.entries.remove(key_bytes);
                     true
                 })?
-                .unwrap_or(false));
+                .unwrap_or(false);
+            if deleted {
+                self.clear_removed_auxiliary_key_side_state(key);
+            }
+            return Ok(deleted);
         }
 
         let mut store = self.lock_string_store_for_key(key_bytes);
@@ -689,6 +694,7 @@ impl RequestProcessor {
                 return Ok(false);
             };
             if should_expire {
+                self.clear_removed_auxiliary_key_side_state(DbKeyRef::new(db, key));
                 self.notify_keyspace_event(db, NOTIFY_EXPIRED, b"expired", key);
                 self.record_lazy_expired_keys(1);
                 self.enqueue_lazy_expired_key_for_replication(DbKeyRef::new(db, key));
