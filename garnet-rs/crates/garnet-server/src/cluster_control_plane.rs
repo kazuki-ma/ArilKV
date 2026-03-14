@@ -253,15 +253,10 @@ pub fn execute_live_slot_migration_step(
         .begin_slot_import_from(slot, peer_ids.source_worker_id_in_target)?;
     target_store.publish(target_importing);
 
-    let moved = source_processor.migrate_slot_to(
-        target_processor,
-        DbName::default(),
-        slot,
-        max_keys,
-        true,
-    )?;
+    let moved =
+        source_processor.migrate_slot_to(target_processor, DbName::db0(), slot, max_keys, true)?;
     let finalized = source_processor
-        .migration_keys_for_slot(DbName::default(), slot, 1)
+        .migration_keys_for_slot(DbName::db0(), slot, 1)
         .is_empty();
 
     if finalized {

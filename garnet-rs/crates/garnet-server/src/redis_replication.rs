@@ -484,7 +484,7 @@ impl RedisReplicationCoordinator {
         let snapshot = self
             .inner
             .processor
-            .build_debug_reload_snapshot(DbName::default(), functions_only)?;
+            .build_debug_reload_snapshot(DbName::db0(), functions_only)?;
         let mut response = Vec::with_capacity(64 + snapshot.len());
         response.extend_from_slice(format!("${}\r\n", snapshot.len()).as_bytes());
         response.extend_from_slice(&snapshot);
@@ -866,7 +866,7 @@ async fn sync_once_from_upstream(
         .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
     let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
     let mut applied_offset = applied_offset_base;
-    let mut applied_selected_db = DbName::default();
+    let mut applied_selected_db = DbName::db0();
 
     loop {
         let mut consumed = 0usize;

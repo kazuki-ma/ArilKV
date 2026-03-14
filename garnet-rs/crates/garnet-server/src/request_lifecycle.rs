@@ -859,13 +859,22 @@ impl From<RedisKey> for ItemKey {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(transparent)]
 pub(crate) struct DbName(usize);
 
 impl DbName {
     pub(crate) const fn new(raw: usize) -> Self {
         Self(raw)
+    }
+
+    pub(crate) const fn db0() -> Self {
+        Self(0)
+    }
+
+    #[cfg(test)]
+    pub(crate) const fn fixture() -> Self {
+        Self::db0()
     }
 }
 
@@ -897,7 +906,7 @@ struct DbCatalogBindings {
 }
 
 fn default_db_storage_binding(db: DbName) -> DbStorageBinding {
-    if db == DbName::default() {
+    if db == DbName::db0() {
         return DbStorageBinding::MainRuntime;
     }
     DbStorageBinding::Auxiliary(AuxiliaryStorageName::new(usize::from(db)))
@@ -2777,7 +2786,7 @@ impl RequestProcessor {
             .iter()
             .position(|binding| *binding == DbStorageBinding::MainRuntime)
             .map(DbName::new)
-            .unwrap_or_default())
+            .unwrap_or(DbName::db0()))
     }
 
     fn swap_logical_db_storage_bindings(

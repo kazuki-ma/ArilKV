@@ -550,7 +550,7 @@ impl Default for ClientConnectionState {
             cluster_read_only: false,
             no_evict: false,
             no_touch: false,
-            selected_db: DbName::default(),
+            selected_db: DbName::db0(),
             resp_protocol_version: RespProtocolVersion::Resp2,
         }
     }

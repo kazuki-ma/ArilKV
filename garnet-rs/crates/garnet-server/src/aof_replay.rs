@@ -25,7 +25,7 @@ pub fn replay_aof_operations(
     let mut args = vec![ArgSlice::EMPTY; 64];
     let mut response = Vec::new();
     let mut applied = 0usize;
-    let mut selected_db = DbName::default();
+    let mut selected_db = DbName::db0();
 
     for operation in operations {
         response.clear();
@@ -152,7 +152,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$-1\r\n");
@@ -164,7 +164,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$6\r\nvalue2\r\n");
@@ -231,7 +231,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$-1\r\n");
@@ -243,7 +243,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$3\r\nnew\r\n");
@@ -255,7 +255,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$4\r\nlive\r\n");
@@ -304,7 +304,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$2\r\nv1\r\n");
@@ -330,7 +330,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$2\r\nv1\r\n");
@@ -347,7 +347,7 @@ mod tests {
             .execute_in_db(
                 &config_args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"+OK\r\n");
@@ -370,7 +370,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$4\r\nzero\r\n");
@@ -390,7 +390,7 @@ mod tests {
             .execute_in_db(
                 &args[..meta.argument_count],
                 &mut response,
-                DbName::default(),
+                DbName::fixture(),
             )
             .unwrap();
         assert_eq!(response, b"$-1\r\n");

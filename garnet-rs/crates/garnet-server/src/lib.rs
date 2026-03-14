@@ -325,7 +325,7 @@ impl ClientRuntimeInfo {
             reply_buffer_peak_last_reset: now,
             wait_target_offset: 0,
             replica_listen_port: None,
-            selected_db: DbName::default(),
+            selected_db: DbName::db0(),
             client_type: ClientTypeFilter::Normal,
         }
     }

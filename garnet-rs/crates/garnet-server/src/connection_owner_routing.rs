@@ -206,7 +206,7 @@ pub(crate) fn execute_owned_args_via_processor(
             false,
             None,
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)
@@ -231,7 +231,7 @@ pub(crate) fn execute_frame_via_processor(
             false,
             None,
             false,
-            DbName::default(),
+            DbName::fixture(),
         )
         .map_err(RoutedExecutionError::Request)?;
     Ok(response)

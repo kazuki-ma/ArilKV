@@ -136,7 +136,7 @@ pub(crate) fn execute_resp_frame(
     processor: &RequestProcessor,
     frame: &[u8],
 ) -> Result<Vec<u8>, CommandHarnessError> {
-    execute_resp_frame_in_db(processor, frame, DbName::default())
+    execute_resp_frame_in_db(processor, frame, DbName::fixture())
 }
 
 pub(crate) fn execute_resp_frame_in_db(
@@ -178,7 +178,7 @@ pub(crate) fn execute_command_line_in_db(
 
 #[cfg(test)]
 pub(crate) fn assert_command_response(processor: &RequestProcessor, line: &str, expected: &[u8]) {
-    assert_command_response_in_db(processor, line, expected, DbName::default());
+    assert_command_response_in_db(processor, line, expected, DbName::fixture());
 }
 
 #[cfg(test)]
