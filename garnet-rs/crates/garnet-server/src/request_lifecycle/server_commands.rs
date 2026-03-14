@@ -1009,6 +1009,17 @@ impl RequestProcessor {
                 self.delete_string_key_for_migration(DbKeyRef::new(selected_db, key.as_slice()))?;
                 let _ = self.object_delete(DbKeyRef::new(selected_db, key.as_slice()))?;
             }
+            if !execution.acknowledged_keys.is_empty() {
+                let mut replication_parts =
+                    Vec::with_capacity(execution.acknowledged_keys.len() + 1);
+                replication_parts.push(b"DEL".as_slice());
+                for key in &execution.acknowledged_keys {
+                    replication_parts.push(key.as_slice());
+                }
+                let mut replication_frame = Vec::new();
+                append_bulk_array(&mut replication_frame, replication_parts.as_slice());
+                enqueue_deferred_replication_frame(selected_db, replication_frame);
+            }
         }
 
         match execution.response {

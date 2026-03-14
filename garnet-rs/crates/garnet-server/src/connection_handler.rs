@@ -1933,7 +1933,7 @@ pub(crate) async fn handle_connection(
                             stream.write_all(&responses).await?;
                             responses.clear();
                         }
-                        let mut replication_frames: Vec<Vec<u8>> = Vec::new();
+                        let mut replication_frames: Vec<(DbName, Vec<u8>)> = Vec::new();
                         let mut wait_for_blocking_progress = false;
                         let blocked_before = if command_mutating {
                             processor.blocked_clients()
@@ -2034,10 +2034,20 @@ pub(crate) async fn handle_connection(
                                     blocking_outcome.connection_effects,
                                 );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);
+                                replication_frames.extend(
+                                    blocking_outcome
+                                        .deferred_replication_frames
+                                        .into_iter()
+                                        .map(|effect| (effect.selected_db, effect.frame)),
+                                );
                                 if command_uses_script_effect_replication(command) {
-                                    replication_frames = take_script_effect_replication_frames(
-                                        &processor,
-                                        max_resp_arguments,
+                                    replication_frames.extend(
+                                        take_script_effect_replication_frames(
+                                            &processor,
+                                            max_resp_arguments,
+                                        )
+                                        .into_iter()
+                                        .map(|frame| (client_state.selected_db, frame)),
                                     );
                                 } else if blocking_outcome.should_replicate {
                                     if let Some(replication_frame) = replication_frame_for_command(
@@ -2048,7 +2058,8 @@ pub(crate) async fn handle_connection(
                                         &blocking_outcome.frame_response,
                                         frame,
                                     ) {
-                                        replication_frames.push(replication_frame);
+                                        replication_frames
+                                            .push((client_state.selected_db, replication_frame));
                                     }
                                 }
                             }
@@ -2100,8 +2111,8 @@ pub(crate) async fn handle_connection(
                             }
                         }
                         if !replication_frames.is_empty() {
-                            publish_select_if_needed(&replication, client_state.selected_db);
-                            for frame_to_replicate in &replication_frames {
+                            for (selected_db, frame_to_replicate) in &replication_frames {
+                                publish_select_if_needed(&replication, *selected_db);
                                 processor.record_rdb_change(1);
                                 let published = replication.publish_write_frame(frame_to_replicate);
                                 wait_target_offset_for_connection = published.replication_offset;
@@ -2409,6 +2420,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 .to_vec(),
                 should_replicate: false,
                 connection_effects: RequestConnectionEffects::default(),
+                deferred_replication_frames: Vec::new(),
             });
         }
         if blocking_request && blocking_client_disconnected(stream).await {
@@ -2425,6 +2437,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 .to_vec(),
                 should_replicate: false,
                 connection_effects: RequestConnectionEffects::default(),
+                deferred_replication_frames: Vec::new(),
             });
         }
 
@@ -2448,6 +2461,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 frame_response: response,
                 should_replicate: false,
                 connection_effects: RequestConnectionEffects::default(),
+                deferred_replication_frames: Vec::new(),
             });
         }
 
@@ -2483,6 +2497,7 @@ async fn execute_blocking_frame_on_owner_thread(
                         .to_vec(),
                         should_replicate: false,
                         connection_effects: RequestConnectionEffects::default(),
+                        deferred_replication_frames: Vec::new(),
                     });
                 }
                 let remaining = deadline_time.duration_since(now);
@@ -2517,6 +2532,7 @@ async fn execute_blocking_frame_on_owner_thread(
                         .to_vec(),
                         should_replicate: false,
                         connection_effects: RequestConnectionEffects::default(),
+                        deferred_replication_frames: Vec::new(),
                     });
                 }
 
@@ -2567,6 +2583,7 @@ async fn execute_blocking_frame_on_owner_thread(
                     )
                     .to_vec(),
                     connection_effects: RequestConnectionEffects::default(),
+                    deferred_replication_frames: Vec::new(),
                 }
             }
             Err(error) => {
@@ -2585,6 +2602,7 @@ async fn execute_blocking_frame_on_owner_thread(
         };
         let mut frame_response = owned_execution.frame_response;
         let connection_effects = owned_execution.connection_effects;
+        let deferred_replication_frames = owned_execution.deferred_replication_frames;
         materialize_wait_response_if_needed(
             replication,
             &mut frame_response,
@@ -2623,6 +2641,7 @@ async fn execute_blocking_frame_on_owner_thread(
                 frame_response,
                 should_replicate,
                 connection_effects,
+                deferred_replication_frames,
             });
         }
 
@@ -2650,6 +2669,7 @@ async fn execute_blocking_frame_on_owner_thread(
                     frame_response,
                     should_replicate,
                     connection_effects,
+                    deferred_replication_frames,
                 });
             }
 
@@ -2679,6 +2699,7 @@ struct BlockingExecutionOutcome {
     frame_response: Vec<u8>,
     should_replicate: bool,
     connection_effects: RequestConnectionEffects,
+    deferred_replication_frames: Vec<crate::request_lifecycle::DeferredReplicationFrame>,
 }
 
 fn blocking_empty_retry_should_sleep(command: CommandId) -> bool {
@@ -3117,7 +3138,10 @@ fn publish_transaction_replication_frames(
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
     let mut replication_frames: Vec<(DbName, Vec<u8>)> = Vec::new();
     for item in &transaction_outcome.items {
-        if item.frame.is_empty() || resp_is_error(&item.response) {
+        if item.frame.is_empty() {
+            continue;
+        }
+        if resp_is_error(&item.response) && item.deferred_replication_frames.is_empty() {
             continue;
         }
         let Ok(meta) =
@@ -3157,6 +3181,16 @@ fn publish_transaction_replication_frames(
             script_eval_effect_replication_frame(processor, command, &args[..meta.argument_count])
         {
             replication_frames.push((item.selected_db, eval_effect_frame));
+            continue;
+        }
+
+        if !item.deferred_replication_frames.is_empty() {
+            replication_frames.extend(
+                item.deferred_replication_frames
+                    .iter()
+                    .cloned()
+                    .map(|effect| (effect.selected_db, effect.frame)),
+            );
             continue;
         }
 
@@ -4996,6 +5030,10 @@ fn replication_frame_for_command(
             frame_response,
             original_frame,
         );
+    }
+
+    if command == CommandId::Migrate {
+        return None;
     }
 
     if command == CommandId::Hgetdel {

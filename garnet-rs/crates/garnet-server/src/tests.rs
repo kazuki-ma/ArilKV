@@ -17483,6 +17483,102 @@ async fn migrate_copy_replace_and_keys_follow_external_dump_scenarios() {
 }
 
 #[tokio::test]
+async fn migrate_rewrites_source_delete_for_downstream_replica_and_target_state() {
+    let (source_addr, source_shutdown_tx, source_server) = start_test_server_on_dedicated_thread();
+    let (target_addr, target_shutdown_tx, target_server) = start_test_server_on_dedicated_thread();
+    let (replica_addr, replica_shutdown_tx, replica_server) =
+        start_test_server_on_dedicated_thread();
+    wait_for_server_ping(source_addr).await;
+    wait_for_server_ping(target_addr).await;
+    wait_for_server_ping(replica_addr).await;
+
+    let mut source = TcpStream::connect(source_addr).await.unwrap();
+    let mut target = TcpStream::connect(target_addr).await.unwrap();
+    let mut replica = TcpStream::connect(replica_addr).await.unwrap();
+    let source_port = source_addr.port().to_string();
+    let target_port = target_addr.port().to_string();
+
+    send_and_expect(
+        &mut replica,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", source_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = wait_for_replica_info_line(&mut source, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"SET", b"migrate-replica-key", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"WAIT", b"1", b"5000"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut replica,
+        &encode_resp_command(&[b"GET", b"migrate-replica-key"]),
+        b"$5\r\nvalue\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"migrate-replica-key",
+            b"9",
+            b"5000",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"WAIT", b"1", b"5000"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"EXISTS", b"migrate-replica-key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut replica,
+        &encode_resp_command(&[b"EXISTS", b"migrate-replica-key"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"GET", b"migrate-replica-key"]),
+        b"$5\r\nvalue\r\n",
+    )
+    .await;
+
+    let _ = source_shutdown_tx.send(());
+    let _ = target_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    source_server.join().unwrap();
+    target_server.join().unwrap();
+    replica_server.join().unwrap();
+}
+
+#[tokio::test]
 async fn slowlog_argument_trimming_matches_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();

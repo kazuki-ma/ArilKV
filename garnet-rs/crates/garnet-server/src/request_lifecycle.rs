@@ -150,6 +150,9 @@ thread_local! {
     static TRACKING_READ_STACK: RefCell<Vec<Vec<RedisKey>>> = const {
         RefCell::new(Vec::new())
     };
+    static DEFERRED_REPLICATION_FRAME_STACK: RefCell<Vec<Vec<DeferredReplicationFrame>>> = const {
+        RefCell::new(Vec::new())
+    };
     static RESP_PROTOCOL_OVERRIDE: Cell<Option<RespProtocolVersion>> = const {
         Cell::new(None)
     };
@@ -217,6 +220,18 @@ impl Default for RequestConnectionEffects {
     fn default() -> Self {
         Self::NONE
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct DeferredReplicationFrame {
+    pub(crate) selected_db: DbName,
+    pub(crate) frame: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RequestExecutionEffects {
+    pub(crate) connection_effects: RequestConnectionEffects,
+    pub(crate) deferred_replication_frames: Vec<DeferredReplicationFrame>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -456,6 +471,41 @@ fn collect_tracking_read_key(key: &[u8]) -> bool {
         current.push(RedisKey::from(key));
         true
     })
+}
+
+#[inline]
+fn begin_deferred_replication_frame_collection() {
+    DEFERRED_REPLICATION_FRAME_STACK.with(|stack| stack.borrow_mut().push(Vec::new()));
+}
+
+#[inline]
+fn finish_deferred_replication_frame_collection() -> Vec<DeferredReplicationFrame> {
+    DEFERRED_REPLICATION_FRAME_STACK.with(|stack| stack.borrow_mut().pop().unwrap_or_default())
+}
+
+#[inline]
+fn finish_deferred_replication_frame_collection_into_parent() -> Vec<DeferredReplicationFrame> {
+    DEFERRED_REPLICATION_FRAME_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        let Some(current) = stack.pop() else {
+            return Vec::new();
+        };
+        let Some(parent) = stack.last_mut() else {
+            return current;
+        };
+        parent.extend(current);
+        Vec::new()
+    })
+}
+
+#[inline]
+fn enqueue_deferred_replication_frame(selected_db: DbName, frame: Vec<u8>) {
+    DEFERRED_REPLICATION_FRAME_STACK.with(|stack| {
+        let mut stack = stack.borrow_mut();
+        if let Some(current) = stack.last_mut() {
+            current.push(DeferredReplicationFrame { selected_db, frame });
+        }
+    });
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -5606,7 +5656,7 @@ impl RequestProcessor {
         client_id: Option<ClientId>,
         in_transaction: bool,
         selected_db: DbName,
-    ) -> Result<RequestConnectionEffects, RequestExecutionError> {
+    ) -> Result<RequestExecutionEffects, RequestExecutionError> {
         let scope = RequestExecutionContextScope::enter(RequestExecutionContext {
             client_no_touch,
             client_id,
@@ -5614,10 +5664,14 @@ impl RequestProcessor {
             tracking_reads_enabled: false,
             connection_effects: RequestConnectionEffects::NONE,
         });
+        begin_deferred_replication_frame_collection();
         let execution = self.execute_in_current_context(args, response_out, selected_db);
-        let connection_effects = current_request_connection_effects();
+        let execution_effects = RequestExecutionEffects {
+            connection_effects: current_request_connection_effects(),
+            deferred_replication_frames: finish_deferred_replication_frame_collection(),
+        };
         drop(scope);
-        execution.map(|_| connection_effects)
+        execution.map(|_| execution_effects)
     }
 
     #[cfg(test)]
@@ -5646,7 +5700,7 @@ impl RequestProcessor {
         client_no_touch: bool,
         client_id: Option<ClientId>,
         selected_db: DbName,
-    ) -> Result<RequestConnectionEffects, RequestExecutionError> {
+    ) -> Result<RequestExecutionEffects, RequestExecutionError> {
         self.execute_with_client_context_and_effects_in_db(
             args,
             response_out,
@@ -5721,6 +5775,7 @@ impl RequestProcessor {
             state.set(context);
             previous
         });
+        begin_deferred_replication_frame_collection();
         begin_tracking_invalidation_collection();
         begin_tracking_read_collection();
         let maxmemory_limit_bytes = self.maxmemory_limit_bytes();
@@ -6011,6 +6066,7 @@ impl RequestProcessor {
 
         let invalidated_keys = finish_tracking_invalidation_collection_into_parent();
         let deferred_read_keys = finish_tracking_read_collection_into_parent();
+        let _ = finish_deferred_replication_frame_collection_into_parent();
         REQUEST_EXECUTION_CONTEXT.with(|state| {
             let mut context = state.get();
             context.tracking_reads_enabled = previous_tracking_reads_enabled;

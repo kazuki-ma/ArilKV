@@ -20007,7 +20007,10 @@ fn readonly_and_readwrite_emit_cluster_read_only_connection_effects() {
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
-    assert_eq!(readonly_effects.cluster_read_only, Some(true));
+    assert_eq!(
+        readonly_effects.connection_effects.cluster_read_only,
+        Some(true)
+    );
 
     response.clear();
     let readwrite = b"*1\r\n$9\r\nREADWRITE\r\n";
@@ -20023,7 +20026,10 @@ fn readonly_and_readwrite_emit_cluster_read_only_connection_effects() {
         )
         .unwrap();
     assert_eq!(response, b"+OK\r\n");
-    assert_eq!(readwrite_effects.cluster_read_only, Some(false));
+    assert_eq!(
+        readwrite_effects.connection_effects.cluster_read_only,
+        Some(false)
+    );
 }
 
 #[test]
@@ -20047,7 +20053,7 @@ fn wait_emits_connection_wait_effects_on_command_path() {
 
     assert!(response.is_empty());
     assert_eq!(
-        effects.wait_request,
+        effects.connection_effects.wait_request,
         Some(WaitRequestEffect {
             requested_replicas: 1,
             timeout_millis: 10,
@@ -20094,7 +20100,7 @@ async fn waitaof_emits_connection_effects_on_command_path_when_local_fsync_lags(
 
     assert!(response.is_empty());
     assert_eq!(
-        effects.waitaof_request,
+        effects.connection_effects.waitaof_request,
         Some(WaitAofRequestEffect {
             requested_local: 1,
             requested_replicas: 0,

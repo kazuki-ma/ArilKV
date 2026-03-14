@@ -10,6 +10,7 @@ use crate::RequestProcessor;
 use crate::ShardOwnerThreadPool;
 use crate::connection_routing::owner_shard_for_command;
 use crate::request_lifecycle::DbName;
+use crate::request_lifecycle::DeferredReplicationFrame;
 use crate::request_lifecycle::RequestConnectionEffects;
 #[cfg(test)]
 const TEST_MAX_ROUTED_ARGUMENTS: usize = 1_048_576;
@@ -49,6 +50,7 @@ pub(crate) struct OwnedFrameArgs {
 pub(crate) struct OwnedExecutionOutcome {
     pub(crate) frame_response: Vec<u8>,
     pub(crate) connection_effects: RequestConnectionEffects,
+    pub(crate) deferred_replication_frames: Vec<DeferredReplicationFrame>,
 }
 
 #[inline]
@@ -123,7 +125,7 @@ pub(crate) fn execute_owned_frame_args_via_processor(
     let args = parse_owned_frame_args(owned_args)?;
 
     let mut response = Vec::new();
-    let connection_effects = processor
+    let execution_effects = processor
         .execute_with_client_context_and_effects_in_db(
             &args,
             &mut response,
@@ -135,7 +137,8 @@ pub(crate) fn execute_owned_frame_args_via_processor(
         .map_err(RoutedExecutionError::Request)?;
     Ok(OwnedExecutionOutcome {
         frame_response: response,
-        connection_effects,
+        connection_effects: execution_effects.connection_effects,
+        deferred_replication_frames: execution_effects.deferred_replication_frames,
     })
 }
 
@@ -151,7 +154,7 @@ pub(crate) fn execute_frame_on_owner_thread(
 ) -> Result<OwnedExecutionOutcome, OwnerThreadExecutionError> {
     if owner_thread_pool.is_inline_execution() {
         let mut response = Vec::new();
-        let connection_effects = processor
+        let execution_effects = processor
             .execute_with_client_context_and_effects_in_db(
                 args,
                 &mut response,
@@ -163,7 +166,8 @@ pub(crate) fn execute_frame_on_owner_thread(
             .map_err(OwnerThreadExecutionError::Request)?;
         return Ok(OwnedExecutionOutcome {
             frame_response: response,
-            connection_effects,
+            connection_effects: execution_effects.connection_effects,
+            deferred_replication_frames: execution_effects.deferred_replication_frames,
         });
     }
 

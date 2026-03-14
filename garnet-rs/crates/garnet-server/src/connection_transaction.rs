@@ -13,6 +13,7 @@ use crate::connection_protocol::parse_u16_ascii;
 use crate::connection_routing::owner_shard_for_command;
 use crate::dispatch_from_arg_slices;
 use crate::request_lifecycle::DbName;
+use crate::request_lifecycle::DeferredReplicationFrame;
 use crate::request_lifecycle::RequestConnectionEffects;
 use crate::request_lifecycle::ShardIndex;
 use crate::request_lifecycle::WatchedKey;
@@ -81,6 +82,7 @@ pub(crate) struct ExecutedTransactionItem {
     pub(crate) selected_db: DbName,
     pub(crate) frame: Vec<u8>,
     pub(crate) response: Vec<u8>,
+    pub(crate) deferred_replication_frames: Vec<DeferredReplicationFrame>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -134,6 +136,7 @@ pub(crate) fn execute_transaction_queue(
                     selected_db,
                     frame: Vec::new(),
                     response: b"-ERR owner routing execution failed\r\n".to_vec(),
+                    deferred_replication_frames: Vec::new(),
                 };
                 queued_len
             ],
@@ -240,6 +243,7 @@ fn execute_transaction_queue_on_owner_thread(
                         selected_db: item_selected_db,
                         frame,
                         response: item_response,
+                        deferred_replication_frames: Vec::new(),
                     });
                     continue;
                 }
@@ -252,14 +256,23 @@ fn execute_transaction_queue_on_owner_thread(
                     client_id,
                     transaction_selected_db,
                 ) {
-                    Ok(connection_effects) => {
-                        connection_effects_after_exec.merge_from(connection_effects);
+                    Ok(execution_effects) => {
+                        connection_effects_after_exec
+                            .merge_from(execution_effects.connection_effects);
                         if command == CommandId::Select
                             && let Some(next_db) =
                                 parse_transaction_select_db(&args[..meta.argument_count], processor)
                         {
                             transaction_selected_db = next_db;
                         }
+                        items.push(ExecutedTransactionItem {
+                            selected_db: item_selected_db,
+                            frame,
+                            response: item_response,
+                            deferred_replication_frames: execution_effects
+                                .deferred_replication_frames,
+                        });
+                        continue;
                     }
                     Err(error) => error.append_resp_error(&mut item_response),
                 }
@@ -273,6 +286,7 @@ fn execute_transaction_queue_on_owner_thread(
             selected_db: item_selected_db,
             frame,
             response: item_response,
+            deferred_replication_frames: Vec::new(),
         });
     }
     processor.finish_tracking_invalidation_batch(client_id);
