@@ -16095,6 +16095,268 @@ async fn slowlog_sensitive_redaction_matches_external_scenarios() {
 }
 
 #[tokio::test]
+async fn migrate_moves_key_between_two_live_servers_like_external_dump_scenario() {
+    let (source_addr, source_shutdown_tx, source_server) = start_test_server_on_dedicated_thread();
+    let (target_addr, target_shutdown_tx, target_server) = start_test_server_on_dedicated_thread();
+    wait_for_server_ping(source_addr).await;
+    wait_for_server_ping(target_addr).await;
+
+    let mut source = TcpStream::connect(source_addr).await.unwrap();
+    let mut target = TcpStream::connect(target_addr).await.unwrap();
+    let target_port = target_addr.port().to_string();
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"SET", b"key", b"Some Value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"key",
+            b"9",
+            b"5000",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"EXISTS", b"key"]),
+        b":0\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"EXISTS", b"key"]),
+        b":1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"GET", b"key"]),
+        b"$10\r\nSome Value\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"TTL", b"key"]),
+        b":-1\r\n",
+    )
+    .await;
+
+    let _ = source_shutdown_tx.send(());
+    let _ = target_shutdown_tx.send(());
+    source_server.join().unwrap();
+    target_server.join().unwrap();
+}
+
+#[tokio::test]
+async fn migrate_copy_replace_and_keys_follow_external_dump_scenarios() {
+    let (source_addr, source_shutdown_tx, source_server) = start_test_server_on_dedicated_thread();
+    let (target_addr, target_shutdown_tx, target_server) = start_test_server_on_dedicated_thread();
+    wait_for_server_ping(source_addr).await;
+    wait_for_server_ping(target_addr).await;
+
+    let mut source = TcpStream::connect(source_addr).await.unwrap();
+    let mut target = TcpStream::connect(target_addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+    let target_port = target_addr.port().to_string();
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"LPUSH", b"list", b"a", b"b", b"c", b"d"]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"list",
+            b"9",
+            b"5000",
+            b"COPY",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"EXISTS", b"list"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"SELECT", b"9"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let copied = send_and_read_resp_value(
+        &mut target,
+        &encode_resp_command(&[b"LRANGE", b"list", b"0", b"-1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_array(&copied)
+            .iter()
+            .map(|item| resp_socket_bulk(item).to_vec())
+            .collect::<Vec<_>>(),
+        vec![b"d".to_vec(), b"c".to_vec(), b"b".to_vec(), b"a".to_vec()]
+    );
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"LPUSH", b"replace-key", b"a", b"b", b"c", b"d"]),
+        b":4\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"SET", b"replace-key", b"busy"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let busy = send_and_read_resp_value(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"replace-key",
+            b"9",
+            b"5000",
+            b"COPY",
+        ]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&busy),
+        b"ERR Target instance replied with error: BUSYKEY Target key name already exists."
+    );
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"EXISTS", b"replace-key"]),
+        b":1\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"replace-key",
+            b"9",
+            b"5000",
+            b"COPY",
+            b"REPLACE",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let replaced = send_and_read_resp_value(
+        &mut target,
+        &encode_resp_command(&[b"LRANGE", b"replace-key", b"0", b"-1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_array(&replaced)
+            .iter()
+            .map(|item| resp_socket_bulk(item).to_vec())
+            .collect::<Vec<_>>(),
+        vec![b"d".to_vec(), b"c".to_vec(), b"b".to_vec(), b"a".to_vec()]
+    );
+
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"SET", b"key1", b"v1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"SET", b"key2", b"v2"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"",
+            b"9",
+            b"5000",
+            b"KEYS",
+            b"nokey-1",
+            b"nokey-2",
+        ]),
+        b"+NOKEY\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[
+            b"MIGRATE",
+            b"127.0.0.1",
+            target_port.as_bytes(),
+            b"",
+            b"9",
+            b"5000",
+            b"KEYS",
+            b"key1",
+            b"key2",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut source,
+        &encode_resp_command(&[b"EXISTS", b"key1", b"key2"]),
+        b":0\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"GET", b"key1"]),
+        b"$2\r\nv1\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut target,
+        &encode_resp_command(&[b"GET", b"key2"]),
+        b"$2\r\nv2\r\n",
+    )
+    .await;
+
+    let _ = source_shutdown_tx.send(());
+    let _ = target_shutdown_tx.send(());
+    source_server.join().unwrap();
+    target_server.join().unwrap();
+}
+
+#[tokio::test]
 async fn slowlog_argument_trimming_matches_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let mut client = TcpStream::connect(addr).await.unwrap();
@@ -17423,6 +17685,35 @@ async fn start_test_server() -> (
         })
         .await
         .unwrap();
+    });
+
+    (addr, shutdown_tx, server)
+}
+
+fn start_test_server_on_dedicated_thread() -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    std::thread::JoinHandle<()>,
+) {
+    let std_listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    std_listener.set_nonblocking(true).unwrap();
+    let addr = std_listener.local_addr().unwrap();
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server = std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = TcpListener::from_std(std_listener).unwrap();
+            let metrics = Arc::new(ServerMetrics::default());
+            run_listener_with_shutdown(listener, 1024, metrics, async move {
+                let _ = shutdown_rx.await;
+            })
+            .await
+            .unwrap();
+        });
     });
 
     (addr, shutdown_tx, server)

@@ -876,7 +876,6 @@ pub(crate) async fn handle_connection(
             let mut command_outcome = ClientCommandOutcome::default();
             let mut commands_processed = 1u64;
             let execution_count_before = processor.executed_command_count();
-            let command_started_at = Instant::now();
 
             if command == CommandId::Client && !transaction.in_multi {
                 command_outcome = handle_client_command(
@@ -1058,35 +1057,6 @@ pub(crate) async fn handle_connection(
                         }
                     }
                 }
-                disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
-                    &mut responses,
-                    response_mark,
-                    &mut client_state,
-                    command,
-                    command_outcome,
-                    commands_processed,
-                );
-                consumed += frame_bytes_consumed;
-                if disconnect_after_write {
-                    break;
-                }
-                continue;
-            }
-
-            if command == CommandId::Migrate {
-                let slowlog_args = args[..argument_count]
-                    .iter()
-                    .map(arg_slice_bytes)
-                    .collect::<Vec<_>>();
-                processor.record_slowlog_command(
-                    &slowlog_args,
-                    command,
-                    command_started_at.elapsed(),
-                    Some(client_id),
-                );
-                append_simple_string(&mut responses, b"NOKEY");
                 disconnect_after_write |= finalize_client_command(
                     &metrics,
                     client_id,

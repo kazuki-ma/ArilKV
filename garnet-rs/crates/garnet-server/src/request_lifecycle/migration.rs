@@ -1,6 +1,263 @@
 use super::*;
+use std::io::Read;
+use std::io::Write;
+use std::net::TcpStream;
+use std::net::ToSocketAddrs;
+use std::time::Duration;
+
+pub(crate) const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteMigrateAuth {
+    pub(crate) username: Option<Vec<u8>>,
+    pub(crate) password: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteMigrateItem {
+    pub(crate) key: ItemKey,
+    pub(crate) ttl_millis: u64,
+    pub(crate) payload: Vec<u8>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteMigratePlan {
+    pub(crate) host: Vec<u8>,
+    pub(crate) port: u16,
+    pub(crate) target_db: i64,
+    pub(crate) timeout_millis: u64,
+    pub(crate) replace: bool,
+    pub(crate) auth: Option<RemoteMigrateAuth>,
+    pub(crate) items: Vec<RemoteMigrateItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum RemoteMigrateResponse {
+    Ok,
+    TargetError(Vec<u8>),
+    IoErr { writing: bool },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RemoteMigrateExecution {
+    pub(crate) response: RemoteMigrateResponse,
+    pub(crate) acknowledged_keys: Vec<ItemKey>,
+}
+
+pub(crate) fn encode_migration_dump_blob(value: &MigrationValue) -> Vec<u8> {
+    let mut encoded = Vec::new();
+    encoded.extend_from_slice(DUMP_BLOB_MAGIC);
+    match value {
+        MigrationValue::String(raw) => {
+            encoded.push(0);
+            let len = u32::try_from(raw.as_slice().len()).unwrap_or(u32::MAX);
+            encoded.extend_from_slice(&len.to_le_bytes());
+            encoded.extend_from_slice(raw.as_slice());
+        }
+        MigrationValue::Object {
+            object_type,
+            payload,
+        } => {
+            encoded.push(1);
+            object_type.write_to(&mut encoded);
+            let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
+            encoded.extend_from_slice(&len.to_le_bytes());
+            encoded.extend_from_slice(payload);
+        }
+    }
+    encoded
+}
+
+fn append_resp_command_frame(target: &mut Vec<u8>, parts: &[&[u8]]) {
+    append_array_length(target, parts.len());
+    for part in parts {
+        append_bulk_string(target, part);
+    }
+}
+
+fn connect_remote_migrate_target(
+    host: &[u8],
+    port: u16,
+    timeout: Duration,
+) -> std::io::Result<TcpStream> {
+    let host_text = String::from_utf8_lossy(host);
+    let mut last_error = None;
+    for addr in (host_text.as_ref(), port).to_socket_addrs()? {
+        match TcpStream::connect_timeout(&addr, timeout) {
+            Ok(stream) => {
+                stream.set_nodelay(true).ok();
+                stream.set_read_timeout(Some(timeout)).ok();
+                stream.set_write_timeout(Some(timeout)).ok();
+                return Ok(stream);
+            }
+            Err(error) => {
+                last_error = Some(error);
+            }
+        }
+    }
+
+    Err(last_error.unwrap_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::AddrNotAvailable,
+            "failed to resolve MIGRATE target address",
+        )
+    }))
+}
+
+fn read_remote_resp_line(stream: &mut TcpStream) -> std::io::Result<Vec<u8>> {
+    let mut line = Vec::new();
+    loop {
+        let mut byte = [0u8; 1];
+        stream.read_exact(&mut byte)?;
+        line.push(byte[0]);
+        if line.ends_with(b"\r\n") {
+            line.truncate(line.len() - 2);
+            return Ok(line);
+        }
+    }
+}
+
+fn format_target_error_line(line: &[u8]) -> Vec<u8> {
+    line.strip_prefix(b"-").unwrap_or(line).to_vec()
+}
 
 impl RequestProcessor {
+    pub(crate) fn execute_remote_migrate_plan(
+        &self,
+        plan: &RemoteMigratePlan,
+    ) -> RemoteMigrateExecution {
+        let timeout = Duration::from_millis(plan.timeout_millis);
+        let mut stream =
+            match connect_remote_migrate_target(plan.host.as_slice(), plan.port, timeout) {
+                Ok(stream) => stream,
+                Err(_) => {
+                    return RemoteMigrateExecution {
+                        response: RemoteMigrateResponse::IoErr { writing: false },
+                        acknowledged_keys: Vec::new(),
+                    };
+                }
+            };
+
+        let mut request = Vec::new();
+        if let Some(auth) = &plan.auth {
+            if let Some(username) = auth.username.as_ref() {
+                append_resp_command_frame(
+                    &mut request,
+                    &[b"AUTH", username.as_slice(), auth.password.as_slice()],
+                );
+            } else {
+                append_resp_command_frame(&mut request, &[b"AUTH", auth.password.as_slice()]);
+            }
+        }
+
+        let target_db_text = plan.target_db.to_string().into_bytes();
+        append_resp_command_frame(&mut request, &[b"SELECT", target_db_text.as_slice()]);
+
+        let mut ttl_texts = Vec::with_capacity(plan.items.len());
+        for item in &plan.items {
+            ttl_texts.push(item.ttl_millis.to_string().into_bytes());
+        }
+        for (index, item) in plan.items.iter().enumerate() {
+            let ttl = ttl_texts[index].as_slice();
+            if plan.replace {
+                append_resp_command_frame(
+                    &mut request,
+                    &[
+                        b"RESTORE",
+                        item.key.as_slice(),
+                        ttl,
+                        item.payload.as_slice(),
+                        b"REPLACE",
+                    ],
+                );
+            } else {
+                append_resp_command_frame(
+                    &mut request,
+                    &[
+                        b"RESTORE",
+                        item.key.as_slice(),
+                        ttl,
+                        item.payload.as_slice(),
+                    ],
+                );
+            }
+        }
+
+        if stream.write_all(request.as_slice()).is_err() {
+            return RemoteMigrateExecution {
+                response: RemoteMigrateResponse::IoErr { writing: true },
+                acknowledged_keys: Vec::new(),
+            };
+        }
+
+        if plan.auth.is_some() {
+            let auth_reply = match read_remote_resp_line(&mut stream) {
+                Ok(line) => line,
+                Err(_) => {
+                    return RemoteMigrateExecution {
+                        response: RemoteMigrateResponse::IoErr { writing: false },
+                        acknowledged_keys: Vec::new(),
+                    };
+                }
+            };
+            if auth_reply.first() == Some(&b'-') {
+                return RemoteMigrateExecution {
+                    response: RemoteMigrateResponse::TargetError(format_target_error_line(
+                        auth_reply.as_slice(),
+                    )),
+                    acknowledged_keys: Vec::new(),
+                };
+            }
+        }
+
+        let select_reply = match read_remote_resp_line(&mut stream) {
+            Ok(line) => line,
+            Err(_) => {
+                return RemoteMigrateExecution {
+                    response: RemoteMigrateResponse::IoErr { writing: false },
+                    acknowledged_keys: Vec::new(),
+                };
+            }
+        };
+        if select_reply.first() == Some(&b'-') {
+            return RemoteMigrateExecution {
+                response: RemoteMigrateResponse::TargetError(format_target_error_line(
+                    select_reply.as_slice(),
+                )),
+                acknowledged_keys: Vec::new(),
+            };
+        }
+
+        let mut acknowledged_keys = Vec::new();
+        let mut first_target_error = None;
+        for item in &plan.items {
+            let reply = match read_remote_resp_line(&mut stream) {
+                Ok(line) => line,
+                Err(_) => {
+                    return RemoteMigrateExecution {
+                        response: RemoteMigrateResponse::IoErr { writing: false },
+                        acknowledged_keys,
+                    };
+                }
+            };
+            if reply.first() == Some(&b'-') {
+                if first_target_error.is_none() {
+                    first_target_error = Some(format_target_error_line(reply.as_slice()));
+                }
+                continue;
+            }
+            acknowledged_keys.push(item.key.clone());
+        }
+
+        RemoteMigrateExecution {
+            response: match first_target_error {
+                Some(error) => RemoteMigrateResponse::TargetError(error),
+                None => RemoteMigrateResponse::Ok,
+            },
+            acknowledged_keys,
+        }
+    }
+
     pub(crate) fn export_migration_entry(
         &self,
         db: DbName,

@@ -319,7 +319,6 @@ const DEBUG_PROTOCOL_BIGNUM_VALUE: &[u8] = b"12345679999999999999999999999999999
 const DEBUG_PROTOCOL_VERBATIM_VALUE: &[u8] = b"This is a verbatim\nstring";
 const DEBUG_PROTOCOL_ATTRIBUTE_NAME: &[u8] = b"key-popularity";
 const DEBUG_PROTOCOL_ATTRIBUTE_KEY: &[u8] = b"key:123";
-const DUMP_BLOB_MAGIC: &[u8] = b"GRN1";
 const DEBUG_RELOAD_SNAPSHOT_MAGIC_V1: &[u8] = b"GRSNAP1";
 const DEBUG_RELOAD_SNAPSHOT_MAGIC_V2: &[u8] = b"GRSNAP2";
 const DEBUG_RELOAD_SNAPSHOT_MAGIC_V3: &[u8] = b"GRSNAP3";
@@ -876,8 +875,9 @@ impl RequestProcessor {
 
     pub(super) fn handle_migrate(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(args, 6, "MIGRATE", MIGRATE_USAGE)?;
         let host = args[1];
@@ -889,22 +889,31 @@ impl RequestProcessor {
             return Err(RequestExecutionError::ValueNotInteger);
         }
         let key_arg = args[3];
-        parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        let timeout_millis =
+        let target_db = parse_i64_ascii(args[4]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let mut timeout_millis =
             parse_i64_ascii(args[5]).ok_or(RequestExecutionError::ValueNotInteger)?;
         if timeout_millis <= 0 {
-            return Err(RequestExecutionError::ValueOutOfRange);
+            timeout_millis = 1000;
         }
 
         let mut parsed_keys: Vec<Vec<u8>> = Vec::new();
         if !key_arg.is_empty() {
             parsed_keys.push(key_arg.to_vec());
         }
+        let mut copy = false;
+        let mut replace = false;
+        let mut auth = None;
 
         let mut index = 6usize;
         while index < args.len() {
             let token = args[index];
-            if ascii_eq_ignore_case(token, b"COPY") || ascii_eq_ignore_case(token, b"REPLACE") {
+            if ascii_eq_ignore_case(token, b"COPY") {
+                copy = true;
+                index += 1;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"REPLACE") {
+                replace = true;
                 index += 1;
                 continue;
             }
@@ -912,6 +921,10 @@ impl RequestProcessor {
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
+                auth = Some(RemoteMigrateAuth {
+                    username: None,
+                    password: args[index + 1].to_vec(),
+                });
                 index += 2;
                 continue;
             }
@@ -919,12 +932,20 @@ impl RequestProcessor {
                 if index + 2 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
+                auth = Some(RemoteMigrateAuth {
+                    username: Some(args[index + 1].to_vec()),
+                    password: args[index + 2].to_vec(),
+                });
                 index += 3;
                 continue;
             }
             if ascii_eq_ignore_case(token, b"KEYS") {
                 if !key_arg.is_empty() {
-                    return Err(RequestExecutionError::SyntaxError);
+                    append_error(
+                        response_out,
+                        b"ERR When using MIGRATE KEYS option, the key argument must be set to the empty string",
+                    );
+                    return Ok(());
                 }
                 if index + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
@@ -943,7 +964,74 @@ impl RequestProcessor {
         if parsed_keys.is_empty() {
             return Err(RequestExecutionError::SyntaxError);
         }
-        Err(RequestExecutionError::CommandDisabled { command: "MIGRATE" })
+
+        let now_unix_millis = current_unix_time_millis().unwrap_or(0);
+        let mut items = Vec::new();
+        for key in &parsed_keys {
+            let Some(entry) = self.export_migration_entry(selected_db, key.as_slice())? else {
+                continue;
+            };
+            let ttl_millis = match entry.expiration_unix_millis {
+                Some(expiration_unix_millis) if expiration_unix_millis <= now_unix_millis => {
+                    continue;
+                }
+                Some(expiration_unix_millis) => {
+                    let remaining = expiration_unix_millis - now_unix_millis;
+                    remaining.max(1)
+                }
+                None => 0,
+            };
+            items.push(RemoteMigrateItem {
+                key: entry.key,
+                ttl_millis,
+                payload: encode_migration_dump_blob(&entry.value),
+            });
+        }
+
+        if items.is_empty() {
+            append_simple_string(response_out, b"NOKEY");
+            return Ok(());
+        }
+
+        let execution = self.execute_remote_migrate_plan(&RemoteMigratePlan {
+            host: host.to_vec(),
+            port: port as u16,
+            target_db,
+            timeout_millis: timeout_millis as u64,
+            replace,
+            auth,
+            items,
+        });
+
+        if !copy {
+            for key in &execution.acknowledged_keys {
+                self.delete_string_key_for_migration(DbKeyRef::new(selected_db, key.as_slice()))?;
+                let _ = self.object_delete(DbKeyRef::new(selected_db, key.as_slice()))?;
+            }
+        }
+
+        match execution.response {
+            RemoteMigrateResponse::Ok => append_simple_string(response_out, b"OK"),
+            RemoteMigrateResponse::TargetError(message) => {
+                let mut prefixed = b"ERR Target instance replied with error: ".to_vec();
+                prefixed.extend_from_slice(message.as_slice());
+                append_error(response_out, prefixed.as_slice());
+            }
+            RemoteMigrateResponse::IoErr { writing } => {
+                if writing {
+                    append_error(
+                        response_out,
+                        b"IOERR error or timeout writing to target instance",
+                    );
+                } else {
+                    append_error(
+                        response_out,
+                        b"IOERR error or timeout reading to target instance",
+                    );
+                }
+            }
+        }
+        Ok(())
     }
 
     pub(super) fn handle_client(
@@ -2922,14 +3010,14 @@ impl RequestProcessor {
         if let Some(value) = self.read_string_value(db_key)? {
             append_bulk_string(
                 response_out,
-                &encode_dump_blob(MigrationValue::String(value.into())),
+                &encode_migration_dump_blob(&MigrationValue::String(value.into())),
             );
             return Ok(());
         }
         if let Some(object) = self.object_read(db_key)? {
             append_bulk_string(
                 response_out,
-                &encode_dump_blob(MigrationValue::Object {
+                &encode_migration_dump_blob(&MigrationValue::Object {
                     object_type: object.object_type,
                     payload: object.payload,
                 }),
@@ -5116,7 +5204,8 @@ impl RequestProcessor {
 
             if let Some(stored_value) = self.read_string_value(db_key)? {
                 let expiration_unix_millis = self.expiration_unix_millis(db_key);
-                let dump_blob = encode_dump_blob(MigrationValue::String(stored_value.into()));
+                let dump_blob =
+                    encode_migration_dump_blob(&MigrationValue::String(stored_value.into()));
                 entries.push(DebugReloadSnapshotEntry {
                     key: key.to_vec(),
                     expiration_unix_millis,
@@ -5141,7 +5230,7 @@ impl RequestProcessor {
                 } else {
                     Vec::new()
                 };
-                let dump_blob = encode_dump_blob(MigrationValue::Object {
+                let dump_blob = encode_migration_dump_blob(&MigrationValue::Object {
                     object_type: object.object_type,
                     payload: object.payload,
                 });
@@ -5227,30 +5316,6 @@ fn parse_restore_options(
         return Err(RequestExecutionError::SyntaxError);
     }
     Ok(options)
-}
-
-fn encode_dump_blob(value: MigrationValue) -> Vec<u8> {
-    let mut encoded = Vec::new();
-    encoded.extend_from_slice(DUMP_BLOB_MAGIC);
-    match value {
-        MigrationValue::String(raw) => {
-            encoded.push(0);
-            let len = u32::try_from(raw.as_slice().len()).unwrap_or(u32::MAX);
-            encoded.extend_from_slice(&len.to_le_bytes());
-            encoded.extend_from_slice(raw.as_slice());
-        }
-        MigrationValue::Object {
-            object_type,
-            payload,
-        } => {
-            encoded.push(1);
-            object_type.write_to(&mut encoded);
-            let len = u32::try_from(payload.len()).unwrap_or(u32::MAX);
-            encoded.extend_from_slice(&len.to_le_bytes());
-            encoded.extend_from_slice(&payload);
-        }
-    }
-    encoded
 }
 
 #[derive(Debug)]

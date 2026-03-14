@@ -610,6 +610,12 @@ use self::errors::map_read_error;
 use self::errors::map_rmw_error;
 use self::errors::map_upsert_error;
 use self::errors::storage_failure;
+use self::migration::DUMP_BLOB_MAGIC;
+use self::migration::RemoteMigrateAuth;
+use self::migration::RemoteMigrateItem;
+use self::migration::RemoteMigratePlan;
+use self::migration::RemoteMigrateResponse;
+use self::migration::encode_migration_dump_blob;
 use self::resp::append_array_length;
 use self::resp::append_bulk_array;
 use self::resp::append_bulk_string;
@@ -5812,7 +5818,7 @@ impl RequestProcessor {
             CommandId::GeoradiusbymemberRo => {
                 self.handle_georadiusbymember_ro(selected_db, args, response_out)
             }
-            CommandId::Migrate => self.handle_migrate(args, response_out),
+            CommandId::Migrate => self.handle_migrate(selected_db, args, response_out),
             CommandId::Monitor => self.handle_monitor(args, response_out),
             CommandId::Shutdown => self.handle_shutdown(args, response_out),
             CommandId::Hello => self.handle_hello(args, response_out),

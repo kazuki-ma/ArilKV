@@ -14700,48 +14700,22 @@ fn geo_commands_are_scoped_by_selected_db_without_db0_fallback() {
 }
 
 #[test]
-fn migrate_command_validates_arguments_before_disabled_response() {
+fn migrate_command_validates_arguments_before_remote_execution() {
     let processor = RequestProcessor::new().unwrap();
 
-    assert_command_error(
-        &processor,
-        "MIGRATE 127.0.0.1 6379 key 0 1000",
-        b"-ERR MIGRATE is disabled in this server\r\n",
-    );
     assert_command_error(
         &processor,
         "MIGRATE 127.0.0.1 notaport key 0 1000",
         b"-ERR value is not an integer or out of range\r\n",
     );
-    assert_command_error(
-        &processor,
-        "MIGRATE 127.0.0.1 6379 key 1 1000",
-        b"-ERR MIGRATE is disabled in this server\r\n",
-    );
-    assert_command_error(
-        &processor,
-        "MIGRATE 127.0.0.1 6379 key 0 -1",
-        b"-ERR value is out of range\r\n",
-    );
-    assert_command_error(
-        &processor,
-        "MIGRATE 127.0.0.1 6379 key 0 1000 KEYS other",
-        b"-ERR syntax error\r\n",
+    assert_eq!(
+        execute_command_line(&processor, "MIGRATE 127.0.0.1 6379 key 0 1000 KEYS other").unwrap(),
+        b"-ERR When using MIGRATE KEYS option, the key argument must be set to the empty string\r\n",
     );
 
     let mut args = [ArgSlice::EMPTY; 16];
-    let empty_key_with_keys = encode_resp(&[
-        b"MIGRATE",
-        b"127.0.0.1",
-        b"6379",
-        b"",
-        b"0",
-        b"1000",
-        b"KEYS",
-        b"one",
-        b"two",
-    ]);
-    let meta = parse_resp_command_arg_slices(&empty_key_with_keys, &mut args).unwrap();
+    let empty_host = encode_resp(&[b"MIGRATE", b"", b"6379", b"key", b"0", b"1000"]);
+    let meta = parse_resp_command_arg_slices(&empty_host, &mut args).unwrap();
     let mut response = Vec::new();
     let err = processor
         .execute_in_db(
@@ -14751,12 +14725,12 @@ fn migrate_command_validates_arguments_before_disabled_response() {
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
-    assert_eq!(response, b"-ERR MIGRATE is disabled in this server\r\n");
+    assert_eq!(response, b"-ERR syntax error\r\n");
 
-    response.clear();
     let empty_key_without_keys =
         encode_resp(&[b"MIGRATE", b"127.0.0.1", b"6379", b"", b"0", b"1000"]);
     let meta = parse_resp_command_arg_slices(&empty_key_without_keys, &mut args).unwrap();
+    response.clear();
     let err = processor
         .execute_in_db(
             &args[..meta.argument_count],

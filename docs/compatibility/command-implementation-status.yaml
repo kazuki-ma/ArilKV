@@ -360,8 +360,8 @@ commands:
     status: FULL
     comment: ""
   - command: MIGRATE
-    status: DISABLED
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "Selected-DB standalone subset implemented (`COPY`/`REPLACE`/`AUTH`/`AUTH2`/`KEYS`, target `SELECT`/`RESTORE`, target-error and `IOERR` surfacing) with exact Rust coverage. Still Garnet-to-Garnet dump payloads only; full Redis DUMP parity and replication/AOF rewrite semantics are not implemented yet."
   - command: MODULE
     status: PARTIAL_MINIMAL
     comment: "Minimal admin and introspection compatibility surface."
