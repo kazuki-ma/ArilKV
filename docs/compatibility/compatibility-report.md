@@ -74,6 +74,6 @@
 | `SELECT` | `PARTIAL_MINIMAL` | single-db mode only; SELECT supports database 0. |
 | `SHUTDOWN` | `DISABLED` | - |
 | `SWAPDB` | `PARTIAL_MINIMAL` | single-db mode only; SWAPDB supports 0<->0 only. |
-| `WAIT` | `PARTIAL_MINIMAL` | Minimal compatibility behavior; full replication and durability semantics are not implemented. |
+| `WAIT` | `PARTIAL_MINIMAL` | Top-level command-path WAIT now uses the downstream replication ACK ledger and timeout wait primitive; but transaction/script edge contexts and durability-coupled semantics are not yet full Redis parity. |
 | `WAITAOF` | `PARTIAL_MINIMAL` | Minimal compatibility behavior; full replication and durability semantics are not implemented. |
 | `XCFGSET` | `DISABLED` | Declared extension surface; runtime behavior is not implemented. |

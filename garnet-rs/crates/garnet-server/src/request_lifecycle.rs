@@ -18,6 +18,7 @@ use crate::debug_concurrency::LockClass;
 use crate::debug_concurrency::OrderedMutex;
 use crate::debug_concurrency::OrderedMutexGuard;
 use crate::dispatch_command_name;
+use crate::redis_replication::RedisReplicationCoordinator;
 use garnet_cluster::ClusterConfigStore;
 use garnet_cluster::redis_hash_slot;
 use garnet_common::ArgSlice;
@@ -155,18 +156,29 @@ thread_local! {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct WaitRequestEffect {
+    pub(crate) requested_replicas: u64,
+    pub(crate) timeout_millis: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RequestConnectionEffects {
     pub(crate) cluster_read_only: Option<bool>,
+    pub(crate) wait_request: Option<WaitRequestEffect>,
 }
 
 impl RequestConnectionEffects {
     const NONE: Self = Self {
         cluster_read_only: None,
+        wait_request: None,
     };
 
     pub(crate) fn merge_from(&mut self, other: Self) {
         if other.cluster_read_only.is_some() {
             self.cluster_read_only = other.cluster_read_only;
+        }
+        if other.wait_request.is_some() {
+            self.wait_request = other.wait_request;
         }
     }
 }
@@ -272,6 +284,18 @@ fn set_request_cluster_read_only_effect(enabled: bool) {
     REQUEST_EXECUTION_CONTEXT.with(|state| {
         let mut context = state.get();
         context.connection_effects.cluster_read_only = Some(enabled);
+        state.set(context);
+    });
+}
+
+#[inline]
+fn set_request_wait_effect(requested_replicas: u64, timeout_millis: u64) {
+    REQUEST_EXECUTION_CONTEXT.with(|state| {
+        let mut context = state.get();
+        context.connection_effects.wait_request = Some(WaitRequestEffect {
+            requested_replicas,
+            timeout_millis,
+        });
         state.set(context);
     });
 }
@@ -2333,6 +2357,7 @@ pub struct RequestProcessor {
     client_lib_ver: Mutex<Vec<u8>>,
     cluster_config_store: OnceLock<Arc<ClusterConfigStore>>,
     server_metrics: OnceLock<Arc<crate::ServerMetrics>>,
+    replication_coordinator: OnceLock<Arc<RedisReplicationCoordinator>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2639,6 +2664,7 @@ impl RequestProcessor {
             client_lib_ver: Mutex::new(Vec::new()),
             cluster_config_store: OnceLock::new(),
             server_metrics: OnceLock::new(),
+            replication_coordinator: OnceLock::new(),
         })
     }
 
@@ -3853,6 +3879,17 @@ impl RequestProcessor {
         let _ = self.server_metrics.set(metrics);
     }
 
+    pub(crate) fn attach_replication_coordinator(
+        &self,
+        replication_coordinator: Arc<RedisReplicationCoordinator>,
+    ) {
+        let _ = self.replication_coordinator.set(replication_coordinator);
+    }
+
+    pub(super) fn replication_coordinator(&self) -> Option<&RedisReplicationCoordinator> {
+        self.replication_coordinator.get().map(Arc::as_ref)
+    }
+
     pub(crate) fn slowlog_len(&self) -> usize {
         self.slowlog_entries
             .lock()
@@ -4377,6 +4414,16 @@ impl RequestProcessor {
 
     pub(crate) fn script_execution_in_progress(&self) -> bool {
         self.script_running.load(Ordering::Acquire)
+    }
+
+    pub(super) fn current_thread_running_script(&self) -> bool {
+        let Ok(running_script) = self.running_script.lock() else {
+            return false;
+        };
+        let Some(state) = running_script.as_ref() else {
+            return false;
+        };
+        state.thread_id == std::thread::current().id()
     }
 
     fn current_script_time_snapshot(&self) -> Option<ScriptTimeSnapshot> {

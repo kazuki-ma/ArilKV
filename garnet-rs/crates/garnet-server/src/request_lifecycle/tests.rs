@@ -19926,6 +19926,35 @@ fn readonly_and_readwrite_emit_cluster_read_only_connection_effects() {
 }
 
 #[test]
+fn wait_emits_connection_wait_effects_on_command_path() {
+    let processor = RequestProcessor::new().unwrap();
+    let mut args = [ArgSlice::EMPTY; 4];
+    let mut response = Vec::new();
+
+    let wait = b"*3\r\n$4\r\nWAIT\r\n$1\r\n1\r\n$2\r\n10\r\n";
+    let meta = parse_resp_command_arg_slices(wait, &mut args).unwrap();
+    let effects = processor
+        .execute_with_client_context_and_effects_in_db(
+            &args[..meta.argument_count],
+            &mut response,
+            false,
+            Some(ClientId::new(7)),
+            false,
+            DbName::default(),
+        )
+        .unwrap();
+
+    assert!(response.is_empty());
+    assert_eq!(
+        effects.wait_request,
+        Some(WaitRequestEffect {
+            requested_replicas: 1,
+            timeout_millis: 10,
+        })
+    );
+}
+
+#[test]
 fn acl_deluser_genpass_log_save_load_stubs() {
     let processor = RequestProcessor::new().unwrap();
 

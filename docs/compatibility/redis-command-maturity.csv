@@ -209,7 +209,7 @@ TYPE,SUPPORTED_DECLARED,1,1,FULL,
 UNLINK,SUPPORTED_DECLARED,1,1,FULL,
 UNSUBSCRIBE,SUPPORTED_DECLARED,1,1,FULL,Real channel unsubscribe with ACK count tracking.
 UNWATCH,SUPPORTED_DECLARED,1,1,FULL,
-WAIT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full replication and durability semantics are not implemented.
+WAIT,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Top-level command-path WAIT now uses the downstream replication ACK ledger and timeout wait primitive; but transaction/script edge contexts and durability-coupled semantics are not yet full Redis parity.
 WAITAOF,SUPPORTED_DECLARED,1,1,PARTIAL_MINIMAL,Minimal compatibility behavior; full replication and durability semantics are not implemented.
 WATCH,SUPPORTED_DECLARED,1,1,FULL,
 XACK,SUPPORTED_DECLARED,1,1,FULL,

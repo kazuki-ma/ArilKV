@@ -227,6 +227,7 @@ struct ClientRuntimeInfo {
     reply_buffer_peak: usize,
     /// Last time the reply buffer peak window was reset.
     reply_buffer_peak_last_reset: Instant,
+    wait_target_offset: u64,
     selected_db: DbName,
     client_type: ClientTypeFilter,
 }
@@ -320,6 +321,7 @@ impl ClientRuntimeInfo {
             reply_buffer_size: REPLY_BUFFER_CHUNK_BYTES,
             reply_buffer_peak: 0,
             reply_buffer_peak_last_reset: now,
+            wait_target_offset: 0,
             selected_db: DbName::default(),
             client_type: ClientTypeFilter::Normal,
         }
@@ -664,6 +666,23 @@ impl ServerMetrics {
             client.selected_db = selected_db;
             client.last_activity = Instant::now();
         }
+    }
+
+    pub(crate) fn set_client_wait_target_offset(&self, client_id: ClientId, wait_target: u64) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.wait_target_offset = wait_target;
+            client.last_activity = Instant::now();
+        }
+    }
+
+    pub(crate) fn client_wait_target_offset(&self, client_id: ClientId) -> Option<u64> {
+        self.clients.lock().ok().and_then(|clients| {
+            clients
+                .get(&client_id)
+                .map(|client| client.wait_target_offset)
+        })
     }
 
     pub(crate) fn set_client_type(&self, client_id: ClientId, client_type: ClientTypeFilter) {

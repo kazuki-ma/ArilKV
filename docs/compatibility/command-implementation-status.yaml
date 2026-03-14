@@ -1,5 +1,5 @@
 schema_version: 1
-last_updated: 2026-03-03
+last_updated: 2026-03-14
 status_enum: [FULL, PARTIAL_MINIMAL, DISABLED]
 commands:
   - command: ACL
@@ -634,7 +634,7 @@ commands:
     comment: ""
   - command: WAIT
     status: PARTIAL_MINIMAL
-    comment: "Minimal compatibility behavior; full replication and durability semantics are not implemented."
+    comment: "Top-level command-path WAIT now uses the downstream replication ACK ledger and timeout wait primitive, but transaction/script edge contexts and durability-coupled semantics are not yet full Redis parity."
   - command: WAITAOF
     status: PARTIAL_MINIMAL
     comment: "Minimal compatibility behavior; full replication and durability semantics are not implemented."

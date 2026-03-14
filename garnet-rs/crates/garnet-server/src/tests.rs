@@ -7906,12 +7906,21 @@ async fn replicaof_enables_replication_and_no_one_promotes_back_to_master() {
     let replica_metrics = Arc::new(ServerMetrics::default());
     let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
     let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
 
     let master_metrics_task = Arc::clone(&master_metrics);
     let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
-            let _ = master_shutdown_rx.await;
-        })
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
         .await
         .unwrap();
     });
@@ -7995,12 +8004,21 @@ async fn wait_returns_ack_count_after_replica_applies_write() {
     let replica_metrics = Arc::new(ServerMetrics::default());
     let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
     let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
 
     let master_metrics_task = Arc::clone(&master_metrics);
     let master_server = tokio::spawn(async move {
-        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
-            let _ = master_shutdown_rx.await;
-        })
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
         .await
         .unwrap();
     });
@@ -8099,6 +8117,166 @@ async fn wait_times_out_without_downstream_replicas() {
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_after_exec_uses_connection_replication_offset() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
+            let _ = master_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
+            let _ = replica_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+    let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"MULTI"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"wait:exec", b"value"]),
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"EXEC"]),
+        b"*1\r\n+OK\r\n",
+    )
+    .await;
+
+    let acknowledged = send_and_read_integer(
+        &mut master_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT after EXEC to observe replicated transaction write, got {acknowledged}"
+    );
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn wait_in_script_reports_acknowledged_replica_count() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
+            let _ = replica_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    let slaveof = encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", master_port.as_bytes()]);
+    send_and_expect(&mut replica_client, &slaveof, b"+OK\r\n").await;
+    let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"wait:script", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let eval_wait = encode_resp_command(&[b"EVAL", b"return redis.call('WAIT', '1', '0')", b"0"]);
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let mut last_response = None;
+    let acknowledged = loop {
+        let response =
+            send_and_read_resp_value(&mut master_client, &eval_wait, Duration::from_secs(1)).await;
+        let acknowledged = match &response {
+            RespSocketValue::Integer(value) => *value,
+            _ => {
+                last_response = Some(response);
+                break -1;
+            }
+        };
+        if acknowledged == 1 || Instant::now() >= deadline {
+            break acknowledged;
+        }
+        sleep(Duration::from_millis(10)).await;
+    };
+    if let Some(response) = last_response {
+        panic!("expected integer response for WAIT in script, got {response:?}");
+    }
+    assert_eq!(
+        acknowledged, 1,
+        "expected WAIT in script to report the acknowledged replica count"
+    );
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
 }
 
 #[tokio::test]

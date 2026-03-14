@@ -128,6 +128,7 @@ where
         Arc::clone(&processor),
         Arc::clone(&owner_thread_pool),
     ));
+    processor.attach_replication_coordinator(Arc::clone(&replication));
     let expiration_processor = Arc::clone(&processor);
     let expiration_shard_count = processor.string_store_shard_count();
     let expiration_owner_thread_pool = Arc::clone(&owner_thread_pool);

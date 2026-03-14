@@ -1,5 +1,6 @@
 // TLA+ model linkage:
 // - formal/tla/specs/SwapDbWatchVisibility.tla
+// - formal/tla/specs/WaitAckProgress.tla
 
 use super::object_store::list_listpack_compatible;
 use super::*;
@@ -1270,9 +1271,43 @@ impl RequestProcessor {
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         require_exact_arity(args, 3, "WAIT", "WAIT numreplicas timeout")?;
-        parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
-        append_integer(response_out, 0);
+        let requested_replicas =
+            parse_u64_ascii(args[1]).ok_or(RequestExecutionError::ValueNotInteger)?;
+        let timeout_millis =
+            parse_u64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+
+        if self.current_thread_running_script() {
+            let Some(client_id) = current_request_client_id() else {
+                append_integer(response_out, 0);
+                return Ok(());
+            };
+            let Some(metrics) = self.server_metrics.get() else {
+                append_integer(response_out, 0);
+                return Ok(());
+            };
+            let Some(replication) = self.replication_coordinator() else {
+                append_integer(response_out, 0);
+                return Ok(());
+            };
+            replication.request_downstream_ack_refresh();
+            let target_offset = metrics.client_wait_target_offset(client_id).unwrap_or(0);
+            let acknowledged = replication
+                .try_acknowledged_downstream_replica_count(target_offset)
+                .unwrap_or(0);
+            append_integer(
+                response_out,
+                i64::try_from(acknowledged).unwrap_or(i64::MAX),
+            );
+            return Ok(());
+        }
+
+        if current_request_in_transaction() || current_request_client_id().is_none() {
+            append_integer(response_out, 0);
+            return Ok(());
+        }
+
+        // TLA+ : WaitStart
+        set_request_wait_effect(requested_replicas, timeout_millis);
         Ok(())
     }
 

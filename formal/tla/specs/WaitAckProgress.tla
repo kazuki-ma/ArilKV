@@ -3,7 +3,8 @@ EXTENDS Naturals, FiniteSets
 
 \* Models WAIT quorum/timeout progression with monotonic downstream ACK offsets.
 \* Linked runtime path:
-\* - connection_handler::WAIT fast-path
+\* - request_lifecycle/server_commands::handle_wait effect emission
+\* - connection_handler::materialize_wait_response_if_needed
 \* - redis_replication::wait_for_replicas / REPLCONF ACK ledger
 
 CONSTANTS Replicas, MaxOffset, TimeoutBound, RequestedReplicas

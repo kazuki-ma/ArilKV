@@ -162,11 +162,6 @@ fn parse_i64_ascii_bytes(value: &[u8]) -> Option<i64> {
     text.parse::<i64>().ok()
 }
 
-fn parse_u64_ascii_bytes(value: &[u8]) -> Option<u64> {
-    let text = std::str::from_utf8(value).ok()?;
-    text.parse::<u64>().ok()
-}
-
 fn parse_resp_single_integer_array(frame: &[u8]) -> Option<i64> {
     if !frame.starts_with(b"*1\r\n:") || !frame.ends_with(b"\r\n") {
         return None;
@@ -578,6 +573,29 @@ fn apply_request_connection_effects(
     if let Some(cluster_read_only) = connection_effects.cluster_read_only {
         client_state.cluster_read_only = cluster_read_only;
     }
+}
+
+async fn materialize_wait_response_if_needed(
+    replication: &RedisReplicationCoordinator,
+    response_out: &mut Vec<u8>,
+    connection_effects: RequestConnectionEffects,
+    wait_target_offset_for_connection: u64,
+) {
+    let Some(wait_request) = connection_effects.wait_request else {
+        return;
+    };
+    let acknowledged = replication
+        .wait_for_replicas(
+            wait_request.requested_replicas,
+            wait_request.timeout_millis,
+            wait_target_offset_for_connection,
+        )
+        .await;
+    response_out.clear();
+    append_integer_frame(
+        response_out,
+        i64::try_from(acknowledged).unwrap_or(i64::MAX),
+    );
 }
 
 fn apply_reset_command_side_effects(
@@ -1057,52 +1075,6 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
-            if command == CommandId::Wait && !transaction.in_multi {
-                if argument_count != 3 {
-                    append_wrong_arity_error_for_command(&mut responses, command);
-                } else {
-                    let requested_replicas = parse_u64_ascii_bytes(arg_slice_bytes(&args[1]));
-                    let timeout_millis = parse_u64_ascii_bytes(arg_slice_bytes(&args[2]));
-                    match (requested_replicas, timeout_millis) {
-                        (Some(requested_replicas), Some(timeout_millis)) => {
-                            // TLA+ : WaitStart
-                            let acknowledged = replication
-                                .wait_for_replicas(
-                                    requested_replicas,
-                                    timeout_millis,
-                                    wait_target_offset_for_connection,
-                                )
-                                .await;
-                            append_integer_frame(
-                                &mut responses,
-                                i64::try_from(acknowledged).unwrap_or(i64::MAX),
-                            );
-                        }
-                        _ => {
-                            append_error_line(
-                                &mut responses,
-                                b"ERR value is not an integer or out of range",
-                            );
-                        }
-                    }
-                }
-                disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
-                    &mut responses,
-                    response_mark,
-                    &mut client_state,
-                    command,
-                    command_outcome,
-                    commands_processed,
-                );
-                consumed += frame_bytes_consumed;
-                if disconnect_after_write {
-                    break;
-                }
-                continue;
-            }
-
             if command == CommandId::Migrate {
                 let slowlog_args = args[..argument_count]
                     .iter()
@@ -1418,6 +1390,10 @@ pub(crate) async fn handle_connection(
                                                 {
                                                     wait_target_offset_for_connection =
                                                         wait_target_offset;
+                                                    metrics.set_client_wait_target_offset(
+                                                        client_id,
+                                                        wait_target_offset_for_connection,
+                                                    );
                                                 }
                                                 client_state.selected_db =
                                                     transaction_outcome.selected_db_after_exec;
@@ -1898,6 +1874,7 @@ pub(crate) async fn handle_connection(
                                 &processor,
                                 &metrics,
                                 &owner_thread_pool,
+                                &replication,
                                 &args[..argument_count],
                                 command,
                                 command_mutating,
@@ -1905,6 +1882,7 @@ pub(crate) async fn handle_connection(
                                 client_state.no_touch,
                                 client_id,
                                 client_state.selected_db,
+                                wait_target_offset_for_connection,
                                 &mut stream,
                                 resumed_blocking_command_after_pause,
                             )
@@ -2042,6 +2020,10 @@ pub(crate) async fn handle_connection(
                         if published_replication_write {
                             wait_target_offset_for_connection =
                                 replication.current_master_repl_offset();
+                            metrics.set_client_wait_target_offset(
+                                client_id,
+                                wait_target_offset_for_connection,
+                            );
                         }
                         if wait_for_blocking_progress {
                             yield_for_blocking_progress(&processor, blocked_before).await;
@@ -2070,6 +2052,7 @@ pub(crate) async fn handle_connection(
                 processor.record_rdb_change(1);
                 replication.publish_write_frame(frame);
                 wait_target_offset_for_connection = replication.current_master_repl_offset();
+                metrics.set_client_wait_target_offset(client_id, wait_target_offset_for_connection);
             }
             commands_processed =
                 command_execution_delta(&processor, execution_count_before, command);
@@ -2273,6 +2256,7 @@ async fn execute_blocking_frame_on_owner_thread(
     processor: &Arc<RequestProcessor>,
     metrics: &Arc<ServerMetrics>,
     owner_thread_pool: &Arc<ShardOwnerThreadPool>,
+    replication: &Arc<RedisReplicationCoordinator>,
     args: &[ArgSlice],
     command: CommandId,
     command_mutating: bool,
@@ -2280,6 +2264,7 @@ async fn execute_blocking_frame_on_owner_thread(
     client_no_touch: bool,
     client_id: ClientId,
     selected_db: DbName,
+    wait_target_offset_for_connection: u64,
     stream: &mut TcpStream,
     resumed_blocking_command_after_pause: bool,
 ) -> Result<BlockingExecutionOutcome, OwnerThreadExecutionError> {
@@ -2492,8 +2477,15 @@ async fn execute_blocking_frame_on_owner_thread(
                 return Err(error);
             }
         };
-        let frame_response = owned_execution.frame_response;
+        let mut frame_response = owned_execution.frame_response;
         let connection_effects = owned_execution.connection_effects;
+        materialize_wait_response_if_needed(
+            replication,
+            &mut frame_response,
+            connection_effects,
+            wait_target_offset_for_connection,
+        )
+        .await;
 
         let should_replicate = if blocking_request {
             command_mutating && !is_blocking_empty_response(&frame_response)

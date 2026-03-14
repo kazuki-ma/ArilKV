@@ -244,6 +244,19 @@ impl RedisReplicationCoordinator {
         }
     }
 
+    pub(crate) fn try_acknowledged_downstream_replica_count(
+        &self,
+        target_offset: u64,
+    ) -> Option<u64> {
+        let ack_offsets = self.inner.downstream_ack_offsets.try_lock().ok()?;
+        Some(
+            ack_offsets
+                .values()
+                .filter(|&&value| value >= target_offset)
+                .count() as u64,
+        )
+    }
+
     async fn acknowledged_downstream_replica_count(&self, target_offset: u64) -> u64 {
         let ack_offsets = self.inner.downstream_ack_offsets.lock().await;
         ack_offsets
@@ -252,7 +265,7 @@ impl RedisReplicationCoordinator {
             .count() as u64
     }
 
-    fn request_downstream_ack_refresh(&self) {
+    pub(crate) fn request_downstream_ack_refresh(&self) {
         if self.inner.downstream_replica_count.load(Ordering::Relaxed) == 0 {
             return;
         }
