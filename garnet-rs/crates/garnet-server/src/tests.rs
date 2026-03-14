@@ -8508,6 +8508,259 @@ async fn waitaof_local_succeeds_after_always_fsync_write_like_external_wait_scen
 }
 
 #[tokio::test]
+async fn waitaof_replica_copy_before_fsync_like_external_wait_scenario() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_temp_dir = std::env::temp_dir().join(format!(
+        "garnet-waitaof-master-before-fsync-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let replica_temp_dir = std::env::temp_dir().join(format!(
+        "garnet-waitaof-replica-before-fsync-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&master_temp_dir).unwrap();
+    std::fs::create_dir_all(&replica_temp_dir).unwrap();
+
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    master_processor.set_config_value(b"appendonly", b"yes".to_vec());
+    master_processor.set_config_value(b"appendfsync", b"always".to_vec());
+    master_processor.set_config_value(
+        b"dir",
+        master_temp_dir.to_string_lossy().into_owned().into_bytes(),
+    );
+    master_processor.set_config_value(b"appendfilename", b"master-waitaof.aof".to_vec());
+
+    let replica_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    replica_processor.set_config_value(b"appendonly", b"yes".to_vec());
+    replica_processor.set_config_value(b"appendfsync", b"everysec".to_vec());
+    replica_processor.set_config_value(
+        b"dir",
+        replica_temp_dir.to_string_lossy().into_owned().into_bytes(),
+    );
+    replica_processor.set_config_value(b"appendfilename", b"replica-waitaof.aof".to_vec());
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            replica_listener,
+            1024,
+            replica_metrics_task,
+            async move {
+                let _ = replica_shutdown_rx.await;
+            },
+            None,
+            replica_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"waitaof:replica:seed", b"seed"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let acknowledged = send_and_read_integer(
+        &mut master_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe the downstream replica before WAITAOF, got {acknowledged}"
+    );
+
+    // Redis tests/unit/wait.tcl: "WAITAOF replica copy before fsync"
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"waitaof:replica:before-fsync", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let reply = send_and_read_resp_value(
+        &mut master_client,
+        &encode_resp_command(&[b"WAITAOF", b"0", b"1", b"50"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&reply), vec![1, 0]);
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+    let _ = std::fs::remove_file(master_temp_dir.join("master-waitaof.aof"));
+    let _ = std::fs::remove_file(replica_temp_dir.join("replica-waitaof.aof"));
+    let _ = std::fs::remove_dir_all(master_temp_dir);
+    let _ = std::fs::remove_dir_all(replica_temp_dir);
+}
+
+#[tokio::test]
+async fn waitaof_master_isnt_configured_to_do_aof_like_external_wait_scenario() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let replica_temp_dir = std::env::temp_dir().join(format!(
+        "garnet-waitaof-replica-master-aof-off-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&replica_temp_dir).unwrap();
+
+    let master_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+
+    let replica_processor =
+        Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    replica_processor.set_config_value(b"appendonly", b"yes".to_vec());
+    replica_processor.set_config_value(b"appendfsync", b"always".to_vec());
+    replica_processor.set_config_value(
+        b"dir",
+        replica_temp_dir.to_string_lossy().into_owned().into_bytes(),
+    );
+    replica_processor.set_config_value(b"appendfilename", b"replica-master-aof-off.aof".to_vec());
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            master_listener,
+            1024,
+            master_metrics_task,
+            async move {
+                let _ = master_shutdown_rx.await;
+            },
+            None,
+            master_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown_and_cluster_with_processor(
+            replica_listener,
+            1024,
+            replica_metrics_task,
+            async move {
+                let _ = replica_shutdown_rx.await;
+            },
+            None,
+            replica_processor,
+        )
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"waitaof:replica:no-master-aof-seed", b"seed"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let acknowledged = send_and_read_integer(
+        &mut master_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe the downstream replica before WAITAOF, got {acknowledged}"
+    );
+
+    // Redis tests/unit/wait.tcl: "WAITAOF master isn't configured to do AOF"
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"waitaof:replica:no-master-aof", b"value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let reply = send_and_read_resp_value(
+        &mut master_client,
+        &encode_resp_command(&[b"WAITAOF", b"0", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(resp_socket_integer_array(&reply), vec![0, 1]);
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+    let _ = std::fs::remove_file(replica_temp_dir.join("replica-master-aof-off.aof"));
+    let _ = std::fs::remove_dir_all(replica_temp_dir);
+}
+
+#[tokio::test]
 async fn wait_times_out_without_downstream_replicas() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

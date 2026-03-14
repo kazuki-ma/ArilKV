@@ -1437,12 +1437,23 @@ impl RequestProcessor {
             } else {
                 0
             };
-        let replica_acknowledged = 0;
+        let replica_target_offset = current_request_client_id()
+            .and_then(|client_id| {
+                self.server_metrics
+                    .get()
+                    .and_then(|metrics| metrics.client_wait_target_offset(client_id))
+            })
+            .unwrap_or(0);
+        let replica_acknowledged = self
+            .replication_coordinator()
+            .and_then(|replication| {
+                replication.try_acknowledged_downstream_aof_replica_count(replica_target_offset)
+            })
+            .unwrap_or(0);
         if (local_acknowledged >= numlocal && replica_acknowledged >= numreplicas)
             || self.current_thread_running_script()
             || current_request_in_transaction()
             || current_request_client_id().is_none()
-            || numreplicas > 0
         {
             append_array_length(response_out, 2);
             append_integer(

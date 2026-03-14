@@ -602,8 +602,10 @@ async fn materialize_wait_response_if_needed(
 
 async fn materialize_waitaof_response_if_needed(
     processor: &RequestProcessor,
+    replication: &RedisReplicationCoordinator,
     response_out: &mut Vec<u8>,
     connection_effects: RequestConnectionEffects,
+    wait_target_offset_for_connection: u64,
     local_aof_wait_target_offset_for_connection: u64,
 ) {
     let Some(waitaof_request) = connection_effects.waitaof_request else {
@@ -616,19 +618,57 @@ async fn materialize_waitaof_response_if_needed(
     }
 
     let local_target_offset = AofOffset::new(local_aof_wait_target_offset_for_connection);
-    let local_acknowledged =
-        if waitaof_request.requested_replicas == 0 && waitaof_request.requested_local > 0 {
-            processor
-                .wait_for_local_aof_fsync(local_target_offset, waitaof_request.timeout_millis)
-                .await
-        } else {
-            processor.local_aof_fsync_satisfied(local_target_offset)
-        };
+    let deadline = if waitaof_request.timeout_millis == 0 {
+        None
+    } else {
+        Some(tokio::time::Instant::now() + Duration::from_millis(waitaof_request.timeout_millis))
+    };
+
+    let local_acknowledged = if waitaof_request.requested_local > 0 {
+        let timeout_millis = deadline
+            .map(|deadline| {
+                deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_millis() as u64
+            })
+            .unwrap_or(0);
+        processor
+            .wait_for_local_aof_fsync(local_target_offset, timeout_millis)
+            .await
+    } else if processor.appendonly_enabled() {
+        processor.local_aof_fsync_satisfied(local_target_offset)
+    } else {
+        false
+    };
+
+    let replica_acknowledged = if waitaof_request.requested_replicas > 0 {
+        let timeout_millis = deadline
+            .map(|deadline| {
+                deadline
+                    .saturating_duration_since(tokio::time::Instant::now())
+                    .as_millis() as u64
+            })
+            .unwrap_or(0);
+        replication
+            .wait_for_aof_replicas(
+                waitaof_request.requested_replicas,
+                timeout_millis,
+                wait_target_offset_for_connection,
+            )
+            .await
+    } else {
+        replication
+            .try_acknowledged_downstream_aof_replica_count(wait_target_offset_for_connection)
+            .unwrap_or(0)
+    };
 
     response_out.clear();
     append_array_length_frame(response_out, 2);
     append_integer_frame(response_out, i64::from(local_acknowledged));
-    append_integer_frame(response_out, 0);
+    append_integer_frame(
+        response_out,
+        i64::try_from(replica_acknowledged).unwrap_or(i64::MAX),
+    );
 }
 
 fn materialize_failover_if_needed(
@@ -2554,8 +2594,10 @@ async fn execute_blocking_frame_on_owner_thread(
         .await;
         materialize_waitaof_response_if_needed(
             processor,
+            replication,
             &mut frame_response,
             connection_effects,
+            wait_target_offset_for_connection,
             local_aof_wait_target_offset_for_connection,
         )
         .await;

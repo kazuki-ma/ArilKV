@@ -23,6 +23,7 @@ use garnet_common::ArgSlice;
 use garnet_common::RespParseError;
 use garnet_common::parse_resp_command_arg_slices_dynamic;
 use std::collections::HashMap;
+use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -110,10 +111,52 @@ struct ReplicationInner {
     master_repl_offset: AtomicU64,
     next_downstream_replica_id: AtomicU64,
     downstream_ack_offsets: Mutex<HashMap<u64, u64>>,
+    downstream_aof_ack_offsets: Mutex<HashMap<u64, u64>>,
     downstream_replica_endpoints: std::sync::Mutex<HashMap<u64, DownstreamReplicaEndpoint>>,
     downstream_ack_notify: Notify,
     manual_failover_state: std::sync::Mutex<ManualFailoverState>,
     repl_id: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PendingReplicaDurabilityAck {
+    local_aof_append_offset: AofOffset,
+    replication_offset: u64,
+}
+
+#[derive(Debug, Default)]
+struct UpstreamReplicaAofAckTracker {
+    fsynced_replication_offset: u64,
+    pending: VecDeque<PendingReplicaDurabilityAck>,
+}
+
+impl UpstreamReplicaAofAckTracker {
+    fn record_replicated_frame(
+        &mut self,
+        replication_offset: u64,
+        local_aof_append_offset: Option<AofOffset>,
+    ) {
+        let Some(local_aof_append_offset) = local_aof_append_offset else {
+            return;
+        };
+        self.pending.push_back(PendingReplicaDurabilityAck {
+            local_aof_append_offset,
+            replication_offset,
+        });
+    }
+
+    fn fsynced_replication_offset(&mut self, processor: &RequestProcessor) -> Option<u64> {
+        let snapshot = processor.local_aof_frontiers_snapshot()?;
+        while self
+            .pending
+            .front()
+            .is_some_and(|pending| pending.local_aof_append_offset <= snapshot.fsync_offset)
+        {
+            let pending = self.pending.pop_front().unwrap();
+            self.fsynced_replication_offset = pending.replication_offset;
+        }
+        Some(self.fsynced_replication_offset)
+    }
 }
 
 #[derive(Clone)]
@@ -148,6 +191,7 @@ impl RedisReplicationCoordinator {
             master_repl_offset: AtomicU64::new(0),
             next_downstream_replica_id: AtomicU64::new(1),
             downstream_ack_offsets: Mutex::new(HashMap::new()),
+            downstream_aof_ack_offsets: Mutex::new(HashMap::new()),
             downstream_replica_endpoints: std::sync::Mutex::new(HashMap::new()),
             downstream_ack_notify: Notify::new(),
             manual_failover_state: std::sync::Mutex::new(ManualFailoverState::Idle),
@@ -385,6 +429,48 @@ impl RedisReplicationCoordinator {
         }
     }
 
+    pub(crate) async fn wait_for_aof_replicas(
+        &self,
+        requested_replicas: u64,
+        timeout_millis: u64,
+        target_offset: u64,
+    ) -> u64 {
+        self.request_downstream_ack_refresh();
+
+        if timeout_millis == 0 {
+            loop {
+                let notified = self.inner.downstream_ack_notify.notified();
+                let acknowledged = self
+                    .acknowledged_downstream_aof_replica_count(target_offset)
+                    .await;
+                if acknowledged >= requested_replicas {
+                    return acknowledged;
+                }
+                notified.await;
+            }
+        }
+
+        let deadline = Instant::now() + Duration::from_millis(timeout_millis);
+        loop {
+            let notified = self.inner.downstream_ack_notify.notified();
+            let acknowledged = self
+                .acknowledged_downstream_aof_replica_count(target_offset)
+                .await;
+            if acknowledged >= requested_replicas {
+                return acknowledged;
+            }
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                return acknowledged;
+            }
+            if tokio::time::timeout(remaining, notified).await.is_err() {
+                return self
+                    .acknowledged_downstream_aof_replica_count(target_offset)
+                    .await;
+            }
+        }
+    }
+
     pub(crate) fn try_acknowledged_downstream_replica_count(
         &self,
         target_offset: u64,
@@ -398,8 +484,29 @@ impl RedisReplicationCoordinator {
         )
     }
 
+    pub(crate) fn try_acknowledged_downstream_aof_replica_count(
+        &self,
+        target_offset: u64,
+    ) -> Option<u64> {
+        let ack_offsets = self.inner.downstream_aof_ack_offsets.try_lock().ok()?;
+        Some(
+            ack_offsets
+                .values()
+                .filter(|&&value| value >= target_offset)
+                .count() as u64,
+        )
+    }
+
     async fn acknowledged_downstream_replica_count(&self, target_offset: u64) -> u64 {
         let ack_offsets = self.inner.downstream_ack_offsets.lock().await;
+        ack_offsets
+            .values()
+            .filter(|&&value| value >= target_offset)
+            .count() as u64
+    }
+
+    async fn acknowledged_downstream_aof_replica_count(&self, target_offset: u64) -> u64 {
+        let ack_offsets = self.inner.downstream_aof_ack_offsets.lock().await;
         ack_offsets
             .values()
             .filter(|&&value| value >= target_offset)
@@ -431,6 +538,9 @@ impl RedisReplicationCoordinator {
         let mut ack_offsets = self.inner.downstream_ack_offsets.lock().await;
         ack_offsets.insert(replica_id, 0);
         drop(ack_offsets);
+        let mut aof_ack_offsets = self.inner.downstream_aof_ack_offsets.lock().await;
+        aof_ack_offsets.insert(replica_id, 0);
+        drop(aof_ack_offsets);
         if let Some(endpoint) =
             downstream_replica_endpoint_from_addr(peer_addr, announced_listen_port)
         {
@@ -448,6 +558,9 @@ impl RedisReplicationCoordinator {
         let mut ack_offsets = self.inner.downstream_ack_offsets.lock().await;
         ack_offsets.remove(&replica_id);
         drop(ack_offsets);
+        let mut aof_ack_offsets = self.inner.downstream_aof_ack_offsets.lock().await;
+        aof_ack_offsets.remove(&replica_id);
+        drop(aof_ack_offsets);
         let mut endpoints = self.inner.downstream_replica_endpoints.lock().unwrap();
         endpoints.remove(&replica_id);
         drop(endpoints);
@@ -867,6 +980,7 @@ async fn sync_once_from_upstream(
     let mut args = vec![ArgSlice::EMPTY; DEFAULT_RESP_ARG_SCRATCH.min(max_resp_arguments)];
     let mut applied_offset = applied_offset_base;
     let mut applied_selected_db = DbName::db0();
+    let mut upstream_aof_ack_tracker = UpstreamReplicaAofAckTracker::default();
 
     loop {
         let mut consumed = 0usize;
@@ -886,6 +1000,7 @@ async fn sync_once_from_upstream(
                         meta.bytes_consumed,
                         &mut applied_offset,
                         &mut applied_selected_db,
+                        &mut upstream_aof_ack_tracker,
                     )
                     .await?;
                     consumed += meta.bytes_consumed;
@@ -928,6 +1043,7 @@ async fn process_upstream_frame(
     frame_len: usize,
     applied_offset: &mut u64,
     applied_selected_db: &mut DbName,
+    upstream_aof_ack_tracker: &mut UpstreamReplicaAofAckTracker,
 ) -> io::Result<()> {
     if args.is_empty() {
         return Ok(());
@@ -941,11 +1057,29 @@ async fn process_upstream_frame(
         if args.len() >= 2 {
             let sub = arg_slice_bytes(&args[1]);
             if starts_with_ascii_no_case(sub, b"GETACK") {
-                write_resp_command(
-                    stream,
-                    &[b"REPLCONF", b"ACK", applied_offset.to_string().as_bytes()],
-                )
-                .await?;
+                let applied_offset_text = applied_offset.to_string();
+                let durable_replication_offset =
+                    upstream_aof_ack_tracker.fsynced_replication_offset(&inner.processor);
+                if let Some(durable_replication_offset) = durable_replication_offset {
+                    let durable_offset_text = durable_replication_offset.to_string();
+                    write_resp_command(
+                        stream,
+                        &[
+                            b"REPLCONF",
+                            b"ACK",
+                            applied_offset_text.as_bytes(),
+                            b"FACK",
+                            durable_offset_text.as_bytes(),
+                        ],
+                    )
+                    .await?;
+                } else {
+                    write_resp_command(
+                        stream,
+                        &[b"REPLCONF", b"ACK", applied_offset_text.as_bytes()],
+                    )
+                    .await?;
+                }
             }
         }
         return Ok(());
@@ -962,6 +1096,8 @@ async fn process_upstream_frame(
         {
             *applied_selected_db = DbName::new(db_index);
         }
+        let local_aof_append_offset = inner.processor.publish_local_aof_frame(frame);
+        upstream_aof_ack_tracker.record_replicated_frame(*applied_offset, local_aof_append_offset);
         return Ok(());
     }
 
@@ -1001,6 +1137,8 @@ async fn process_upstream_frame(
             ));
         }
     }
+    let local_aof_append_offset = inner.processor.publish_local_aof_frame(frame);
+    upstream_aof_ack_tracker.record_replicated_frame(*applied_offset, local_aof_append_offset);
     Ok(())
 }
 
@@ -1065,18 +1203,47 @@ async fn maybe_record_downstream_ack(inner: &ReplicationInner, replica_id: u64, 
     let Some(ack_offset) = parse_u64_ascii_bytes(arg_slice_bytes(&args[2])) else {
         return;
     };
+    let durable_offset = parse_downstream_aof_ack_offset(args);
+    let mut changed = false;
 
-    let mut ack_offsets = inner.downstream_ack_offsets.lock().await;
-    let Some(current_offset) = ack_offsets.get_mut(&replica_id) else {
-        return;
-    };
-    if ack_offset <= *current_offset {
-        return;
+    {
+        let mut ack_offsets = inner.downstream_ack_offsets.lock().await;
+        let Some(current_offset) = ack_offsets.get_mut(&replica_id) else {
+            return;
+        };
+        if ack_offset > *current_offset {
+            // TLA+ : ReplicaAckAdvance
+            *current_offset = ack_offset;
+            changed = true;
+        }
     }
-    // TLA+ : ReplicaAckAdvance
-    *current_offset = ack_offset;
-    drop(ack_offsets);
-    inner.downstream_ack_notify.notify_waiters();
+
+    if let Some(durable_offset) = durable_offset {
+        let mut aof_ack_offsets = inner.downstream_aof_ack_offsets.lock().await;
+        let Some(current_offset) = aof_ack_offsets.get_mut(&replica_id) else {
+            return;
+        };
+        if durable_offset > *current_offset {
+            *current_offset = durable_offset;
+            changed = true;
+        }
+    }
+
+    if changed {
+        inner.downstream_ack_notify.notify_waiters();
+    }
+}
+
+fn parse_downstream_aof_ack_offset(args: &[ArgSlice]) -> Option<u64> {
+    let mut index = 3usize;
+    while index + 1 < args.len() {
+        let keyword = arg_slice_bytes(&args[index]);
+        if starts_with_ascii_no_case(keyword, b"FACK") {
+            return parse_u64_ascii_bytes(arg_slice_bytes(&args[index + 1]));
+        }
+        index += 2;
+    }
+    None
 }
 
 fn parse_u64_ascii_bytes(value: &[u8]) -> Option<u64> {
@@ -1101,4 +1268,31 @@ fn parse_positive_env_usize(key: &str) -> Option<usize> {
         .ok()
         .and_then(|value| value.parse::<usize>().ok())
         .filter(|value| *value > 0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_downstream_aof_ack_offset_reads_fack_pair() {
+        let args = [
+            ArgSlice::from_slice(b"REPLCONF").unwrap(),
+            ArgSlice::from_slice(b"ACK").unwrap(),
+            ArgSlice::from_slice(b"123").unwrap(),
+            ArgSlice::from_slice(b"FACK").unwrap(),
+            ArgSlice::from_slice(b"77").unwrap(),
+        ];
+        assert_eq!(parse_downstream_aof_ack_offset(&args), Some(77));
+    }
+
+    #[test]
+    fn parse_downstream_aof_ack_offset_ignores_missing_fack_pair() {
+        let args = [
+            ArgSlice::from_slice(b"REPLCONF").unwrap(),
+            ArgSlice::from_slice(b"ACK").unwrap(),
+            ArgSlice::from_slice(b"123").unwrap(),
+        ];
+        assert_eq!(parse_downstream_aof_ack_offset(&args), None);
+    }
 }
