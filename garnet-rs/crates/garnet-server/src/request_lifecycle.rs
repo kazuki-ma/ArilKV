@@ -53,6 +53,7 @@ use std::time::Instant;
 use std::time::SystemTime;
 use std::time::UNIX_EPOCH;
 use tokio::sync::Notify;
+use tsavorite::AofOffset;
 use tsavorite::DeleteInfo;
 use tsavorite::DeleteOperationStatus;
 use tsavorite::ReadInfo;
@@ -3952,11 +3953,11 @@ impl RequestProcessor {
             .map(|runtime| runtime.snapshot())
     }
 
-    pub(crate) fn publish_local_aof_frame(&self, frame: &[u8]) {
+    pub(crate) fn publish_local_aof_frame(&self, frame: &[u8]) -> Option<AofOffset> {
         let Some(runtime) = self.aof_durability_runtime.get() else {
-            return;
+            return None;
         };
-        runtime.publish_frame(frame);
+        Some(runtime.publish_frame(frame).append_offset)
     }
 
     pub(crate) fn slowlog_len(&self) -> usize {

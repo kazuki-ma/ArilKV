@@ -40,6 +40,7 @@ use tokio::sync::Notify;
 use tokio::sync::RwLock;
 use tokio::sync::broadcast;
 use tokio::task::JoinHandle;
+use tsavorite::AofOffset;
 
 const DOWNSTREAM_BROADCAST_CAPACITY: usize = 4096;
 const DEFAULT_RESP_ARG_SCRATCH: usize = 64;
@@ -118,6 +119,12 @@ struct ReplicationInner {
 #[derive(Clone)]
 pub(crate) struct RedisReplicationCoordinator {
     inner: Arc<ReplicationInner>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PublishedWriteFrontiers {
+    pub(crate) replication_offset: u64,
+    pub(crate) local_aof_append_offset: Option<AofOffset>,
 }
 
 impl RedisReplicationCoordinator {
@@ -233,14 +240,21 @@ impl RedisReplicationCoordinator {
         }));
     }
 
-    pub(crate) fn publish_write_frame(&self, frame: &[u8]) {
-        self.inner
+    pub(crate) fn publish_write_frame(&self, frame: &[u8]) -> PublishedWriteFrontiers {
+        let replication_offset = self
+            .inner
             .master_repl_offset
-            .fetch_add(frame.len() as u64, Ordering::Relaxed);
-        self.inner.processor.publish_local_aof_frame(frame);
+            .fetch_add(frame.len() as u64, Ordering::Relaxed)
+            .saturating_add(frame.len() as u64);
+        let local_aof_append_offset = self.inner.processor.publish_local_aof_frame(frame);
         let _ = self.inner.downstream_tx.send(Arc::from(frame.to_vec()));
+        PublishedWriteFrontiers {
+            replication_offset,
+            local_aof_append_offset,
+        }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn current_master_repl_offset(&self) -> u64 {
         self.inner.master_repl_offset.load(Ordering::Relaxed)
     }

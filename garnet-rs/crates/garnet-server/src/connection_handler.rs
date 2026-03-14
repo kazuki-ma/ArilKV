@@ -2006,7 +2006,8 @@ pub(crate) async fn handle_connection(
                                 let del_frame =
                                     encode_resp_frame_slices(&[b"DEL", expired.key.as_slice()]);
                                 processor.record_rdb_change(1);
-                                replication.publish_write_frame(&del_frame);
+                                let published = replication.publish_write_frame(&del_frame);
+                                wait_target_offset_for_connection = published.replication_offset;
                                 published_replication_write = true;
                             }
                         }
@@ -2014,13 +2015,12 @@ pub(crate) async fn handle_connection(
                             publish_select_if_needed(&replication, client_state.selected_db);
                             for frame_to_replicate in &replication_frames {
                                 processor.record_rdb_change(1);
-                                replication.publish_write_frame(frame_to_replicate);
+                                let published = replication.publish_write_frame(frame_to_replicate);
+                                wait_target_offset_for_connection = published.replication_offset;
                                 published_replication_write = true;
                             }
                         }
                         if published_replication_write {
-                            wait_target_offset_for_connection =
-                                replication.current_master_repl_offset();
                             metrics.set_client_wait_target_offset(
                                 client_id,
                                 wait_target_offset_for_connection,
@@ -2051,8 +2051,8 @@ pub(crate) async fn handle_connection(
             }
             if propagate_frame {
                 processor.record_rdb_change(1);
-                replication.publish_write_frame(frame);
-                wait_target_offset_for_connection = replication.current_master_repl_offset();
+                let published = replication.publish_write_frame(frame);
+                wait_target_offset_for_connection = published.replication_offset;
                 metrics.set_client_wait_target_offset(client_id, wait_target_offset_for_connection);
             }
             commands_processed =
@@ -3083,21 +3083,24 @@ fn publish_transaction_replication_frames(
     if replication_frames.len() > 1 {
         let multi_frame = encode_resp_frame_slices(&[b"MULTI"]);
         processor.record_rdb_change(1);
-        replication.publish_write_frame(&multi_frame);
+        let _ = replication.publish_write_frame(&multi_frame);
     }
 
+    let mut last_replication_offset = None;
     for (selected_db, replication_frame) in &replication_frames {
         publish_select_if_needed(replication, *selected_db);
         processor.record_rdb_change(1);
-        replication.publish_write_frame(replication_frame);
+        let published = replication.publish_write_frame(replication_frame);
+        last_replication_offset = Some(published.replication_offset);
     }
 
     if replication_frames.len() > 1 {
         let exec_frame = encode_resp_frame_slices(&[b"EXEC"]);
         processor.record_rdb_change(1);
-        replication.publish_write_frame(&exec_frame);
+        let published = replication.publish_write_frame(&exec_frame);
+        last_replication_offset = Some(published.replication_offset);
     }
-    Some(replication.current_master_repl_offset())
+    last_replication_offset
 }
 
 fn command_uses_script_effect_replication(command: CommandId) -> bool {

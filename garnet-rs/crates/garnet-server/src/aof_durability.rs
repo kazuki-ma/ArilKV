@@ -15,6 +15,8 @@ use tsavorite::AofOffset;
 use tsavorite::AofWriter;
 use tsavorite::AofWriterConfig;
 
+const AOF_LENGTH_PREFIX_SIZE: u64 = core::mem::size_of::<u32>() as u64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppendFsyncPolicy {
     Always,
@@ -69,8 +71,19 @@ pub(crate) struct LocalAofFrontiersSnapshot {
     pub(crate) fsync_offset: AofOffset,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct LocalAofPublishTarget {
+    pub(crate) append_offset: AofOffset,
+}
+
+struct PublishedAofFrame {
+    frame: Arc<[u8]>,
+    append_offset: AofOffset,
+}
+
 pub(crate) struct LiveAofDurabilityRuntime {
-    publisher: mpsc::UnboundedSender<Arc<[u8]>>,
+    publisher: mpsc::UnboundedSender<PublishedAofFrame>,
+    next_append_target: AtomicU64,
     local_append_offset: AtomicU64,
     local_fsync_offset: AtomicU64,
     frontier_notify: Notify,
@@ -81,17 +94,19 @@ impl LiveAofDurabilityRuntime {
         if let Some(parent) = config.path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let writer = AofWriter::open(
+        let mut writer = AofWriter::open(
             &config.path,
             AofWriterConfig {
                 flush_every_ops: config.flush_every_ops.max(1),
             },
         )?;
+        let initial_offset = writer.current_offset()?;
         let (publisher, receiver) = mpsc::unbounded_channel();
         let runtime = Arc::new(Self {
             publisher,
-            local_append_offset: AtomicU64::new(0),
-            local_fsync_offset: AtomicU64::new(0),
+            next_append_target: AtomicU64::new(u64::from(initial_offset)),
+            local_append_offset: AtomicU64::new(u64::from(initial_offset)),
+            local_fsync_offset: AtomicU64::new(u64::from(initial_offset)),
             frontier_notify: Notify::new(),
         });
         let worker_runtime = Arc::clone(&runtime);
@@ -105,8 +120,17 @@ impl LiveAofDurabilityRuntime {
         Ok(runtime)
     }
 
-    pub(crate) fn publish_frame(&self, frame: &[u8]) {
-        let _ = self.publisher.send(Arc::from(frame.to_vec()));
+    pub(crate) fn publish_frame(&self, frame: &[u8]) -> LocalAofPublishTarget {
+        let record_len = AOF_LENGTH_PREFIX_SIZE.saturating_add(frame.len() as u64);
+        let previous_tail = self
+            .next_append_target
+            .fetch_add(record_len, Ordering::AcqRel);
+        let append_offset = AofOffset::new(previous_tail.saturating_add(record_len));
+        let _ = self.publisher.send(PublishedAofFrame {
+            frame: Arc::from(frame.to_vec()),
+            append_offset,
+        });
+        LocalAofPublishTarget { append_offset }
     }
 
     #[cfg_attr(not(test), allow(dead_code))]
@@ -159,13 +183,14 @@ async fn run_live_aof_writer_task(
     runtime: Arc<LiveAofDurabilityRuntime>,
     config: LiveAofDurabilityConfig,
     mut writer: AofWriter,
-    mut receiver: mpsc::UnboundedReceiver<Arc<[u8]>>,
+    mut receiver: mpsc::UnboundedReceiver<PublishedAofFrame>,
 ) -> io::Result<()> {
     match config.fsync_policy {
         AppendFsyncPolicy::Always => {
-            while let Some(frame) = receiver.recv().await {
-                writer.append_operation(&frame)?;
+            while let Some(record) = receiver.recv().await {
+                writer.append_operation(&record.frame)?;
                 let append_offset = writer.current_offset()?;
+                debug_assert_eq!(append_offset, record.append_offset);
                 runtime.publish_local_append_offset(append_offset);
                 writer.sync_all()?;
                 let fsync_offset = writer.current_offset()?;
@@ -174,9 +199,10 @@ async fn run_live_aof_writer_task(
             Ok(())
         }
         AppendFsyncPolicy::No => {
-            while let Some(frame) = receiver.recv().await {
-                writer.append_operation(&frame)?;
+            while let Some(record) = receiver.recv().await {
+                writer.append_operation(&record.frame)?;
                 let append_offset = writer.current_offset()?;
+                debug_assert_eq!(append_offset, record.append_offset);
                 runtime.publish_local_append_offset(append_offset);
             }
             Ok(())
@@ -187,12 +213,13 @@ async fn run_live_aof_writer_task(
             interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
             loop {
                 tokio::select! {
-                    maybe_frame = receiver.recv() => {
-                        let Some(frame) = maybe_frame else {
+                    maybe_record = receiver.recv() => {
+                        let Some(record) = maybe_record else {
                             break;
                         };
-                        writer.append_operation(&frame)?;
+                        writer.append_operation(&record.frame)?;
                         let append_offset = writer.current_offset()?;
+                        debug_assert_eq!(append_offset, record.append_offset);
                         runtime.publish_local_append_offset(append_offset);
                         pending_fsync_offset = Some(append_offset);
                     }
@@ -244,9 +271,21 @@ mod tests {
             b"*1\r\n$4\r\nPONG\r\n".as_slice(),
         ];
         let expected_offset = u64::try_from((4 + frames[0].len()) + (4 + frames[1].len())).unwrap();
-        for frame in &frames {
-            runtime.publish_frame(frame);
-        }
+        let publish_targets = frames
+            .iter()
+            .map(|frame| runtime.publish_frame(frame))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            publish_targets,
+            vec![
+                LocalAofPublishTarget {
+                    append_offset: AofOffset::new(u64::try_from(4 + frames[0].len()).unwrap()),
+                },
+                LocalAofPublishTarget {
+                    append_offset: AofOffset::new(expected_offset),
+                },
+            ]
+        );
         let reached = runtime
             .wait_for_frontiers_at_least(
                 LocalAofFrontiersSnapshot {
@@ -281,7 +320,13 @@ mod tests {
         .unwrap();
         let frame = b"*1\r\n$4\r\nPING\r\n";
         let expected_offset = u64::try_from(4 + frame.len()).unwrap();
-        runtime.publish_frame(frame);
+        let publish_target = runtime.publish_frame(frame);
+        assert_eq!(
+            publish_target,
+            LocalAofPublishTarget {
+                append_offset: AofOffset::new(expected_offset),
+            }
+        );
         let reached = runtime
             .wait_for_frontiers_at_least(
                 LocalAofFrontiersSnapshot {
@@ -310,7 +355,13 @@ mod tests {
         .unwrap();
         let frame = b"*1\r\n$4\r\nPING\r\n";
         let expected_offset = u64::try_from(4 + frame.len()).unwrap();
-        runtime.publish_frame(frame);
+        let publish_target = runtime.publish_frame(frame);
+        assert_eq!(
+            publish_target,
+            LocalAofPublishTarget {
+                append_offset: AofOffset::new(expected_offset),
+            }
+        );
         let reached = runtime
             .wait_for_frontiers_at_least(
                 LocalAofFrontiersSnapshot {
@@ -324,6 +375,57 @@ mod tests {
         let snapshot = runtime.snapshot();
         assert_eq!(snapshot.append_offset, AofOffset::new(expected_offset));
         assert_eq!(snapshot.fsync_offset, AofOffset::new(expected_offset));
+        let _ = fs::remove_file(path);
+    }
+
+    #[tokio::test]
+    async fn live_aof_runtime_bootstraps_frontiers_from_existing_aof_tail() {
+        let path = temp_aof_path("bootstrap");
+        let mut writer = AofWriter::open(&path, AofWriterConfig { flush_every_ops: 1 }).unwrap();
+        writer.append_operation(b"*1\r\n$4\r\nPING\r\n").unwrap();
+        writer.sync_all().unwrap();
+        let existing_offset = writer.current_offset().unwrap();
+        drop(writer);
+
+        let runtime = LiveAofDurabilityRuntime::start(LiveAofDurabilityConfig::new(
+            path.clone(),
+            AppendFsyncPolicy::Always,
+        ))
+        .unwrap();
+        assert_eq!(
+            runtime.snapshot(),
+            LocalAofFrontiersSnapshot {
+                append_offset: existing_offset,
+                fsync_offset: existing_offset,
+            }
+        );
+
+        let frame = b"*1\r\n$4\r\nPONG\r\n";
+        let publish_target = runtime.publish_frame(frame);
+        assert_eq!(
+            publish_target,
+            LocalAofPublishTarget {
+                append_offset: AofOffset::new(
+                    u64::from(existing_offset)
+                        .saturating_add(AOF_LENGTH_PREFIX_SIZE)
+                        .saturating_add(frame.len() as u64),
+                ),
+            }
+        );
+
+        let reached = runtime
+            .wait_for_frontiers_at_least(
+                LocalAofFrontiersSnapshot {
+                    append_offset: publish_target.append_offset,
+                    fsync_offset: publish_target.append_offset,
+                },
+                Duration::from_secs(1),
+            )
+            .await;
+        assert!(
+            reached,
+            "timed out waiting for bootstrapped frontier advance"
+        );
         let _ = fs::remove_file(path);
     }
 }

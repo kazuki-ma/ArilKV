@@ -8353,7 +8353,12 @@ async fn publish_write_frame_advances_local_aof_frontiers_when_appendonly_enable
     let frame = encode_resp_command(&[b"SET", b"aof:key", b"value"]);
     let expected_offset = u64::try_from(4 + frame.len()).unwrap();
 
-    replication.publish_write_frame(&frame);
+    let published = replication.publish_write_frame(&frame);
+    assert_eq!(published.replication_offset, frame.len() as u64);
+    assert_eq!(
+        published.local_aof_append_offset,
+        Some(tsavorite::AofOffset::new(expected_offset))
+    );
 
     let reached = runtime
         .wait_for_frontiers_at_least(
