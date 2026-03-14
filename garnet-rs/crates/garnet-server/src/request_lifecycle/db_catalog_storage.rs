@@ -154,4 +154,41 @@ impl AuxiliaryDbStorageMap {
 
         Ok(expired)
     }
+
+    pub(super) fn hash_field_expiration_keys_in_shard(
+        &self,
+        shard_index: ShardIndex,
+        max_keys: usize,
+        string_store_shard_index_for_key: impl Fn(&KeyBytes) -> ShardIndex,
+    ) -> Result<Vec<(AuxiliaryStorageName, RedisKey)>, RequestExecutionError> {
+        if max_keys == 0 {
+            return Ok(Vec::new());
+        }
+
+        let Ok(databases) = self.databases.lock() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+
+        let mut keys = Vec::new();
+        for (storage, state) in databases.iter() {
+            if keys.len() >= max_keys {
+                break;
+            }
+
+            for (key, entry) in state.entries.iter() {
+                if entry.hash_field_expirations.is_empty() {
+                    continue;
+                }
+                if string_store_shard_index_for_key(key.as_slice()) != shard_index {
+                    continue;
+                }
+                keys.push((*storage, key.clone()));
+                if keys.len() >= max_keys {
+                    break;
+                }
+            }
+        }
+
+        Ok(keys)
+    }
 }

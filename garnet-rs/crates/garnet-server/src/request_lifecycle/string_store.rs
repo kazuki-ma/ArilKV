@@ -1065,15 +1065,14 @@ impl RequestProcessor {
         expiration_unix_millis: Option<u64>,
     ) {
         if let Ok(false) = self.logical_db_uses_main_runtime(key.db()) {
-            let _ = self.with_auxiliary_db_state(key.db(), false, |state| {
-                let Some(entry) = state.entries.get_mut(key.key()) else {
-                    return;
-                };
+            let create_if_missing = expiration_unix_millis.is_some();
+            let _ = self.with_auxiliary_db_state(key.db(), create_if_missing, |state| {
                 match expiration_unix_millis {
                     Some(unix_millis) => {
                         let Some(deadline) = instant_from_unix_millis(unix_millis) else {
                             return;
                         };
+                        let entry = state.entries.entry(RedisKey::from(key.key())).or_default();
                         entry.hash_field_expirations.insert(
                             HashField::from(field),
                             ExpirationMetadata {
@@ -1083,6 +1082,9 @@ impl RequestProcessor {
                         );
                     }
                     None => {
+                        let Some(entry) = state.entries.get_mut(key.key()) else {
+                            return;
+                        };
                         entry.hash_field_expirations.remove(field);
                     }
                 }

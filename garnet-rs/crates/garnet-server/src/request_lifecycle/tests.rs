@@ -2515,6 +2515,35 @@ fn hash_field_expiration_commands_are_scoped_by_selected_db_without_db0_fallback
 }
 
 #[test]
+fn auxiliary_hsetex_preserves_existing_field_ttl_when_plain_hsetex_updates_other_fields() {
+    let processor = RequestProcessor::new().unwrap();
+    let db9 = DbName::new(9);
+
+    assert_command_response_in_db(
+        &processor,
+        "HSETEX myhash PX 60000 FIELDS 1 f1 v1",
+        b":1\r\n",
+        db9,
+    );
+    assert_command_response_in_db(&processor, "HSETEX myhash FIELDS 1 f2 v2", b":1\r\n", db9);
+
+    assert_command_response_in_db(&processor, "HGET myhash f1", b"$2\r\nv1\r\n", db9);
+    assert_command_response_in_db(&processor, "HGET myhash f2", b"$2\r\nv2\r\n", db9);
+
+    let hpttl = parse_integer_array_response(&execute_command_line_in_db(
+        &processor,
+        "HPTTL myhash FIELDS 2 f1 f2",
+        db9,
+    ));
+    assert_eq!(hpttl.len(), 2);
+    assert!(
+        (0..=60_000).contains(&hpttl[0]),
+        "unexpected f1 HPTTL: {hpttl:?}"
+    );
+    assert_eq!(hpttl[1], -1);
+}
+
+#[test]
 fn hsetex_hgetex_hgetdel_hexpire_hpexpire_cover_basic_operations() {
     let processor = RequestProcessor::new().unwrap();
 
@@ -13870,6 +13899,76 @@ fn hsetex_px_one_emits_hexpire_not_immediate_hdel() {
         messages[1],
         b"*4\r\n$8\r\npmessage\r\n$21\r\n__keyspace@0__:myhash\r\n$21\r\n__keyspace@0__:myhash\r\n$7\r\nhexpire\r\n".to_vec()
     );
+}
+
+#[test]
+fn hash_keyspace_notifications_emit_hexpired_for_lazy_hgetdel_in_auxiliary_db() {
+    let processor = RequestProcessor::new().unwrap();
+    let client = ClientId::new(74);
+    let db9 = DbName::new(9);
+    processor.register_pubsub_client(client);
+
+    assert_command_response(
+        &processor,
+        "CONFIG SET hash-max-listpack-entries 512",
+        b"+OK\r\n",
+    );
+    assert_command_response(
+        &processor,
+        "CONFIG SET notify-keyspace-events Khg",
+        b"+OK\r\n",
+    );
+    assert_client_command_response(
+        &processor,
+        "PSUBSCRIBE *",
+        client,
+        b"*3\r\n$10\r\npsubscribe\r\n$1\r\n*\r\n:1\r\n",
+    );
+
+    assert_command_response_in_db(&processor, "DEBUG SET-ACTIVE-EXPIRE 0", b"+OK\r\n", db9);
+    assert_command_response_in_db(
+        &processor,
+        "HSETEX myhash PX 10 FIELDS 1 f1 v1",
+        b":1\r\n",
+        db9,
+    );
+    assert_command_response_in_db(&processor, "HSETEX myhash FIELDS 1 f2 v2", b":1\r\n", db9);
+    let setup_messages = processor.take_pending_pubsub_messages(client);
+    assert_eq!(
+        setup_messages,
+        vec![
+            b"*4\r\n$8\r\npmessage\r\n$1\r\n*\r\n$21\r\n__keyspace@9__:myhash\r\n$4\r\nhset\r\n"
+                .to_vec(),
+            b"*4\r\n$8\r\npmessage\r\n$1\r\n*\r\n$21\r\n__keyspace@9__:myhash\r\n$7\r\nhexpire\r\n"
+                .to_vec(),
+            b"*4\r\n$8\r\npmessage\r\n$1\r\n*\r\n$21\r\n__keyspace@9__:myhash\r\n$4\r\nhset\r\n"
+                .to_vec(),
+        ]
+    );
+
+    std::thread::sleep(std::time::Duration::from_millis(20));
+    let expired = execute_command_line_in_db(&processor, "HGETDEL myhash FIELDS 1 f1", db9);
+    assert_eq!(expired, b"*1\r\n$-1\r\n");
+    let lazy_messages = processor.take_pending_pubsub_messages(client);
+    assert_eq!(
+        lazy_messages,
+        vec![b"*4\r\n$8\r\npmessage\r\n$1\r\n*\r\n$21\r\n__keyspace@9__:myhash\r\n$8\r\nhexpired\r\n".to_vec()]
+    );
+
+    let remaining = execute_command_line_in_db(&processor, "HGETDEL myhash FIELDS 1 f2", db9);
+    assert_eq!(remaining, b"*1\r\n$2\r\nv2\r\n");
+    let delete_messages = processor.take_pending_pubsub_messages(client);
+    assert_eq!(
+        delete_messages,
+        vec![
+            b"*4\r\n$8\r\npmessage\r\n$1\r\n*\r\n$21\r\n__keyspace@9__:myhash\r\n$4\r\nhdel\r\n"
+                .to_vec(),
+            b"*4\r\n$8\r\npmessage\r\n$1\r\n*\r\n$21\r\n__keyspace@9__:myhash\r\n$3\r\ndel\r\n"
+                .to_vec(),
+        ]
+    );
+
+    assert_command_response_in_db(&processor, "DEBUG SET-ACTIVE-EXPIRE 1", b"+OK\r\n", db9);
 }
 
 #[test]

@@ -1396,7 +1396,7 @@ impl RequestProcessor {
         if max_keys == 0 || !self.active_expire_enabled() {
             return Ok(());
         }
-        let keys = {
+        let main_keys = {
             self.lock_hash_field_expirations_for_shard(shard_index)
                 .keys()
                 .take(max_keys)
@@ -1404,8 +1404,25 @@ impl RequestProcessor {
                 .collect::<Vec<_>>()
         };
         let main_runtime_db = self.logical_db_for_main_runtime()?;
-        for key in keys {
+        let remaining = max_keys.saturating_sub(main_keys.len());
+        for key in main_keys {
             self.active_expire_hash_fields_for_key(DbKeyRef::new(main_runtime_db, key.as_slice()))?;
+        }
+        if remaining == 0 {
+            return Ok(());
+        }
+
+        let auxiliary_keys = self
+            .db_catalog
+            .auxiliary_databases
+            .hash_field_expiration_keys_in_shard(shard_index, remaining, |key| {
+                self.string_store_shard_index_for_key(key)
+            })?;
+        for (auxiliary_storage, key) in auxiliary_keys {
+            let Some(logical_db) = self.logical_db_for_auxiliary_storage(auxiliary_storage)? else {
+                continue;
+            };
+            self.active_expire_hash_fields_for_key(DbKeyRef::new(logical_db, key.as_slice()))?;
         }
         Ok(())
     }
