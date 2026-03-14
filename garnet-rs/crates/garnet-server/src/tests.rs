@@ -3683,7 +3683,33 @@ async fn tcp_inline_pipeline_executes_basic_crud_commands() {
 #[tokio::test]
 async fn inline_pipelining_stresser_external_scenario_round_trips_all_pairs() {
     let (addr, shutdown_tx, server) = start_test_server().await;
+    run_inline_pipelining_stresser_external_scenario(addr, None).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn inline_pipelining_stresser_external_scenario_round_trips_all_pairs_in_nonzero_db() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    run_inline_pipelining_stresser_external_scenario(addr, Some(9)).await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+async fn run_inline_pipelining_stresser_external_scenario(
+    addr: SocketAddr,
+    selected_db: Option<u16>,
+) {
     let mut client = TcpStream::connect(addr).await.unwrap();
+
+    if let Some(selected_db) = selected_db {
+        let select = format!("SELECT {selected_db}\r\n");
+        client.write_all(select.as_bytes()).await.unwrap();
+        let select_reply = read_resp_line_with_timeout(&mut client, Duration::from_secs(5)).await;
+        assert_eq!(select_reply, b"+OK");
+    }
 
     // Redis tests/unit/other.tcl:
     // "PIPELINING stresser (also a regression for the old epoll bug)"
@@ -3714,9 +3740,6 @@ async fn inline_pipelining_stresser_external_scenario_round_trips_all_pairs() {
     })
     .await
     .expect("inline pipelining stresser timed out");
-
-    let _ = shutdown_tx.send(());
-    server.await.unwrap();
 }
 
 #[tokio::test]
