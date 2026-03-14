@@ -657,6 +657,18 @@ impl RequestProcessor {
                 return Ok(false);
             }
             let now = current_instant();
+            if self.is_expire_action_paused() {
+                let logically_expired = self.with_auxiliary_db_state(db, false, |state| {
+                    let Some(entry) = state.entries.get(key) else {
+                        return false;
+                    };
+                    let Some(expiration) = entry.expiration else {
+                        return false;
+                    };
+                    expiration.deadline <= now
+                })?;
+                return Ok(logically_expired.unwrap_or(false));
+            }
             let Some(should_expire) = self.with_auxiliary_db_state(db, false, |state| {
                 let Some(entry) = state.entries.get(key) else {
                     return None;
@@ -664,9 +676,6 @@ impl RequestProcessor {
                 let Some(expiration) = entry.expiration else {
                     return None;
                 };
-                if self.is_expire_action_paused() {
-                    return Some(expiration.deadline <= now);
-                }
                 if expiration.deadline > now {
                     return Some(false);
                 }

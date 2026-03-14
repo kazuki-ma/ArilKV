@@ -4119,6 +4119,139 @@ async fn client_pause_write_keeps_randomkey_visible_until_unpause() {
 }
 
 #[tokio::test]
+async fn client_pause_write_defers_expired_keys_stats_until_unpause_like_external_scenario() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(1);
+
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$6\r\nSELECT\r\n$1\r\n9\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut inspector,
+        b"*2\r\n$6\r\nSELECT\r\n$1\r\n9\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+
+    let baseline_info = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*2\r\n$4\r\nINFO\r\n$5\r\nstats\r\n",
+        timeout,
+    )
+    .await;
+    let baseline_expired_keys = read_info_u64(&baseline_info, "expired_keys").unwrap_or(0);
+
+    send_and_expect(&mut client, b"*1\r\n$5\r\nMULTI\r\n", b"+OK\r\n").await;
+    send_and_expect(
+        &mut client,
+        b"*5\r\n$3\r\nSET\r\n$6\r\nfoo{t}\r\n$6\r\nbar{t}\r\n$2\r\nPX\r\n$2\r\n10\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*5\r\n$3\r\nSET\r\n$6\r\nbar{t}\r\n$6\r\nfoo{t}\r\n$2\r\nPX\r\n$2\r\n10\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*4\r\n$6\r\nCLIENT\r\n$5\r\nPAUSE\r\n$5\r\n50000\r\n$5\r\nWRITE\r\n",
+        b"+QUEUED\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        b"*1\r\n$4\r\nEXEC\r\n",
+        b"*3\r\n+OK\r\n+OK\r\n+OK\r\n",
+    )
+    .await;
+
+    let mut logically_expired = false;
+    for _ in 0..10 {
+        let foo = send_and_read_optional_bulk(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$6\r\nfoo{t}\r\n",
+            timeout,
+        )
+        .await;
+        let bar = send_and_read_optional_bulk(
+            &mut client,
+            b"*2\r\n$3\r\nGET\r\n$6\r\nbar{t}\r\n",
+            timeout,
+        )
+        .await;
+        if foo.is_none() && bar.is_none() {
+            logically_expired = true;
+            break;
+        }
+        sleep(Duration::from_millis(100)).await;
+    }
+    assert!(
+        logically_expired,
+        "keys never became logically expired during CLIENT PAUSE WRITE",
+    );
+
+    let paused_info = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*2\r\n$4\r\nINFO\r\n$5\r\nstats\r\n",
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&paused_info, "expired_keys").unwrap_or(0),
+        baseline_expired_keys,
+        "expired_keys should stay unchanged while expire actions are paused",
+    );
+
+    send_and_expect(
+        &mut client,
+        b"*2\r\n$6\r\nCLIENT\r\n$7\r\nUNPAUSE\r\n",
+        b"+OK\r\n",
+    )
+    .await;
+    let _ =
+        send_and_read_optional_bulk(&mut client, b"*2\r\n$3\r\nGET\r\n$6\r\nfoo{t}\r\n", timeout)
+            .await;
+    let _ =
+        send_and_read_optional_bulk(&mut client, b"*2\r\n$3\r\nGET\r\n$6\r\nbar{t}\r\n", timeout)
+            .await;
+
+    let resumed_info = send_and_read_bulk_payload(
+        &mut inspector,
+        b"*2\r\n$4\r\nINFO\r\n$5\r\nstats\r\n",
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        read_info_u64(&resumed_info, "expired_keys").unwrap_or(0),
+        baseline_expired_keys + 2,
+        "expired_keys should advance after forced lazy expiration post-unpause",
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn client_unblock_cannot_interrupt_pause_block_but_works_after_unpause() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
