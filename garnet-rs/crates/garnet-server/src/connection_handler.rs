@@ -358,6 +358,7 @@ fn command_effectively_mutated_for_replication(
         CommandId::Eval | CommandId::EvalRo | CommandId::Evalsha | CommandId::EvalshaRo => {
             !eval_script_is_read_only_for_replication(processor, command, args).unwrap_or(false)
         }
+        CommandId::Failover => false,
         _ => true,
     }
 }
@@ -595,6 +596,22 @@ async fn materialize_wait_response_if_needed(
     append_integer_frame(
         response_out,
         i64::try_from(acknowledged).unwrap_or(i64::MAX),
+    );
+}
+
+fn materialize_failover_if_needed(
+    replication: &RedisReplicationCoordinator,
+    connection_effects: RequestConnectionEffects,
+) {
+    let Some(failover_request) = connection_effects.failover_request else {
+        return;
+    };
+    let _ = replication.launch_prepared_manual_failover(
+        crate::redis_replication::ManualFailoverRequest {
+            target_replica_id: failover_request.target_replica_id,
+            timeout_millis: failover_request.timeout_millis,
+            force: failover_request.force,
+        },
     );
 }
 
@@ -1124,6 +1141,11 @@ pub(crate) async fn handle_connection(
                 while index + 1 < argument_count {
                     let option = arg_slice_bytes(&args[index]);
                     let value = arg_slice_bytes(&args[index + 1]);
+                    if ascii_eq_ignore_case(option, b"LISTENING-PORT")
+                        && let Some(replica_listen_port) = parse_u16_ascii(value)
+                    {
+                        metrics.set_client_replica_listen_port(client_id, replica_listen_port);
+                    }
                     if ascii_eq_ignore_case(option, b"RDB-FILTER-ONLY") {
                         replica_rdb_functions_only = ascii_eq_ignore_case(value, b"FUNCTIONS");
                     }
@@ -1369,6 +1391,11 @@ pub(crate) async fn handle_connection(
                                                     transaction_outcome.selected_db_after_exec;
                                                 apply_request_connection_effects(
                                                     &mut client_state,
+                                                    transaction_outcome
+                                                        .connection_effects_after_exec,
+                                                );
+                                                materialize_failover_if_needed(
+                                                    &replication,
                                                     transaction_outcome
                                                         .connection_effects_after_exec,
                                                 );
@@ -1916,6 +1943,10 @@ pub(crate) async fn handle_connection(
                                 );
                                 apply_request_connection_effects(
                                     &mut client_state,
+                                    blocking_outcome.connection_effects,
+                                );
+                                materialize_failover_if_needed(
+                                    &replication,
                                     blocking_outcome.connection_effects,
                                 );
                                 responses.extend_from_slice(&blocking_outcome.frame_response);

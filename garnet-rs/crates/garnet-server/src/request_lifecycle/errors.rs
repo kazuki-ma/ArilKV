@@ -72,6 +72,13 @@ pub enum RequestExecutionError {
     UnsupportedUnit,
     ValueOutOfRange,
     ValueOutOfRangePositive,
+    FailoverTimeoutMustBeGreaterThanZero,
+    FailoverAlreadyInProgress,
+    FailoverIsNotValidWhenServerIsReplica,
+    FailoverRequiresConnectedReplicas,
+    FailoverWithForceRequiresTimeoutAndTarget,
+    FailoverTargetHostAndPortIsNotReplica,
+    NoFailoverInProgress,
     StringExceedsMaximumAllowedSize,
     GeoSearchRequiresOrigin,
     GeoSearchRequiresShape,
@@ -298,6 +305,30 @@ impl RequestExecutionError {
             Self::ValueOutOfRange => append_error(response_out, "ERR value is out of range"),
             Self::ValueOutOfRangePositive => {
                 append_error(response_out, "ERR value is out of range, must be positive")
+            }
+            Self::FailoverTimeoutMustBeGreaterThanZero => {
+                append_error(response_out, "ERR FAILOVER timeout must be greater than 0")
+            }
+            Self::FailoverAlreadyInProgress => {
+                append_error(response_out, "ERR FAILOVER already in progress.")
+            }
+            Self::FailoverIsNotValidWhenServerIsReplica => append_error(
+                response_out,
+                "ERR FAILOVER is not valid when server is a replica.",
+            ),
+            Self::FailoverRequiresConnectedReplicas => {
+                append_error(response_out, "ERR FAILOVER requires connected replicas.")
+            }
+            Self::FailoverWithForceRequiresTimeoutAndTarget => append_error(
+                response_out,
+                "ERR FAILOVER with force option requires both a timeout and target HOST and IP.",
+            ),
+            Self::FailoverTargetHostAndPortIsNotReplica => append_error(
+                response_out,
+                "ERR FAILOVER target HOST and PORT is not a replica.",
+            ),
+            Self::NoFailoverInProgress => {
+                append_error(response_out, "ERR No failover in progress.")
             }
             Self::StringExceedsMaximumAllowedSize => append_error(
                 response_out,

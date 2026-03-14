@@ -228,6 +228,7 @@ struct ClientRuntimeInfo {
     /// Last time the reply buffer peak window was reset.
     reply_buffer_peak_last_reset: Instant,
     wait_target_offset: u64,
+    replica_listen_port: Option<u16>,
     selected_db: DbName,
     client_type: ClientTypeFilter,
 }
@@ -322,6 +323,7 @@ impl ClientRuntimeInfo {
             reply_buffer_peak: 0,
             reply_buffer_peak_last_reset: now,
             wait_target_offset: 0,
+            replica_listen_port: None,
             selected_db: DbName::default(),
             client_type: ClientTypeFilter::Normal,
         }
@@ -685,6 +687,23 @@ impl ServerMetrics {
         })
     }
 
+    pub(crate) fn set_client_replica_listen_port(&self, client_id: ClientId, port: u16) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.replica_listen_port = Some(port);
+            client.last_activity = Instant::now();
+        }
+    }
+
+    pub(crate) fn client_replica_listen_port(&self, client_id: ClientId) -> Option<u16> {
+        self.clients.lock().ok().and_then(|clients| {
+            clients
+                .get(&client_id)
+                .and_then(|client| client.replica_listen_port)
+        })
+    }
+
     pub(crate) fn set_client_type(&self, client_id: ClientId, client_type: ClientTypeFilter) {
         if let Ok(mut clients) = self.clients.lock()
             && let Some(client) = clients.get_mut(&client_id)
@@ -701,7 +720,19 @@ impl ServerMetrics {
         clients
             .values()
             .filter(|client| !client.killed && client.client_type == ClientTypeFilter::Replica)
-            .map(|client| client.addr.clone())
+            .map(|client| {
+                let Some(replica_listen_port) = client.replica_listen_port else {
+                    return client.addr.clone();
+                };
+                let Ok(addr_text) = std::str::from_utf8(&client.addr) else {
+                    return client.addr.clone();
+                };
+                let Ok(mut socket_addr) = addr_text.parse::<SocketAddr>() else {
+                    return client.addr.clone();
+                };
+                socket_addr.set_port(replica_listen_port);
+                socket_addr.to_string().into_bytes()
+            })
             .collect()
     }
 

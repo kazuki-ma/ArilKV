@@ -8085,6 +8085,247 @@ async fn wait_returns_ack_count_after_replica_applies_write() {
 }
 
 #[tokio::test]
+async fn failover_promotes_connected_replica_and_demotes_source() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
+            let _ = master_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
+            let _ = replica_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let replication_info =
+        wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+    assert!(
+        String::from_utf8_lossy(&replication_info)
+            .contains(format!("port={}", replica_addr.port()).as_str()),
+        "INFO REPLICATION did not expose replica listening port: {}",
+        String::from_utf8_lossy(&replication_info)
+    );
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"failover:seed", b"seed"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let mut replicated = false;
+    for _ in 0..50 {
+        let observed = send_and_read_bulk_payload(
+            &mut replica_client,
+            &encode_resp_command(&[b"GET", b"failover:seed"]),
+            Duration::from_millis(250),
+        )
+        .await;
+        if observed == b"seed" {
+            replicated = true;
+            break;
+        }
+        sleep(Duration::from_millis(20)).await;
+    }
+    assert!(replicated, "replica did not reach steady replication state");
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"failover:wait", b"ready"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let acknowledged = send_and_read_integer(
+        &mut master_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe the downstream replica before FAILOVER, got {acknowledged}"
+    );
+
+    let failover_request = encode_resp_command(&[b"FAILOVER", b"TIMEOUT", b"2000"]);
+    master_client.write_all(&failover_request).await.unwrap();
+    let failover_reply =
+        read_resp_line_with_timeout(&mut master_client, Duration::from_secs(1)).await;
+    assert_eq!(
+        failover_reply,
+        b"+OK",
+        "unexpected FAILOVER reply: {}",
+        String::from_utf8_lossy(&failover_reply)
+    );
+
+    let mut promoted_value = None;
+    for attempt in 0..120 {
+        let value = format!("after-{attempt}");
+        let request = encode_resp_command(&[b"SET", b"failover:post", value.as_bytes()]);
+        replica_client.write_all(&request).await.unwrap();
+        let mut response = [0u8; 128];
+        let bytes_read = tokio::time::timeout(
+            Duration::from_millis(250),
+            replica_client.read(&mut response),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        if &response[..bytes_read] == b"+OK\r\n" {
+            promoted_value = Some(value);
+            break;
+        }
+        assert_eq!(
+            &response[..bytes_read],
+            b"-READONLY You can't write against a read only replica.\r\n",
+            "unexpected FAILOVER target write response before promotion"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+    let promoted_value =
+        promoted_value.expect("FAILOVER target was not promoted to writable master");
+
+    let mut source_following = false;
+    for _ in 0..120 {
+        let observed = send_and_read_bulk_payload(
+            &mut master_client,
+            &encode_resp_command(&[b"GET", b"failover:post"]),
+            Duration::from_millis(250),
+        )
+        .await;
+        if observed == promoted_value.as_bytes() {
+            source_following = true;
+            break;
+        }
+        sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        source_following,
+        "source did not follow promoted target after FAILOVER"
+    );
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"failover:readonly", b"x"]),
+        b"-READONLY You can't write against a read only replica.\r\n",
+    )
+    .await;
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn failover_rejects_unknown_target_even_with_connected_replica() {
+    let master_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let master_addr = master_listener.local_addr().unwrap();
+    let replica_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let replica_addr = replica_listener.local_addr().unwrap();
+
+    let master_metrics = Arc::new(ServerMetrics::default());
+    let replica_metrics = Arc::new(ServerMetrics::default());
+    let (master_shutdown_tx, master_shutdown_rx) = oneshot::channel::<()>();
+    let (replica_shutdown_tx, replica_shutdown_rx) = oneshot::channel::<()>();
+
+    let master_metrics_task = Arc::clone(&master_metrics);
+    let master_server = tokio::spawn(async move {
+        run_listener_with_shutdown(master_listener, 1024, master_metrics_task, async move {
+            let _ = master_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let replica_metrics_task = Arc::clone(&replica_metrics);
+    let replica_server = tokio::spawn(async move {
+        run_listener_with_shutdown(replica_listener, 1024, replica_metrics_task, async move {
+            let _ = replica_shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut master_client = TcpStream::connect(master_addr).await.unwrap();
+    let mut replica_client = TcpStream::connect(replica_addr).await.unwrap();
+
+    let master_port = master_addr.port().to_string();
+    send_and_expect(
+        &mut replica_client,
+        &encode_resp_command(&[b"REPLICAOF", b"127.0.0.1", master_port.as_bytes()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let _ = wait_for_replica_info_line(&mut master_client, 1, Duration::from_secs(5)).await;
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[b"SET", b"failover:target-check", b"ready"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let acknowledged = send_and_read_integer(
+        &mut master_client,
+        &encode_resp_command(&[b"WAIT", b"1", b"2000"]),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        acknowledged >= 1,
+        "expected WAIT to observe the downstream replica before target validation, got {acknowledged}"
+    );
+
+    let unknown_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let unknown_port = unknown_listener.local_addr().unwrap().port().to_string();
+    drop(unknown_listener);
+
+    send_and_expect(
+        &mut master_client,
+        &encode_resp_command(&[
+            b"FAILOVER",
+            b"TO",
+            b"127.0.0.1",
+            unknown_port.as_bytes(),
+            b"TIMEOUT",
+            b"100",
+        ]),
+        b"-ERR FAILOVER target HOST and PORT is not a replica.\r\n",
+    )
+    .await;
+
+    let _ = master_shutdown_tx.send(());
+    let _ = replica_shutdown_tx.send(());
+    master_server.await.unwrap();
+    replica_server.await.unwrap();
+}
+
+#[tokio::test]
 async fn wait_times_out_without_downstream_replicas() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

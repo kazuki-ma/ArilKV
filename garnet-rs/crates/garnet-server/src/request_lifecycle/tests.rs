@@ -13550,10 +13550,7 @@ fn acl_cluster_failover_monitor_and_shutdown_commands_cover_basic_shapes() {
         )
         .unwrap_err();
     err.append_resp_error(&mut response);
-    assert_eq!(
-        response,
-        b"-ERR This instance has cluster support disabled\r\n"
-    );
+    assert_eq!(response, b"-ERR FAILOVER requires connected replicas.\r\n");
 
     response.clear();
     let monitor = b"*1\r\n$7\r\nMONITOR\r\n";
@@ -14745,6 +14742,37 @@ fn migrate_command_validates_arguments_before_remote_execution() {
         &processor,
         "MIGRATE 127.0.0.1 6379 key 0",
         b"-ERR wrong number of arguments for 'migrate' command\r\n",
+    );
+}
+
+#[test]
+fn failover_command_validates_arguments_and_runtime_preconditions() {
+    let processor = RequestProcessor::new().unwrap();
+
+    assert_command_error(
+        &processor,
+        "FAILOVER TIMEOUT 0",
+        b"-ERR FAILOVER timeout must be greater than 0\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "FAILOVER FORCE",
+        b"-ERR FAILOVER with force option requires both a timeout and target HOST and IP.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "FAILOVER TO 127.0.0.1 6380 FORCE",
+        b"-ERR FAILOVER with force option requires both a timeout and target HOST and IP.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "FAILOVER ABORT",
+        b"-ERR No failover in progress.\r\n",
+    );
+    assert_command_error(
+        &processor,
+        "FAILOVER",
+        b"-ERR FAILOVER requires connected replicas.\r\n",
     );
 }
 

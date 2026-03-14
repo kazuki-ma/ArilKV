@@ -132,8 +132,8 @@ commands:
     status: FULL
     comment: ""
   - command: FAILOVER
-    status: DISABLED
-    comment: ""
+    status: PARTIAL_MINIMAL
+    comment: "Standalone/manual failover slice implemented (`ABORT`, `TIMEOUT`, `TO host port`, `FORCE`, connected-replica target selection, promotion/demotion flow, exact validation/runtime errors) with exact Rust coverage. Cluster failover-controller integration and full cluster-management parity are not implemented yet."
   - command: FCALL
     status: FULL
     comment: "Full function execution for FUNCTION LOAD-registered functions with library/function registry."

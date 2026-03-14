@@ -162,15 +162,24 @@ pub(crate) struct WaitRequestEffect {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FailoverRequestEffect {
+    pub(crate) target_replica_id: Option<u64>,
+    pub(crate) timeout_millis: Option<u64>,
+    pub(crate) force: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct RequestConnectionEffects {
     pub(crate) cluster_read_only: Option<bool>,
     pub(crate) wait_request: Option<WaitRequestEffect>,
+    pub(crate) failover_request: Option<FailoverRequestEffect>,
 }
 
 impl RequestConnectionEffects {
     const NONE: Self = Self {
         cluster_read_only: None,
         wait_request: None,
+        failover_request: None,
     };
 
     pub(crate) fn merge_from(&mut self, other: Self) {
@@ -179,6 +188,9 @@ impl RequestConnectionEffects {
         }
         if other.wait_request.is_some() {
             self.wait_request = other.wait_request;
+        }
+        if other.failover_request.is_some() {
+            self.failover_request = other.failover_request;
         }
     }
 }
@@ -296,6 +308,15 @@ fn set_request_wait_effect(requested_replicas: u64, timeout_millis: u64) {
             requested_replicas,
             timeout_millis,
         });
+        state.set(context);
+    });
+}
+
+#[inline]
+fn set_request_failover_effect(effect: FailoverRequestEffect) {
+    REQUEST_EXECUTION_CONTEXT.with(|state| {
+        let mut context = state.get();
+        context.connection_effects.failover_request = Some(effect);
         state.set(context);
     });
 }

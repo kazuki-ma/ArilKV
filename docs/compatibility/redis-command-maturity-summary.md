@@ -6,8 +6,8 @@
 
 - Supported declared commands: `259`
 - `FULL`: `227`
-- `PARTIAL_MINIMAL`: `18`
-- `DISABLED`: `14`
+- `PARTIAL_MINIMAL`: `20`
+- `DISABLED`: `12`
 - Full implementation ratio over declared commands: `87.64%`
 
 ## Non-Full Commands
@@ -20,7 +20,7 @@
 | `CLUSTER` | `PARTIAL_MINIMAL` | Selected subcommands are implemented; unsupported subcommands are cluster-support-disabled. |
 | `DELEX` | `DISABLED` | Declared extension surface; runtime behavior is not implemented. |
 | `DIGEST` | `PARTIAL_MINIMAL` | Compatibility digest surface is limited to DEBUG DIGEST-VALUE. |
-| `FAILOVER` | `DISABLED` | - |
+| `FAILOVER` | `PARTIAL_MINIMAL` | Standalone/manual failover slice implemented (`ABORT`; `TIMEOUT`; `TO host port`; `FORCE`; connected-replica target selection; promotion/demotion flow; exact validation/runtime errors) with exact Rust coverage. Cluster failover-controller integration and full cluster-management parity are not implemented yet. |
 | `HEXPIRE` | `PARTIAL_MINIMAL` | Hash-field expiration subset implemented; full command-family parity is not complete. |
 | `HEXPIREAT` | `DISABLED` | Declared for compatibility matrix only. |
 | `HEXPIRETIME` | `DISABLED` | Declared for compatibility matrix only. |
@@ -33,7 +33,7 @@
 | `HPTTL` | `DISABLED` | Declared for compatibility matrix only. |
 | `HSETEX` | `PARTIAL_MINIMAL` | Hash-field expiration extension surface implemented with partial parity. |
 | `HTTL` | `DISABLED` | Declared for compatibility matrix only. |
-| `MIGRATE` | `DISABLED` | - |
+| `MIGRATE` | `PARTIAL_MINIMAL` | Selected-DB standalone subset implemented (`COPY`/`REPLACE`/`AUTH`/`AUTH2`/`KEYS`; target `SELECT`/`RESTORE`; target-error and `IOERR` surfacing) with exact Rust coverage. Still Garnet-to-Garnet dump payloads only; full Redis DUMP parity and replication/AOF rewrite semantics are not implemented yet. |
 | `MODULE` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
 | `MOVE` | `PARTIAL_MINIMAL` | single-db mode only; MOVE to non-zero DB is unsupported. |
 | `MSETEX` | `DISABLED` | Declared extension surface; runtime behavior is not implemented. |

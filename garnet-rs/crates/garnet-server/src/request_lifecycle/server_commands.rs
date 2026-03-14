@@ -16,6 +16,7 @@ use crate::command_spec::command_id_from_name;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_key_access_pattern;
 use crate::command_spec::command_names_for_command_response;
+use crate::connection_protocol::parse_u16_ascii;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
 const COMPATIBLE_REDIS_VERSION: &str = "8.4.0";
@@ -3628,7 +3629,7 @@ impl RequestProcessor {
     pub(super) fn handle_failover(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_min_arity(
             args,
@@ -3636,7 +3637,102 @@ impl RequestProcessor {
             "FAILOVER",
             "FAILOVER [TO host port] [FORCE] [TIMEOUT ms]",
         )?;
-        Err(RequestExecutionError::ClusterSupportDisabled)
+        if args.len() == 2 && ascii_eq_ignore_case(args[1], b"ABORT") {
+            let Some(replication) = self.replication_coordinator() else {
+                return Err(RequestExecutionError::NoFailoverInProgress);
+            };
+            if replication.abort_manual_failover() {
+                append_simple_string(response_out, b"OK");
+                return Ok(());
+            }
+            return Err(RequestExecutionError::NoFailoverInProgress);
+        }
+
+        let mut timeout_millis = None;
+        let mut force = false;
+        let mut target_host = None;
+        let mut target_port = None;
+
+        let mut index = 1usize;
+        while index < args.len() {
+            let token = args[index];
+            if ascii_eq_ignore_case(token, b"TIMEOUT")
+                && index + 1 < args.len()
+                && timeout_millis.is_none()
+            {
+                let parsed_timeout = parse_u64_ascii(args[index + 1])
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                if parsed_timeout == 0 {
+                    return Err(RequestExecutionError::FailoverTimeoutMustBeGreaterThanZero);
+                }
+                timeout_millis = Some(parsed_timeout);
+                index += 2;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"TO")
+                && index + 2 < args.len()
+                && target_host.is_none()
+                && target_port.is_none()
+            {
+                let parsed_port = parse_u16_ascii(args[index + 2])
+                    .ok_or(RequestExecutionError::ValueNotInteger)?;
+                target_host = Some(args[index + 1]);
+                target_port = Some(parsed_port);
+                index += 3;
+                continue;
+            }
+            if ascii_eq_ignore_case(token, b"FORCE") && !force {
+                force = true;
+                index += 1;
+                continue;
+            }
+            return Err(RequestExecutionError::SyntaxError);
+        }
+
+        if force && (timeout_millis.is_none() || target_host.is_none() || target_port.is_none()) {
+            return Err(RequestExecutionError::FailoverWithForceRequiresTimeoutAndTarget);
+        }
+
+        let Some(replication) = self.replication_coordinator() else {
+            return Err(RequestExecutionError::FailoverRequiresConnectedReplicas);
+        };
+        let target_replica_id = if let (Some(host), Some(port)) = (target_host, target_port) {
+            Some(
+                replication
+                    .find_downstream_replica_id_by_host_port(host, port)
+                    .ok_or(RequestExecutionError::FailoverTargetHostAndPortIsNotReplica)?,
+            )
+        } else {
+            None
+        };
+
+        match replication.prepare_manual_failover(crate::redis_replication::ManualFailoverRequest {
+            target_replica_id,
+            timeout_millis,
+            force,
+        }) {
+            Ok(()) => {
+                set_request_failover_effect(FailoverRequestEffect {
+                    target_replica_id,
+                    timeout_millis,
+                    force,
+                });
+                append_simple_string(response_out, b"OK");
+                Ok(())
+            }
+            Err(crate::redis_replication::ManualFailoverPrepareError::AlreadyInProgress) => {
+                Err(RequestExecutionError::FailoverAlreadyInProgress)
+            }
+            Err(crate::redis_replication::ManualFailoverPrepareError::IsReplica) => {
+                Err(RequestExecutionError::FailoverIsNotValidWhenServerIsReplica)
+            }
+            Err(
+                crate::redis_replication::ManualFailoverPrepareError::RequiresConnectedReplicas,
+            ) => Err(RequestExecutionError::FailoverRequiresConnectedReplicas),
+            Err(crate::redis_replication::ManualFailoverPrepareError::TargetNotReplica) => {
+                Err(RequestExecutionError::FailoverTargetHostAndPortIsNotReplica)
+            }
+        }
     }
 
     pub(super) fn handle_subscribe(

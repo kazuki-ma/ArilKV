@@ -128,6 +128,9 @@ where
         Arc::clone(&processor),
         Arc::clone(&owner_thread_pool),
     ));
+    if let Ok(local_addr) = listener.local_addr() {
+        replication.set_listen_port(local_addr.port());
+    }
     processor.attach_replication_coordinator(Arc::clone(&replication));
     let expiration_processor = Arc::clone(&processor);
     let expiration_shard_count = processor.string_store_shard_count();
