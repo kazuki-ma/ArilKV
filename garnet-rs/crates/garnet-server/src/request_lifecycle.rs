@@ -1761,6 +1761,7 @@ struct PubSubState {
     client_channels: HashMap<ClientId, HashSet<Vec<u8>>>,
     client_patterns: HashMap<ClientId, HashSet<Vec<u8>>>,
     pending_messages: HashMap<ClientId, VecDeque<Vec<u8>>>,
+    pending_message_notifiers: HashMap<ClientId, Arc<Notify>>,
     client_resp_versions: HashMap<ClientId, RespProtocolVersion>,
 }
 
@@ -3051,15 +3052,21 @@ impl RequestProcessor {
         self.connected_clients.store(count, Ordering::Release);
     }
 
-    pub(crate) fn register_pubsub_client(&self, client_id: ClientId) {
+    pub(crate) fn register_pubsub_client(&self, client_id: ClientId) -> Arc<Notify> {
         let Ok(mut state) = self.pubsub_state.lock() else {
-            return;
+            return Arc::new(Notify::new());
         };
         state.pending_messages.entry(client_id).or_default();
+        let notify = state
+            .pending_message_notifiers
+            .entry(client_id)
+            .or_insert_with(|| Arc::new(Notify::new()))
+            .clone();
         state
             .client_resp_versions
             .entry(client_id)
             .or_insert(RespProtocolVersion::Resp2);
+        notify
     }
 
     pub(crate) fn update_pubsub_client_resp_version(
@@ -3089,6 +3096,7 @@ impl RequestProcessor {
                 PubSubTargetKind::Pattern,
             );
             let _ = state.pending_messages.remove(&client_id);
+            let _ = state.pending_message_notifiers.remove(&client_id);
             let _ = state.client_resp_versions.remove(&client_id);
             state.client_resp_versions.clone()
         };
@@ -3514,6 +3522,8 @@ impl RequestProcessor {
         // Pre-encode RESP2 and RESP3 variants lazily to avoid redundant encoding.
         let mut resp2_message_frame: Option<Vec<u8>> = None;
         let mut resp3_message_frame: Option<Vec<u8>> = None;
+        let mut notified_clients = HashSet::new();
+        let mut pending_notifiers = Vec::new();
         for target in channel_targets {
             let resp3 = state
                 .client_resp_versions
@@ -3538,6 +3548,11 @@ impl RequestProcessor {
                 .entry(target)
                 .or_default()
                 .push_back(frame);
+            if notified_clients.insert(target)
+                && let Some(notify) = state.pending_message_notifiers.get(&target)
+            {
+                pending_notifiers.push(Arc::clone(notify));
+            }
         }
 
         for (target, pattern) in pattern_targets {
@@ -3553,6 +3568,16 @@ impl RequestProcessor {
                 .entry(target)
                 .or_default()
                 .push_back(frame);
+            if notified_clients.insert(target)
+                && let Some(notify) = state.pending_message_notifiers.get(&target)
+            {
+                pending_notifiers.push(Arc::clone(notify));
+            }
+        }
+
+        drop(state);
+        for notify in pending_notifiers {
+            notify.notify_waiters();
         }
 
         saturating_usize_to_i64(total_delivery_count)

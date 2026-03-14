@@ -16206,6 +16206,78 @@ async fn unsubscribe_inside_multi_then_publish_to_self_external_pubsub_scenario(
 }
 
 #[tokio::test]
+async fn keyspace_notifications_evicted_events_external_pubsub_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let mut writer = TcpStream::connect(addr).await.unwrap();
+    let mut subscriber = TcpStream::connect(addr).await.unwrap();
+    let timeout = Duration::from_secs(5);
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"notify-keyspace-events", b"Ee"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"maxmemory-policy", b"allkeys-lru"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut writer, &encode_resp_command(&[b"FLUSHDB"]), b"+OK\r\n").await;
+
+    let subscribe = send_and_read_resp_value(
+        &mut subscriber,
+        &encode_resp_command(&[b"PSUBSCRIBE", b"*"]),
+        timeout,
+    )
+    .await;
+    let subscribe_items = resp_socket_array(&subscribe);
+    assert_eq!(resp_socket_bulk(&subscribe_items[0]), b"psubscribe");
+    assert_eq!(resp_socket_bulk(&subscribe_items[1]), b"*");
+    assert_eq!(resp_socket_integer(&subscribe_items[2]), 1);
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"SET", b"foo", b"bar"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"maxmemory", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let evicted = read_resp_value_with_timeout(&mut subscriber, timeout).await;
+    let evicted_items = resp_socket_array(&evicted);
+    assert_eq!(resp_socket_bulk(&evicted_items[0]), b"pmessage");
+    assert_eq!(resp_socket_bulk(&evicted_items[1]), b"*");
+    assert_eq!(
+        resp_socket_bulk(&evicted_items[2]),
+        b"__keyevent@0__:evicted"
+    );
+    assert_eq!(resp_socket_bulk(&evicted_items[3]), b"foo");
+
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"maxmemory", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut writer,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"maxmemory-policy", b"noeviction"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn subscribed_mode_resp2_after_hello2_rejects_regular_commands_like_external_redis_cli_scenario()
  {
     let (addr, shutdown_tx, server) = start_test_server().await;

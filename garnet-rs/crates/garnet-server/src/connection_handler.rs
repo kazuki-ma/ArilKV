@@ -133,6 +133,12 @@ const OWNER_EXECUTION_INLINE_DEFAULT_TRUE: u8 = 2;
 static OWNER_EXECUTION_INLINE_DEFAULT: AtomicU8 =
     AtomicU8::new(OWNER_EXECUTION_INLINE_DEFAULT_UNSET);
 
+enum ConnectionReadWake {
+    BytesRead(usize),
+    PendingPubsub,
+    KilledClientPoll,
+}
+
 pub fn set_owner_execution_inline_default(enabled: bool) {
     let encoded = if enabled {
         OWNER_EXECUTION_INLINE_DEFAULT_TRUE
@@ -746,7 +752,7 @@ pub(crate) async fn handle_connection(
         processor: &processor,
         client_id,
     };
-    processor.register_pubsub_client(client_id);
+    let pending_pubsub_notify = processor.register_pubsub_client(client_id);
     let max_resp_arguments = parse_positive_env_usize(GARNET_MAX_RESP_ARGUMENTS_ENV)
         .unwrap_or(DEFAULT_MAX_RESP_ARGUMENTS);
     let mut read_buffer = vec![0u8; read_buffer_size.max(1)];
@@ -772,23 +778,53 @@ pub(crate) async fn handle_connection(
         // Moves a flushed request burst from socket into the per-connection receive buffer.
         // Read at least once (await), then drain any immediately-available bytes via try_read.
         // This reduces read-side wakeups/syscall count under small pipelined requests.
-        let bytes_read = match tokio::time::timeout(
-            KILLED_CLIENT_POLL_INTERVAL,
-            read_and_drain_available(&mut stream, &mut read_buffer, &mut receive_buffer, &metrics),
-        )
-        .await
-        {
-            Ok(result) => result?,
-            Err(_) => {
-                flush_pending_pubsub_messages(
+        let bytes_read = if processor.pubsub_subscription_count(client_id) > 0 {
+            match wait_for_connection_read_or_pubsub(
+                &mut stream,
+                &mut read_buffer,
+                &mut receive_buffer,
+                &metrics,
+                pending_pubsub_notify.as_ref(),
+            )
+            .await?
+            {
+                ConnectionReadWake::BytesRead(bytes_read) => bytes_read,
+                ConnectionReadWake::PendingPubsub | ConnectionReadWake::KilledClientPoll => {
+                    flush_pending_pubsub_messages(
+                        &mut stream,
+                        &processor,
+                        &metrics,
+                        client_id,
+                        &client_state,
+                    )
+                    .await?;
+                    continue;
+                }
+            }
+        } else {
+            match tokio::time::timeout(
+                KILLED_CLIENT_POLL_INTERVAL,
+                read_and_drain_available(
                     &mut stream,
-                    &processor,
+                    &mut read_buffer,
+                    &mut receive_buffer,
                     &metrics,
-                    client_id,
-                    &client_state,
-                )
-                .await?;
-                continue;
+                ),
+            )
+            .await
+            {
+                Ok(result) => result?,
+                Err(_) => {
+                    flush_pending_pubsub_messages(
+                        &mut stream,
+                        &processor,
+                        &metrics,
+                        client_id,
+                        &client_state,
+                    )
+                    .await?;
+                    continue;
+                }
             }
         };
         if bytes_read == 0 {
@@ -2271,6 +2307,26 @@ async fn read_and_drain_available(
     }
 
     Ok(total)
+}
+
+async fn wait_for_connection_read_or_pubsub(
+    stream: &mut TcpStream,
+    read_buffer: &mut [u8],
+    receive_buffer: &mut Vec<u8>,
+    metrics: &ServerMetrics,
+    pending_pubsub_notify: &tokio::sync::Notify,
+) -> io::Result<ConnectionReadWake> {
+    tokio::select! {
+        result = read_and_drain_available(stream, read_buffer, receive_buffer, metrics) => {
+            result.map(ConnectionReadWake::BytesRead)
+        }
+        _ = pending_pubsub_notify.notified() => {
+            Ok(ConnectionReadWake::PendingPubsub)
+        }
+        _ = sleep(KILLED_CLIENT_POLL_INTERVAL) => {
+            Ok(ConnectionReadWake::KilledClientPoll)
+        }
+    }
 }
 
 async fn flush_monitor_events(
