@@ -2372,6 +2372,208 @@ async fn acl_log_max_len_config_matches_external_scenarios() {
 }
 
 #[tokio::test]
+async fn acl_selectors_match_valkey_semantics_for_or_permissions_and_rendering() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SET", b"foo:1", b"db1-value"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"selector",
+            b"reset",
+            b"on",
+            b">pw",
+            b"+set",
+            b"+select|0",
+            b"~root:*",
+            b"db=0",
+            b"(+get",
+            b"+select|1",
+            b"~foo:*",
+            b"db=1)",
+            b"(+publish",
+            b"resetchannels",
+            b"&alerts:*",
+            b"alldbs)",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let getuser = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"selector"]),
+        timeout,
+    )
+    .await;
+    let getuser_map = resp_socket_map_or_flat_map(&getuser);
+    let selectors = resp_socket_array(getuser_map[&b"selectors".to_vec()]);
+    assert_eq!(selectors.len(), 2);
+
+    let selector_one = resp_socket_map_or_flat_map(&selectors[0]);
+    assert_eq!(
+        resp_socket_bulk(selector_one[&b"commands".to_vec()]),
+        b"+get +select|1"
+    );
+    assert_eq!(resp_socket_bulk(selector_one[&b"keys".to_vec()]), b"~foo:*");
+    assert_eq!(resp_socket_bulk(selector_one[&b"channels".to_vec()]), b"");
+    assert_eq!(
+        resp_socket_bulk(selector_one[&b"databases".to_vec()]),
+        b"db=1"
+    );
+
+    let selector_two = resp_socket_map_or_flat_map(&selectors[1]);
+    assert_eq!(
+        resp_socket_bulk(selector_two[&b"commands".to_vec()]),
+        b"+publish"
+    );
+    assert_eq!(resp_socket_bulk(selector_two[&b"keys".to_vec()]), b"");
+    assert_eq!(
+        resp_socket_bulk(selector_two[&b"channels".to_vec()]),
+        b"&alerts:*"
+    );
+    assert_eq!(
+        resp_socket_bulk(selector_two[&b"databases".to_vec()]),
+        b"alldbs"
+    );
+
+    let acl_list = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let acl_list_lines = resp_socket_array(&acl_list)
+        .iter()
+        .map(resp_socket_bulk)
+        .collect::<Vec<_>>();
+    let acl_list_text = acl_list_lines
+        .iter()
+        .map(|line| String::from_utf8_lossy(line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    assert!(acl_list_text.contains("(~foo:* resetchannels db=1 +get +select|1)"));
+    assert!(acl_list_text.contains("(resetchannels &alerts:* alldbs +publish)"));
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"selector", b"pw"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"SET", b"root:1", b"root-value"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let denied_get_root = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"GET", b"root:1"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_get_root.contains("NOPERM"));
+    assert!(denied_get_root.contains("get"));
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"GET", b"foo:1"]),
+        b"$9\r\ndb1-value\r\n",
+    )
+    .await;
+
+    let denied_set_db1 = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SET", b"foo:1", b"nope"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_set_db1.contains("NOPERM"));
+    assert!(denied_set_db1.contains("set"));
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut user,
+            &encode_resp_command(&[b"PUBLISH", b"alerts:1", b"hello"]),
+            timeout,
+        )
+        .await,
+        0
+    );
+
+    let denied_publish = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"PUBLISH", b"news:1", b"hello"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_publish.contains("NOPERM"));
+    assert!(denied_publish.contains("channel"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"selector", b"clearselectors"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let getuser_after_clear = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"selector"]),
+        timeout,
+    )
+    .await;
+    let getuser_after_clear_map = resp_socket_map_or_flat_map(&getuser_after_clear);
+    assert!(resp_socket_array(getuser_after_clear_map[&b"selectors".to_vec()]).is_empty());
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_select_after_clear =
+        send_and_read_error_line(&mut user, &encode_resp_command(&[b"SELECT", b"1"]), timeout)
+            .await;
+    assert!(denied_select_after_clear.contains("NOPERM"));
+    assert!(denied_select_after_clear.contains("select|1"));
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

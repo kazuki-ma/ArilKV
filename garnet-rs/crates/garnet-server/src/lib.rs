@@ -172,9 +172,7 @@ pub struct ServerMetrics {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct AclUserProfile {
-    pub(crate) enabled: bool,
-    pub(crate) nopass: bool,
+pub(crate) struct AclSelectorProfile {
     pub(crate) allow_all_commands: bool,
     pub(crate) allowed_categories: HashSet<Vec<u8>>,
     pub(crate) denied_categories: HashSet<Vec<u8>>,
@@ -185,14 +183,11 @@ pub(crate) struct AclUserProfile {
     pub(crate) channel_patterns: Vec<Vec<u8>>,
     pub(crate) allow_all_databases: bool,
     pub(crate) allowed_databases: BTreeSet<request_lifecycle::DbName>,
-    pub(crate) password_hashes: HashSet<Vec<u8>>,
 }
 
-impl AclUserProfile {
+impl AclSelectorProfile {
     pub(crate) fn default_superuser() -> Self {
         Self {
-            enabled: true,
-            nopass: true,
             allow_all_commands: true,
             allowed_categories: HashSet::new(),
             denied_categories: HashSet::new(),
@@ -203,14 +198,11 @@ impl AclUserProfile {
             channel_patterns: Vec::new(),
             allow_all_databases: true,
             allowed_databases: BTreeSet::new(),
-            password_hashes: HashSet::new(),
         }
     }
 
     pub(crate) fn restricted() -> Self {
         Self {
-            enabled: false,
-            nopass: false,
             allow_all_commands: false,
             allowed_categories: HashSet::new(),
             denied_categories: HashSet::new(),
@@ -221,6 +213,36 @@ impl AclUserProfile {
             channel_patterns: Vec::new(),
             allow_all_databases: true,
             allowed_databases: BTreeSet::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct AclUserProfile {
+    pub(crate) enabled: bool,
+    pub(crate) nopass: bool,
+    pub(crate) root_selector: AclSelectorProfile,
+    pub(crate) selectors: Vec<AclSelectorProfile>,
+    pub(crate) password_hashes: HashSet<Vec<u8>>,
+}
+
+impl AclUserProfile {
+    pub(crate) fn default_superuser() -> Self {
+        Self {
+            enabled: true,
+            nopass: true,
+            root_selector: AclSelectorProfile::default_superuser(),
+            selectors: Vec::new(),
+            password_hashes: HashSet::new(),
+        }
+    }
+
+    pub(crate) fn restricted() -> Self {
+        Self {
+            enabled: false,
+            nopass: false,
+            root_selector: AclSelectorProfile::restricted(),
+            selectors: Vec::new(),
             password_hashes: HashSet::new(),
         }
     }

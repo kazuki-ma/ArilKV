@@ -5,6 +5,7 @@
 use super::object_store::list_listpack_compatible;
 use super::resp::append_bulk_double;
 use super::*;
+use crate::AclSelectorProfile;
 use crate::AclUserProfile;
 use crate::acl_password_hash_hex;
 use crate::cluster_live_view::append_cluster_info_snapshot;
@@ -181,7 +182,7 @@ fn clear_acl_specific_rules_for_command(rules: &mut HashSet<Vec<u8>>, command: &
 }
 
 fn apply_acl_command_rule(
-    profile: &mut AclUserProfile,
+    profile: &mut AclSelectorProfile,
     token: &[u8],
     allow: bool,
 ) -> Result<(), String> {
@@ -272,12 +273,138 @@ fn is_valid_acl_password_hash(hash: &[u8]) -> bool {
     hash.len() == 64 && hash.iter().all(|byte| byte.is_ascii_hexdigit())
 }
 
+fn merge_acl_selector_arguments(modifiers: &[&[u8]]) -> Result<Vec<Vec<u8>>, String> {
+    let mut merged = Vec::with_capacity(modifiers.len());
+    let mut open_selector = None::<Vec<u8>>;
+    let mut opening_token = None::<Vec<u8>>;
+
+    for &token in modifiers {
+        let starts_selector = token.starts_with(b"(");
+        let ends_selector = token.ends_with(b")");
+
+        if open_selector.is_none() && starts_selector && !ends_selector {
+            open_selector = Some(token.to_vec());
+            opening_token = Some(token.to_vec());
+            continue;
+        }
+
+        if let Some(selector) = open_selector.as_mut() {
+            selector.push(b' ');
+            selector.extend_from_slice(token);
+            if ends_selector {
+                merged.push(open_selector.take().unwrap());
+                opening_token = None;
+            }
+            continue;
+        }
+
+        merged.push(token.to_vec());
+    }
+
+    if let Some(token) = opening_token {
+        return Err(format!(
+            "ERR Unmatched parenthesis in acl selector starting at '{}'.",
+            String::from_utf8_lossy(&token)
+        ));
+    }
+
+    Ok(merged)
+}
+
+fn apply_acl_selector_modifier(
+    profile: &mut AclSelectorProfile,
+    token: &[u8],
+) -> Result<(), String> {
+    if ascii_eq_ignore_case(token, b"RESETKEYS") {
+        profile.key_patterns.clear();
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"RESETCHANNELS") {
+        profile.allow_all_channels = false;
+        profile.channel_patterns.clear();
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"RESETDBS") {
+        profile.allow_all_databases = false;
+        profile.allowed_databases.clear();
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"ALLKEYS") {
+        profile.key_patterns.clear();
+        profile.key_patterns.push(b"*".to_vec());
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"ALLCHANNELS") {
+        profile.allow_all_channels = true;
+        profile.channel_patterns.clear();
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"ALLDBS") {
+        profile.allow_all_databases = true;
+        profile.allowed_databases.clear();
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"ALLCOMMANDS") || ascii_eq_ignore_case(token, b"+@ALL") {
+        profile.allow_all_commands = true;
+        profile.allowed_categories.clear();
+        profile.denied_categories.clear();
+        profile.allowed_commands.clear();
+        profile.denied_commands.clear();
+        return Ok(());
+    }
+    if ascii_eq_ignore_case(token, b"NOCOMMANDS") || ascii_eq_ignore_case(token, b"-@ALL") {
+        profile.allow_all_commands = false;
+        profile.allowed_categories.clear();
+        profile.denied_categories.clear();
+        profile.allowed_commands.clear();
+        profile.denied_commands.clear();
+        return Ok(());
+    }
+    if let Some(pattern) = token.strip_prefix(b"~") {
+        profile.key_patterns.push(pattern.to_vec());
+        return Ok(());
+    }
+    if let Some(pattern) = token.strip_prefix(b"&") {
+        profile.allow_all_channels = false;
+        profile.channel_patterns.push(pattern.to_vec());
+        return Ok(());
+    }
+    if let Some(databases) = token.strip_prefix(b"db=") {
+        if profile.allow_all_databases {
+            profile.allow_all_databases = false;
+            profile.allowed_databases.clear();
+        }
+        for database in parse_acl_database_rule(databases, token)? {
+            profile.allowed_databases.insert(database);
+        }
+        return Ok(());
+    }
+    if token.starts_with(b"+") {
+        apply_acl_command_rule(profile, token, true)?;
+        return Ok(());
+    }
+    if token.starts_with(b"-") {
+        apply_acl_command_rule(profile, token, false)?;
+        return Ok(());
+    }
+    Err(acl_setuser_syntax_error(token))
+}
+
+fn parse_acl_selector_profile(modifiers: &[&[u8]]) -> Result<AclSelectorProfile, String> {
+    let mut profile = AclSelectorProfile::restricted();
+    for &token in modifiers {
+        apply_acl_selector_modifier(&mut profile, token)?;
+    }
+    Ok(profile)
+}
+
 fn parse_acl_setuser_profile(
     existing: Option<AclUserProfile>,
     modifiers: &[&[u8]],
 ) -> Result<AclUserProfile, String> {
     let mut profile = existing.unwrap_or_else(AclUserProfile::restricted);
-    for token in modifiers {
+    let merged_modifiers = merge_acl_selector_arguments(modifiers)?;
+    for token in merged_modifiers.iter().map(Vec::as_slice) {
         if ascii_eq_ignore_case(token, b"RESET") {
             profile = AclUserProfile::restricted();
             continue;
@@ -292,6 +419,7 @@ fn parse_acl_setuser_profile(
         }
         if ascii_eq_ignore_case(token, b"NOPASS") {
             profile.nopass = true;
+            profile.password_hashes.clear();
             continue;
         }
         if ascii_eq_ignore_case(token, b"RESETPASS") {
@@ -299,68 +427,8 @@ fn parse_acl_setuser_profile(
             profile.password_hashes.clear();
             continue;
         }
-        if ascii_eq_ignore_case(token, b"RESETKEYS") {
-            profile.key_patterns.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"RESETCHANNELS") {
-            profile.allow_all_channels = false;
-            profile.channel_patterns.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"RESETDBS") {
-            profile.allow_all_databases = false;
-            profile.allowed_databases.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"ALLKEYS") {
-            profile.key_patterns.clear();
-            profile.key_patterns.push(b"*".to_vec());
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"ALLCHANNELS") {
-            profile.allow_all_channels = true;
-            profile.channel_patterns.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"ALLDBS") {
-            profile.allow_all_databases = true;
-            profile.allowed_databases.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"ALLCOMMANDS") || ascii_eq_ignore_case(token, b"+@ALL") {
-            profile.allow_all_commands = true;
-            profile.allowed_categories.clear();
-            profile.denied_categories.clear();
-            profile.allowed_commands.clear();
-            profile.denied_commands.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"NOCOMMANDS") || ascii_eq_ignore_case(token, b"-@ALL") {
-            profile.allow_all_commands = false;
-            profile.allowed_categories.clear();
-            profile.denied_categories.clear();
-            profile.allowed_commands.clear();
-            profile.denied_commands.clear();
-            continue;
-        }
-        if let Some(pattern) = token.strip_prefix(b"~") {
-            profile.key_patterns.push(pattern.to_vec());
-            continue;
-        }
-        if let Some(pattern) = token.strip_prefix(b"&") {
-            profile.allow_all_channels = false;
-            profile.channel_patterns.push(pattern.to_vec());
-            continue;
-        }
-        if let Some(databases) = token.strip_prefix(b"db=") {
-            if profile.allow_all_databases {
-                profile.allow_all_databases = false;
-                profile.allowed_databases.clear();
-            }
-            for database in parse_acl_database_rule(databases, token)? {
-                profile.allowed_databases.insert(database);
-            }
+        if ascii_eq_ignore_case(token, b"CLEARSELECTORS") {
+            profile.selectors.clear();
             continue;
         }
         if let Some(password) = token.strip_prefix(b">") {
@@ -396,15 +464,22 @@ fn parse_acl_setuser_profile(
                 .remove(password_hash.to_ascii_lowercase().as_slice());
             continue;
         }
-        if token.starts_with(b"+") {
-            apply_acl_command_rule(&mut profile, token, true)?;
+
+        if token.starts_with(b"(") {
+            if !token.ends_with(b")") {
+                return Err(acl_setuser_syntax_error(token));
+            }
+            let selector_body = &token[1..token.len() - 1];
+            let selector_modifiers = selector_body
+                .split(|byte| byte.is_ascii_whitespace())
+                .filter(|part| !part.is_empty())
+                .collect::<Vec<_>>();
+            let selector = parse_acl_selector_profile(&selector_modifiers)?;
+            profile.selectors.push(selector);
             continue;
         }
-        if token.starts_with(b"-") {
-            apply_acl_command_rule(&mut profile, token, false)?;
-            continue;
-        }
-        return Err(acl_setuser_syntax_error(token));
+
+        apply_acl_selector_modifier(&mut profile.root_selector, token)?;
     }
     Ok(profile)
 }
@@ -415,7 +490,7 @@ fn sorted_bytes(entries: impl IntoIterator<Item = Vec<u8>>) -> Vec<Vec<u8>> {
     entries
 }
 
-fn render_acl_commands(profile: &AclUserProfile) -> Vec<u8> {
+fn render_acl_commands(profile: &AclSelectorProfile) -> Vec<u8> {
     let mut parts = Vec::<Vec<u8>>::new();
     if profile.allow_all_commands {
         parts.push(b"+@all".to_vec());
@@ -454,7 +529,7 @@ fn render_acl_commands(profile: &AclUserProfile) -> Vec<u8> {
     join_acl_tokens(parts)
 }
 
-fn render_acl_keys(profile: &AclUserProfile) -> Vec<u8> {
+fn render_acl_keys(profile: &AclSelectorProfile) -> Vec<u8> {
     let mut parts = Vec::<Vec<u8>>::new();
     for pattern in sorted_bytes(profile.key_patterns.iter().cloned()) {
         let mut token = Vec::with_capacity(pattern.len() + 1);
@@ -465,7 +540,7 @@ fn render_acl_keys(profile: &AclUserProfile) -> Vec<u8> {
     join_acl_tokens(parts)
 }
 
-fn render_acl_channels(profile: &AclUserProfile) -> Vec<u8> {
+fn render_acl_channels(profile: &AclSelectorProfile) -> Vec<u8> {
     if profile.allow_all_channels {
         return b"&*".to_vec();
     }
@@ -499,7 +574,7 @@ fn parse_acl_database_rule(databases: &[u8], original_token: &[u8]) -> Result<Ve
     Ok(parsed.into_iter().collect())
 }
 
-fn render_acl_databases(profile: &AclUserProfile) -> Vec<u8> {
+fn render_acl_databases(profile: &AclSelectorProfile) -> Vec<u8> {
     if profile.allow_all_databases {
         return b"alldbs".to_vec();
     }
@@ -528,29 +603,19 @@ fn join_acl_tokens(parts: Vec<Vec<u8>>) -> Vec<u8> {
     out
 }
 
-fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
-    let mut parts = vec![
-        b"user".to_vec(),
-        username.to_vec(),
-        if profile.enabled {
-            b"on".to_vec()
-        } else {
-            b"off".to_vec()
-        },
-    ];
-    if profile.nopass {
-        parts.push(b"nopass".to_vec());
-    }
-    parts.push(b"sanitize-payload".to_vec());
+fn render_acl_selector(profile: &AclSelectorProfile) -> Vec<u8> {
+    let mut parts = Vec::<Vec<u8>>::new();
 
     let rendered_keys = render_acl_keys(profile);
     if !rendered_keys.is_empty() {
         parts.extend(
             rendered_keys
                 .split(|byte| *byte == b' ')
+                .filter(|part| !part.is_empty())
                 .map(|part| part.to_vec()),
         );
     }
+
     if profile.allow_all_channels {
         parts.push(b"&*".to_vec());
     } else {
@@ -565,15 +630,15 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
             );
         }
     }
+
     if profile.allow_all_databases {
         parts.push(b"alldbs".to_vec());
-    } else {
+    } else if profile.allowed_databases.is_empty() {
         parts.push(b"resetdbs".to_vec());
-        let rendered_databases = render_acl_databases(profile);
-        if !rendered_databases.is_empty() {
-            parts.push(rendered_databases);
-        }
+    } else {
+        parts.push(render_acl_databases(profile));
     }
+
     let rendered_commands = render_acl_commands(profile);
     if !rendered_commands.is_empty() {
         parts.extend(
@@ -582,6 +647,73 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
                 .filter(|part| !part.is_empty())
                 .map(|part| part.to_vec()),
         );
+    }
+
+    join_acl_tokens(parts)
+}
+
+fn append_acl_getuser_selector_description(
+    response_out: &mut Vec<u8>,
+    profile: &AclSelectorProfile,
+    resp3: bool,
+) {
+    if resp3 {
+        append_map_length(response_out, 4);
+    } else {
+        append_array_length(response_out, 8);
+    }
+
+    append_bulk_string(response_out, b"commands");
+    append_bulk_string(response_out, &render_acl_commands(profile));
+
+    append_bulk_string(response_out, b"keys");
+    append_bulk_string(response_out, &render_acl_keys(profile));
+
+    append_bulk_string(response_out, b"channels");
+    append_bulk_string(response_out, &render_acl_channels(profile));
+
+    append_bulk_string(response_out, b"databases");
+    append_bulk_string(response_out, &render_acl_databases(profile));
+}
+
+fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
+    let mut parts = vec![
+        b"user".to_vec(),
+        username.to_vec(),
+        if profile.enabled {
+            b"on".to_vec()
+        } else {
+            b"off".to_vec()
+        },
+    ];
+    if profile.nopass {
+        parts.push(b"nopass".to_vec());
+    }
+    parts.push(b"sanitize-payload".to_vec());
+    for password_hash in sorted_bytes(profile.password_hashes.iter().cloned()) {
+        let mut token = Vec::with_capacity(password_hash.len() + 1);
+        token.push(b'#');
+        token.extend_from_slice(&password_hash);
+        parts.push(token);
+    }
+
+    let rendered_root_selector = render_acl_selector(&profile.root_selector);
+    if !rendered_root_selector.is_empty() {
+        parts.extend(
+            rendered_root_selector
+                .split(|byte| *byte == b' ')
+                .filter(|part| !part.is_empty())
+                .map(|part| part.to_vec()),
+        );
+    }
+
+    for selector in &profile.selectors {
+        let rendered_selector = render_acl_selector(selector);
+        let mut wrapped_selector = Vec::with_capacity(rendered_selector.len() + 2);
+        wrapped_selector.push(b'(');
+        wrapped_selector.extend_from_slice(&rendered_selector);
+        wrapped_selector.push(b')');
+        parts.push(wrapped_selector);
     }
     join_acl_tokens(parts)
 }
@@ -4178,23 +4310,26 @@ impl RequestProcessor {
             }
 
             append_bulk_string(response_out, b"commands");
-            let commands = render_acl_commands(&profile);
+            let commands = render_acl_commands(&profile.root_selector);
             append_bulk_string(response_out, &commands);
 
             append_bulk_string(response_out, b"keys");
-            let keys = render_acl_keys(&profile);
+            let keys = render_acl_keys(&profile.root_selector);
             append_bulk_string(response_out, &keys);
 
             append_bulk_string(response_out, b"channels");
-            let channels = render_acl_channels(&profile);
+            let channels = render_acl_channels(&profile.root_selector);
             append_bulk_string(response_out, &channels);
 
             append_bulk_string(response_out, b"databases");
-            let databases = render_acl_databases(&profile);
+            let databases = render_acl_databases(&profile.root_selector);
             append_bulk_string(response_out, &databases);
 
             append_bulk_string(response_out, b"selectors");
-            append_array_length(response_out, 0);
+            append_array_length(response_out, profile.selectors.len());
+            for selector in &profile.selectors {
+                append_acl_getuser_selector_description(response_out, selector, resp3);
+            }
 
             return Ok(());
         }

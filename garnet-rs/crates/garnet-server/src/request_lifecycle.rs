@@ -10,6 +10,7 @@
 //! - formal/tla/specs/StreamPelOwnership.tla
 //! - formal/tla/specs/SwapDbWatchVisibility.tla
 
+use crate::AclSelectorProfile;
 use crate::AclUserProfile;
 use crate::ClientId;
 use crate::CommandId;
@@ -4259,27 +4260,53 @@ impl RequestProcessor {
 
         let base_token = acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec());
         let specific_token = acl_specific_rule_token(command, args);
-        if !acl_profile_allows_command(&profile, command, args, specific_token.as_deref()) {
-            return Err(AclAuthorizationError::Command(
-                specific_token.unwrap_or(base_token),
-            ));
+        let mut best_error = None::<AclSelectorAuthorizationError>;
+
+        for selector in std::iter::once(&profile.root_selector).chain(profile.selectors.iter()) {
+            match acl_authorize_selector_command(
+                selector,
+                command,
+                args,
+                specific_token.as_deref(),
+                selected_db,
+                self.configured_databases(),
+            ) {
+                Ok(()) => return Ok(()),
+                Err(error) => {
+                    let replace = match best_error.as_ref() {
+                        Some(current_best) => {
+                            let best_priority = acl_selector_error_priority(current_best);
+                            let error_priority = acl_selector_error_priority(&error);
+                            let best_index = acl_selector_error_argument_index(current_best);
+                            let error_index = acl_selector_error_argument_index(&error);
+                            error_priority > best_priority
+                                || (error_priority == best_priority && error_index > best_index)
+                        }
+                        None => true,
+                    };
+                    if replace {
+                        best_error = Some(error);
+                    }
+                }
+            }
         }
-        if let Some(database) = acl_first_denied_database(
-            &profile,
-            command,
-            args,
-            selected_db,
-            self.configured_databases(),
-        ) {
-            return Err(AclAuthorizationError::Database(database));
-        }
-        if let Some(key) = acl_first_denied_key(&profile.key_patterns, command, args) {
-            return Err(AclAuthorizationError::Key(key));
-        }
-        if let Some(channel) = acl_first_denied_channel(&profile, command, args) {
-            return Err(AclAuthorizationError::Channel(channel));
-        }
-        Ok(())
+
+        let best_error = best_error.unwrap_or_else(|| {
+            AclSelectorAuthorizationError::Command(specific_token.unwrap_or(base_token))
+        });
+
+        Err(match best_error {
+            AclSelectorAuthorizationError::Database(_, database) => {
+                AclAuthorizationError::Database(database)
+            }
+            AclSelectorAuthorizationError::Command(command) => {
+                AclAuthorizationError::Command(command)
+            }
+            AclSelectorAuthorizationError::Key(_, key) => AclAuthorizationError::Key(key),
+            AclSelectorAuthorizationError::Channel(_, channel) => {
+                AclAuthorizationError::Channel(channel)
+            }
+        })
     }
 
     pub(crate) fn acl_authorize_client_command(
@@ -4461,12 +4488,12 @@ impl RequestProcessor {
                 continue;
             }
 
-            let channels_allowed = channels.iter().all(|channel| {
-                profile.enabled && acl_profile_allows_single_channel(profile, channel)
-            });
-            let patterns_allowed = patterns.iter().all(|pattern| {
-                profile.enabled && acl_profile_allows_single_channel(profile, pattern)
-            });
+            let channels_allowed = channels
+                .iter()
+                .all(|channel| profile.enabled && acl_user_allows_single_channel(profile, channel));
+            let patterns_allowed = patterns
+                .iter()
+                .all(|pattern| profile.enabled && acl_user_allows_single_channel(profile, pattern));
             if channels_allowed && patterns_allowed {
                 continue;
             }
@@ -6677,8 +6704,33 @@ fn acl_specific_rule_token(command: CommandId, args: &[&[u8]]) -> Option<Vec<u8>
     Some(token)
 }
 
-fn acl_profile_allows_command(
-    profile: &AclUserProfile,
+enum AclSelectorAuthorizationError {
+    Database(usize, Vec<u8>),
+    Command(Vec<u8>),
+    Key(usize, Vec<u8>),
+    Channel(usize, Vec<u8>),
+}
+
+fn acl_selector_error_priority(error: &AclSelectorAuthorizationError) -> u8 {
+    match error {
+        AclSelectorAuthorizationError::Database(_, _) => 0,
+        AclSelectorAuthorizationError::Command(_) => 1,
+        AclSelectorAuthorizationError::Key(_, _) => 2,
+        AclSelectorAuthorizationError::Channel(_, _) => 3,
+    }
+}
+
+fn acl_selector_error_argument_index(error: &AclSelectorAuthorizationError) -> usize {
+    match error {
+        AclSelectorAuthorizationError::Database(index, _)
+        | AclSelectorAuthorizationError::Key(index, _)
+        | AclSelectorAuthorizationError::Channel(index, _) => *index,
+        AclSelectorAuthorizationError::Command(_) => 0,
+    }
+}
+
+fn acl_selector_allows_command(
+    selector: &AclSelectorProfile,
     command: CommandId,
     args: &[&[u8]],
     specific_token: Option<&[u8]>,
@@ -6687,33 +6739,33 @@ fn acl_profile_allows_command(
         return false;
     };
     if let Some(token) = specific_token {
-        if profile.denied_commands.contains(token) {
+        if selector.denied_commands.contains(token) {
             return false;
         }
-        if profile.allowed_commands.contains(token) {
+        if selector.allowed_commands.contains(token) {
             return true;
         }
     }
-    if profile.denied_commands.contains(base_token.as_slice()) {
+    if selector.denied_commands.contains(base_token.as_slice()) {
         return false;
     }
-    if profile.allowed_commands.contains(base_token.as_slice()) {
+    if selector.allowed_commands.contains(base_token.as_slice()) {
         return true;
     }
 
     let categories = acl_command_categories(command, args);
     if categories
         .iter()
-        .any(|category| profile.denied_categories.contains(category.as_bytes()))
+        .any(|category| selector.denied_categories.contains(category.as_bytes()))
     {
         return false;
     }
-    if profile.allow_all_commands {
+    if selector.allow_all_commands {
         return true;
     }
     categories
         .iter()
-        .any(|category| profile.allowed_categories.contains(category.as_bytes()))
+        .any(|category| selector.allowed_categories.contains(category.as_bytes()))
 }
 
 fn acl_command_is_blocking(command: CommandId, args: &[&[u8]]) -> bool {
@@ -7000,28 +7052,28 @@ fn acl_command_categories(command: CommandId, args: &[&[u8]]) -> Vec<&'static st
 }
 
 fn acl_first_denied_key(
-    key_patterns: &[Vec<u8>],
+    selector: &AclSelectorProfile,
     command: CommandId,
     args: &[&[u8]],
-) -> Option<Vec<u8>> {
+) -> Option<(usize, Vec<u8>)> {
     let keys = acl_command_key_arguments(command, args);
     if keys.is_empty() {
         return None;
     }
-    if key_patterns.is_empty() {
-        return Some(keys[0].to_vec());
+    if selector.key_patterns.is_empty() {
+        return Some((1, keys[0].to_vec()));
     }
-    for key in keys {
-        let allowed = key_patterns.iter().any(|pattern| {
+    for (index, key) in keys.iter().enumerate() {
+        let allowed = selector.key_patterns.iter().any(|pattern| {
             self::server_commands::redis_glob_match(
                 pattern,
-                key,
+                *key,
                 self::server_commands::CaseSensitivity::Sensitive,
                 0,
             )
         });
         if !allowed {
-            return Some(key.to_vec());
+            return Some((index.saturating_add(1), (*key).to_vec()));
         }
     }
     None
@@ -7062,17 +7114,17 @@ fn acl_command_key_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&
 }
 
 fn acl_first_denied_channel(
-    profile: &AclUserProfile,
+    selector: &AclSelectorProfile,
     command: CommandId,
     args: &[&[u8]],
-) -> Option<Vec<u8>> {
+) -> Option<(usize, Vec<u8>)> {
     let channels = acl_command_channel_arguments(command, args);
     if channels.is_empty() {
         return None;
     }
-    for channel in channels {
-        if !acl_profile_allows_single_channel(profile, channel) {
-            return Some(channel.to_vec());
+    for (index, channel) in channels.iter().enumerate() {
+        if !acl_selector_allows_single_channel(selector, channel) {
+            return Some((index.saturating_add(1), (*channel).to_vec()));
         }
     }
     None
@@ -7088,14 +7140,14 @@ fn acl_command_channel_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> V
     }
 }
 
-fn acl_profile_allows_single_channel(profile: &AclUserProfile, channel: &[u8]) -> bool {
-    if profile.allow_all_channels {
+fn acl_selector_allows_single_channel(selector: &AclSelectorProfile, channel: &[u8]) -> bool {
+    if selector.allow_all_channels {
         return true;
     }
-    if profile.channel_patterns.is_empty() {
+    if selector.channel_patterns.is_empty() {
         return false;
     }
-    profile.channel_patterns.iter().any(|pattern| {
+    selector.channel_patterns.iter().any(|pattern| {
         self::server_commands::redis_glob_match(
             pattern,
             channel,
@@ -7105,18 +7157,24 @@ fn acl_profile_allows_single_channel(profile: &AclUserProfile, channel: &[u8]) -
     })
 }
 
-fn acl_profile_allows_database(profile: &AclUserProfile, database: DbName) -> bool {
-    profile.allow_all_databases || profile.allowed_databases.contains(&database)
+fn acl_user_allows_single_channel(profile: &AclUserProfile, channel: &[u8]) -> bool {
+    std::iter::once(&profile.root_selector)
+        .chain(profile.selectors.iter())
+        .any(|selector| acl_selector_allows_single_channel(selector, channel))
 }
 
-fn acl_profile_allows_all_configured_databases(
-    profile: &AclUserProfile,
+fn acl_selector_allows_database(selector: &AclSelectorProfile, database: DbName) -> bool {
+    selector.allow_all_databases || selector.allowed_databases.contains(&database)
+}
+
+fn acl_selector_allows_all_configured_databases(
+    selector: &AclSelectorProfile,
     configured_databases: usize,
 ) -> bool {
-    if profile.allow_all_databases {
+    if selector.allow_all_databases {
         return true;
     }
-    (0..configured_databases).all(|index| profile.allowed_databases.contains(&DbName::new(index)))
+    (0..configured_databases).all(|index| selector.allowed_databases.contains(&DbName::new(index)))
 }
 
 fn acl_render_database_token(database: DbName) -> Vec<u8> {
@@ -7211,16 +7269,18 @@ fn acl_explicit_database_targets(
     command: CommandId,
     args: &[&[u8]],
     configured_databases: usize,
-) -> Vec<DbName> {
+) -> Vec<(usize, DbName)> {
     match command {
         CommandId::Select => args
             .get(1)
             .and_then(|value| parse_acl_database_token(value, configured_databases))
+            .map(|database| (1, database))
             .into_iter()
             .collect(),
         CommandId::Move => args
             .get(2)
             .and_then(|value| parse_acl_database_token(value, configured_databases))
+            .map(|database| (2, database))
             .into_iter()
             .collect(),
         CommandId::Swapdb => {
@@ -7229,13 +7289,13 @@ fn acl_explicit_database_targets(
                 .get(1)
                 .and_then(|value| parse_acl_database_token(value, configured_databases))
             {
-                databases.push(index1);
+                databases.push((1, index1));
             }
             if let Some(index2) = args
                 .get(2)
                 .and_then(|value| parse_acl_database_token(value, configured_databases))
             {
-                databases.push(index2);
+                databases.push((2, index2));
             }
             databases
         }
@@ -7246,6 +7306,7 @@ fn acl_explicit_database_targets(
                     return args
                         .get(index + 1)
                         .and_then(|value| parse_acl_database_token(value, configured_databases))
+                        .map(|database| (index + 1, database))
                         .into_iter()
                         .collect();
                 }
@@ -7260,6 +7321,7 @@ fn acl_explicit_database_targets(
         CommandId::Migrate => args
             .get(4)
             .and_then(|value| parse_acl_database_token(value, configured_databases))
+            .map(|database| (4, database))
             .into_iter()
             .collect(),
         _ => Vec::new(),
@@ -7267,30 +7329,69 @@ fn acl_explicit_database_targets(
 }
 
 fn acl_first_denied_database(
-    profile: &AclUserProfile,
+    selector: &AclSelectorProfile,
     command: CommandId,
     args: &[&[u8]],
     selected_db: DbName,
     configured_databases: usize,
-) -> Option<Vec<u8>> {
+) -> Option<(usize, Vec<u8>)> {
     if command == CommandId::Flushall {
-        if acl_profile_allows_all_configured_databases(profile, configured_databases) {
+        if acl_selector_allows_all_configured_databases(selector, configured_databases) {
             return None;
         }
-        return acl_base_command_token(args);
+        return acl_base_command_token(args).map(|token| (0, token));
     }
 
-    for database in acl_explicit_database_targets(command, args, configured_databases) {
-        if !acl_profile_allows_database(profile, database) {
-            return Some(acl_render_database_token(database));
+    for (argument_index, database) in
+        acl_explicit_database_targets(command, args, configured_databases)
+    {
+        if !acl_selector_allows_database(selector, database) {
+            return Some((argument_index, acl_render_database_token(database)));
         }
     }
 
-    if acl_command_uses_selected_db(command) && !acl_profile_allows_database(profile, selected_db) {
-        return Some(acl_render_database_token(selected_db));
+    if acl_command_uses_selected_db(command) && !acl_selector_allows_database(selector, selected_db)
+    {
+        return Some((0, acl_render_database_token(selected_db)));
     }
 
     None
+}
+
+fn acl_authorize_selector_command(
+    selector: &AclSelectorProfile,
+    command: CommandId,
+    args: &[&[u8]],
+    specific_token: Option<&[u8]>,
+    selected_db: DbName,
+    configured_databases: usize,
+) -> Result<(), AclSelectorAuthorizationError> {
+    let base_token = acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec());
+    if !acl_selector_allows_command(selector, command, args, specific_token) {
+        return Err(AclSelectorAuthorizationError::Command(
+            specific_token
+                .map(|token| token.to_vec())
+                .unwrap_or(base_token),
+        ));
+    }
+    if let Some((argument_index, database)) =
+        acl_first_denied_database(selector, command, args, selected_db, configured_databases)
+    {
+        return Err(AclSelectorAuthorizationError::Database(
+            argument_index,
+            database,
+        ));
+    }
+    if let Some((argument_index, key)) = acl_first_denied_key(selector, command, args) {
+        return Err(AclSelectorAuthorizationError::Key(argument_index, key));
+    }
+    if let Some((argument_index, channel)) = acl_first_denied_channel(selector, command, args) {
+        return Err(AclSelectorAuthorizationError::Channel(
+            argument_index,
+            channel,
+        ));
+    }
+    Ok(())
 }
 
 fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientId) -> usize {
