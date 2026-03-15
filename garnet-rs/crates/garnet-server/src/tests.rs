@@ -2157,6 +2157,130 @@ async fn acl_log_distinguishes_multi_context_like_external_scenario() {
 }
 
 #[tokio::test]
+async fn acl_database_permissions_and_log_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"dbuser", b"reset", b"on", b"nopass", b"db=0", b"+@all", b"~*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let getuser = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"dbuser"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        resp_socket_contains_bulk(&getuser, b"databases"),
+        "ACL GETUSER should expose the databases field"
+    );
+    assert!(
+        resp_socket_contains_bulk(&getuser, b"db=0"),
+        "ACL GETUSER should expose db=0"
+    );
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"dbuser", b"password"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let denied_select =
+        send_and_read_error_line(&mut user, &encode_resp_command(&[b"SELECT", b"1"]), timeout)
+            .await;
+    assert!(denied_select.contains("NOPERM"));
+    assert!(denied_select.contains("database"));
+
+    let denied_swapdb = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SWAPDB", b"0", b"2"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_swapdb.contains("NOPERM"));
+    assert!(denied_swapdb.contains("database"));
+
+    let denied_flushall =
+        send_and_read_error_line(&mut user, &encode_resp_command(&[b"FLUSHALL"]), timeout).await;
+    assert!(denied_flushall.contains("NOPERM"));
+    assert!(denied_flushall.contains("database"));
+
+    let acl_log =
+        send_and_read_resp_value(&mut admin, &encode_resp_command(&[b"ACL", b"LOG"]), timeout)
+            .await;
+    let entries = resp_socket_array(&acl_log);
+    assert_eq!(entries.len(), 3);
+
+    let flushall_entry = resp_socket_map_or_flat_map(&entries[0]);
+    assert_eq!(
+        resp_socket_bulk(flushall_entry[&b"reason".to_vec()]),
+        b"database"
+    );
+    assert_eq!(
+        resp_socket_bulk(flushall_entry[&b"object".to_vec()]),
+        b"flushall"
+    );
+
+    let swapdb_entry = resp_socket_map_or_flat_map(&entries[1]);
+    assert_eq!(
+        resp_socket_bulk(swapdb_entry[&b"reason".to_vec()]),
+        b"database"
+    );
+    assert_eq!(resp_socket_bulk(swapdb_entry[&b"object".to_vec()]), b"2");
+
+    let select_entry = resp_socket_map_or_flat_map(&entries[2]);
+    assert_eq!(
+        resp_socket_bulk(select_entry[&b"reason".to_vec()]),
+        b"database"
+    );
+    assert_eq!(resp_socket_bulk(select_entry[&b"object".to_vec()]), b"1");
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"dbuser", b"resetdbs", b"db=0,1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_select_again =
+        send_and_read_error_line(&mut user, &encode_resp_command(&[b"SELECT", b"2"]), timeout)
+            .await;
+    assert!(denied_select_again.contains("NOPERM"));
+    assert!(denied_select_again.contains("database"));
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"dbuser", b"alldbs"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut user, &encode_resp_command(&[b"FLUSHALL"]), b"+OK\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

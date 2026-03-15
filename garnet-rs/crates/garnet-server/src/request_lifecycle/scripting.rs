@@ -1591,7 +1591,7 @@ impl RequestProcessor {
                 Ok(())
             })?;
             let acl_check_cmd_fn = scope.create_function(move |_, values: MultiValue| {
-                self.execute_lua_acl_check_cmd(values)
+                self.execute_lua_acl_check_cmd(selected_db, values)
             })?;
             let log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
@@ -1989,7 +1989,7 @@ impl RequestProcessor {
             })?;
             let runtime_acl_check_cmd_fn =
                 scope.create_function(move |_, values: MultiValue| {
-                    self.execute_lua_acl_check_cmd(values)
+                    self.execute_lua_acl_check_cmd(selected_db, values)
                 })?;
             let runtime_log_fn =
                 scope.create_function(|_, (_level, _message): (LuaValue, LuaValue)| Ok(()))?;
@@ -2210,7 +2210,9 @@ impl RequestProcessor {
                 current_request_client_id().and_then(|client_id| metrics.client_user(client_id))
             })
             .unwrap_or_else(|| b"default".to_vec());
-        if let Err(error) = self.acl_authorize_user_command(&current_user, command, &arg_refs) {
+        if let Err(error) =
+            self.acl_authorize_user_command(&current_user, selected_db, command, &arg_refs)
+        {
             self.record_command_rejection(arg_refs[0]);
             self.record_error_reply(b"NOPERM");
             if let Some(client_id) = current_request_client_id() {
@@ -2268,7 +2270,11 @@ impl RequestProcessor {
         }
     }
 
-    fn execute_lua_acl_check_cmd(&self, values: MultiValue) -> mlua::Result<bool> {
+    fn execute_lua_acl_check_cmd(
+        &self,
+        selected_db: DbName,
+        values: MultiValue,
+    ) -> mlua::Result<bool> {
         if values.is_empty() {
             return Err(LuaError::RuntimeError(
                 "ERR redis.acl_check_cmd() requires a command argument".to_string(),
@@ -2291,17 +2297,22 @@ impl RequestProcessor {
             ));
         }
 
-        Ok(self.current_user_acl_allows(command, &arg_refs))
+        Ok(self.current_user_acl_allows(selected_db, command, &arg_refs))
     }
 
-    fn current_user_acl_allows(&self, command: CommandId, arg_refs: &[&[u8]]) -> bool {
+    fn current_user_acl_allows(
+        &self,
+        selected_db: DbName,
+        command: CommandId,
+        arg_refs: &[&[u8]],
+    ) -> bool {
         let Some(metrics) = self.server_metrics.get() else {
             return true;
         };
         let user = current_request_client_id()
             .and_then(|client_id| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
-        self.acl_authorize_user_command(&user, command, arg_refs)
+        self.acl_authorize_user_command(&user, selected_db, command, arg_refs)
             .is_ok()
     }
 

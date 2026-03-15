@@ -20796,11 +20796,11 @@ fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
         "ACL CAT read should not contain write-only command 'set'"
     );
 
-    // ACL GETUSER default returns 12-element array in RESP2
+    // ACL GETUSER default returns 14-element array in RESP2
     let getuser = execute_command_line(&processor, "ACL GETUSER default").unwrap();
     assert!(
-        getuser.starts_with(b"*12\r\n"),
-        "ACL GETUSER default should return 12-element array in RESP2, got: {:?}",
+        getuser.starts_with(b"*14\r\n"),
+        "ACL GETUSER default should return 14-element array in RESP2, got: {:?}",
         std::str::from_utf8(&getuser[..getuser.len().min(60)]).unwrap_or("(non-utf8)")
     );
     let getuser_str = std::str::from_utf8(&getuser).unwrap();
@@ -20816,6 +20816,10 @@ fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
         getuser_str.contains("+@all"),
         "ACL GETUSER should contain '+@all'"
     );
+    assert!(
+        getuser_str.contains("alldbs"),
+        "ACL GETUSER should contain 'alldbs'"
+    );
 
     // ACL GETUSER nonexistent returns null
     let getuser_none = execute_command_line(&processor, "ACL GETUSER unknown").unwrap();
@@ -20825,8 +20829,8 @@ fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
     processor.set_resp_protocol_version(RespProtocolVersion::Resp3);
     let getuser_resp3 = execute_command_line(&processor, "ACL GETUSER default").unwrap();
     assert!(
-        getuser_resp3.starts_with(b"%6\r\n"),
-        "ACL GETUSER in RESP3 should return 6-entry map"
+        getuser_resp3.starts_with(b"%7\r\n"),
+        "ACL GETUSER in RESP3 should return 7-entry map"
     );
 
     // ACL GETUSER nonexistent in RESP3 returns _\r\n

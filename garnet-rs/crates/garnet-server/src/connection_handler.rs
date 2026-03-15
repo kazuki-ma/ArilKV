@@ -1016,9 +1016,12 @@ pub(crate) async fn handle_connection(
             };
 
             if let Some(acl_args) = acl_args.as_ref() {
-                if let Err(error) =
-                    processor.acl_authorize_client_command(client_id, command, acl_args)
-                {
+                if let Err(error) = processor.acl_authorize_client_command(
+                    client_id,
+                    client_state.selected_db,
+                    command,
+                    acl_args,
+                ) {
                     append_acl_denial_response(
                         &processor,
                         client_id,
@@ -1387,9 +1390,12 @@ pub(crate) async fn handle_connection(
                         .iter()
                         .map(arg_slice_bytes)
                         .collect::<Vec<_>>();
-                    if let Err(error) =
-                        processor.acl_authorize_client_command(client_id, command, &acl_args)
-                    {
+                    if let Err(error) = processor.acl_authorize_client_command(
+                        client_id,
+                        client_state.selected_db,
+                        command,
+                        &acl_args,
+                    ) {
                         append_acl_denial_response(
                             &processor,
                             client_id,
@@ -1692,9 +1698,12 @@ pub(crate) async fn handle_connection(
                                 .iter()
                                 .map(arg_slice_bytes)
                                 .collect::<Vec<_>>();
-                            if let Err(error) = processor
-                                .acl_authorize_client_command(client_id, command, &acl_args)
-                            {
+                            if let Err(error) = processor.acl_authorize_client_command(
+                                client_id,
+                                client_state.selected_db,
+                                command,
+                                &acl_args,
+                            ) {
                                 transaction.aborted = true;
                                 append_acl_denial_response(
                                     &processor,
@@ -2697,7 +2706,7 @@ async fn execute_blocking_frame_on_owner_thread(
         if !command_bypasses_acl(command) {
             let acl_args = args.iter().map(arg_slice_bytes).collect::<Vec<_>>();
             if let Err(error) =
-                processor.acl_authorize_client_command(client_id, command, &acl_args)
+                processor.acl_authorize_client_command(client_id, selected_db, command, &acl_args)
             {
                 clear_blocking_request_state(
                     processor,

@@ -308,6 +308,11 @@ fn parse_acl_setuser_profile(
             profile.channel_patterns.clear();
             continue;
         }
+        if ascii_eq_ignore_case(token, b"RESETDBS") {
+            profile.allow_all_databases = false;
+            profile.allowed_databases.clear();
+            continue;
+        }
         if ascii_eq_ignore_case(token, b"ALLKEYS") {
             profile.key_patterns.clear();
             profile.key_patterns.push(b"*".to_vec());
@@ -316,6 +321,11 @@ fn parse_acl_setuser_profile(
         if ascii_eq_ignore_case(token, b"ALLCHANNELS") {
             profile.allow_all_channels = true;
             profile.channel_patterns.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ALLDBS") {
+            profile.allow_all_databases = true;
+            profile.allowed_databases.clear();
             continue;
         }
         if ascii_eq_ignore_case(token, b"ALLCOMMANDS") || ascii_eq_ignore_case(token, b"+@ALL") {
@@ -341,6 +351,16 @@ fn parse_acl_setuser_profile(
         if let Some(pattern) = token.strip_prefix(b"&") {
             profile.allow_all_channels = false;
             profile.channel_patterns.push(pattern.to_vec());
+            continue;
+        }
+        if let Some(databases) = token.strip_prefix(b"db=") {
+            if profile.allow_all_databases {
+                profile.allow_all_databases = false;
+                profile.allowed_databases.clear();
+            }
+            for database in parse_acl_database_rule(databases, token)? {
+                profile.allowed_databases.insert(database);
+            }
             continue;
         }
         if let Some(password) = token.strip_prefix(b">") {
@@ -459,6 +479,44 @@ fn render_acl_channels(profile: &AclUserProfile) -> Vec<u8> {
     join_acl_tokens(parts)
 }
 
+fn parse_acl_database_rule(databases: &[u8], original_token: &[u8]) -> Result<Vec<DbName>, String> {
+    if databases.is_empty() {
+        return Err(acl_setuser_syntax_error(original_token));
+    }
+    let mut parsed = BTreeSet::new();
+    for token in databases.split(|byte| *byte == b',') {
+        if token.is_empty() {
+            return Err(acl_setuser_syntax_error(original_token));
+        }
+        let Some(database) = parse_u64_ascii(token) else {
+            return Err(acl_setuser_syntax_error(original_token));
+        };
+        let Ok(database) = usize::try_from(database) else {
+            return Err(acl_setuser_syntax_error(original_token));
+        };
+        parsed.insert(DbName::new(database));
+    }
+    Ok(parsed.into_iter().collect())
+}
+
+fn render_acl_databases(profile: &AclUserProfile) -> Vec<u8> {
+    if profile.allow_all_databases {
+        return b"alldbs".to_vec();
+    }
+    if profile.allowed_databases.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = b"db=".to_vec();
+    for (index, database) in profile.allowed_databases.iter().enumerate() {
+        if index > 0 {
+            out.push(b',');
+        }
+        out.extend_from_slice(usize::from(*database).to_string().as_bytes());
+    }
+    out
+}
+
 fn join_acl_tokens(parts: Vec<Vec<u8>>) -> Vec<u8> {
     let mut out = Vec::new();
     for (index, part) in parts.iter().enumerate() {
@@ -505,6 +563,15 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
                     .filter(|part| !part.is_empty())
                     .map(|part| part.to_vec()),
             );
+        }
+    }
+    if profile.allow_all_databases {
+        parts.push(b"alldbs".to_vec());
+    } else {
+        parts.push(b"resetdbs".to_vec());
+        let rendered_databases = render_acl_databases(profile);
+        if !rendered_databases.is_empty() {
+            parts.push(rendered_databases);
         }
     }
     let rendered_commands = render_acl_commands(profile);
@@ -3886,6 +3953,7 @@ impl RequestProcessor {
 
     pub(super) fn handle_acl(
         &self,
+        selected_db: DbName,
         args: &[&[u8]],
         response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
@@ -4055,7 +4123,7 @@ impl RequestProcessor {
                 append_error(response_out, b"ERR Invalid command specified");
                 return Ok(());
             };
-            match self.acl_authorize_user_command(args[2], command, dryrun_args) {
+            match self.acl_authorize_user_command(args[2], selected_db, command, dryrun_args) {
                 Ok(()) => append_simple_string(response_out, b"OK"),
                 Err(error) => {
                     let payload = super::acl_denial_message_for_user(args[2], &error);
@@ -4076,12 +4144,12 @@ impl RequestProcessor {
                 return Ok(());
             };
             let resp3 = self.resp_protocol_version().is_resp3();
-            // Valkey emits a 6-field map: flags, passwords, commands, keys,
-            // channels, selectors.
+            // Valkey emits a 7-field map: flags, passwords, commands, keys,
+            // channels, databases, selectors.
             if resp3 {
-                append_map_length(response_out, 6);
+                append_map_length(response_out, 7);
             } else {
-                append_array_length(response_out, 12);
+                append_array_length(response_out, 14);
             }
 
             append_bulk_string(response_out, b"flags");
@@ -4120,6 +4188,10 @@ impl RequestProcessor {
             append_bulk_string(response_out, b"channels");
             let channels = render_acl_channels(&profile);
             append_bulk_string(response_out, &channels);
+
+            append_bulk_string(response_out, b"databases");
+            let databases = render_acl_databases(&profile);
+            append_bulk_string(response_out, &databases);
 
             append_bulk_string(response_out, b"selectors");
             append_array_length(response_out, 0);

@@ -87,6 +87,7 @@ pub use shard_owner_threads::ShardOwnerThreadPoolError;
 use sha2::Digest;
 use sha2::Sha256;
 use std::collections::BTreeMap;
+use std::collections::BTreeSet;
 use std::collections::HashSet;
 use std::fmt;
 use std::net::SocketAddr;
@@ -182,6 +183,8 @@ pub(crate) struct AclUserProfile {
     pub(crate) key_patterns: Vec<Vec<u8>>,
     pub(crate) allow_all_channels: bool,
     pub(crate) channel_patterns: Vec<Vec<u8>>,
+    pub(crate) allow_all_databases: bool,
+    pub(crate) allowed_databases: BTreeSet<request_lifecycle::DbName>,
     pub(crate) password_hashes: HashSet<Vec<u8>>,
 }
 
@@ -198,6 +201,8 @@ impl AclUserProfile {
             key_patterns: vec![b"*".to_vec()],
             allow_all_channels: true,
             channel_patterns: Vec::new(),
+            allow_all_databases: true,
+            allowed_databases: BTreeSet::new(),
             password_hashes: HashSet::new(),
         }
     }
@@ -214,6 +219,8 @@ impl AclUserProfile {
             key_patterns: Vec::new(),
             allow_all_channels: false,
             channel_patterns: Vec::new(),
+            allow_all_databases: true,
+            allowed_databases: BTreeSet::new(),
             password_hashes: HashSet::new(),
         }
     }

@@ -2497,6 +2497,7 @@ pub(crate) enum AclAuthorizationError {
     Command(Vec<u8>),
     Key(Vec<u8>),
     Channel(Vec<u8>),
+    Database(Vec<u8>),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2504,6 +2505,7 @@ pub(crate) enum AclLogReason {
     Command,
     Key,
     Channel,
+    Database,
     Auth,
 }
 
@@ -2538,6 +2540,7 @@ pub(crate) fn acl_denial_message_for_user(user: &[u8], error: &AclAuthorizationE
         .into_bytes(),
         AclAuthorizationError::Key(_) => b"NOPERM No permissions to access a key".to_vec(),
         AclAuthorizationError::Channel(_) => b"NOPERM No permissions to access a channel".to_vec(),
+        AclAuthorizationError::Database(_) => b"NOPERM No permissions to access database".to_vec(),
     }
 }
 
@@ -2550,6 +2553,7 @@ fn acl_log_reason_matches(error: &AclAuthorizationError) -> AclLogReason {
         AclAuthorizationError::Command(_) => AclLogReason::Command,
         AclAuthorizationError::Key(_) => AclLogReason::Key,
         AclAuthorizationError::Channel(_) => AclLogReason::Channel,
+        AclAuthorizationError::Database(_) => AclLogReason::Database,
     }
 }
 
@@ -2558,6 +2562,7 @@ fn acl_log_reason_name(reason: AclLogReason) -> &'static [u8] {
         AclLogReason::Command => b"command",
         AclLogReason::Key => b"key",
         AclLogReason::Channel => b"channel",
+        AclLogReason::Database => b"database",
         AclLogReason::Auth => b"auth",
     }
 }
@@ -4231,6 +4236,7 @@ impl RequestProcessor {
     pub(crate) fn acl_authorize_user_command(
         &self,
         user: &[u8],
+        selected_db: DbName,
         command: CommandId,
         args: &[&[u8]],
     ) -> Result<(), AclAuthorizationError> {
@@ -4252,6 +4258,15 @@ impl RequestProcessor {
                 specific_token.unwrap_or(base_token),
             ));
         }
+        if let Some(database) = acl_first_denied_database(
+            &profile,
+            command,
+            args,
+            selected_db,
+            self.configured_databases(),
+        ) {
+            return Err(AclAuthorizationError::Database(database));
+        }
         if let Some(key) = acl_first_denied_key(&profile.key_patterns, command, args) {
             return Err(AclAuthorizationError::Key(key));
         }
@@ -4264,6 +4279,7 @@ impl RequestProcessor {
     pub(crate) fn acl_authorize_client_command(
         &self,
         client_id: ClientId,
+        selected_db: DbName,
         command: CommandId,
         args: &[&[u8]],
     ) -> Result<(), AclAuthorizationError> {
@@ -4272,7 +4288,7 @@ impl RequestProcessor {
             .get()
             .and_then(|metrics| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
-        self.acl_authorize_user_command(&user, command, args)
+        self.acl_authorize_user_command(&user, selected_db, command, args)
     }
 
     pub(crate) fn acl_denial_message_for_client(
@@ -4316,7 +4332,8 @@ impl RequestProcessor {
         let object = match error {
             AclAuthorizationError::Command(command)
             | AclAuthorizationError::Key(command)
-            | AclAuthorizationError::Channel(command) => command.clone(),
+            | AclAuthorizationError::Channel(command)
+            | AclAuthorizationError::Database(command) => command.clone(),
         };
         let username = self
             .server_metrics
@@ -6489,7 +6506,7 @@ impl RequestProcessor {
             CommandId::Latency => self.handle_latency(args, response_out),
             CommandId::Module => self.handle_module(args, response_out),
             CommandId::Slowlog => self.handle_slowlog(args, response_out),
-            CommandId::Acl => self.handle_acl(args, response_out),
+            CommandId::Acl => self.handle_acl(selected_db, args, response_out),
             CommandId::Cluster => self.handle_cluster(selected_db, args, response_out),
             CommandId::Failover => self.handle_failover(args, response_out),
             CommandId::Subscribe => self.handle_subscribe(args, response_out),
@@ -7076,6 +7093,194 @@ fn acl_profile_allows_single_channel(profile: &AclUserProfile, channel: &[u8]) -
             0,
         )
     })
+}
+
+fn acl_profile_allows_database(profile: &AclUserProfile, database: DbName) -> bool {
+    profile.allow_all_databases || profile.allowed_databases.contains(&database)
+}
+
+fn acl_profile_allows_all_configured_databases(
+    profile: &AclUserProfile,
+    configured_databases: usize,
+) -> bool {
+    if profile.allow_all_databases {
+        return true;
+    }
+    (0..configured_databases).all(|index| profile.allowed_databases.contains(&DbName::new(index)))
+}
+
+fn acl_render_database_token(database: DbName) -> Vec<u8> {
+    usize::from(database).to_string().into_bytes()
+}
+
+fn parse_acl_database_token(token: &[u8], configured_databases: usize) -> Option<DbName> {
+    let database = std::str::from_utf8(token).ok()?.parse::<usize>().ok()?;
+    if database >= configured_databases {
+        return None;
+    }
+    Some(DbName::new(database))
+}
+
+fn acl_command_uses_selected_db(command: CommandId) -> bool {
+    if matches!(
+        command,
+        CommandId::Auth
+            | CommandId::Hello
+            | CommandId::Client
+            | CommandId::Readonly
+            | CommandId::Readwrite
+            | CommandId::Reset
+            | CommandId::Quit
+            | CommandId::Ping
+            | CommandId::Echo
+            | CommandId::Acl
+            | CommandId::Config
+            | CommandId::Info
+            | CommandId::Memory
+            | CommandId::Monitor
+            | CommandId::Shutdown
+            | CommandId::Save
+            | CommandId::Bgsave
+            | CommandId::Bgrewriteaof
+            | CommandId::Lastsave
+            | CommandId::Latency
+            | CommandId::Slowlog
+            | CommandId::Module
+            | CommandId::Cluster
+            | CommandId::Failover
+            | CommandId::Role
+            | CommandId::Wait
+            | CommandId::Waitaof
+            | CommandId::Multi
+            | CommandId::Exec
+            | CommandId::Discard
+            | CommandId::Subscribe
+            | CommandId::Psubscribe
+            | CommandId::Ssubscribe
+            | CommandId::Unsubscribe
+            | CommandId::Punsubscribe
+            | CommandId::Sunsubscribe
+            | CommandId::Publish
+            | CommandId::Spublish
+            | CommandId::Pubsub
+            | CommandId::Select
+            | CommandId::Swapdb
+            | CommandId::Flushall
+            | CommandId::Function
+            | CommandId::Script
+            | CommandId::Command
+            | CommandId::Unknown
+    ) {
+        return false;
+    }
+
+    if command_key_access_pattern(command) != KeyAccessPattern::None {
+        return true;
+    }
+
+    matches!(
+        command,
+        CommandId::Dbsize
+            | CommandId::Keys
+            | CommandId::Randomkey
+            | CommandId::Scan
+            | CommandId::Flushdb
+            | CommandId::Move
+            | CommandId::Copy
+            | CommandId::Migrate
+            | CommandId::Eval
+            | CommandId::EvalRo
+            | CommandId::Evalsha
+            | CommandId::EvalshaRo
+            | CommandId::Fcall
+            | CommandId::FcallRo
+    )
+}
+
+fn acl_explicit_database_targets(
+    command: CommandId,
+    args: &[&[u8]],
+    configured_databases: usize,
+) -> Vec<DbName> {
+    match command {
+        CommandId::Select => args
+            .get(1)
+            .and_then(|value| parse_acl_database_token(value, configured_databases))
+            .into_iter()
+            .collect(),
+        CommandId::Move => args
+            .get(2)
+            .and_then(|value| parse_acl_database_token(value, configured_databases))
+            .into_iter()
+            .collect(),
+        CommandId::Swapdb => {
+            let mut databases = Vec::new();
+            if let Some(index1) = args
+                .get(1)
+                .and_then(|value| parse_acl_database_token(value, configured_databases))
+            {
+                databases.push(index1);
+            }
+            if let Some(index2) = args
+                .get(2)
+                .and_then(|value| parse_acl_database_token(value, configured_databases))
+            {
+                databases.push(index2);
+            }
+            databases
+        }
+        CommandId::Copy => {
+            let mut index = 3usize;
+            while index < args.len() {
+                if ascii_eq_ignore_case(args[index], b"DB") {
+                    return args
+                        .get(index + 1)
+                        .and_then(|value| parse_acl_database_token(value, configured_databases))
+                        .into_iter()
+                        .collect();
+                }
+                if ascii_eq_ignore_case(args[index], b"REPLACE") {
+                    index += 1;
+                    continue;
+                }
+                break;
+            }
+            Vec::new()
+        }
+        CommandId::Migrate => args
+            .get(4)
+            .and_then(|value| parse_acl_database_token(value, configured_databases))
+            .into_iter()
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+fn acl_first_denied_database(
+    profile: &AclUserProfile,
+    command: CommandId,
+    args: &[&[u8]],
+    selected_db: DbName,
+    configured_databases: usize,
+) -> Option<Vec<u8>> {
+    if command == CommandId::Flushall {
+        if acl_profile_allows_all_configured_databases(profile, configured_databases) {
+            return None;
+        }
+        return acl_base_command_token(args);
+    }
+
+    for database in acl_explicit_database_targets(command, args, configured_databases) {
+        if !acl_profile_allows_database(profile, database) {
+            return Some(acl_render_database_token(database));
+        }
+    }
+
+    if acl_command_uses_selected_db(command) && !acl_profile_allows_database(profile, selected_db) {
+        return Some(acl_render_database_token(selected_db));
+    }
+
+    None
 }
 
 fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientId) -> usize {
