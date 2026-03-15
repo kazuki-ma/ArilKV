@@ -652,6 +652,10 @@ fn render_acl_selector(profile: &AclSelectorProfile) -> Vec<u8> {
     join_acl_tokens(parts)
 }
 
+fn is_valid_client_name(name: &[u8]) -> bool {
+    !name.iter().any(|&b| b == b' ' || b == b'\n')
+}
+
 fn append_acl_getuser_selector_description(
     response_out: &mut Vec<u8>,
     profile: &AclSelectorProfile,
@@ -1204,39 +1208,51 @@ impl RequestProcessor {
         };
 
         // Scan remaining arguments for AUTH and SETNAME options.
+        // Redis/Valkey use last-option-wins semantics for repeated AUTH/SETNAME.
+        let mut auth_credentials = None::<(&[u8], &[u8])>;
+        let mut setname = None::<&[u8]>;
         let mut idx = 2;
         while idx < args.len() {
             if ascii_eq_ignore_case(args[idx], b"AUTH") {
                 if idx + 2 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let username = args[idx + 1];
-                let password = args[idx + 2];
-                match self.authenticate_acl_user(username, password, false) {
-                    AclAuthenticationResult::Authenticated => {}
-                    AclAuthenticationResult::DefaultPasswordNotConfigured => {
-                        return Err(RequestExecutionError::AuthNotEnabled);
-                    }
-                    AclAuthenticationResult::WrongPass => {
-                        self.record_acl_auth_failure_for_current_client(username);
-                        append_wrongpass_error(response_out);
-                        return Ok(());
-                    }
-                }
+                auth_credentials = Some((args[idx + 1], args[idx + 2]));
                 idx += 3;
             } else if ascii_eq_ignore_case(args[idx], b"SETNAME") {
                 if idx + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                let name = args[idx + 1];
-                if name.iter().any(|&b| b == b' ' || b == b'\n') {
-                    return Err(RequestExecutionError::SyntaxError);
-                }
-                *self.client_name.lock().unwrap_or_else(|e| e.into_inner()) = name.to_vec();
+                setname = Some(args[idx + 1]);
                 idx += 2;
             } else {
                 return Err(RequestExecutionError::SyntaxError);
             }
+        }
+
+        if let Some((username, password)) = auth_credentials {
+            match self.authenticate_acl_user(username, password, false) {
+                AclAuthenticationResult::Authenticated => {}
+                AclAuthenticationResult::DefaultPasswordNotConfigured => {
+                    return Err(RequestExecutionError::AuthNotEnabled);
+                }
+                AclAuthenticationResult::WrongPass => {
+                    self.record_acl_auth_failure_for_current_client(username);
+                    append_wrongpass_error(response_out);
+                    return Ok(());
+                }
+            }
+        }
+
+        if let Some(name) = setname {
+            if !is_valid_client_name(name) {
+                append_error(
+                    response_out,
+                    b"ERR Client names cannot contain spaces, newlines or special characters.",
+                );
+                return Ok(());
+            }
+            *self.client_name.lock().unwrap_or_else(|e| e.into_inner()) = name.to_vec();
         }
 
         // Apply the protocol version change.
@@ -1800,7 +1816,7 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"SETNAME") {
             require_exact_arity(args, 3, "CLIENT", "CLIENT SETNAME connection-name")?;
             let name = args[2];
-            if name.iter().any(|&b| b == b' ' || b == b'\n') {
+            if !is_valid_client_name(name) {
                 append_error(
                     response_out,
                     b"ERR Client names cannot contain spaces, newlines or special characters.",

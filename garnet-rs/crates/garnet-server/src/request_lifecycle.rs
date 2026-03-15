@@ -2506,6 +2506,12 @@ pub(crate) enum AclAuthorizationError {
     Database(Vec<u8>),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum ClientAclAuthorizationError {
+    AuthenticationRequired,
+    Denied(AclAuthorizationError),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AclLogReason {
     Command,
@@ -4204,13 +4210,20 @@ impl RequestProcessor {
             return Err(RequestExecutionError::StorageBusy);
         };
         let mut deleted = 0u64;
+        let mut killed_clients = Vec::new();
         for &username in usernames {
             if ascii_eq_ignore_case(username, b"default") {
                 continue;
             }
             if users.remove(username).is_some() {
                 deleted = deleted.saturating_add(1);
+                if let Some(metrics) = self.server_metrics.get() {
+                    killed_clients.extend(metrics.client_ids_for_user(username));
+                }
             }
+        }
+        if let Some(metrics) = self.server_metrics.get() {
+            metrics.mark_clients_killed(&killed_clients);
         }
         Ok(deleted)
     }
@@ -4240,24 +4253,13 @@ impl RequestProcessor {
         AclAuthenticationResult::WrongPass
     }
 
-    pub(crate) fn acl_authorize_user_command(
+    fn acl_authorize_profile_command(
         &self,
-        user: &[u8],
+        profile: &AclUserProfile,
         selected_db: DbName,
         command: CommandId,
         args: &[&[u8]],
     ) -> Result<(), AclAuthorizationError> {
-        let Some(profile) = self.acl_user_profile(user) else {
-            return Err(AclAuthorizationError::Command(
-                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
-            ));
-        };
-        if !profile.enabled {
-            return Err(AclAuthorizationError::Command(
-                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
-            ));
-        }
-
         let base_token = acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec());
         let specific_token = acl_specific_rule_token(command, args);
         let mut best_error = None::<AclSelectorAuthorizationError>;
@@ -4309,19 +4311,54 @@ impl RequestProcessor {
         })
     }
 
+    pub(crate) fn acl_authorize_user_command(
+        &self,
+        user: &[u8],
+        selected_db: DbName,
+        command: CommandId,
+        args: &[&[u8]],
+    ) -> Result<(), AclAuthorizationError> {
+        let Some(profile) = self.acl_user_profile(user) else {
+            return Err(AclAuthorizationError::Command(
+                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
+            ));
+        };
+        if !profile.enabled {
+            return Err(AclAuthorizationError::Command(
+                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
+            ));
+        }
+        self.acl_authorize_profile_command(&profile, selected_db, command, args)
+    }
+
     pub(crate) fn acl_authorize_client_command(
         &self,
         client_id: ClientId,
         selected_db: DbName,
         command: CommandId,
         args: &[&[u8]],
-    ) -> Result<(), AclAuthorizationError> {
-        let user = self
-            .server_metrics
-            .get()
-            .and_then(|metrics| metrics.client_user(client_id))
+    ) -> Result<(), ClientAclAuthorizationError> {
+        let Some(metrics) = self.server_metrics.get() else {
+            let user = b"default".to_vec();
+            return self
+                .acl_authorize_user_command(&user, selected_db, command, args)
+                .map_err(ClientAclAuthorizationError::Denied);
+        };
+        if !metrics.client_is_authenticated(client_id) {
+            return Err(ClientAclAuthorizationError::AuthenticationRequired);
+        }
+        let user = metrics
+            .client_user(client_id)
             .unwrap_or_else(|| b"default".to_vec());
-        self.acl_authorize_user_command(&user, selected_db, command, args)
+        let Some(profile) = self.acl_user_profile(&user) else {
+            return Err(ClientAclAuthorizationError::Denied(
+                AclAuthorizationError::Command(
+                    acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
+                ),
+            ));
+        };
+        self.acl_authorize_profile_command(&profile, selected_db, command, args)
+            .map_err(ClientAclAuthorizationError::Denied)
     }
 
     pub(crate) fn acl_denial_message_for_client(
@@ -4335,6 +4372,11 @@ impl RequestProcessor {
             .and_then(|metrics| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
         acl_denial_message_for_user(&user, error)
+    }
+
+    pub(crate) fn default_user_starts_authenticated(&self) -> bool {
+        self.acl_user_profile(b"default")
+            .is_some_and(|profile| profile.enabled && profile.nopass)
     }
 
     fn current_acl_log_context(&self) -> AclLogContext {

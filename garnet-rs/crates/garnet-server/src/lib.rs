@@ -268,6 +268,7 @@ pub(crate) fn acl_password_hash_hex(password: &[u8]) -> Vec<u8> {
 struct ClientRuntimeInfo {
     name: Option<Vec<u8>>,
     user: Vec<u8>,
+    authenticated: bool,
     library_name: Option<Vec<u8>>,
     library_version: Option<Vec<u8>>,
     last_command: Vec<u8>,
@@ -371,6 +372,7 @@ impl ClientRuntimeInfo {
         Self {
             name: None,
             user: b"default".to_vec(),
+            authenticated: false,
             library_name: None,
             library_version: None,
             last_command: b"unknown".to_vec(),
@@ -651,11 +653,28 @@ impl ServerMetrics {
         }
     }
 
+    pub fn set_client_authenticated(&self, client_id: ClientId, authenticated: bool) {
+        if let Ok(mut clients) = self.clients.lock()
+            && let Some(client) = clients.get_mut(&client_id)
+        {
+            client.authenticated = authenticated;
+            client.last_activity = Instant::now();
+        }
+    }
+
     pub fn client_user(&self, client_id: ClientId) -> Option<Vec<u8>> {
         self.clients
             .lock()
             .ok()
             .and_then(|clients| clients.get(&client_id).map(|client| client.user.clone()))
+    }
+
+    pub fn client_is_authenticated(&self, client_id: ClientId) -> bool {
+        self.clients
+            .lock()
+            .ok()
+            .and_then(|clients| clients.get(&client_id).map(|client| client.authenticated))
+            .unwrap_or(false)
     }
 
     pub(crate) fn client_ids_for_user(&self, user: &[u8]) -> Vec<ClientId> {
@@ -664,7 +683,9 @@ impl ServerMetrics {
         };
         clients
             .iter()
-            .filter(|(_, client)| !client.killed && client.user.as_slice() == user)
+            .filter(|(_, client)| {
+                !client.killed && client.authenticated && client.user.as_slice() == user
+            })
             .map(|(client_id, _)| *client_id)
             .collect()
     }

@@ -1306,6 +1306,287 @@ async fn acl_auth_password_rotation_and_hello_auth_match_external_scenarios() {
 }
 
 #[tokio::test]
+async fn acl_current_connection_and_hello_chain_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"default", b"off"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut fresh = TcpStream::connect(addr).await.unwrap();
+    let noauth =
+        send_and_read_error_line(&mut fresh, &encode_resp_command(&[b"PING"]), timeout).await;
+    assert!(
+        noauth.contains("NOAUTH"),
+        "new connections should require AUTH when the default user is off, got {noauth:?}"
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"default", b"on"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"secure-user",
+            b">supass",
+            b"on",
+            b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"secure-user1",
+            b">supass",
+            b"on",
+            b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"secure-user2",
+            b">supass",
+            b"on",
+            b"+@all",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"default", b"-@all"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let hello_auth = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"HELLO", b"2", b"AUTH", b"secure-user", b"supass"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(
+            hello_auth,
+            RespSocketValue::Map(_) | RespSocketValue::Array(_)
+        ),
+        "HELLO AUTH should succeed even when the current default user has no command permissions, got {hello_auth:?}"
+    );
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$11\r\nsecure-user\r\n",
+    )
+    .await;
+
+    let chained_hello = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"HELLO",
+            b"2",
+            b"AUTH",
+            b"secure-user",
+            b"pass",
+            b"AUTH",
+            b"secure-user2",
+            b"supass",
+            b"AUTH",
+            b"secure-user1",
+            b"supass",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(
+            chained_hello,
+            RespSocketValue::Map(_) | RespSocketValue::Array(_)
+        ),
+        "HELLO should accept the last AUTH option, got {chained_hello:?}"
+    );
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$12\r\nsecure-user1\r\n",
+    )
+    .await;
+
+    let wrongpass = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[
+            b"HELLO",
+            b"2",
+            b"AUTH",
+            b"secure-user",
+            b"supass",
+            b"AUTH",
+            b"secure-user2",
+            b"supass",
+            b"AUTH",
+            b"secure-user",
+            b"pass",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        wrongpass.contains("WRONGPASS"),
+        "last HELLO AUTH should decide the result, got {wrongpass:?}"
+    );
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$12\r\nsecure-user1\r\n",
+    )
+    .await;
+
+    let setname_hello = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[
+            b"HELLO", b"2", b"SETNAME", b"client1", b"SETNAME", b"client2", b"SETNAME", b"client3",
+            b"SETNAME", b"client4",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(
+            setname_hello,
+            RespSocketValue::Map(_) | RespSocketValue::Array(_)
+        ),
+        "HELLO should accept the last SETNAME option, got {setname_hello:?}"
+    );
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"GETNAME"]),
+        b"$7\r\nclient4\r\n",
+    )
+    .await;
+
+    let invalid_name = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[
+            b"HELLO",
+            b"2",
+            b"SETNAME",
+            b"client5",
+            b"SETNAME",
+            b"client6",
+            b"SETNAME",
+            b"client name",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        invalid_name.contains("Client names cannot contain spaces"),
+        "HELLO should validate only the final SETNAME token, got {invalid_name:?}"
+    );
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"GETNAME"]),
+        b"$7\r\nclient4\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"client0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let failed_hello = send_and_read_error_line(
+        &mut admin,
+        &encode_resp_command(&[
+            b"HELLO", b"2", b"AUTH", b"user", b"pass", b"SETNAME", b"client1",
+        ]),
+        timeout,
+    )
+    .await;
+    assert!(
+        failed_hello.contains("WRONGPASS"),
+        "failed HELLO AUTH should not authenticate the client, got {failed_hello:?}"
+    );
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CLIENT", b"GETNAME"]),
+        b"$7\r\nclient0\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_deluser_disconnects_current_client_after_reply_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"using", b"on", b"+acl", b">passwd"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"using", b"passwd"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let deleted = send_and_read_integer(
+        &mut user,
+        &encode_resp_command(&[b"ACL", b"DELUSER", b"using"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(deleted, 1);
+
+    user.write_all(&encode_resp_command(&[b"PING"]))
+        .await
+        .unwrap();
+    let mut eof_probe = [0u8; 1];
+    let read_result = tokio::time::timeout(timeout, user.read(&mut eof_probe)).await;
+    match read_result {
+        Ok(Ok(0)) => {}
+        Ok(Err(error))
+            if matches!(
+                error.kind(),
+                std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe
+            ) => {}
+        other => {
+            panic!("deleted-user client should disconnect after DELUSER reply: {other:?}");
+        }
+    }
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn acl_command_key_channel_and_dryrun_permissions_match_external_scenarios() {
     let (addr, shutdown_tx, server) = start_test_server().await;
     let timeout = Duration::from_secs(5);

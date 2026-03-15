@@ -67,6 +67,7 @@ use crate::request_lifecycle::AclAuthorizationError;
 use crate::request_lifecycle::AclLogContext;
 use crate::request_lifecycle::BlockingWaitClass;
 use crate::request_lifecycle::BlockingWaitKey;
+use crate::request_lifecycle::ClientAclAuthorizationError;
 use crate::request_lifecycle::ClientTrackingConfig;
 use crate::request_lifecycle::ClientTrackingModeSetting;
 use crate::request_lifecycle::ClientUnblockMode;
@@ -709,6 +710,7 @@ fn apply_reset_command_side_effects(
     *monitor_receiver = None;
     *allow_asking_once = false;
     metrics.set_client_user(client_id, b"default".to_vec());
+    metrics.set_client_authenticated(client_id, processor.default_user_starts_authenticated());
     metrics.set_client_selected_db(client_id, client_state.selected_db);
     processor.unregister_pubsub_client(client_id);
 }
@@ -749,6 +751,7 @@ pub(crate) async fn handle_connection(
     let client_id = metrics.register_client(remote_addr, local_addr);
     processor.attach_metrics(Arc::clone(&metrics));
     processor.set_connected_clients(metrics.connected_client_count());
+    metrics.set_client_authenticated(client_id, processor.default_user_starts_authenticated());
     let _lifecycle = ConnectionLifecycle {
         metrics: &metrics,
         processor: &processor,
@@ -1022,14 +1025,21 @@ pub(crate) async fn handle_connection(
                     command,
                     acl_args,
                 ) {
-                    append_acl_denial_response(
-                        &processor,
-                        client_id,
-                        &command_call_name,
-                        &mut responses,
-                        &error,
-                        AclLogContext::Toplevel,
-                    );
+                    match error {
+                        ClientAclAuthorizationError::AuthenticationRequired => {
+                            append_noauth_response(&mut responses);
+                        }
+                        ClientAclAuthorizationError::Denied(error) => {
+                            append_acl_denial_response(
+                                &processor,
+                                client_id,
+                                &command_call_name,
+                                &mut responses,
+                                &error,
+                                AclLogContext::Toplevel,
+                            );
+                        }
+                    }
                     disconnect_after_write |= finalize_client_command(
                         &metrics,
                         client_id,
@@ -1396,14 +1406,21 @@ pub(crate) async fn handle_connection(
                         command,
                         &acl_args,
                     ) {
-                        append_acl_denial_response(
-                            &processor,
-                            client_id,
-                            &command_call_name,
-                            &mut responses,
-                            &error,
-                            AclLogContext::Multi,
-                        );
+                        match error {
+                            ClientAclAuthorizationError::AuthenticationRequired => {
+                                append_noauth_response(&mut responses);
+                            }
+                            ClientAclAuthorizationError::Denied(error) => {
+                                append_acl_denial_response(
+                                    &processor,
+                                    client_id,
+                                    &command_call_name,
+                                    &mut responses,
+                                    &error,
+                                    AclLogContext::Multi,
+                                );
+                            }
+                        }
                         disconnect_after_write |= finalize_client_command(
                             &metrics,
                             client_id,
@@ -1705,14 +1722,21 @@ pub(crate) async fn handle_connection(
                                 &acl_args,
                             ) {
                                 transaction.aborted = true;
-                                append_acl_denial_response(
-                                    &processor,
-                                    client_id,
-                                    &command_call_name,
-                                    &mut responses,
-                                    &error,
-                                    AclLogContext::Multi,
-                                );
+                                match error {
+                                    ClientAclAuthorizationError::AuthenticationRequired => {
+                                        append_noauth_response(&mut responses);
+                                    }
+                                    ClientAclAuthorizationError::Denied(error) => {
+                                        append_acl_denial_response(
+                                            &processor,
+                                            client_id,
+                                            &command_call_name,
+                                            &mut responses,
+                                            &error,
+                                            AclLogContext::Multi,
+                                        );
+                                    }
+                                }
                                 disconnect_after_write |= finalize_client_command(
                                     &metrics,
                                     client_id,
@@ -2719,14 +2743,21 @@ async fn execute_blocking_frame_on_owner_thread(
                     processor.unregister_pause_blocked_blocking_client(client_id);
                 }
                 let mut frame_response = Vec::new();
-                append_acl_denial_response(
-                    processor,
-                    client_id,
-                    command_name_upper(command),
-                    &mut frame_response,
-                    &error,
-                    AclLogContext::Toplevel,
-                );
+                match error {
+                    ClientAclAuthorizationError::AuthenticationRequired => {
+                        append_noauth_response(&mut frame_response);
+                    }
+                    ClientAclAuthorizationError::Denied(error) => {
+                        append_acl_denial_response(
+                            processor,
+                            client_id,
+                            command_name_upper(command),
+                            &mut frame_response,
+                            &error,
+                            AclLogContext::Toplevel,
+                        );
+                    }
+                }
                 return Ok(BlockingExecutionOutcome {
                     frame_response,
                     should_replicate: false,
@@ -4978,6 +5009,10 @@ fn append_acl_denial_response(
     append_error_line(response_out, &payload);
 }
 
+fn append_noauth_response(response_out: &mut Vec<u8>) {
+    append_error_line(response_out, b"NOAUTH Authentication required.");
+}
+
 fn maybe_apply_hello_side_effects(
     command: CommandId,
     args: &[ArgSlice],
@@ -5009,6 +5044,7 @@ fn maybe_apply_hello_side_effects(
         if ascii_eq_ignore_case(token, b"AUTH") {
             if idx + 2 < args.len() {
                 metrics.set_client_user(client_id, arg_slice_bytes(&args[idx + 1]).to_vec());
+                metrics.set_client_authenticated(client_id, true);
             }
             idx += 3;
         } else if ascii_eq_ignore_case(token, b"SETNAME") {
@@ -5046,6 +5082,7 @@ fn maybe_apply_auth_side_effects(
         return;
     };
     metrics.set_client_user(client_id, user);
+    metrics.set_client_authenticated(client_id, true);
 }
 
 #[allow(clippy::too_many_arguments)]
