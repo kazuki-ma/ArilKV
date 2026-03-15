@@ -46,6 +46,9 @@ const SCRIPT_EXISTS_USAGE: &str = "SCRIPT EXISTS sha1 [sha1 ...]";
 const SCRIPT_DEBUG_USAGE: &str = "SCRIPT DEBUG YES|SYNC|NO";
 const SCRIPT_TIMEOUT_ERROR_TEXT: &str = "ERR script execution timed out";
 const SCRIPT_FUNCTION_LOAD_TIMEOUT_ERROR_TEXT: &str = "ERR FUNCTION LOAD timeout";
+const STALE_REPLICA_MASTERDOWN_ERROR: &[u8] =
+    b"MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.";
+const STALE_REPLICA_SCRIPT_CALL_ERROR: &str = "ERR Can not execute the command on a stale replica";
 const SCRIPT_KILLED_ERROR_TEXT: &str = "ERR script killed by user";
 const SCRIPT_INTERNAL_TRACKED_ERROR_KEY: &[u8] = b"\0garnet_tracked_error";
 const LUA_TIMEOUT_HOOK_INSTRUCTION_STRIDE: u32 = 1_024;
@@ -681,6 +684,7 @@ impl RequestProcessor {
             &args[key_end..],
             mutability,
             function_target.flags.allow_oom,
+            function_target.flags.allow_stale,
             "fcall",
             response_out,
         );
@@ -716,6 +720,7 @@ impl RequestProcessor {
             &args[key_end..],
             ScriptMutability::ReadOnly,
             function_target.flags.allow_oom,
+            function_target.flags.allow_stale,
             "fcall_ro",
             response_out,
         );
@@ -1446,6 +1451,16 @@ impl RequestProcessor {
             return;
         }
 
+        if self.stale_replica_reads_denied() && !script_flags.allow_stale {
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                STALE_REPLICA_MASTERDOWN_ERROR,
+            );
+            return;
+        }
+
         let _running_script_guard =
             match self.enter_running_script(RunningScriptKind::Script, "", "eval".to_string()) {
                 Ok(guard) => guard,
@@ -1510,6 +1525,7 @@ impl RequestProcessor {
                     values,
                     mutability,
                     script_allow_oom,
+                    script_flags.allow_stale,
                     LuaCallMode::Call,
                     call_resp_protocol.get(),
                 )
@@ -1522,6 +1538,7 @@ impl RequestProcessor {
                     values,
                     mutability,
                     script_allow_oom,
+                    script_flags.allow_stale,
                     LuaCallMode::PCall,
                     pcall_resp_protocol.get(),
                 )
@@ -1697,6 +1714,7 @@ impl RequestProcessor {
         argv: &[&[u8]],
         mutability: ScriptMutability,
         allow_oom: bool,
+        allow_stale: bool,
         command_name: &str,
         response_out: &mut Vec<u8>,
     ) {
@@ -1711,6 +1729,15 @@ impl RequestProcessor {
             }
         };
         let command = format!("{} {} {}", command_name, function_name_text, keys.len());
+        if self.stale_replica_reads_denied() && !allow_stale {
+            append_recorded_command_failure(
+                self,
+                response_out,
+                command_name.as_bytes(),
+                STALE_REPLICA_MASTERDOWN_ERROR,
+            );
+            return;
+        }
         let _running_script_guard = match self.enter_running_script(
             RunningScriptKind::Function,
             function_name_text.as_str(),
@@ -1782,6 +1809,7 @@ impl RequestProcessor {
                     values,
                     mutability,
                     allow_oom,
+                    allow_stale,
                     LuaCallMode::Call,
                     load_call_resp_protocol.get(),
                 )
@@ -1794,6 +1822,7 @@ impl RequestProcessor {
                     values,
                     mutability,
                     allow_oom,
+                    allow_stale,
                     LuaCallMode::PCall,
                     load_pcall_resp_protocol.get(),
                 )
@@ -1908,6 +1937,7 @@ impl RequestProcessor {
                     values,
                     mutability,
                     allow_oom,
+                    allow_stale,
                     LuaCallMode::Call,
                     runtime_call_resp_protocol.get(),
                 )
@@ -1920,6 +1950,7 @@ impl RequestProcessor {
                     values,
                     mutability,
                     allow_oom,
+                    allow_stale,
                     LuaCallMode::PCall,
                     runtime_pcall_resp_protocol.get(),
                 )
@@ -2098,6 +2129,7 @@ impl RequestProcessor {
         values: MultiValue,
         mutability: ScriptMutability,
         allow_oom: bool,
+        allow_stale: bool,
         call_mode: LuaCallMode,
         call_resp_protocol: RespProtocolVersion,
     ) -> mlua::Result<LuaValue> {
@@ -2154,6 +2186,26 @@ impl RequestProcessor {
                 call_mode,
                 "OOM command not allowed when used memory > 'maxmemory'.",
             );
+        }
+        if self.stale_replica_reads_denied() {
+            if !allow_stale {
+                self.record_command_rejection(arg_refs[0]);
+                self.record_error_reply(b"MASTERDOWN");
+                return lua_call_error_or_pcall_error(
+                    lua,
+                    call_mode,
+                    std::str::from_utf8(STALE_REPLICA_MASTERDOWN_ERROR).unwrap(),
+                );
+            }
+            if !command_allowed_on_stale_replica_from_script(command, subcommand) {
+                self.record_command_rejection(arg_refs[0]);
+                self.record_error_reply(b"ERR");
+                return lua_call_error_or_pcall_error(
+                    lua,
+                    call_mode,
+                    STALE_REPLICA_SCRIPT_CALL_ERROR,
+                );
+            }
         }
 
         self.record_command_call(arg_refs[0]);
@@ -5149,6 +5201,21 @@ fn command_allowed_from_script(command: CommandId) -> bool {
             // Unknown / unrecognised
             | CommandId::Unknown
     )
+}
+
+fn command_allowed_on_stale_replica_from_script(
+    command: CommandId,
+    subcommand: Option<&[u8]>,
+) -> bool {
+    match command {
+        CommandId::Echo | CommandId::Info | CommandId::Time => true,
+        CommandId::Slowlog => subcommand.is_some_and(|name| {
+            ascii_eq_ignore_case(name, b"GET")
+                || ascii_eq_ignore_case(name, b"HELP")
+                || ascii_eq_ignore_case(name, b"LEN")
+        }),
+        _ => false,
+    }
 }
 
 fn validate_scripting_numkeys(

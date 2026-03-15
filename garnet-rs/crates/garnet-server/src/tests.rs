@@ -139,6 +139,20 @@ async fn wait_for_replica_info_line(
     }
 }
 
+async fn wait_for_stale_replica_mode(processor: &RequestProcessor, timeout: Duration) {
+    let deadline = Instant::now() + timeout;
+    loop {
+        if processor.stale_replica_reads_denied() {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "timed out waiting for stale replica mode"
+        );
+        sleep(Duration::from_millis(25)).await;
+    }
+}
+
 #[tokio::test]
 async fn accept_loop_spawns_connection_handlers() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -4479,6 +4493,7 @@ async fn client_pause_write_unpause_releases_script_commands_without_busy_error(
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let server_processor = Arc::clone(&processor);
 
     let server_metrics = Arc::clone(&metrics);
     let server = tokio::spawn(async move {
@@ -4490,7 +4505,7 @@ async fn client_pause_write_unpause_releases_script_commands_without_busy_error(
                 let _ = shutdown_rx.await;
             },
             None,
-            processor,
+            server_processor,
         )
         .await
         .unwrap()
@@ -8881,6 +8896,7 @@ async fn waitaof_local_times_out_before_everysec_fsync_like_external_wait_scenar
     processor.set_config_value(b"appendfsync", b"everysec".to_vec());
     processor.set_config_value(b"dir", temp_dir.to_string_lossy().into_owned().into_bytes());
     processor.set_config_value(b"appendfilename", b"waitaof-everysec.aof".to_vec());
+    let server_processor = Arc::clone(&processor);
 
     let server_metrics = Arc::clone(&metrics);
     let server = tokio::spawn(async move {
@@ -8892,7 +8908,7 @@ async fn waitaof_local_times_out_before_everysec_fsync_like_external_wait_scenar
                 let _ = shutdown_rx.await;
             },
             None,
-            processor,
+            server_processor,
         )
         .await
         .unwrap();
@@ -9782,6 +9798,185 @@ async fn replicaof_replication_propagates_function_load_and_fcall() {
     let _ = replica_shutdown_tx.send(());
     master_server.await.unwrap();
     replica_server.await.unwrap();
+}
+
+#[tokio::test]
+async fn eval_allow_stale_matches_external_stale_replica_semantics() {
+    let (addr, shutdown_tx, server, processor) =
+        start_test_server_with_scripting_enabled_and_processor().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"replica-serve-stale-data", b"no"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    wait_for_stale_replica_mode(processor.as_ref(), Duration::from_secs(5)).await;
+
+    let plain_eval = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('get','x')", b"1", b"x"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        plain_eval,
+        "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'."
+    );
+
+    let no_writes_eval = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"EVAL", b"#!lua flags=no-writes\nreturn 1", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        no_writes_eval,
+        "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'."
+    );
+
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[
+                b"EVAL",
+                b"#!lua flags=allow-stale,no-writes\nreturn 1",
+                b"0",
+            ]),
+            Duration::from_secs(1),
+        )
+        .await,
+        1
+    );
+
+    let stale_get_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"#!lua flags=allow-stale,no-writes\nreturn redis.call('get','x')",
+            b"1",
+            b"x",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        stale_get_error.contains("Can not execute the command on a stale replica"),
+        "unexpected stale replica script error: {stale_get_error}"
+    );
+
+    let echo_payload = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[
+            b"EVAL",
+            b"#!lua flags=allow-stale,no-writes\nreturn redis.call('echo','foobar')",
+            b"0",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&echo_payload), b"foobar");
+
+    let sha = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[
+            b"SCRIPT",
+            b"LOAD",
+            b"#!lua flags=allow-stale,no-writes\nreturn redis.call('echo','foobar')",
+        ]),
+        Duration::from_secs(1),
+    )
+    .await;
+    let evalsha_payload = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"EVALSHA", sha.as_slice(), b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(resp_socket_bulk(&evalsha_payload), b"foobar");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn function_allow_stale_matches_external_stale_replica_semantics() {
+    let (addr, shutdown_tx, server, processor) =
+        start_test_server_with_scripting_enabled_and_processor().await;
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    let library_source = b"#!lua name=test\nredis.register_function{function_name='f1', callback=function() return 'hello' end, flags={'no-writes'}}\nredis.register_function{function_name='f2', callback=function() return 'hello' end, flags={'allow-stale', 'no-writes'}}\nredis.register_function{function_name='f3', callback=function() return redis.call('get', 'x') end, flags={'allow-stale', 'no-writes'}}\nredis.register_function{function_name='f4', callback=function() return redis.call('info', 'server') end, flags={'allow-stale', 'no-writes'}}";
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"FUNCTION", b"LOAD", b"REPLACE", library_source]),
+        b"$4\r\ntest\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"replica-serve-stale-data", b"no"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SLAVEOF", b"127.0.0.1", b"1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    wait_for_stale_replica_mode(processor.as_ref(), Duration::from_secs(5)).await;
+
+    let f1_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"f1", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(
+        f1_error,
+        "MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'."
+    );
+
+    let f2_payload = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"f2", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert_eq!(f2_payload, b"hello");
+
+    let f3_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"f3", b"1", b"x"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        f3_error.contains("Can not execute the command on a stale replica"),
+        "unexpected stale replica function error: {f3_error}"
+    );
+
+    let f4_payload = send_and_read_bulk_payload(
+        &mut client,
+        &encode_resp_command(&[b"FCALL", b"f4", b"0"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        String::from_utf8_lossy(&f4_payload).contains("redis_version"),
+        "expected INFO server payload, got: {}",
+        String::from_utf8_lossy(&f4_payload)
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
 }
 
 #[tokio::test]
@@ -19143,12 +19338,24 @@ async fn start_test_server_with_scripting_enabled() -> (
     oneshot::Sender<()>,
     tokio::task::JoinHandle<()>,
 ) {
+    let (addr, shutdown_tx, server, _) =
+        start_test_server_with_scripting_enabled_and_processor().await;
+    (addr, shutdown_tx, server)
+}
+
+async fn start_test_server_with_scripting_enabled_and_processor() -> (
+    std::net::SocketAddr,
+    oneshot::Sender<()>,
+    tokio::task::JoinHandle<()>,
+    Arc<RequestProcessor>,
+) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let metrics = Arc::new(ServerMetrics::default());
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
     let processor =
         Arc::new(RequestProcessor::new_with_string_store_shards_and_scripting(1, true).unwrap());
+    let server_processor = Arc::clone(&processor);
 
     let server_metrics = Arc::clone(&metrics);
     let server = tokio::spawn(async move {
@@ -19160,13 +19367,13 @@ async fn start_test_server_with_scripting_enabled() -> (
                 let _ = shutdown_rx.await;
             },
             None,
-            processor,
+            server_processor,
         )
         .await
         .unwrap();
     });
 
-    (addr, shutdown_tx, server)
+    (addr, shutdown_tx, server, processor)
 }
 
 fn unique_test_temp_dir(prefix: &str) -> PathBuf {

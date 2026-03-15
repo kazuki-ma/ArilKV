@@ -1331,14 +1331,19 @@ pub(crate) async fn handle_connection(
             }
 
             let transaction_control = command_transaction_control(command);
-            let command_mutating = command_is_effectively_mutating(
+            let subcommand = if argument_count > 1 {
+                Some(arg_slice_bytes(&args[1]))
+            } else {
+                None
+            };
+            let replica_scripting_flags = scripting_replica_execution_flags(
+                processor.as_ref(),
                 command,
-                if argument_count > 1 {
-                    Some(arg_slice_bytes(&args[1]))
-                } else {
-                    None
-                },
+                &args[..argument_count],
             );
+            let command_mutating = replica_scripting_flags
+                .map(|flags| flags.effectively_mutating)
+                .unwrap_or_else(|| command_is_effectively_mutating(command, subcommand));
             if transaction_control == TransactionControlCommand::Asking {
                 if !command_has_valid_arity(command, argument_count) {
                     append_wrong_arity_error_for_command(&mut responses, command);
@@ -1851,6 +1856,31 @@ pub(crate) async fn handle_connection(
                         }
                     }
                     _ => {
+                        let reject_reads_on_stale_replica = replication.is_replica_mode()
+                            && !processor.replica_serve_stale_data()
+                            && !replication.is_upstream_link_up();
+                        if reject_reads_on_stale_replica
+                            && replica_scripting_flags.is_some_and(|flags| !flags.allow_stale)
+                        {
+                            responses.extend_from_slice(
+                                b"-MASTERDOWN Link with MASTER is down and replica-serve-stale-data is set to 'no'.\r\n",
+                            );
+                            disconnect_after_write |= finalize_client_command(
+                                &metrics,
+                                client_id,
+                                &mut responses,
+                                response_mark,
+                                &mut client_state,
+                                command,
+                                command_outcome,
+                                commands_processed,
+                            );
+                            consumed += frame_bytes_consumed;
+                            if disconnect_after_write {
+                                break;
+                            }
+                            continue;
+                        }
                         if replication.is_replica_mode() && command_mutating {
                             responses.extend_from_slice(
                                 b"-READONLY You can't write against a read only replica.\r\n",
@@ -3008,6 +3038,12 @@ enum TransactionRuntimeAbortReason {
     Oom,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ScriptingReplicaExecutionFlags {
+    effectively_mutating: bool,
+    allow_stale: bool,
+}
+
 fn transaction_runtime_abort_reason(
     processor: &RequestProcessor,
     replication: &RedisReplicationCoordinator,
@@ -3041,9 +3077,18 @@ fn transaction_runtime_abort_reason(
         } else {
             None
         };
-        let command_mutating = command_is_effectively_mutating(command, subcommand);
+        let replica_scripting_flags =
+            scripting_replica_execution_flags(processor, command, &args[..meta.argument_count]);
+        let command_mutating = replica_scripting_flags
+            .map(|flags| flags.effectively_mutating)
+            .unwrap_or_else(|| command_is_effectively_mutating(command, subcommand));
         if command_requires_good_replicas(processor, command, &args[..meta.argument_count]) {
             requires_good_replicas = true;
+        }
+        if reject_reads_on_stale_replica
+            && replica_scripting_flags.is_some_and(|flags| !flags.allow_stale)
+        {
+            return Ok(Some(TransactionRuntimeAbortReason::MasterDown));
         }
         if command_mutating {
             has_mutating_command = true;
@@ -3095,6 +3140,58 @@ fn command_requires_good_replicas(
             };
             command_is_effectively_mutating(command, subcommand)
         }
+    }
+}
+
+fn scripting_replica_execution_flags(
+    processor: &RequestProcessor,
+    command: CommandId,
+    args: &[ArgSlice],
+) -> Option<ScriptingReplicaExecutionFlags> {
+    match command {
+        CommandId::Eval | CommandId::Evalsha | CommandId::EvalRo | CommandId::EvalshaRo => {
+            let script_source = script_source_for_replication(processor, command, args)?;
+            let flags = eval_script_shebang_flags(&script_source).ok()?;
+            let effectively_mutating = match command {
+                CommandId::Eval | CommandId::Evalsha => {
+                    if flags.has_shebang {
+                        !flags.no_writes
+                    } else {
+                        true
+                    }
+                }
+                CommandId::EvalRo | CommandId::EvalshaRo => false,
+                _ => unreachable!(),
+            };
+            Some(ScriptingReplicaExecutionFlags {
+                effectively_mutating,
+                allow_stale: flags.has_shebang && flags.allow_stale,
+            })
+        }
+        CommandId::Fcall | CommandId::FcallRo => {
+            let function_name = args.get(1)?;
+            Some(ScriptingReplicaExecutionFlags {
+                effectively_mutating: match command {
+                    CommandId::Fcall => {
+                        !processor.is_function_read_only(arg_slice_bytes(function_name))
+                    }
+                    CommandId::FcallRo => false,
+                    _ => unreachable!(),
+                },
+                allow_stale: processor.function_allows_stale(arg_slice_bytes(function_name)),
+            })
+        }
+        CommandId::Script
+            if args
+                .get(1)
+                .is_some_and(|name| ascii_eq_ignore_case(arg_slice_bytes(name), b"LOAD")) =>
+        {
+            Some(ScriptingReplicaExecutionFlags {
+                effectively_mutating: false,
+                allow_stale: true,
+            })
+        }
+        _ => None,
     }
 }
 

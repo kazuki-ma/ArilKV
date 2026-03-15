@@ -4739,6 +4739,15 @@ impl RequestProcessor {
             .store(value, Ordering::Release);
     }
 
+    pub(super) fn stale_replica_reads_denied(&self) -> bool {
+        let Some(replication) = self.replication_coordinator() else {
+            return false;
+        };
+        replication.is_replica_mode()
+            && !self.replica_serve_stale_data()
+            && !replication.is_upstream_link_up()
+    }
+
     pub(super) fn record_script_cache_hit(&self) {
         self.script_cache_hits.fetch_add(1, Ordering::Relaxed);
     }
@@ -5082,6 +5091,18 @@ impl RequestProcessor {
             .functions
             .get(&name)
             .map(|desc| desc.read_only)
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn function_allows_stale(&self, function_name: &[u8]) -> bool {
+        let name = String::from_utf8_lossy(function_name).to_lowercase();
+        let Ok(registry) = self.function_registry.lock() else {
+            return false;
+        };
+        registry
+            .functions
+            .get(&name)
+            .map(|desc| desc.allow_stale)
             .unwrap_or(false)
     }
 
