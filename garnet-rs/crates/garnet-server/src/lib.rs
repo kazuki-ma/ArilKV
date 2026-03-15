@@ -175,6 +175,8 @@ pub(crate) struct AclUserProfile {
     pub(crate) enabled: bool,
     pub(crate) nopass: bool,
     pub(crate) allow_all_commands: bool,
+    pub(crate) allowed_categories: HashSet<Vec<u8>>,
+    pub(crate) denied_categories: HashSet<Vec<u8>>,
     pub(crate) allowed_commands: HashSet<Vec<u8>>,
     pub(crate) denied_commands: HashSet<Vec<u8>>,
     pub(crate) key_patterns: Vec<Vec<u8>>,
@@ -189,6 +191,8 @@ impl AclUserProfile {
             enabled: true,
             nopass: true,
             allow_all_commands: true,
+            allowed_categories: HashSet::new(),
+            denied_categories: HashSet::new(),
             allowed_commands: HashSet::new(),
             denied_commands: HashSet::new(),
             key_patterns: vec![b"*".to_vec()],
@@ -203,6 +207,8 @@ impl AclUserProfile {
             enabled: false,
             nopass: false,
             allow_all_commands: false,
+            allowed_categories: HashSet::new(),
+            denied_categories: HashSet::new(),
             allowed_commands: HashSet::new(),
             denied_commands: HashSet::new(),
             key_patterns: Vec::new(),
@@ -621,6 +627,28 @@ impl ServerMetrics {
             .lock()
             .ok()
             .and_then(|clients| clients.get(&client_id).map(|client| client.user.clone()))
+    }
+
+    pub(crate) fn client_ids_for_user(&self, user: &[u8]) -> Vec<ClientId> {
+        let Ok(clients) = self.clients.lock() else {
+            return Vec::new();
+        };
+        clients
+            .iter()
+            .filter(|(_, client)| !client.killed && client.user.as_slice() == user)
+            .map(|(client_id, _)| *client_id)
+            .collect()
+    }
+
+    pub(crate) fn mark_clients_killed(&self, client_ids: &[ClientId]) {
+        let Ok(mut clients) = self.clients.lock() else {
+            return;
+        };
+        for client_id in client_ids {
+            if let Some(client) = clients.get_mut(client_id) {
+                client.killed = true;
+            }
+        }
     }
 
     pub fn set_client_library_name(&self, client_id: ClientId, value: Option<Vec<u8>>) {

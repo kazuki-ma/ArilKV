@@ -17,8 +17,10 @@ use crate::aof_durability::AppendFsyncPolicy;
 use crate::aof_durability::LiveAofDurabilityConfig;
 use crate::aof_durability::LiveAofDurabilityRuntime;
 use crate::aof_durability::LocalAofFrontiersSnapshot;
+use crate::command_spec::KeyAccessPattern;
 use crate::command_spec::command_allowed_while_script_busy;
 use crate::command_spec::command_is_effectively_mutating;
+use crate::command_spec::command_key_access_pattern;
 use crate::debug_concurrency::LockClass;
 use crate::debug_concurrency::OrderedMutex;
 use crate::debug_concurrency::OrderedMutexGuard;
@@ -2488,6 +2490,26 @@ pub(crate) enum AclAuthenticationResult {
     WrongPass,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum AclAuthorizationError {
+    Command(Vec<u8>),
+    Key,
+    Channel,
+}
+
+pub(crate) fn acl_denial_message_for_user(user: &[u8], error: &AclAuthorizationError) -> Vec<u8> {
+    match error {
+        AclAuthorizationError::Command(command) => format!(
+            "NOPERM User {} has no permissions to run the '{}' command",
+            String::from_utf8_lossy(user),
+            String::from_utf8_lossy(command)
+        )
+        .into_bytes(),
+        AclAuthorizationError::Key => b"NOPERM No permissions to access a key".to_vec(),
+        AclAuthorizationError::Channel => b"NOPERM No permissions to access a channel".to_vec(),
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockingWaitClass {
     List,
@@ -4070,10 +4092,13 @@ impl RequestProcessor {
         if user.is_empty() {
             return Err(RequestExecutionError::SyntaxError);
         }
+        let profile_for_reconcile = profile.clone();
         let Ok(mut users) = self.acl_users.lock() else {
             return Err(RequestExecutionError::StorageBusy);
         };
         users.insert(user.to_vec(), profile);
+        drop(users);
+        self.reconcile_acl_pubsub_clients_for_user(user, &profile_for_reconcile);
         Ok(())
     }
 
@@ -4119,6 +4144,113 @@ impl RequestProcessor {
             return AclAuthenticationResult::DefaultPasswordNotConfigured;
         }
         AclAuthenticationResult::WrongPass
+    }
+
+    pub(crate) fn acl_authorize_user_command(
+        &self,
+        user: &[u8],
+        command: CommandId,
+        args: &[&[u8]],
+    ) -> Result<(), AclAuthorizationError> {
+        let Some(profile) = self.acl_user_profile(user) else {
+            return Err(AclAuthorizationError::Command(
+                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
+            ));
+        };
+        if !profile.enabled {
+            return Err(AclAuthorizationError::Command(
+                acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),
+            ));
+        }
+
+        let base_token = acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec());
+        let specific_token = acl_specific_rule_token(command, args);
+        if !acl_profile_allows_command(&profile, command, args, specific_token.as_deref()) {
+            return Err(AclAuthorizationError::Command(
+                specific_token.unwrap_or(base_token),
+            ));
+        }
+        if !acl_profile_allows_keys(&profile.key_patterns, command, args) {
+            return Err(AclAuthorizationError::Key);
+        }
+        if !acl_profile_allows_channels(&profile, command, args) {
+            return Err(AclAuthorizationError::Channel);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn acl_authorize_client_command(
+        &self,
+        client_id: ClientId,
+        command: CommandId,
+        args: &[&[u8]],
+    ) -> Result<(), AclAuthorizationError> {
+        let user = self
+            .server_metrics
+            .get()
+            .and_then(|metrics| metrics.client_user(client_id))
+            .unwrap_or_else(|| b"default".to_vec());
+        self.acl_authorize_user_command(&user, command, args)
+    }
+
+    pub(crate) fn acl_denial_message_for_client(
+        &self,
+        client_id: ClientId,
+        error: &AclAuthorizationError,
+    ) -> Vec<u8> {
+        let user = self
+            .server_metrics
+            .get()
+            .and_then(|metrics| metrics.client_user(client_id))
+            .unwrap_or_else(|| b"default".to_vec());
+        acl_denial_message_for_user(&user, error)
+    }
+
+    pub(crate) fn pubsub_client_subscriptions(
+        &self,
+        client_id: ClientId,
+    ) -> (Vec<Vec<u8>>, Vec<Vec<u8>>) {
+        let Ok(state) = self.pubsub_state.lock() else {
+            return (Vec::new(), Vec::new());
+        };
+        let channels = state
+            .client_channels
+            .get(&client_id)
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default();
+        let patterns = state
+            .client_patterns
+            .get(&client_id)
+            .map(|entries| entries.iter().cloned().collect())
+            .unwrap_or_default();
+        (channels, patterns)
+    }
+
+    fn reconcile_acl_pubsub_clients_for_user(&self, user: &[u8], profile: &AclUserProfile) {
+        let Some(metrics) = self.server_metrics.get() else {
+            return;
+        };
+
+        let mut clients_to_kill = Vec::new();
+        for client_id in metrics.client_ids_for_user(user) {
+            let (channels, patterns) = self.pubsub_client_subscriptions(client_id);
+            if channels.is_empty() && patterns.is_empty() {
+                continue;
+            }
+
+            let channels_allowed = channels.iter().all(|channel| {
+                profile.enabled && acl_profile_allows_single_channel(profile, channel)
+            });
+            let patterns_allowed = patterns.iter().all(|pattern| {
+                profile.enabled && acl_profile_allows_single_channel(profile, pattern)
+            });
+            if channels_allowed && patterns_allowed {
+                continue;
+            }
+            clients_to_kill.push(client_id);
+        }
+
+        metrics.mark_clients_killed(&clients_to_kill);
     }
 
     pub(crate) fn attach_replication_coordinator(
@@ -6231,6 +6363,505 @@ impl RequestProcessor {
         }
         execution_result
     }
+}
+
+pub(crate) fn acl_category_is_known(category: &[u8]) -> bool {
+    matches!(
+        category,
+        b"keyspace"
+            | b"read"
+            | b"write"
+            | b"set"
+            | b"sortedset"
+            | b"list"
+            | b"hash"
+            | b"string"
+            | b"bitmap"
+            | b"hyperloglog"
+            | b"geo"
+            | b"stream"
+            | b"pubsub"
+            | b"admin"
+            | b"fast"
+            | b"slow"
+            | b"blocking"
+            | b"dangerous"
+            | b"connection"
+            | b"transaction"
+            | b"scripting"
+    )
+}
+
+fn normalize_acl_token_component(component: &[u8]) -> Vec<u8> {
+    component
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect()
+}
+
+fn acl_base_command_token(args: &[&[u8]]) -> Option<Vec<u8>> {
+    args.first()
+        .map(|command| normalize_acl_token_component(command))
+}
+
+fn acl_command_uses_acl_first_arg(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Acl
+            | CommandId::Client
+            | CommandId::Cluster
+            | CommandId::Command
+            | CommandId::Config
+            | CommandId::Debug
+            | CommandId::Function
+            | CommandId::Latency
+            | CommandId::Memory
+            | CommandId::Module
+            | CommandId::Object
+            | CommandId::Pubsub
+            | CommandId::Script
+            | CommandId::Slowlog
+            | CommandId::Select
+            | CommandId::Xgroup
+            | CommandId::Xinfo
+    )
+}
+
+fn acl_specific_rule_token(command: CommandId, args: &[&[u8]]) -> Option<Vec<u8>> {
+    if !acl_command_uses_acl_first_arg(command) || args.len() < 2 {
+        return None;
+    }
+    let base = acl_base_command_token(args)?;
+    let first_arg = normalize_acl_token_component(args[1]);
+    if first_arg.is_empty() {
+        return None;
+    }
+    let mut token = Vec::with_capacity(base.len() + first_arg.len() + 1);
+    token.extend_from_slice(&base);
+    token.push(b'|');
+    token.extend_from_slice(&first_arg);
+    Some(token)
+}
+
+fn acl_profile_allows_command(
+    profile: &AclUserProfile,
+    command: CommandId,
+    args: &[&[u8]],
+    specific_token: Option<&[u8]>,
+) -> bool {
+    let Some(base_token) = acl_base_command_token(args) else {
+        return false;
+    };
+    if let Some(token) = specific_token {
+        if profile.denied_commands.contains(token) {
+            return false;
+        }
+        if profile.allowed_commands.contains(token) {
+            return true;
+        }
+    }
+    if profile.denied_commands.contains(base_token.as_slice()) {
+        return false;
+    }
+    if profile.allowed_commands.contains(base_token.as_slice()) {
+        return true;
+    }
+
+    let categories = acl_command_categories(command, args);
+    if categories
+        .iter()
+        .any(|category| profile.denied_categories.contains(category.as_bytes()))
+    {
+        return false;
+    }
+    if profile.allow_all_commands {
+        return true;
+    }
+    categories
+        .iter()
+        .any(|category| profile.allowed_categories.contains(category.as_bytes()))
+}
+
+fn acl_command_is_blocking(command: CommandId, args: &[&[u8]]) -> bool {
+    match command {
+        CommandId::Xread | CommandId::Xreadgroup => args
+            .iter()
+            .any(|argument| ascii_eq_ignore_case(argument, b"BLOCK")),
+        _ => matches!(
+            command,
+            CommandId::Blpop
+                | CommandId::Brpop
+                | CommandId::Blmove
+                | CommandId::Brpoplpush
+                | CommandId::Blmpop
+                | CommandId::Bzpopmin
+                | CommandId::Bzpopmax
+                | CommandId::Bzmpop
+        ),
+    }
+}
+
+fn acl_command_categories(command: CommandId, args: &[&[u8]]) -> Vec<&'static str> {
+    let mut categories = Vec::new();
+    let subcommand = args.get(1).copied();
+    if command_is_effectively_mutating(command, subcommand) {
+        categories.push("write");
+    } else {
+        categories.push("read");
+    }
+    if acl_command_is_blocking(command, args) {
+        categories.push("blocking");
+    }
+    match command {
+        CommandId::Get
+        | CommandId::Set
+        | CommandId::Setex
+        | CommandId::Setnx
+        | CommandId::Strlen
+        | CommandId::Getrange
+        | CommandId::Substr
+        | CommandId::Append
+        | CommandId::Getex
+        | CommandId::Getdel
+        | CommandId::Getset
+        | CommandId::Mget
+        | CommandId::Mset
+        | CommandId::Msetnx
+        | CommandId::Msetex
+        | CommandId::Psetex
+        | CommandId::Delex
+        | CommandId::Digest
+        | CommandId::Incr
+        | CommandId::Decr
+        | CommandId::Incrby
+        | CommandId::Decrby
+        | CommandId::Incrbyfloat
+        | CommandId::Lcs
+        | CommandId::Getbit
+        | CommandId::Setbit
+        | CommandId::Setrange
+        | CommandId::Bitcount
+        | CommandId::Bitpos
+        | CommandId::Bitop
+        | CommandId::Bitfield
+        | CommandId::BitfieldRo => {
+            categories.push("string");
+        }
+        CommandId::Sadd
+        | CommandId::Srem
+        | CommandId::Smembers
+        | CommandId::Sismember
+        | CommandId::Scard
+        | CommandId::Smismember
+        | CommandId::Srandmember
+        | CommandId::Spop
+        | CommandId::Smove
+        | CommandId::Sdiff
+        | CommandId::Sdiffstore
+        | CommandId::Sinter
+        | CommandId::Sintercard
+        | CommandId::Sinterstore
+        | CommandId::Sunion
+        | CommandId::Sunionstore
+        | CommandId::Sscan => {
+            categories.push("set");
+        }
+        CommandId::Lpush
+        | CommandId::Rpush
+        | CommandId::Lpop
+        | CommandId::Rpop
+        | CommandId::Lrange
+        | CommandId::Llen
+        | CommandId::Lindex
+        | CommandId::Lpos
+        | CommandId::Lset
+        | CommandId::Ltrim
+        | CommandId::Lpushx
+        | CommandId::Rpushx
+        | CommandId::Lrem
+        | CommandId::Linsert
+        | CommandId::Lmove
+        | CommandId::Rpoplpush
+        | CommandId::Lmpop
+        | CommandId::Blmpop
+        | CommandId::Blpop
+        | CommandId::Brpop
+        | CommandId::Blmove
+        | CommandId::Brpoplpush => {
+            categories.push("list");
+        }
+        CommandId::Hset
+        | CommandId::Hget
+        | CommandId::Hdel
+        | CommandId::Hgetall
+        | CommandId::Hlen
+        | CommandId::Hmget
+        | CommandId::Hmset
+        | CommandId::Hsetnx
+        | CommandId::Hexists
+        | CommandId::Hkeys
+        | CommandId::Hvals
+        | CommandId::Hstrlen
+        | CommandId::Hincrby
+        | CommandId::Hincrbyfloat
+        | CommandId::Hrandfield
+        | CommandId::Hscan
+        | CommandId::Hsetex
+        | CommandId::Hgetex
+        | CommandId::Hgetdel
+        | CommandId::Hexpire
+        | CommandId::Hpexpire
+        | CommandId::Hpexpireat
+        | CommandId::Hexpireat
+        | CommandId::Hpersist
+        | CommandId::Hpttl
+        | CommandId::Httl
+        | CommandId::Hpexpiretime
+        | CommandId::Hexpiretime => {
+            categories.push("hash");
+        }
+        CommandId::Zadd
+        | CommandId::Zrem
+        | CommandId::Zrange
+        | CommandId::Zrevrange
+        | CommandId::Zrangebyscore
+        | CommandId::Zrevrangebyscore
+        | CommandId::Zscore
+        | CommandId::Zcard
+        | CommandId::Zcount
+        | CommandId::Zrank
+        | CommandId::Zrevrank
+        | CommandId::Zincrby
+        | CommandId::Zremrangebyrank
+        | CommandId::Zremrangebyscore
+        | CommandId::Zmscore
+        | CommandId::Zrandmember
+        | CommandId::Zpopmin
+        | CommandId::Zpopmax
+        | CommandId::Bzpopmin
+        | CommandId::Bzpopmax
+        | CommandId::Zdiff
+        | CommandId::Zdiffstore
+        | CommandId::Zinter
+        | CommandId::Zinterstore
+        | CommandId::Zlexcount
+        | CommandId::Zrangestore
+        | CommandId::Zrangebylex
+        | CommandId::Zrevrangebylex
+        | CommandId::Zremrangebylex
+        | CommandId::Zintercard
+        | CommandId::Zmpop
+        | CommandId::Bzmpop
+        | CommandId::Zunion
+        | CommandId::Zunionstore
+        | CommandId::Zscan => {
+            categories.push("sortedset");
+        }
+        CommandId::Xadd
+        | CommandId::Xdel
+        | CommandId::Xdelex
+        | CommandId::Xgroup
+        | CommandId::Xreadgroup
+        | CommandId::Xread
+        | CommandId::Xack
+        | CommandId::Xackdel
+        | CommandId::Xpending
+        | CommandId::Xclaim
+        | CommandId::Xautoclaim
+        | CommandId::Xsetid
+        | CommandId::Xinfo
+        | CommandId::Xlen
+        | CommandId::Xrange
+        | CommandId::Xrevrange
+        | CommandId::Xtrim
+        | CommandId::Xcfgset => {
+            categories.push("stream");
+        }
+        CommandId::Publish
+        | CommandId::Spublish
+        | CommandId::Subscribe
+        | CommandId::Psubscribe
+        | CommandId::Ssubscribe
+        | CommandId::Unsubscribe
+        | CommandId::Punsubscribe
+        | CommandId::Sunsubscribe
+        | CommandId::Pubsub => {
+            categories.push("pubsub");
+        }
+        CommandId::Geoadd
+        | CommandId::Geopos
+        | CommandId::Geodist
+        | CommandId::Geohash
+        | CommandId::Geosearch
+        | CommandId::Geosearchstore
+        | CommandId::Georadius
+        | CommandId::GeoradiusRo
+        | CommandId::Georadiusbymember
+        | CommandId::GeoradiusbymemberRo => {
+            categories.push("geo");
+        }
+        CommandId::Pfadd
+        | CommandId::Pfcount
+        | CommandId::Pfmerge
+        | CommandId::Pfdebug
+        | CommandId::Pfselftest => {
+            categories.push("hyperloglog");
+        }
+        CommandId::Auth
+        | CommandId::Hello
+        | CommandId::Client
+        | CommandId::Select
+        | CommandId::Readonly
+        | CommandId::Readwrite
+        | CommandId::Reset
+        | CommandId::Quit
+        | CommandId::Ping
+        | CommandId::Echo => {
+            categories.push("connection");
+        }
+        CommandId::Acl
+        | CommandId::Config
+        | CommandId::Info
+        | CommandId::Memory
+        | CommandId::Monitor
+        | CommandId::Shutdown
+        | CommandId::Save
+        | CommandId::Bgsave
+        | CommandId::Bgrewriteaof
+        | CommandId::Lastsave
+        | CommandId::Latency
+        | CommandId::Slowlog
+        | CommandId::Module
+        | CommandId::Cluster
+        | CommandId::Failover
+        | CommandId::Role
+        | CommandId::Wait
+        | CommandId::Waitaof
+        | CommandId::Migrate => {
+            categories.push("admin");
+        }
+        CommandId::Eval
+        | CommandId::EvalRo
+        | CommandId::Evalsha
+        | CommandId::EvalshaRo
+        | CommandId::Fcall
+        | CommandId::FcallRo
+        | CommandId::Function
+        | CommandId::Script => {
+            categories.push("scripting");
+        }
+        CommandId::Multi
+        | CommandId::Exec
+        | CommandId::Discard
+        | CommandId::Watch
+        | CommandId::Unwatch => {
+            categories.push("transaction");
+        }
+        CommandId::Flushall | CommandId::Flushdb | CommandId::Debug => {
+            categories.push("dangerous");
+        }
+        _ => {}
+    }
+    categories
+}
+
+fn acl_profile_allows_keys(key_patterns: &[Vec<u8>], command: CommandId, args: &[&[u8]]) -> bool {
+    let keys = acl_command_key_arguments(command, args);
+    if keys.is_empty() {
+        return true;
+    }
+    if key_patterns.is_empty() {
+        return false;
+    }
+    for key in keys {
+        let allowed = key_patterns.iter().any(|pattern| {
+            self::server_commands::redis_glob_match(
+                pattern,
+                key,
+                self::server_commands::CaseSensitivity::Sensitive,
+                0,
+            )
+        });
+        if !allowed {
+            return false;
+        }
+    }
+    true
+}
+
+fn acl_command_key_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&'a [u8]> {
+    match command {
+        CommandId::Del
+        | CommandId::Exists
+        | CommandId::Mget
+        | CommandId::Touch
+        | CommandId::Unlink
+        | CommandId::Watch => args.iter().skip(1).copied().collect(),
+        CommandId::Mset | CommandId::Msetnx => args.iter().skip(1).step_by(2).copied().collect(),
+        CommandId::Blpop | CommandId::Brpop => {
+            if args.len() <= 2 {
+                Vec::new()
+            } else {
+                args[1..args.len() - 1].to_vec()
+            }
+        }
+        CommandId::Lmove | CommandId::Rpoplpush | CommandId::Blmove | CommandId::Brpoplpush => {
+            args.iter().skip(1).take(2).copied().collect()
+        }
+        CommandId::Smove => args.iter().skip(1).take(2).copied().collect(),
+        CommandId::Copy => {
+            if args.len() >= 3 {
+                vec![args[1], args[2]]
+            } else {
+                Vec::new()
+            }
+        }
+        _ => match command_key_access_pattern(command) {
+            KeyAccessPattern::FirstKey => args.get(1).copied().into_iter().collect(),
+            _ => Vec::new(),
+        },
+    }
+}
+
+fn acl_profile_allows_channels(
+    profile: &AclUserProfile,
+    command: CommandId,
+    args: &[&[u8]],
+) -> bool {
+    let channels = acl_command_channel_arguments(command, args);
+    if channels.is_empty() {
+        return true;
+    }
+    channels
+        .into_iter()
+        .all(|channel| acl_profile_allows_single_channel(profile, channel))
+}
+
+fn acl_command_channel_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&'a [u8]> {
+    match command {
+        CommandId::Publish | CommandId::Spublish => args.get(1).copied().into_iter().collect(),
+        CommandId::Subscribe | CommandId::Psubscribe | CommandId::Ssubscribe => {
+            args.iter().skip(1).copied().collect()
+        }
+        _ => Vec::new(),
+    }
+}
+
+fn acl_profile_allows_single_channel(profile: &AclUserProfile, channel: &[u8]) -> bool {
+    if profile.allow_all_channels {
+        return true;
+    }
+    if profile.channel_patterns.is_empty() {
+        return false;
+    }
+    profile.channel_patterns.iter().any(|pattern| {
+        self::server_commands::redis_glob_match(
+            pattern,
+            channel,
+            self::server_commands::CaseSensitivity::Sensitive,
+            0,
+        )
+    })
 }
 
 fn pubsub_total_subscriptions_for_client(state: &PubSubState, client_id: ClientId) -> usize {

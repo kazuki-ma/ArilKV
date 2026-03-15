@@ -19,6 +19,7 @@ use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_key_access_pattern;
 use crate::command_spec::command_names_for_command_response;
 use crate::connection_protocol::parse_u16_ascii;
+use std::collections::BTreeSet;
 
 static NEXT_RANDOMKEY_INDEX: AtomicU64 = AtomicU64::new(0);
 const COMPATIBLE_REDIS_VERSION: &str = "8.4.0";
@@ -132,11 +133,138 @@ fn acl_username_is_valid(username: &[u8]) -> bool {
     !username.is_empty() && !username.iter().any(|byte| *byte == b' ' || *byte == b'\0')
 }
 
-fn normalize_acl_command_name(command_name: &[u8]) -> Vec<u8> {
-    command_name
-        .iter()
-        .map(|byte| byte.to_ascii_lowercase())
-        .collect()
+fn normalize_acl_rule_token(token: &[u8]) -> Vec<u8> {
+    token.iter().map(|byte| byte.to_ascii_lowercase()).collect()
+}
+
+fn acl_setuser_syntax_error(token: &[u8]) -> String {
+    format!(
+        "ERR Error in ACL SETUSER modifier '{}': Syntax error",
+        String::from_utf8_lossy(token)
+    )
+}
+
+fn acl_setuser_unknown_rule_error(token: &[u8]) -> String {
+    format!(
+        "ERR Error in ACL SETUSER modifier '{}': Unknown command or category name in ACL",
+        String::from_utf8_lossy(token)
+    )
+}
+
+fn acl_setuser_unsupported_nested_subcommand_error(token: &[u8]) -> String {
+    format!(
+        "ERR Error in ACL SETUSER modifier '{}': Allowing first-arg of a subcommand is not supported",
+        String::from_utf8_lossy(token)
+    )
+}
+
+fn acl_command_first_arg_rule_is_valid(command: CommandId, first_arg: &[u8]) -> bool {
+    if first_arg.is_empty() {
+        return false;
+    }
+    match command {
+        CommandId::Config => matches!(
+            first_arg,
+            b"get" | b"set" | b"rewrite" | b"resetstat" | b"help"
+        ),
+        CommandId::Select => first_arg.iter().all(|byte| byte.is_ascii_digit()),
+        _ => true,
+    }
+}
+
+fn clear_acl_specific_rules_for_command(rules: &mut HashSet<Vec<u8>>, command: &[u8]) {
+    let mut prefix = Vec::with_capacity(command.len() + 1);
+    prefix.extend_from_slice(command);
+    prefix.push(b'|');
+    rules.retain(|rule| !rule.starts_with(prefix.as_slice()));
+}
+
+fn apply_acl_command_rule(
+    profile: &mut AclUserProfile,
+    token: &[u8],
+    allow: bool,
+) -> Result<(), String> {
+    let Some(rule_body) = token.get(1..) else {
+        return Err(acl_setuser_syntax_error(token));
+    };
+    if rule_body.is_empty() {
+        return Err(acl_setuser_syntax_error(token));
+    }
+
+    if let Some(category) = rule_body.strip_prefix(b"@") {
+        let normalized_category = normalize_acl_rule_token(category);
+        if !super::acl_category_is_known(&normalized_category) {
+            return Err(acl_setuser_unknown_rule_error(token));
+        }
+        if allow {
+            profile
+                .denied_categories
+                .remove(normalized_category.as_slice());
+            profile.allowed_categories.insert(normalized_category);
+        } else {
+            profile
+                .allowed_categories
+                .remove(normalized_category.as_slice());
+            profile.denied_categories.insert(normalized_category);
+        }
+        return Ok(());
+    }
+
+    let normalized_rule = normalize_acl_rule_token(rule_body);
+    let parts = normalized_rule
+        .split(|byte| *byte == b'|')
+        .collect::<Vec<_>>();
+    if parts.len() > 2 {
+        let Some(base_command) = parts.first() else {
+            return Err(acl_setuser_unknown_rule_error(token));
+        };
+        let Some(command_id) = command_id_from_name(base_command) else {
+            return Err(acl_setuser_unknown_rule_error(token));
+        };
+        if super::acl_command_uses_acl_first_arg(command_id) {
+            return Err(acl_setuser_unsupported_nested_subcommand_error(token));
+        }
+        return Err(acl_setuser_unknown_rule_error(token));
+    }
+
+    let Some(base_command_name) = parts.first() else {
+        return Err(acl_setuser_unknown_rule_error(token));
+    };
+    let Some(command_id) = command_id_from_name(base_command_name) else {
+        return Err(acl_setuser_unknown_rule_error(token));
+    };
+
+    if parts.len() == 2 {
+        if !super::acl_command_uses_acl_first_arg(command_id) {
+            return Err(acl_setuser_unknown_rule_error(token));
+        }
+        let first_arg = parts[1];
+        if !acl_command_first_arg_rule_is_valid(command_id, first_arg) {
+            return Err(acl_setuser_unknown_rule_error(token));
+        }
+        if allow {
+            profile.denied_commands.remove(normalized_rule.as_slice());
+            profile.allowed_commands.insert(normalized_rule);
+        } else {
+            profile.allowed_commands.remove(normalized_rule.as_slice());
+            profile.denied_commands.insert(normalized_rule);
+        }
+        return Ok(());
+    }
+
+    if allow {
+        profile.denied_commands.remove(normalized_rule.as_slice());
+        clear_acl_specific_rules_for_command(&mut profile.allowed_commands, &normalized_rule);
+        clear_acl_specific_rules_for_command(&mut profile.denied_commands, &normalized_rule);
+        profile.allowed_commands.insert(normalized_rule);
+    } else {
+        profile.allowed_commands.remove(normalized_rule.as_slice());
+        clear_acl_specific_rules_for_command(&mut profile.allowed_commands, &normalized_rule);
+        clear_acl_specific_rules_for_command(&mut profile.denied_commands, &normalized_rule);
+        profile.denied_commands.insert(normalized_rule);
+    }
+
+    Ok(())
 }
 
 fn is_valid_acl_password_hash(hash: &[u8]) -> bool {
@@ -191,11 +319,16 @@ fn parse_acl_setuser_profile(
         }
         if ascii_eq_ignore_case(token, b"ALLCOMMANDS") || ascii_eq_ignore_case(token, b"+@ALL") {
             profile.allow_all_commands = true;
+            profile.allowed_categories.clear();
+            profile.denied_categories.clear();
+            profile.allowed_commands.clear();
             profile.denied_commands.clear();
             continue;
         }
         if ascii_eq_ignore_case(token, b"NOCOMMANDS") || ascii_eq_ignore_case(token, b"-@ALL") {
             profile.allow_all_commands = false;
+            profile.allowed_categories.clear();
+            profile.denied_categories.clear();
             profile.allowed_commands.clear();
             profile.denied_commands.clear();
             continue;
@@ -235,36 +368,22 @@ fn parse_acl_setuser_profile(
         }
         if let Some(password_hash) = token.strip_prefix(b"!") {
             if !is_valid_acl_password_hash(password_hash) {
-                return Err(format!(
-                    "ERR Error in ACL SETUSER modifier '{}': Syntax error",
-                    String::from_utf8_lossy(token)
-                ));
+                return Err(acl_setuser_syntax_error(token));
             }
             profile
                 .password_hashes
                 .remove(password_hash.to_ascii_lowercase().as_slice());
             continue;
         }
-        if let Some(command_name) = token.strip_prefix(b"+") {
-            if !command_name.starts_with(b"@") && !command_name.is_empty() {
-                let normalized = normalize_acl_command_name(command_name);
-                profile.denied_commands.remove(normalized.as_slice());
-                profile.allowed_commands.insert(normalized);
-            }
+        if token.starts_with(b"+") {
+            apply_acl_command_rule(&mut profile, token, true)?;
             continue;
         }
-        if let Some(command_name) = token.strip_prefix(b"-") {
-            if !command_name.starts_with(b"@") && !command_name.is_empty() {
-                let normalized = normalize_acl_command_name(command_name);
-                profile.allowed_commands.remove(normalized.as_slice());
-                profile.denied_commands.insert(normalized);
-            }
+        if token.starts_with(b"-") {
+            apply_acl_command_rule(&mut profile, token, false)?;
             continue;
         }
-        return Err(format!(
-            "ERR Error in ACL SETUSER modifier '{}': Syntax error",
-            String::from_utf8_lossy(token)
-        ));
+        return Err(acl_setuser_syntax_error(token));
     }
     Ok(profile)
 }
@@ -279,18 +398,35 @@ fn render_acl_commands(profile: &AclUserProfile) -> Vec<u8> {
     let mut parts = Vec::<Vec<u8>>::new();
     if profile.allow_all_commands {
         parts.push(b"+@all".to_vec());
-    } else if profile.allowed_commands.is_empty() && profile.denied_commands.is_empty() {
+    } else if profile.allowed_categories.is_empty()
+        && profile.denied_categories.is_empty()
+        && profile.allowed_commands.is_empty()
+        && profile.denied_commands.is_empty()
+    {
         parts.push(b"-@all".to_vec());
     }
-    for command in sorted_bytes(profile.allowed_commands.iter().cloned()) {
-        let mut token = Vec::with_capacity(command.len() + 1);
-        token.push(b'+');
-        token.extend_from_slice(&command);
+
+    for category in sorted_bytes(profile.allowed_categories.iter().cloned()) {
+        let mut token = Vec::with_capacity(category.len() + 2);
+        token.extend_from_slice(b"+@");
+        token.extend_from_slice(&category);
+        parts.push(token);
+    }
+    for category in sorted_bytes(profile.denied_categories.iter().cloned()) {
+        let mut token = Vec::with_capacity(category.len() + 2);
+        token.extend_from_slice(b"-@");
+        token.extend_from_slice(&category);
         parts.push(token);
     }
     for command in sorted_bytes(profile.denied_commands.iter().cloned()) {
         let mut token = Vec::with_capacity(command.len() + 1);
         token.push(b'-');
+        token.extend_from_slice(&command);
+        parts.push(token);
+    }
+    for command in sorted_bytes(profile.allowed_commands.iter().cloned()) {
+        let mut token = Vec::with_capacity(command.len() + 1);
+        token.push(b'+');
         token.extend_from_slice(&command);
         parts.push(token);
     }
@@ -380,6 +516,31 @@ fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
         );
     }
     join_acl_tokens(parts)
+}
+
+fn acl_category_members(category: &[u8]) -> Vec<Vec<u8>> {
+    let normalized_category = normalize_acl_rule_token(category);
+    let mut members = BTreeSet::new();
+    for &command_name in command_names_for_command_response() {
+        let Some(command) = command_id_from_name(command_name) else {
+            continue;
+        };
+        let command_args = [command_name];
+        let categories = super::acl_command_categories(command, &command_args);
+        if categories
+            .iter()
+            .any(|candidate| candidate.as_bytes() == normalized_category.as_slice())
+        {
+            members.insert(normalize_acl_rule_token(command_name));
+        }
+    }
+
+    if normalized_category.as_slice() == b"scripting" {
+        members.insert(b"function|list".to_vec());
+        members.insert(b"script|help".to_vec());
+    }
+
+    members.into_iter().collect()
 }
 const OBJECT_HELP_LINES: [&[u8]; 11] = [
     b"OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
@@ -3737,7 +3898,22 @@ impl RequestProcessor {
                 return Ok(());
             }
             require_exact_arity(args, 3, "ACL", "ACL CAT [category]")?;
-            append_bulk_array(response_out, &[]);
+            if !super::acl_category_is_known(args[2]) {
+                append_error(
+                    response_out,
+                    format!(
+                        "ERR Unknown category '{}'",
+                        String::from_utf8_lossy(args[2])
+                    )
+                    .as_bytes(),
+                );
+                return Ok(());
+            }
+            let members = acl_category_members(args[2]);
+            append_array_length(response_out, members.len());
+            for member in members {
+                append_bulk_string(response_out, &member);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"DELUSER") {
@@ -3805,8 +3981,18 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"DRYRUN") {
             ensure_min_arity(args, 4, "ACL", "ACL DRYRUN username command [arg ...]")?;
-            // Single-user stub: the "default" user can run everything.
-            append_simple_string(response_out, b"OK");
+            let dryrun_args = &args[3..];
+            let Some(command) = command_id_from_name(dryrun_args[0]) else {
+                append_error(response_out, b"ERR Invalid command specified");
+                return Ok(());
+            };
+            match self.acl_authorize_user_command(args[2], command, dryrun_args) {
+                Ok(()) => append_simple_string(response_out, b"OK"),
+                Err(error) => {
+                    let payload = super::acl_denial_message_for_user(args[2], &error);
+                    append_error(response_out, &payload);
+                }
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {

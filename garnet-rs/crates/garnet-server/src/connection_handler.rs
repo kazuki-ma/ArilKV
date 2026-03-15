@@ -42,6 +42,7 @@ use crate::command_spec::command_is_effectively_mutating;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_scripting_family;
 use crate::command_spec::command_is_write_pause_affected_with_script;
+use crate::command_spec::command_name_upper;
 use crate::command_spec::command_transaction_control;
 use crate::command_spec::eval_script_shebang_flags;
 use crate::connection_owner_routing::OwnedExecutionOutcome;
@@ -62,6 +63,7 @@ use crate::connection_transaction::QueuedReplicationTransition;
 use crate::connection_transaction::TransactionExecutionOutcome;
 use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
+use crate::request_lifecycle::AclAuthorizationError;
 use crate::request_lifecycle::BlockingWaitClass;
 use crate::request_lifecycle::BlockingWaitKey;
 use crate::request_lifecycle::ClientTrackingConfig;
@@ -1001,6 +1003,45 @@ pub(crate) async fn handle_connection(
             let mut command_outcome = ClientCommandOutcome::default();
             let mut commands_processed = 1u64;
             let execution_count_before = processor.executed_command_count();
+            let acl_args = if !transaction.in_multi && !command_bypasses_acl(command) {
+                Some(
+                    args[..argument_count]
+                        .iter()
+                        .map(arg_slice_bytes)
+                        .collect::<Vec<_>>(),
+                )
+            } else {
+                None
+            };
+
+            if let Some(acl_args) = acl_args.as_ref() {
+                if let Err(error) =
+                    processor.acl_authorize_client_command(client_id, command, acl_args)
+                {
+                    append_acl_denial_response(
+                        &processor,
+                        client_id,
+                        &command_call_name,
+                        &mut responses,
+                        &error,
+                    );
+                    disconnect_after_write |= finalize_client_command(
+                        &metrics,
+                        client_id,
+                        &mut responses,
+                        response_mark,
+                        &mut client_state,
+                        command,
+                        command_outcome,
+                        commands_processed,
+                    );
+                    consumed += frame_bytes_consumed;
+                    if disconnect_after_write {
+                        break;
+                    }
+                    continue;
+                }
+            }
 
             if command == CommandId::Client && !transaction.in_multi {
                 command_outcome = handle_client_command(
@@ -1336,6 +1377,41 @@ pub(crate) async fn handle_connection(
             }
             let propagate_frame = false;
             if transaction.in_multi {
+                if transaction_control != TransactionControlCommand::None
+                    && command_has_valid_arity(command, argument_count)
+                    && !command_bypasses_acl(command)
+                {
+                    let acl_args = args[..argument_count]
+                        .iter()
+                        .map(arg_slice_bytes)
+                        .collect::<Vec<_>>();
+                    if let Err(error) =
+                        processor.acl_authorize_client_command(client_id, command, &acl_args)
+                    {
+                        append_acl_denial_response(
+                            &processor,
+                            client_id,
+                            &command_call_name,
+                            &mut responses,
+                            &error,
+                        );
+                        disconnect_after_write |= finalize_client_command(
+                            &metrics,
+                            client_id,
+                            &mut responses,
+                            response_mark,
+                            &mut client_state,
+                            command,
+                            command_outcome,
+                            commands_processed,
+                        );
+                        consumed += frame_bytes_consumed;
+                        if disconnect_after_write {
+                            break;
+                        }
+                        continue;
+                    }
+                }
                 match transaction_control {
                     TransactionControlCommand::Exec => {
                         if !command_has_valid_arity(command, argument_count) {
@@ -1607,6 +1683,39 @@ pub(crate) async fn handle_connection(
                                 break;
                             }
                             continue;
+                        }
+                        if !command_bypasses_acl(command) {
+                            let acl_args = args[..argument_count]
+                                .iter()
+                                .map(arg_slice_bytes)
+                                .collect::<Vec<_>>();
+                            if let Err(error) = processor
+                                .acl_authorize_client_command(client_id, command, &acl_args)
+                            {
+                                transaction.aborted = true;
+                                append_acl_denial_response(
+                                    &processor,
+                                    client_id,
+                                    &command_call_name,
+                                    &mut responses,
+                                    &error,
+                                );
+                                disconnect_after_write |= finalize_client_command(
+                                    &metrics,
+                                    client_id,
+                                    &mut responses,
+                                    response_mark,
+                                    &mut client_state,
+                                    command,
+                                    command_outcome,
+                                    commands_processed,
+                                );
+                                consumed += frame_bytes_consumed;
+                                if disconnect_after_write {
+                                    break;
+                                }
+                                continue;
+                            }
                         }
                         if command_disallowed_inside_multi(command) {
                             transaction.aborted = true;
@@ -2579,6 +2688,35 @@ async fn execute_blocking_frame_on_owner_thread(
                 sleep(BLOCKING_COMMAND_NON_TURN_POLL_INTERVAL).await;
             }
             continue;
+        }
+
+        if !command_bypasses_acl(command) {
+            let acl_args = args.iter().map(arg_slice_bytes).collect::<Vec<_>>();
+            if let Err(error) =
+                processor.acl_authorize_client_command(client_id, command, &acl_args)
+            {
+                clear_blocking_request_state(
+                    processor,
+                    metrics,
+                    client_id,
+                    blocked,
+                    &blocking_keys,
+                );
+                if pause_blocked_marker_active {
+                    processor.unregister_pause_blocked_blocking_client(client_id);
+                }
+                processor.record_command_rejection(command_name_upper(command));
+                processor.record_error_reply(b"NOPERM");
+                let mut frame_response = Vec::new();
+                let payload = processor.acl_denial_message_for_client(client_id, &error);
+                append_error_line(&mut frame_response, &payload);
+                return Ok(BlockingExecutionOutcome {
+                    frame_response,
+                    should_replicate: false,
+                    connection_effects: RequestConnectionEffects::default(),
+                    deferred_replication_frames: Vec::new(),
+                });
+            }
         }
 
         let pre_string_len =
@@ -4799,6 +4937,26 @@ fn parse_u64_ascii(value: &[u8]) -> Option<u64> {
 fn parse_i64_ascii(value: &[u8]) -> Option<i64> {
     let text = std::str::from_utf8(value).ok()?;
     text.parse::<i64>().ok()
+}
+
+fn command_bypasses_acl(command: CommandId) -> bool {
+    matches!(
+        command,
+        CommandId::Auth | CommandId::Hello | CommandId::Quit | CommandId::Reset
+    )
+}
+
+fn append_acl_denial_response(
+    processor: &RequestProcessor,
+    client_id: ClientId,
+    command_call_name: &[u8],
+    response_out: &mut Vec<u8>,
+    error: &AclAuthorizationError,
+) {
+    processor.record_command_rejection(command_call_name);
+    processor.record_error_reply(b"NOPERM");
+    let payload = processor.acl_denial_message_for_client(client_id, error);
+    append_error_line(response_out, &payload);
 }
 
 fn maybe_apply_hello_side_effects(

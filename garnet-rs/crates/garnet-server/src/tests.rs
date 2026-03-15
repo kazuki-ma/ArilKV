@@ -1088,7 +1088,7 @@ async fn reset_clears_multi_and_authenticated_state() {
     let mut client = TcpStream::connect(addr).await.unwrap();
     send_and_expect(
         &mut client,
-        b"*6\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$5\r\nuser1\r\n$2\r\non\r\n$7\r\n>secret\r\n$5\r\n+@all\r\n",
+        b"*7\r\n$3\r\nACL\r\n$7\r\nSETUSER\r\n$5\r\nuser1\r\n$2\r\non\r\n$7\r\n>secret\r\n$5\r\n+@all\r\n$7\r\nallkeys\r\n",
         b"+OK\r\n",
     )
     .await;
@@ -1300,6 +1300,614 @@ async fn acl_auth_password_rotation_and_hello_auth_match_external_scenarios() {
         b"$7\r\nnewuser\r\n",
     )
     .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_command_key_channel_and_dryrun_permissions_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut client = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"newuser", b"reset", b"on", b"nopass", b"+acl",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"pass"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let denied_command = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_command.contains("NOPERM"));
+    assert!(denied_command.contains("set"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b"+set"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_key = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo", b"bar"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_key.contains("NOPERM"));
+    assert!(denied_key.contains("key"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"newuser",
+            b"allcommands",
+            b"~foo:*",
+            b"~bar:*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"foo:1", b"a"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"bar:2", b"b"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_pattern = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"zap:3", b"c"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_pattern.contains("NOPERM"));
+    assert!(denied_pattern.contains("key"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"newuser", b"-@all", b"+@set", b"allkeys", b"+acl",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"SADD", b"myset", b"a", b"b", b"c"]),
+            timeout,
+        )
+        .await,
+        3
+    );
+    let denied_string = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SET", b"x", b"1"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_string.contains("NOPERM"));
+    assert!(denied_string.contains("set"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"newuser",
+            b"+@all",
+            b"-client",
+            b"+client|id",
+            b"+client|setname",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"CLIENT", b"ID"]),
+            timeout
+        )
+        .await
+            > 0
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_subcommand = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"CLIENT", b"KILL", b"TYPE", b"master"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_subcommand.contains("NOPERM"));
+    assert!(denied_subcommand.contains("client|kill"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"newuser",
+            b"-@all",
+            b"+acl",
+            b"+config",
+            b"-config|set",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let config_get = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"GET", b"loglevel"]),
+        timeout,
+    )
+    .await;
+    assert!(
+        matches!(
+            config_get,
+            RespSocketValue::Array(_) | RespSocketValue::Map(_)
+        ),
+        "CONFIG GET should be allowed, got {config_get:?}"
+    );
+    let denied_config = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"loglevel", b"notice"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_config.contains("NOPERM"));
+    assert!(denied_config.contains("config|set"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"newuser",
+            b"-@all",
+            b"+acl",
+            b"+select|0",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_select = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"SELECT", b"1"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_select.contains("NOPERM"));
+    assert!(denied_select.contains("select|1"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b"+@all", b"-config|get"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let nested_rule_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b"+config|get|appendonly"]),
+        timeout,
+    )
+    .await;
+    assert!(nested_rule_error.contains("Allowing first-arg of a subcommand is not supported"));
+
+    let unknown_rule_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b"+config|asdf"]),
+        timeout,
+    )
+    .await;
+    assert!(unknown_rule_error.contains("Unknown command or category name in ACL"));
+
+    let cat_unknown = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"CAT", b"NON_EXISTS"]),
+        timeout,
+    )
+    .await;
+    assert!(cat_unknown.contains("Unknown category 'NON_EXISTS'"));
+
+    let scripting_category = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"CAT", b"scripting"]),
+        timeout,
+    )
+    .await;
+    let scripting_members = resp_socket_array(&scripting_category)
+        .iter()
+        .map(resp_socket_bulk)
+        .collect::<Vec<_>>();
+    assert!(scripting_members.contains(&b"function|list".as_slice()));
+    assert!(!scripting_members.contains(&b"set".as_slice()));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"scripter",
+            b"on",
+            b"nopass",
+            b"+readonly",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let dryrun_error = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"DRYRUN", b"scripter", b"EVAL_RO", b"", b"0"]),
+        timeout,
+    )
+    .await;
+    assert!(dryrun_error.contains("NOPERM"));
+    assert!(dryrun_error.contains("eval_ro"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"reset",
+            b"on",
+            b">pspass",
+            b"+acl",
+            b"+client",
+            b"+multi",
+            b"+discard",
+            b"+@pubsub",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"psuser", b"pspass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let denied_publish = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"PUBLISH", b"foo", b"bar"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_publish.contains("NOPERM"));
+    assert!(denied_publish.contains("channel"));
+
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"resetchannels",
+            b"&foo:1",
+            b"&bar:*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"PUBLISH", b"foo:1", b"somemessage"]),
+            timeout,
+        )
+        .await,
+        0
+    );
+    assert_eq!(
+        send_and_read_integer(
+            &mut client,
+            &encode_resp_command(&[b"PUBLISH", b"bar:2", b"anothermessage"]),
+            timeout,
+        )
+        .await,
+        0
+    );
+    let denied_channel = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"PUBLISH", b"zap:3", b"nosuchmessage"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_channel.contains("NOPERM"));
+    assert!(denied_channel.contains("channel"));
+
+    send_and_expect(&mut client, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    let queued_publish = send_and_read_error_line(
+        &mut client,
+        &encode_resp_command(&[b"PUBLISH", b"notexists", b"helloworld"]),
+        timeout,
+    )
+    .await;
+    assert!(queued_publish.contains("NOPERM"));
+    assert!(queued_publish.contains("channel"));
+    send_and_expect(&mut client, &encode_resp_command(&[b"DISCARD"]), b"+OK\r\n").await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_pubsub_revocation_and_blocking_recheck_match_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut inspector = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"reset",
+            b"on",
+            b">pspass",
+            b"+acl",
+            b"+client",
+            b"+@pubsub",
+            b"resetchannels",
+            b"&foo:1",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut subscriber = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut subscriber,
+        &encode_resp_command(&[b"AUTH", b"psuser", b"pspass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut subscriber,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"deathrow"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let subscribe = send_and_read_resp_value(
+        &mut subscriber,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo:1"]),
+        timeout,
+    )
+    .await;
+    let subscribe_items = resp_socket_array(&subscribe);
+    assert_eq!(resp_socket_bulk(&subscribe_items[0]), b"subscribe");
+    assert_eq!(resp_socket_bulk(&subscribe_items[1]), b"foo:1");
+    assert_eq!(resp_socket_integer(&subscribe_items[2]), 1);
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"psuser", b"resetchannels"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let client_list_after_revoke = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_text = std::str::from_utf8(&client_list_after_revoke).unwrap();
+    assert!(client_list_line_with_name(client_list_text, "deathrow").is_none());
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"resetchannels",
+            b"&foo:1",
+            b"&bar:*",
+            b"&orders",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut pardoned = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut pardoned,
+        &encode_resp_command(&[b"AUTH", b"psuser", b"pspass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut pardoned,
+        &encode_resp_command(&[b"CLIENT", b"SETNAME", b"pardoned"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let subscribe_one = send_and_read_resp_value(
+        &mut pardoned,
+        &encode_resp_command(&[b"SUBSCRIBE", b"foo:1"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&subscribe_one)[1]),
+        b"foo:1"
+    );
+    let subscribe_two = send_and_read_resp_value(
+        &mut pardoned,
+        &encode_resp_command(&[b"SSUBSCRIBE", b"orders"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&subscribe_two)[1]),
+        b"orders"
+    );
+    let subscribe_three = send_and_read_resp_value(
+        &mut pardoned,
+        &encode_resp_command(&[b"PSUBSCRIBE", b"bar:*"]),
+        timeout,
+    )
+    .await;
+    assert_eq!(
+        resp_socket_bulk(&resp_socket_array(&subscribe_three)[1]),
+        b"bar:*"
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"psuser",
+            b"resetchannels",
+            b"&foo:1",
+            b"&bar:*",
+            b"&orders",
+            b"&baz:qaz",
+            b"&zoo:*",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    let client_list_pardoned = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_pardoned_text = std::str::from_utf8(&client_list_pardoned).unwrap();
+    assert!(client_list_line_with_name(client_list_pardoned_text, "pardoned").is_some());
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"psuser", b"allchannels"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let client_list_allchannels = send_and_read_bulk_payload(
+        &mut inspector,
+        &encode_resp_command(&[b"CLIENT", b"LIST"]),
+        timeout,
+    )
+    .await;
+    let client_list_allchannels_text = std::str::from_utf8(&client_list_allchannels).unwrap();
+    assert!(client_list_line_with_name(client_list_allchannels_text, "pardoned").is_some());
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"AUTH", b"default", b"pass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"RESETSTAT"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"psuser", b"reset", b"on", b"nopass", b"+@all", b"allkeys",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let mut blocked = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut blocked,
+        &encode_resp_command(&[b"AUTH", b"psuser", b"pspass"]),
+        b"+OK\r\n",
+    )
+    .await;
+    blocked
+        .write_all(&encode_resp_command(&[b"BLPOP", b"list1", b"0"]))
+        .await
+        .unwrap();
+    wait_for_blocked_clients(&mut inspector, 1, Duration::from_secs(1)).await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"psuser", b"resetkeys"]),
+        b"+OK\r\n",
+    )
+    .await;
+    assert_eq!(
+        send_and_read_integer(
+            &mut admin,
+            &encode_resp_command(&[b"LPUSH", b"list1", b"foo"]),
+            timeout,
+        )
+        .await,
+        1
+    );
+    let blocked_error = read_resp_value_with_timeout(&mut blocked, timeout).await;
+    match blocked_error {
+        RespSocketValue::Error(message) => {
+            let text = String::from_utf8(message).unwrap();
+            assert!(text.contains("NOPERM"));
+            assert!(text.contains("No permissions to access a key"));
+        }
+        other => panic!("expected BLPOP NOPERM after ACL change, got {other:?}"),
+    }
+    send_and_expect(&mut blocked, &encode_resp_command(&[b"PING"]), b"+PONG\r\n").await;
+
+    let commandstats = send_and_read_bulk_payload(
+        &mut admin,
+        &encode_resp_command(&[b"INFO", b"commandstats"]),
+        timeout,
+    )
+    .await;
+    let commandstats_text = String::from_utf8_lossy(&commandstats);
+    assert!(
+        commandstats_text.contains("cmdstat_blpop:"),
+        "BLPOP stats should be present after ACL recheck rejection: {commandstats_text}"
+    );
+    assert!(
+        commandstats_text.contains("rejected_calls=1"),
+        "BLPOP rejection should be tracked after ACL recheck: {commandstats_text}"
+    );
+    assert!(
+        commandstats_text.contains("failed_calls=0"),
+        "BLPOP ACL rejection should not count as failed_calls: {commandstats_text}"
+    );
 
     let _ = shutdown_tx.send(());
     server.await.unwrap();

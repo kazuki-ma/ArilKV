@@ -20444,7 +20444,7 @@ fn client_list_type_and_id_filters() {
 fn acl_dryrun_and_cluster_saveconfig_countkeysinslot_getkeysinslot() {
     let processor = RequestProcessor::new().unwrap();
 
-    // ACL DRYRUN returns OK for any user/command
+    // ACL DRYRUN authorizes against the live ACL profile.
     let dryrun = execute_command_line(&processor, "ACL DRYRUN default GET key").unwrap();
     assert_eq!(dryrun, b"+OK\r\n");
 
@@ -20779,9 +20779,22 @@ fn acl_cat_returns_full_category_list_and_getuser_returns_default_profile() {
         );
     }
 
-    // ACL CAT with category returns empty array (stub)
+    // ACL CAT with category returns the category members.
     let cat_read = execute_command_line(&processor, "ACL CAT read").unwrap();
-    assert_eq!(cat_read, b"*0\r\n");
+    assert!(
+        cat_read.starts_with(b"*"),
+        "ACL CAT read should return an array, got: {:?}",
+        std::str::from_utf8(&cat_read[..cat_read.len().min(60)]).unwrap_or("(non-utf8)")
+    );
+    let cat_read_str = std::str::from_utf8(&cat_read).unwrap();
+    assert!(
+        cat_read_str.contains("get"),
+        "ACL CAT read should contain 'get'"
+    );
+    assert!(
+        !cat_read_str.contains("$3\r\nset\r\n"),
+        "ACL CAT read should not contain write-only command 'set'"
+    );
 
     // ACL GETUSER default returns 12-element array in RESP2
     let getuser = execute_command_line(&processor, "ACL GETUSER default").unwrap();

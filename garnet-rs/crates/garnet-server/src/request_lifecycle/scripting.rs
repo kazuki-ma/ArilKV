@@ -2,15 +2,10 @@
 
 use super::*;
 use crate::CommandId;
-use crate::command_spec::KeyAccessPattern;
 use crate::command_spec::command_is_mutating;
 use crate::command_spec::command_is_write_pause_affected;
-use crate::command_spec::command_key_access_pattern;
-use crate::command_spec::command_name_upper;
 use crate::command_spec::eval_script_shebang_flags;
 use crate::dispatch_command_name;
-use crate::request_lifecycle::server_commands::CaseSensitivity;
-use crate::request_lifecycle::server_commands::redis_glob_match;
 use mlua::Error as LuaError;
 use mlua::Function as LuaFunction;
 use mlua::HookTriggers;
@@ -2284,56 +2279,8 @@ impl RequestProcessor {
         let user = current_request_client_id()
             .and_then(|client_id| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
-        let Some(profile) = self.acl_user_profile(&user) else {
-            return true;
-        };
-        if !profile.enabled {
-            return false;
-        }
-        let command_name = command_name_upper(command)
-            .iter()
-            .map(|byte| byte.to_ascii_lowercase())
-            .collect::<Vec<u8>>();
-        if profile.denied_commands.contains(command_name.as_slice()) {
-            return false;
-        }
-        if !profile.allow_all_commands
-            && !profile.allowed_commands.contains(command_name.as_slice())
-        {
-            return false;
-        }
-        self.acl_profile_allows_keys(&profile.key_patterns, command, arg_refs)
-    }
-
-    fn acl_profile_allows_keys(
-        &self,
-        key_patterns: &[Vec<u8>],
-        command: CommandId,
-        arg_refs: &[&[u8]],
-    ) -> bool {
-        let key_args = match command_key_access_pattern(command) {
-            KeyAccessPattern::None => return true,
-            KeyAccessPattern::FirstKey => {
-                if arg_refs.len() < 2 {
-                    return true;
-                }
-                &arg_refs[1..2]
-            }
-            KeyAccessPattern::AllKeysFromArg1 => {
-                if arg_refs.len() < 2 {
-                    return true;
-                }
-                &arg_refs[1..]
-            }
-        };
-        if key_patterns.is_empty() {
-            return false;
-        }
-        key_args.iter().all(|key| {
-            key_patterns
-                .iter()
-                .any(|pattern| redis_glob_match(pattern, key, CaseSensitivity::Sensitive, 0))
-        })
+        self.acl_authorize_user_command(&user, command, arg_refs)
+            .is_ok()
     }
 
     fn configure_lua_runtime_limits(
