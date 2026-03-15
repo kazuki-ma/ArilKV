@@ -3,6 +3,7 @@
 // - formal/tla/specs/WaitAckProgress.tla
 
 use super::object_store::list_listpack_compatible;
+use super::resp::append_bulk_double;
 use super::*;
 use crate::AclUserProfile;
 use crate::acl_password_hash_hex;
@@ -542,6 +543,62 @@ fn acl_category_members(category: &[u8]) -> Vec<Vec<u8>> {
 
     members.into_iter().collect()
 }
+
+fn append_acl_log_entry(response_out: &mut Vec<u8>, entry: &AclLogEntry, resp3: bool) {
+    const ACL_LOG_FIELD_COUNT: usize = 10;
+
+    if resp3 {
+        append_map_length(response_out, ACL_LOG_FIELD_COUNT);
+    } else {
+        append_array_length(response_out, ACL_LOG_FIELD_COUNT * 2);
+    }
+
+    let now_millis = current_unix_time_millis().unwrap_or(entry.timestamp_last_updated);
+    let age_seconds = now_millis.saturating_sub(entry.timestamp_last_updated) as f64 / 1000.0;
+
+    append_bulk_string(response_out, b"count");
+    append_integer(response_out, i64::try_from(entry.count).unwrap_or(i64::MAX));
+
+    append_bulk_string(response_out, b"reason");
+    append_bulk_string(response_out, acl_log_reason_name(entry.reason));
+
+    append_bulk_string(response_out, b"context");
+    append_bulk_string(response_out, acl_log_context_name(entry.context));
+
+    append_bulk_string(response_out, b"object");
+    append_bulk_string(response_out, &entry.object);
+
+    append_bulk_string(response_out, b"username");
+    append_bulk_string(response_out, &entry.username);
+
+    append_bulk_string(response_out, b"age-seconds");
+    if resp3 {
+        append_double(response_out, age_seconds);
+    } else {
+        append_bulk_double(response_out, age_seconds);
+    }
+
+    append_bulk_string(response_out, b"client-info");
+    append_bulk_string(response_out, &entry.client_info);
+
+    append_bulk_string(response_out, b"entry-id");
+    append_integer(
+        response_out,
+        i64::try_from(entry.entry_id).unwrap_or(i64::MAX),
+    );
+
+    append_bulk_string(response_out, b"timestamp-created");
+    append_integer(
+        response_out,
+        i64::try_from(entry.timestamp_created).unwrap_or(i64::MAX),
+    );
+
+    append_bulk_string(response_out, b"timestamp-last-updated");
+    append_integer(
+        response_out,
+        i64::try_from(entry.timestamp_last_updated).unwrap_or(i64::MAX),
+    );
+}
 const OBJECT_HELP_LINES: [&[u8]; 11] = [
     b"OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"ENCODING <key>",
@@ -962,6 +1019,7 @@ impl RequestProcessor {
                         return Err(RequestExecutionError::AuthNotEnabled);
                     }
                     AclAuthenticationResult::WrongPass => {
+                        self.record_acl_auth_failure_for_current_client(username);
                         append_wrongpass_error(response_out);
                         return Ok(());
                     }
@@ -1211,6 +1269,7 @@ impl RequestProcessor {
                 Err(RequestExecutionError::AuthNotEnabled)
             }
             AclAuthenticationResult::WrongPass => {
+                self.record_acl_auth_failure_for_current_client(user);
                 append_wrongpass_error(response_out);
                 Ok(())
             }
@@ -3959,14 +4018,24 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"LOG") {
             ensure_ranged_arity(args, 2, 3, "ACL", "ACL LOG [count | RESET]")?;
-            if args.len() == 3 {
+            let limit = if args.len() == 3 {
                 if ascii_eq_ignore_case(args[2], b"RESET") {
+                    self.reset_acl_log();
                     append_simple_string(response_out, b"OK");
                     return Ok(());
                 }
-                parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+                let requested =
+                    parse_i64_ascii(args[2]).ok_or(RequestExecutionError::ValueNotInteger)?;
+                Some(usize::try_from(requested.max(0)).unwrap_or(usize::MAX))
+            } else {
+                None
+            };
+            let entries = self.acl_log_entries(limit);
+            append_array_length(response_out, entries.len());
+            let resp3 = self.resp_protocol_version().is_resp3();
+            for entry in &entries {
+                append_acl_log_entry(response_out, entry, resp3);
             }
-            append_array_length(response_out, 0);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"SAVE") {

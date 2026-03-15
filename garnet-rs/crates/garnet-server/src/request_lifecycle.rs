@@ -2421,6 +2421,8 @@ pub struct RequestProcessor {
     command_rejected_calls: Mutex<HashMap<Vec<u8>, u64>>,
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     error_reply_counts: Mutex<HashMap<Vec<u8>, u64>>,
+    acl_log_entries: Mutex<VecDeque<AclLogEntry>>,
+    next_acl_log_entry_id: AtomicU64,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     slowlog_entries: Mutex<VecDeque<SlowlogEntry>>,
     slowlog_next_id: AtomicU64,
@@ -2493,8 +2495,37 @@ pub(crate) enum AclAuthenticationResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum AclAuthorizationError {
     Command(Vec<u8>),
+    Key(Vec<u8>),
+    Channel(Vec<u8>),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AclLogReason {
+    Command,
     Key,
     Channel,
+    Auth,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AclLogContext {
+    Toplevel,
+    Multi,
+    Lua,
+    Script,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AclLogEntry {
+    count: u64,
+    reason: AclLogReason,
+    context: AclLogContext,
+    object: Vec<u8>,
+    username: Vec<u8>,
+    timestamp_last_updated: u64,
+    client_info: Vec<u8>,
+    entry_id: u64,
+    timestamp_created: u64,
 }
 
 pub(crate) fn acl_denial_message_for_user(user: &[u8], error: &AclAuthorizationError) -> Vec<u8> {
@@ -2505,9 +2536,58 @@ pub(crate) fn acl_denial_message_for_user(user: &[u8], error: &AclAuthorizationE
             String::from_utf8_lossy(command)
         )
         .into_bytes(),
-        AclAuthorizationError::Key => b"NOPERM No permissions to access a key".to_vec(),
-        AclAuthorizationError::Channel => b"NOPERM No permissions to access a channel".to_vec(),
+        AclAuthorizationError::Key(_) => b"NOPERM No permissions to access a key".to_vec(),
+        AclAuthorizationError::Channel(_) => b"NOPERM No permissions to access a channel".to_vec(),
     }
+}
+
+const ACL_LOG_GROUPING_MAX_TIME_DELTA_MILLIS: u64 = 60_000;
+const ACL_LOG_GROUPING_SCAN_LIMIT: usize = 10;
+const DEFAULT_ACL_LOG_MAX_LEN: usize = 128;
+
+fn acl_log_reason_matches(error: &AclAuthorizationError) -> AclLogReason {
+    match error {
+        AclAuthorizationError::Command(_) => AclLogReason::Command,
+        AclAuthorizationError::Key(_) => AclLogReason::Key,
+        AclAuthorizationError::Channel(_) => AclLogReason::Channel,
+    }
+}
+
+fn acl_log_reason_name(reason: AclLogReason) -> &'static [u8] {
+    match reason {
+        AclLogReason::Command => b"command",
+        AclLogReason::Key => b"key",
+        AclLogReason::Channel => b"channel",
+        AclLogReason::Auth => b"auth",
+    }
+}
+
+fn acl_log_context_name(context: AclLogContext) -> &'static [u8] {
+    match context {
+        AclLogContext::Toplevel => b"toplevel",
+        AclLogContext::Multi => b"multi",
+        AclLogContext::Lua => b"lua",
+        AclLogContext::Script => b"script",
+    }
+}
+
+fn acl_log_entry_matches(existing: &AclLogEntry, candidate: &AclLogEntry) -> bool {
+    if existing.reason != candidate.reason {
+        return false;
+    }
+    if existing.context != candidate.context {
+        return false;
+    }
+    if existing.object != candidate.object {
+        return false;
+    }
+    if existing.username != candidate.username {
+        return false;
+    }
+    existing
+        .timestamp_last_updated
+        .abs_diff(candidate.timestamp_last_updated)
+        <= ACL_LOG_GROUPING_MAX_TIME_DELTA_MILLIS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2766,6 +2846,8 @@ impl RequestProcessor {
             command_rejected_calls: Mutex::new(HashMap::new()),
             command_failed_calls: Mutex::new(HashMap::new()),
             error_reply_counts: Mutex::new(HashMap::new()),
+            acl_log_entries: Mutex::new(VecDeque::new()),
+            next_acl_log_entry_id: AtomicU64::new(0),
             latency_events: Mutex::new(HashMap::new()),
             slowlog_entries: Mutex::new(VecDeque::new()),
             slowlog_next_id: AtomicU64::new(0),
@@ -4170,11 +4252,11 @@ impl RequestProcessor {
                 specific_token.unwrap_or(base_token),
             ));
         }
-        if !acl_profile_allows_keys(&profile.key_patterns, command, args) {
-            return Err(AclAuthorizationError::Key);
+        if let Some(key) = acl_first_denied_key(&profile.key_patterns, command, args) {
+            return Err(AclAuthorizationError::Key(key));
         }
-        if !acl_profile_allows_channels(&profile, command, args) {
-            return Err(AclAuthorizationError::Channel);
+        if let Some(channel) = acl_first_denied_channel(&profile, command, args) {
+            return Err(AclAuthorizationError::Channel(channel));
         }
         Ok(())
     }
@@ -4204,6 +4286,120 @@ impl RequestProcessor {
             .and_then(|metrics| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
         acl_denial_message_for_user(&user, error)
+    }
+
+    fn current_acl_log_context(&self) -> AclLogContext {
+        if current_request_in_transaction() {
+            return AclLogContext::Multi;
+        }
+        match self.current_thread_running_script_kind() {
+            Some(RunningScriptKind::Script) => AclLogContext::Lua,
+            Some(RunningScriptKind::Function) => AclLogContext::Script,
+            None => AclLogContext::Toplevel,
+        }
+    }
+
+    fn acl_log_client_info(&self, client_id: ClientId) -> Vec<u8> {
+        self.server_metrics
+            .get()
+            .and_then(|metrics| metrics.render_client_info_payload(client_id))
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn record_acl_denial_for_client_with_context(
+        &self,
+        client_id: ClientId,
+        error: &AclAuthorizationError,
+        context: AclLogContext,
+    ) {
+        let reason = acl_log_reason_matches(error);
+        let object = match error {
+            AclAuthorizationError::Command(command)
+            | AclAuthorizationError::Key(command)
+            | AclAuthorizationError::Channel(command) => command.clone(),
+        };
+        let username = self
+            .server_metrics
+            .get()
+            .and_then(|metrics| metrics.client_user(client_id))
+            .unwrap_or_else(|| b"default".to_vec());
+        let entry = AclLogEntry {
+            count: 1,
+            reason,
+            context,
+            object,
+            username,
+            timestamp_last_updated: current_unix_time_millis().unwrap_or(0),
+            client_info: self.acl_log_client_info(client_id),
+            entry_id: 0,
+            timestamp_created: 0,
+        };
+        self.push_acl_log_entry(entry);
+    }
+
+    pub(crate) fn record_acl_auth_failure_for_current_client(&self, username: &[u8]) {
+        let client_id = current_request_client_id();
+        let client_info = client_id
+            .map(|id| self.acl_log_client_info(id))
+            .unwrap_or_default();
+        let entry = AclLogEntry {
+            count: 1,
+            reason: AclLogReason::Auth,
+            context: self.current_acl_log_context(),
+            object: b"AUTH".to_vec(),
+            username: username.to_vec(),
+            timestamp_last_updated: current_unix_time_millis().unwrap_or(0),
+            client_info,
+            entry_id: 0,
+            timestamp_created: 0,
+        };
+        self.push_acl_log_entry(entry);
+    }
+
+    fn push_acl_log_entry(&self, mut entry: AclLogEntry) {
+        let Ok(mut entries) = self.acl_log_entries.lock() else {
+            return;
+        };
+        let scan_limit = entries.len().min(ACL_LOG_GROUPING_SCAN_LIMIT);
+        for index in 0..scan_limit {
+            let Some(existing) = entries.get_mut(index) else {
+                continue;
+            };
+            if !acl_log_entry_matches(existing, &entry) {
+                continue;
+            }
+            existing.count = existing.count.saturating_add(1);
+            existing.timestamp_last_updated = entry.timestamp_last_updated;
+            existing.client_info = entry.client_info;
+            if index != 0
+                && let Some(updated) = entries.remove(index)
+            {
+                entries.push_front(updated);
+            }
+            return;
+        }
+
+        entry.entry_id = self.next_acl_log_entry_id.fetch_add(1, Ordering::Relaxed);
+        entry.timestamp_created = entry.timestamp_last_updated;
+        entries.push_front(entry);
+        while entries.len() > DEFAULT_ACL_LOG_MAX_LEN {
+            let _ = entries.pop_back();
+        }
+    }
+
+    pub(crate) fn reset_acl_log(&self) {
+        let Ok(mut entries) = self.acl_log_entries.lock() else {
+            return;
+        };
+        entries.clear();
+    }
+
+    fn acl_log_entries(&self, limit: Option<usize>) -> Vec<AclLogEntry> {
+        let Ok(entries) = self.acl_log_entries.lock() else {
+            return Vec::new();
+        };
+        let count = limit.unwrap_or(entries.len()).min(entries.len());
+        entries.iter().take(count).cloned().collect()
     }
 
     pub(crate) fn pubsub_client_subscriptions(
@@ -4896,6 +5092,17 @@ impl RequestProcessor {
             return false;
         };
         state.thread_id == std::thread::current().id()
+    }
+
+    fn current_thread_running_script_kind(&self) -> Option<RunningScriptKind> {
+        let Ok(running_script) = self.running_script.lock() else {
+            return None;
+        };
+        let state = running_script.as_ref()?;
+        if state.thread_id != std::thread::current().id() {
+            return None;
+        }
+        Some(state.kind)
     }
 
     fn current_script_time_snapshot(&self) -> Option<ScriptTimeSnapshot> {
@@ -6765,13 +6972,17 @@ fn acl_command_categories(command: CommandId, args: &[&[u8]]) -> Vec<&'static st
     categories
 }
 
-fn acl_profile_allows_keys(key_patterns: &[Vec<u8>], command: CommandId, args: &[&[u8]]) -> bool {
+fn acl_first_denied_key(
+    key_patterns: &[Vec<u8>],
+    command: CommandId,
+    args: &[&[u8]],
+) -> Option<Vec<u8>> {
     let keys = acl_command_key_arguments(command, args);
     if keys.is_empty() {
-        return true;
+        return None;
     }
     if key_patterns.is_empty() {
-        return false;
+        return Some(keys[0].to_vec());
     }
     for key in keys {
         let allowed = key_patterns.iter().any(|pattern| {
@@ -6783,10 +6994,10 @@ fn acl_profile_allows_keys(key_patterns: &[Vec<u8>], command: CommandId, args: &
             )
         });
         if !allowed {
-            return false;
+            return Some(key.to_vec());
         }
     }
-    true
+    None
 }
 
 fn acl_command_key_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&'a [u8]> {
@@ -6823,18 +7034,21 @@ fn acl_command_key_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&
     }
 }
 
-fn acl_profile_allows_channels(
+fn acl_first_denied_channel(
     profile: &AclUserProfile,
     command: CommandId,
     args: &[&[u8]],
-) -> bool {
+) -> Option<Vec<u8>> {
     let channels = acl_command_channel_arguments(command, args);
     if channels.is_empty() {
-        return true;
+        return None;
     }
-    channels
-        .into_iter()
-        .all(|channel| acl_profile_allows_single_channel(profile, channel))
+    for channel in channels {
+        if !acl_profile_allows_single_channel(profile, channel) {
+            return Some(channel.to_vec());
+        }
+    }
+    None
 }
 
 fn acl_command_channel_arguments<'a>(command: CommandId, args: &[&'a [u8]]) -> Vec<&'a [u8]> {

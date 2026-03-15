@@ -64,6 +64,7 @@ use crate::connection_transaction::TransactionExecutionOutcome;
 use crate::connection_transaction::execute_transaction_queue;
 use crate::redis_replication::RedisReplicationCoordinator;
 use crate::request_lifecycle::AclAuthorizationError;
+use crate::request_lifecycle::AclLogContext;
 use crate::request_lifecycle::BlockingWaitClass;
 use crate::request_lifecycle::BlockingWaitKey;
 use crate::request_lifecycle::ClientTrackingConfig;
@@ -1024,6 +1025,7 @@ pub(crate) async fn handle_connection(
                         &command_call_name,
                         &mut responses,
                         &error,
+                        AclLogContext::Toplevel,
                     );
                     disconnect_after_write |= finalize_client_command(
                         &metrics,
@@ -1394,6 +1396,7 @@ pub(crate) async fn handle_connection(
                             &command_call_name,
                             &mut responses,
                             &error,
+                            AclLogContext::Multi,
                         );
                         disconnect_after_write |= finalize_client_command(
                             &metrics,
@@ -1699,6 +1702,7 @@ pub(crate) async fn handle_connection(
                                     &command_call_name,
                                     &mut responses,
                                     &error,
+                                    AclLogContext::Multi,
                                 );
                                 disconnect_after_write |= finalize_client_command(
                                     &metrics,
@@ -2705,11 +2709,15 @@ async fn execute_blocking_frame_on_owner_thread(
                 if pause_blocked_marker_active {
                     processor.unregister_pause_blocked_blocking_client(client_id);
                 }
-                processor.record_command_rejection(command_name_upper(command));
-                processor.record_error_reply(b"NOPERM");
                 let mut frame_response = Vec::new();
-                let payload = processor.acl_denial_message_for_client(client_id, &error);
-                append_error_line(&mut frame_response, &payload);
+                append_acl_denial_response(
+                    processor,
+                    client_id,
+                    command_name_upper(command),
+                    &mut frame_response,
+                    &error,
+                    AclLogContext::Toplevel,
+                );
                 return Ok(BlockingExecutionOutcome {
                     frame_response,
                     should_replicate: false,
@@ -4952,7 +4960,9 @@ fn append_acl_denial_response(
     command_call_name: &[u8],
     response_out: &mut Vec<u8>,
     error: &AclAuthorizationError,
+    log_context: AclLogContext,
 ) {
+    processor.record_acl_denial_for_client_with_context(client_id, error, log_context);
     processor.record_command_rejection(command_call_name);
     processor.record_error_reply(b"NOPERM");
     let payload = processor.acl_denial_message_for_client(client_id, error);

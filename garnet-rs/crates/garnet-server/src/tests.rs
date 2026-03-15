@@ -1914,6 +1914,249 @@ async fn acl_pubsub_revocation_and_blocking_recheck_match_external_scenarios() {
 }
 
 #[tokio::test]
+async fn acl_log_tracks_auth_and_acl_denials_like_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL",
+            b"SETUSER",
+            b"antirez",
+            b"reset",
+            b"on",
+            b">foo",
+            b"+set",
+            b"+publish",
+            b"+multi",
+            b"+exec",
+            b"~object:1234",
+            b"resetchannels",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let wrongpass = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"antirez", b"doo"]),
+        timeout,
+    )
+    .await;
+    assert!(wrongpass.contains("WRONGPASS"));
+
+    let auth_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"1"]),
+        timeout,
+    )
+    .await;
+    let auth_entries = resp_socket_array(&auth_log);
+    assert_eq!(auth_entries.len(), 1);
+    let auth_entry = resp_socket_map_or_flat_map(&auth_entries[0]);
+    assert_eq!(resp_socket_bulk(auth_entry[&b"reason".to_vec()]), b"auth");
+    assert_eq!(
+        resp_socket_bulk(auth_entry[&b"context".to_vec()]),
+        b"toplevel"
+    );
+    assert_eq!(resp_socket_bulk(auth_entry[&b"object".to_vec()]), b"AUTH");
+    assert_eq!(
+        resp_socket_bulk(auth_entry[&b"username".to_vec()]),
+        b"antirez"
+    );
+    assert!(
+        resp_socket_integer(auth_entry[&b"timestamp-created".to_vec()]) > 0,
+        "auth log should expose creation time"
+    );
+
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"antirez", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    for _ in 0..3 {
+        let denied_command =
+            send_and_read_error_line(&mut user, &encode_resp_command(&[b"GET", b"foo"]), timeout)
+                .await;
+        assert!(denied_command.contains("NOPERM"));
+        assert!(denied_command.contains("get"));
+    }
+
+    let command_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"1"]),
+        timeout,
+    )
+    .await;
+    let command_entry = resp_socket_map_or_flat_map(&resp_socket_array(&command_log)[0]);
+    assert_eq!(
+        resp_socket_bulk(command_entry[&b"reason".to_vec()]),
+        b"command"
+    );
+    assert_eq!(
+        resp_socket_bulk(command_entry[&b"context".to_vec()]),
+        b"toplevel"
+    );
+    assert_eq!(resp_socket_bulk(command_entry[&b"object".to_vec()]), b"get");
+    assert_eq!(
+        resp_socket_bulk(command_entry[&b"username".to_vec()]),
+        b"antirez"
+    );
+    assert_eq!(resp_socket_integer(command_entry[&b"count".to_vec()]), 3);
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(command_entry[&b"client-info".to_vec()]))
+            .contains("cmd=get"),
+        "client-info should include the denied command"
+    );
+
+    let denied_key = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"SET", b"somekeynotallowed", b"1234"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_key.contains("NOPERM"));
+    assert!(denied_key.contains("key"));
+
+    let denied_channel = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"PUBLISH", b"somechannelnotallowed", b"nullmsg"]),
+        timeout,
+    )
+    .await;
+    assert!(denied_channel.contains("NOPERM"));
+    assert!(denied_channel.contains("channel"));
+
+    let hello =
+        send_and_read_resp_value(&mut admin, &encode_resp_command(&[b"HELLO", b"3"]), timeout)
+            .await;
+    assert!(
+        matches!(hello, RespSocketValue::Map(_) | RespSocketValue::Array(_)),
+        "HELLO 3 should return server info, got {hello:?}"
+    );
+
+    let resp3_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"2"]),
+        timeout,
+    )
+    .await;
+    let resp3_entries = resp_socket_array(&resp3_log);
+    assert_eq!(resp3_entries.len(), 2);
+
+    let channel_entry = resp_socket_map_or_flat_map(&resp3_entries[0]);
+    assert_eq!(
+        resp_socket_bulk(channel_entry[&b"reason".to_vec()]),
+        b"channel"
+    );
+    assert_eq!(
+        resp_socket_bulk(channel_entry[&b"object".to_vec()]),
+        b"somechannelnotallowed"
+    );
+    assert!(matches!(
+        channel_entry[&b"age-seconds".to_vec()],
+        RespSocketValue::Double(_)
+    ));
+
+    let key_entry = resp_socket_map_or_flat_map(&resp3_entries[1]);
+    assert_eq!(resp_socket_bulk(key_entry[&b"reason".to_vec()]), b"key");
+    assert_eq!(
+        resp_socket_bulk(key_entry[&b"object".to_vec()]),
+        b"somekeynotallowed"
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let empty_after_reset =
+        send_and_read_resp_value(&mut admin, &encode_resp_command(&[b"ACL", b"LOG"]), timeout)
+            .await;
+    assert!(resp_socket_array(&empty_after_reset).is_empty());
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn acl_log_distinguishes_multi_context_like_external_scenario() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"antirez", b"reset", b"on", b">foo", b"+multi", b"+exec",
+            b"allkeys",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"antirez", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(&mut user, &encode_resp_command(&[b"MULTI"]), b"+OK\r\n").await;
+    let denied_incr =
+        send_and_read_error_line(&mut user, &encode_resp_command(&[b"INCR", b"foo"]), timeout)
+            .await;
+    assert!(denied_incr.contains("NOPERM"));
+    assert!(denied_incr.contains("incr"));
+    let exec_error =
+        send_and_read_error_line(&mut user, &encode_resp_command(&[b"EXEC"]), timeout).await;
+    assert!(exec_error.contains("EXECABORT"));
+
+    let multi_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"1"]),
+        timeout,
+    )
+    .await;
+    let multi_entry = resp_socket_map_or_flat_map(&resp_socket_array(&multi_log)[0]);
+    assert_eq!(
+        resp_socket_bulk(multi_entry[&b"reason".to_vec()]),
+        b"command"
+    );
+    assert_eq!(
+        resp_socket_bulk(multi_entry[&b"context".to_vec()]),
+        b"multi"
+    );
+    assert_eq!(resp_socket_bulk(multi_entry[&b"object".to_vec()]), b"incr");
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -19668,6 +19911,22 @@ fn resp_socket_flat_map<'a>(
         index += 2;
     }
     map
+}
+
+fn resp_socket_map_or_flat_map<'a>(
+    value: &'a RespSocketValue,
+) -> std::collections::BTreeMap<Vec<u8>, &'a RespSocketValue> {
+    match value {
+        RespSocketValue::Map(items) => {
+            let mut map = std::collections::BTreeMap::new();
+            for (key, value) in items {
+                map.insert(resp_socket_bulk(key).to_vec(), value);
+            }
+            map
+        }
+        RespSocketValue::Array(_) => resp_socket_flat_map(value),
+        other => panic!("expected RESP map/flat map, got {other:?}"),
+    }
 }
 
 async fn read_zmpop_like_response(
