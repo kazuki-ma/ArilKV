@@ -46,6 +46,7 @@ RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS="${RUNTEXT_ISOLATED_OTHER_TIMEOUT_SECONDS
 RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL="${RUNTEXT_SKIP_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_IN_FULL:-1}"
 RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED="${RUNTEXT_RUN_REDIS_CLI_CONNECTING_AS_REPLICA_TEST_ISOLATED:-1}"
 RUNTEXT_RUN_ONLY_ISOLATED_UNIT="${RUNTEXT_RUN_ONLY_ISOLATED_UNIT:-}"
+RUNTEXT_ALLOW_EXTERNAL_SKIP="${RUNTEXT_ALLOW_EXTERNAL_SKIP:-0}"
 
 if [[ -z "${RUNTEXT_TIMEOUT_SECONDS}" && "${REDIS_RUNTEXT_MODE}" == "full" ]]; then
     # Keep full external probes from stalling for the runtest default (20 minutes)
@@ -117,20 +118,29 @@ garnet_process_id() {
 
 install_redis_external_pid_patch() {
     local server_tcl="${REDIS_REPO_ROOT}/tests/support/server.tcl"
-    local patch_marker="# garnet-rs external pid injection"
+    local pid_patch_marker="# garnet-rs external pid injection"
+    local skip_patch_marker="# garnet-rs external skip override"
 
-    if grep -Fq "${patch_marker}" "${server_tcl}"; then
+    if grep -Fq "${pid_patch_marker}" "${server_tcl}" && grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
         return 0
     fi
 
     REDIS_SERVER_TCL_BACKUP="${RESULT_DIR}/server.tcl.before-garnet-external-pid-patch"
     cp "${server_tcl}" "${REDIS_SERVER_TCL_BACKUP}"
 
-    perl -0pi -e '
-        s/set client \[redis \$::host \$::port 0 \$::tls\]\n    dict set srv "client" \$client\n/set client [redis \$::host \$::port 0 \$::tls]\n    dict set srv "client" \$client\n    # garnet-rs external pid injection\n    if {[info exists ::env(GARNET_EXTERNAL_SERVER_PID)] && \$::env(GARNET_EXTERNAL_SERVER_PID) ne ""} {\n        dict set srv "pid" \$::env(GARNET_EXTERNAL_SERVER_PID)\n    }\n/
-    ' "${server_tcl}"
+    if ! grep -Fq "${pid_patch_marker}" "${server_tcl}"; then
+        perl -0pi -e '
+            s/set client \[redis \$::host \$::port 0 \$::tls\]\n    dict set srv "client" \$client\n/set client [redis \$::host \$::port 0 \$::tls]\n    dict set srv "client" \$client\n    # garnet-rs external pid injection\n    if {[info exists ::env(GARNET_EXTERNAL_SERVER_PID)] && \$::env(GARNET_EXTERNAL_SERVER_PID) ne ""} {\n        dict set srv "pid" \$::env(GARNET_EXTERNAL_SERVER_PID)\n    }\n/
+        ' "${server_tcl}"
+    fi
 
-    if ! grep -Fq "${patch_marker}" "${server_tcl}"; then
+    if ! grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
+        perl -0pi -e '
+            s/    if \{\$::external && \[lsearch \$tags "external:skip"\] >= 0\} \{\n        set err "Not supported on external server"\n        return 0\n    \}/    if {\$::external && [lsearch \$tags "external:skip"] >= 0} {\n        # garnet-rs external skip override\n        if {![info exists ::env(GARNET_EXTERNAL_ALLOW_SKIP)] || \$::env(GARNET_EXTERNAL_ALLOW_SKIP) ne "1"} {\n            set err "Not supported on external server"\n            return 0\n        }\n    }/
+        ' "${server_tcl}"
+    fi
+
+    if ! grep -Fq "${pid_patch_marker}" "${server_tcl}" || ! grep -Fq "${skip_patch_marker}" "${server_tcl}"; then
         cp "${REDIS_SERVER_TCL_BACKUP}" "${server_tcl}"
         echo "failed to install Redis external pid patch into ${server_tcl}" >&2
         return 1
@@ -910,6 +920,13 @@ if [[ ! -x "${RUNTEXT_BIN}" ]]; then
     echo "redis runtest binary is not executable: ${RUNTEXT_BIN}" >&2
     exit 2
 fi
+
+if [[ "${RUNTEXT_ALLOW_EXTERNAL_SKIP}" != "0" && "${RUNTEXT_ALLOW_EXTERNAL_SKIP}" != "1" ]]; then
+    echo "RUNTEXT_ALLOW_EXTERNAL_SKIP must be 0 or 1" >&2
+    exit 2
+fi
+
+export GARNET_EXTERNAL_ALLOW_SKIP="${RUNTEXT_ALLOW_EXTERNAL_SKIP}"
 
 GARNET_PID=""
 REDIS_SERVER_TCL_BACKUP=""
