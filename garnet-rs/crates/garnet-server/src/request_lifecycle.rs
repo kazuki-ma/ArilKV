@@ -596,6 +596,10 @@ fn default_config_overrides() -> HashMap<Vec<u8>, Vec<u8>> {
     values.insert(b"lua-time-limit".to_vec(), b"5000".to_vec());
     values.insert(b"slowlog-log-slower-than".to_vec(), b"10000".to_vec());
     values.insert(b"slowlog-max-len".to_vec(), b"128".to_vec());
+    values.insert(
+        b"acllog-max-len".to_vec(),
+        DEFAULT_ACL_LOG_MAX_LEN.to_string().into_bytes(),
+    );
     values.insert(b"hash-max-listpack-entries".to_vec(), b"128".to_vec());
     values.insert(b"hash-max-listpack-value".to_vec(), b"64".to_vec());
     values.insert(b"set-max-intset-entries".to_vec(), b"512".to_vec());
@@ -2422,6 +2426,7 @@ pub struct RequestProcessor {
     command_failed_calls: Mutex<HashMap<Vec<u8>, u64>>,
     error_reply_counts: Mutex<HashMap<Vec<u8>, u64>>,
     acl_log_entries: Mutex<VecDeque<AclLogEntry>>,
+    acl_log_max_len: AtomicUsize,
     next_acl_log_entry_id: AtomicU64,
     latency_events: Mutex<HashMap<Vec<u8>, LatencyEventState>>,
     slowlog_entries: Mutex<VecDeque<SlowlogEntry>>,
@@ -2852,6 +2857,7 @@ impl RequestProcessor {
             command_failed_calls: Mutex::new(HashMap::new()),
             error_reply_counts: Mutex::new(HashMap::new()),
             acl_log_entries: Mutex::new(VecDeque::new()),
+            acl_log_max_len: AtomicUsize::new(DEFAULT_ACL_LOG_MAX_LEN),
             next_acl_log_entry_id: AtomicU64::new(0),
             latency_events: Mutex::new(HashMap::new()),
             slowlog_entries: Mutex::new(VecDeque::new()),
@@ -4374,6 +4380,10 @@ impl RequestProcessor {
     }
 
     fn push_acl_log_entry(&self, mut entry: AclLogEntry) {
+        let max_len = self.acl_log_max_len.load(Ordering::Acquire);
+        if max_len == 0 {
+            return;
+        }
         let Ok(mut entries) = self.acl_log_entries.lock() else {
             return;
         };
@@ -4399,7 +4409,7 @@ impl RequestProcessor {
         entry.entry_id = self.next_acl_log_entry_id.fetch_add(1, Ordering::Relaxed);
         entry.timestamp_created = entry.timestamp_last_updated;
         entries.push_front(entry);
-        while entries.len() > DEFAULT_ACL_LOG_MAX_LEN {
+        while entries.len() > max_len {
             let _ = entries.pop_back();
         }
     }

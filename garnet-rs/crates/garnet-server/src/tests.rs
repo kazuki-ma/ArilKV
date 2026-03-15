@@ -2281,6 +2281,97 @@ async fn acl_database_permissions_and_log_match_external_scenarios() {
 }
 
 #[tokio::test]
+async fn acl_log_max_len_config_matches_external_scenarios() {
+    let (addr, shutdown_tx, server) = start_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"antirez", b"reset", b"on", b">foo", b"+set",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"antirez", b"foo"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"acllog-max-len", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    for index in 0..10 {
+        let key = format!("obj:{index}");
+        let denied = send_and_read_error_line(
+            &mut user,
+            &encode_resp_command(&[b"SET", key.as_bytes(), b"123"]),
+            timeout,
+        )
+        .await;
+        assert!(denied.contains("NOPERM"));
+    }
+    let zero_log =
+        send_and_read_resp_value(&mut admin, &encode_resp_command(&[b"ACL", b"LOG"]), timeout)
+            .await;
+    assert_eq!(resp_socket_array(&zero_log).len(), 0);
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"acllog-max-len", b"5"]),
+        b"+OK\r\n",
+    )
+    .await;
+    for index in 0..10 {
+        let key = format!("obj:{index}");
+        let denied = send_and_read_error_line(
+            &mut user,
+            &encode_resp_command(&[b"SET", key.as_bytes(), b"123"]),
+            timeout,
+        )
+        .await;
+        assert!(denied.contains("NOPERM"));
+    }
+    let limited_log =
+        send_and_read_resp_value(&mut admin, &encode_resp_command(&[b"ACL", b"LOG"]), timeout)
+            .await;
+    assert_eq!(resp_socket_array(&limited_log).len(), 5);
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"CONFIG", b"SET", b"acllog-max-len", b"0"]),
+        b"+OK\r\n",
+    )
+    .await;
+    let preserved_log =
+        send_and_read_resp_value(&mut admin, &encode_resp_command(&[b"ACL", b"LOG"]), timeout)
+            .await;
+    assert_eq!(resp_socket_array(&preserved_log).len(), 5);
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

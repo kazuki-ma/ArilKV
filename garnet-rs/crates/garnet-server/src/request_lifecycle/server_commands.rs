@@ -4964,6 +4964,7 @@ impl RequestProcessor {
                     || parameter == b"tcp-keepalive"
                     || parameter == b"databases"
                     || parameter == b"lua-time-limit"
+                    || parameter == b"acllog-max-len"
                     || parameter == b"slowlog-max-len"
                     || parameter == b"repl-backlog-size"
                     || parameter == b"repl-diskless-sync-delay"
@@ -5080,6 +5081,13 @@ impl RequestProcessor {
                     let parsed =
                         parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
                     self.set_min_replicas_to_write(parsed);
+                } else if parameter == b"acllog-max-len" {
+                    let parsed =
+                        parse_u64_ascii(&value).ok_or(RequestExecutionError::ValueNotInteger)?;
+                    self.acl_log_max_len.store(
+                        usize::try_from(parsed).unwrap_or(usize::MAX),
+                        Ordering::Release,
+                    );
                 } else if parameter == b"replica-serve-stale-data" {
                     self.set_replica_serve_stale_data(value.eq_ignore_ascii_case(b"yes"));
                 } else if parameter == b"rdb-key-save-delay" {
