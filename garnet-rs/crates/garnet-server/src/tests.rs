@@ -16701,7 +16701,11 @@ async fn config_get_dir_returns_absolute_path_for_external_redis_cli_rdb_dump_sc
     server.await.unwrap();
 }
 
-async fn run_sync_rdb_dump_and_debug_reload_scenario(populate_count: u64, value_size: usize) {
+async fn run_sync_rdb_dump_and_debug_reload_scenario(
+    populate_count: u64,
+    value_size: usize,
+    selected_db: u16,
+) {
     let _serial = lock_scripting_test_serial().await;
     let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
     wait_for_server_ping(addr).await;
@@ -16714,6 +16718,31 @@ async fn run_sync_rdb_dump_and_debug_reload_scenario(populate_count: u64, value_
     let mut client = TcpStream::connect(addr).await.unwrap();
     let mut sync_client = TcpStream::connect(addr).await.unwrap();
 
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    if selected_db != 0 {
+        let selected_db_text = selected_db.to_string();
+        assert_eq!(
+            resp_socket_bulk(
+                &send_and_read_resp_value(
+                    &mut client,
+                    &encode_resp_command(&[b"SELECT", selected_db_text.as_bytes()]),
+                    timeout,
+                )
+                .await
+            ),
+            b"OK"
+        );
+    }
     assert_eq!(
         resp_socket_bulk(
             &send_and_read_resp_value(
@@ -16851,6 +16880,30 @@ async fn run_sync_rdb_dump_and_debug_reload_scenario(populate_count: u64, value_
         ),
         i64::try_from(populate_count).unwrap()
     );
+    if selected_db != 0 {
+        assert_eq!(
+            resp_socket_bulk(
+                &send_and_read_resp_value(
+                    &mut client,
+                    &encode_resp_command(&[b"SELECT", b"0"]),
+                    timeout,
+                )
+                .await
+            ),
+            b"OK"
+        );
+        assert_eq!(
+            resp_socket_integer(
+                &send_and_read_resp_value(
+                    &mut client,
+                    &encode_resp_command(&[b"DBSIZE"]),
+                    timeout,
+                )
+                .await
+            ),
+            0
+        );
+    }
 
     let _ = std::fs::remove_file(&dump_path);
     let _ = std::fs::remove_dir_all(&temp_dir);
@@ -16860,18 +16913,30 @@ async fn run_sync_rdb_dump_and_debug_reload_scenario(populate_count: u64, value_
 
 #[tokio::test]
 async fn sync_rdb_dump_and_debug_reload_round_trip_smoke() {
-    run_sync_rdb_dump_and_debug_reload_scenario(1_000, 128).await;
+    run_sync_rdb_dump_and_debug_reload_scenario(1_000, 128, 0).await;
+}
+
+#[tokio::test]
+async fn sync_rdb_dump_and_debug_reload_round_trip_smoke_in_nonzero_db() {
+    run_sync_rdb_dump_and_debug_reload_scenario(1_000, 128, 9).await;
 }
 
 #[tokio::test]
 #[ignore = "exact external redis-cli dump scenario; run targeted"]
 async fn sync_rdb_dump_and_debug_reload_match_external_redis_cli_scenario() {
-    run_sync_rdb_dump_and_debug_reload_scenario(100_000, 1_000).await;
+    run_sync_rdb_dump_and_debug_reload_scenario(100_000, 1_000, 0).await;
+}
+
+#[tokio::test]
+#[ignore = "exact external redis-cli dump scenario in non-zero db; run targeted"]
+async fn sync_rdb_dump_and_debug_reload_match_external_redis_cli_scenario_in_nonzero_db() {
+    run_sync_rdb_dump_and_debug_reload_scenario(100_000, 1_000, 9).await;
 }
 
 async fn run_sync_functions_rdb_dump_and_debug_reload_scenario(
     populate_count: u64,
     value_size: usize,
+    selected_db: u16,
 ) {
     let _serial = lock_scripting_test_serial().await;
     let (addr, shutdown_tx, server) = start_test_server_with_scripting_enabled().await;
@@ -16885,6 +16950,31 @@ async fn run_sync_functions_rdb_dump_and_debug_reload_scenario(
     let mut client = TcpStream::connect(addr).await.unwrap();
     let mut sync_client = TcpStream::connect(addr).await.unwrap();
 
+    assert_eq!(
+        resp_socket_bulk(
+            &send_and_read_resp_value(
+                &mut client,
+                &encode_resp_command(&[b"CONFIG", b"SET", b"databases", b"16"]),
+                timeout,
+            )
+            .await
+        ),
+        b"OK"
+    );
+    if selected_db != 0 {
+        let selected_db_text = selected_db.to_string();
+        assert_eq!(
+            resp_socket_bulk(
+                &send_and_read_resp_value(
+                    &mut client,
+                    &encode_resp_command(&[b"SELECT", selected_db_text.as_bytes()]),
+                    timeout,
+                )
+                .await
+            ),
+            b"OK"
+        );
+    }
     assert_eq!(
         resp_socket_bulk(
             &send_and_read_resp_value(
@@ -17037,13 +17127,25 @@ async fn run_sync_functions_rdb_dump_and_debug_reload_scenario(
 
 #[tokio::test]
 async fn sync_functions_rdb_dump_and_debug_reload_round_trip_smoke() {
-    run_sync_functions_rdb_dump_and_debug_reload_scenario(1_000, 128).await;
+    run_sync_functions_rdb_dump_and_debug_reload_scenario(1_000, 128, 0).await;
+}
+
+#[tokio::test]
+async fn sync_functions_rdb_dump_and_debug_reload_round_trip_smoke_in_nonzero_db() {
+    run_sync_functions_rdb_dump_and_debug_reload_scenario(1_000, 128, 9).await;
 }
 
 #[tokio::test]
 #[ignore = "exact external redis-cli dump scenario; run targeted"]
 async fn sync_functions_rdb_dump_and_debug_reload_match_external_redis_cli_scenario() {
-    run_sync_functions_rdb_dump_and_debug_reload_scenario(100_000, 1_000).await;
+    run_sync_functions_rdb_dump_and_debug_reload_scenario(100_000, 1_000, 0).await;
+}
+
+#[tokio::test]
+#[ignore = "exact external redis-cli dump scenario in non-zero db; run targeted"]
+async fn sync_functions_rdb_dump_and_debug_reload_match_external_redis_cli_scenario_in_nonzero_db()
+{
+    run_sync_functions_rdb_dump_and_debug_reload_scenario(100_000, 1_000, 9).await;
 }
 
 #[tokio::test]

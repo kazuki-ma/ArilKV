@@ -31,8 +31,8 @@ RUNTEXT_EXTRA_ARGS="${RUNTEXT_EXTRA_ARGS:-}"
 RUNTEXT_SINGLEDB="${RUNTEXT_SINGLEDB:-1}"
 EXPECTED_FAILS_FILE="${EXPECTED_FAILS_FILE:-}"
 REDIS_CLI_OVERRIDE_BIN="${REDIS_CLI_OVERRIDE_BIN:-}"
-RUNTEXT_SKIP_QUERYBUF_IN_FULL="${RUNTEXT_SKIP_QUERYBUF_IN_FULL:-1}"
-RUNTEXT_RUN_QUERYBUF_ISOLATED="${RUNTEXT_RUN_QUERYBUF_ISOLATED:-1}"
+RUNTEXT_SKIP_QUERYBUF_IN_FULL="${RUNTEXT_SKIP_QUERYBUF_IN_FULL:-0}"
+RUNTEXT_RUN_QUERYBUF_ISOLATED="${RUNTEXT_RUN_QUERYBUF_ISOLATED:-0}"
 RUNTEXT_SKIP_SCRIPTING_IN_FULL="${RUNTEXT_SKIP_SCRIPTING_IN_FULL:-1}"
 RUNTEXT_RUN_SCRIPTING_ISOLATED="${RUNTEXT_RUN_SCRIPTING_ISOLATED:-1}"
 RUNTEXT_SKIP_OTHER_IN_FULL="${RUNTEXT_SKIP_OTHER_IN_FULL:-0}"
@@ -499,9 +499,9 @@ run_full_runtest_case() {
         cmd+=("${extra_args[@]}")
     else
         if [[ "${RUNTEXT_SKIP_QUERYBUF_IN_FULL}" == "1" ]]; then
-            # `unit/querybuf` can leave `DEBUG PAUSE-CRON 1` behind when it fails early,
-            # which contaminates later suites (notably `unit/tracking` expiration cases).
-            # Run it separately in isolation to keep full-run progression deterministic.
+            # Keep this escape hatch for focused diagnosis. The default path now keeps
+            # `unit/querybuf` in-band, but an early failure can still leave
+            # `DEBUG PAUSE-CRON 1` behind and contaminate later suites.
             cmd+=(--skipunit "unit/querybuf")
             skip_querybuf_applied=1
         fi
@@ -940,8 +940,8 @@ case "${REDIS_RUNTEXT_MODE}" in
             reset_expiration_debug_state
         fi
         if [[ -z "${RUNTEXT_RUN_ONLY_ISOLATED_UNIT}" && "${RUNTEXT_RUN_QUERYBUF_ISOLATED}" == "1" && -z "${RUNTEXT_EXTRA_ARGS}" ]]; then
-            # Keep querybuf coverage in a separate run, with explicit debug-state reset,
-            # so querybuf failures cannot stall later suites in the main full probe.
+            # Opt-in debugging path: isolate querybuf after a restart when chasing
+            # query-buffer or DEBUG PAUSE-CRON contamination.
             if ! restart_garnet_server; then
                 echo "warning: failed to restart server before isolated querybuf run" >&2
             fi
