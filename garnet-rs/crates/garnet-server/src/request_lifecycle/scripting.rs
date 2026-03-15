@@ -2203,6 +2203,28 @@ impl RequestProcessor {
             }
         }
 
+        let current_user = self
+            .server_metrics
+            .get()
+            .and_then(|metrics| {
+                current_request_client_id().and_then(|client_id| metrics.client_user(client_id))
+            })
+            .unwrap_or_else(|| b"default".to_vec());
+        if let Err(error) = self.acl_authorize_user_command(&current_user, command, &arg_refs) {
+            self.record_command_rejection(arg_refs[0]);
+            self.record_error_reply(b"NOPERM");
+            if let Some(client_id) = current_request_client_id() {
+                self.record_acl_denial_for_client_with_context(
+                    client_id,
+                    &error,
+                    self.current_acl_log_context(),
+                );
+            }
+            let message = acl_denial_message_for_user(&current_user, &error);
+            let rewritten = String::from_utf8_lossy(&message).into_owned();
+            return lua_call_error_or_pcall_error(lua, call_mode, &rewritten);
+        }
+
         self.record_command_call(arg_refs[0]);
         let execution = self.with_resp_protocol_version_override(call_resp_protocol, || {
             let mut response = Vec::new();

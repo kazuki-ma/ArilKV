@@ -12169,6 +12169,125 @@ async fn scripting_acl_check_cmd_matches_external_scenario_for_eval_and_function
 }
 
 #[tokio::test]
+async fn scripting_acl_enforcement_and_acl_log_context_match_external_scenarios() {
+    let _serial = lock_scripting_test_serial().await;
+    let (addr, shutdown_tx, server) = start_scripting_test_server().await;
+    let timeout = Duration::from_secs(5);
+    let mut admin = TcpStream::connect(addr).await.unwrap();
+    let mut user = TcpStream::connect(addr).await.unwrap();
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"ACL", b"SETUSER", b"bob", b"reset", b"on", b">123", b"+eval", b"+fcall", b"allkeys",
+        ]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut user,
+        &encode_resp_command(&[b"AUTH", b"bob", b"123"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let eval_denied = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"EVAL", b"return redis.call('incr','foo')", b"0"]),
+        timeout,
+    )
+    .await;
+    assert!(eval_denied.contains("NOPERM"));
+    assert!(eval_denied.contains("incr"));
+
+    let eval_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"1"]),
+        timeout,
+    )
+    .await;
+    let eval_entry = resp_socket_map_or_flat_map(&resp_socket_array(&eval_log)[0]);
+    assert_eq!(
+        resp_socket_bulk(eval_entry[&b"reason".to_vec()]),
+        b"command"
+    );
+    assert_eq!(resp_socket_bulk(eval_entry[&b"context".to_vec()]), b"lua");
+    assert_eq!(resp_socket_bulk(eval_entry[&b"object".to_vec()]), b"incr");
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(eval_entry[&b"client-info".to_vec()]))
+            .contains("cmd=eval"),
+        "lua ACL log should keep the top-level EVAL command in client-info"
+    );
+
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"FUNCTION", b"FLUSH"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[
+            b"FUNCTION",
+            b"LOAD",
+            b"REPLACE",
+            b"#!lua name=aclctx\nredis.register_function('deny_incr', function(KEYS, ARGV)\n return redis.call('incr', 'foo')\nend)",
+        ]),
+        b"$6\r\naclctx\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"RESET"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let fcall_denied = send_and_read_error_line(
+        &mut user,
+        &encode_resp_command(&[b"FCALL", b"deny_incr", b"0"]),
+        timeout,
+    )
+    .await;
+    assert!(fcall_denied.contains("NOPERM"));
+    assert!(fcall_denied.contains("incr"));
+
+    let function_log = send_and_read_resp_value(
+        &mut admin,
+        &encode_resp_command(&[b"ACL", b"LOG", b"1"]),
+        timeout,
+    )
+    .await;
+    let function_entry = resp_socket_map_or_flat_map(&resp_socket_array(&function_log)[0]);
+    assert_eq!(
+        resp_socket_bulk(function_entry[&b"reason".to_vec()]),
+        b"command"
+    );
+    assert_eq!(
+        resp_socket_bulk(function_entry[&b"context".to_vec()]),
+        b"script"
+    );
+    assert_eq!(
+        resp_socket_bulk(function_entry[&b"object".to_vec()]),
+        b"incr"
+    );
+    assert!(
+        String::from_utf8_lossy(resp_socket_bulk(function_entry[&b"client-info".to_vec()]))
+            .contains("cmd=fcall"),
+        "function ACL log should keep the top-level FCALL command in client-info"
+    );
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn scripting_function_freezes_key_expiration_during_execution_like_external_scenario() {
     let _serial = lock_scripting_test_serial().await;
     let (addr, shutdown_tx, server) = start_scripting_test_server().await;
