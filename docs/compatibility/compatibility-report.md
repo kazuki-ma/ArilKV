@@ -15,10 +15,10 @@
 
 ## Implementation Maturity Snapshot
 
-- `FULL`: `227`
-- `PARTIAL_MINIMAL`: `20`
+- `FULL`: `230`
+- `PARTIAL_MINIMAL`: `17`
 - `DISABLED`: `12`
-- Full ratio over declared commands: `87.64%`
+- Full ratio over declared commands: `88.80%`
 
 ## External Probe Snapshot
 
@@ -66,14 +66,11 @@
 | `HTTL` | `DISABLED` | Declared for compatibility matrix only. |
 | `MIGRATE` | `PARTIAL_MINIMAL` | Selected-DB standalone subset implemented (`COPY`/`REPLACE`/`AUTH`/`AUTH2`/`KEYS`; target `SELECT`/`RESTORE`; target-error and `IOERR` surfacing) with exact Rust coverage. Still Garnet-to-Garnet dump payloads only; full Redis DUMP parity and replication/AOF rewrite semantics are not implemented yet. |
 | `MODULE` | `PARTIAL_MINIMAL` | Minimal admin and introspection compatibility surface. |
-| `MOVE` | `PARTIAL_MINIMAL` | single-db mode only; MOVE to non-zero DB is unsupported. |
 | `MSETEX` | `DISABLED` | Declared extension surface; runtime behavior is not implemented. |
 | `READONLY` | `DISABLED` | - |
 | `READWRITE` | `DISABLED` | - |
 | `ROLE` | `PARTIAL_MINIMAL` | Returns fixed master-role shape; full role-state semantics are not implemented. |
-| `SELECT` | `PARTIAL_MINIMAL` | single-db mode only; SELECT supports database 0. |
 | `SHUTDOWN` | `DISABLED` | - |
-| `SWAPDB` | `PARTIAL_MINIMAL` | single-db mode only; SWAPDB supports 0<->0 only. |
 | `WAIT` | `PARTIAL_MINIMAL` | Top-level command-path WAIT now uses the downstream replication ACK ledger and timeout wait primitive; but transaction/script edge contexts and durability-coupled semantics are not yet full Redis parity. |
 | `WAITAOF` | `PARTIAL_MINIMAL` | Minimal compatibility behavior; full replication and durability semantics are not implemented. |
 | `XCFGSET` | `DISABLED` | Declared extension surface; runtime behavior is not implemented. |
