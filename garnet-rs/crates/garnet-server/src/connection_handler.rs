@@ -27,7 +27,6 @@ use tokio::task::yield_now;
 use tokio::time::sleep;
 use tsavorite::AofOffset;
 
-use crate::AclUserProfile;
 use crate::ClientId;
 use crate::ClientKillFilter;
 use crate::ClientTypeFilter;
@@ -1093,69 +1092,6 @@ pub(crate) async fn handle_connection(
                 continue;
             }
 
-            if command == CommandId::Auth {
-                let maybe_user = if argument_count == 2 {
-                    Some(b"default".to_vec())
-                } else if argument_count == 3 {
-                    Some(arg_slice_bytes(&args[1]).to_vec())
-                } else {
-                    None
-                };
-                if let Some(user) = maybe_user {
-                    if metrics.acl_user_exists(&user) {
-                        metrics.set_client_user(client_id, user);
-                        append_simple_string(&mut responses, b"OK");
-                    } else {
-                        append_error_line(
-                            &mut responses,
-                            b"WRONGPASS invalid username-password pair or user is disabled",
-                        );
-                    }
-                } else {
-                    append_wrong_arity_error_for_command(&mut responses, CommandId::Auth);
-                }
-                disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
-                    &mut responses,
-                    response_mark,
-                    &mut client_state,
-                    command,
-                    command_outcome,
-                    commands_processed,
-                );
-                consumed += frame_bytes_consumed;
-                if disconnect_after_write {
-                    break;
-                }
-                continue;
-            }
-
-            if command == CommandId::Acl
-                && argument_count == 2
-                && ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"WHOAMI")
-            {
-                let whoami = metrics
-                    .client_user(client_id)
-                    .unwrap_or_else(|| b"default".to_vec());
-                append_bulk_string_frame(&mut responses, &whoami);
-                disconnect_after_write |= finalize_client_command(
-                    &metrics,
-                    client_id,
-                    &mut responses,
-                    response_mark,
-                    &mut client_state,
-                    command,
-                    command_outcome,
-                    commands_processed,
-                );
-                consumed += frame_bytes_consumed;
-                if disconnect_after_write {
-                    break;
-                }
-                continue;
-            }
-
             if command == CommandId::Select && !transaction.in_multi {
                 if argument_count != 2 {
                     append_wrong_arity_error_for_command(&mut responses, command);
@@ -2085,11 +2021,12 @@ pub(crate) async fn handle_connection(
                                     &processor,
                                     client_id,
                                 );
-                                maybe_apply_acl_setuser_side_effects(
+                                maybe_apply_auth_side_effects(
                                     command,
                                     &args[..argument_count],
                                     &blocking_outcome.frame_response,
                                     &metrics,
+                                    client_id,
                                 );
                                 apply_request_connection_effects(
                                     &mut client_state,
@@ -4119,7 +4056,7 @@ fn handle_client_command(
         }
 
         if let Some(user) = filter.user.as_ref()
-            && !metrics.acl_user_exists(user)
+            && !processor.acl_user_exists(user)
         {
             append_error_line(response_out, b"ERR No such user");
             return outcome;
@@ -4893,7 +4830,10 @@ fn maybe_apply_hello_side_effects(
     while idx < args.len() {
         let token = arg_slice_bytes(&args[idx]);
         if ascii_eq_ignore_case(token, b"AUTH") {
-            idx += 3; // skip AUTH username password
+            if idx + 2 < args.len() {
+                metrics.set_client_user(client_id, arg_slice_bytes(&args[idx + 1]).to_vec());
+            }
+            idx += 3;
         } else if ascii_eq_ignore_case(token, b"SETNAME") {
             if idx + 1 < args.len() {
                 let name = arg_slice_bytes(&args[idx + 1]);
@@ -4911,82 +4851,24 @@ fn maybe_apply_hello_side_effects(
     }
 }
 
-fn maybe_apply_acl_setuser_side_effects(
+fn maybe_apply_auth_side_effects(
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
     metrics: &ServerMetrics,
+    client_id: ClientId,
 ) {
-    if command != CommandId::Acl || frame_response != b"+OK\r\n" || args.len() < 3 {
+    if command != CommandId::Auth || frame_response != b"+OK\r\n" {
         return;
     }
-    if !ascii_eq_ignore_case(arg_slice_bytes(&args[1]), b"SETUSER") {
+    let user = if args.len() == 2 {
+        b"default".to_vec()
+    } else if args.len() == 3 {
+        arg_slice_bytes(&args[1]).to_vec()
+    } else {
         return;
-    }
-    let user = arg_slice_bytes(&args[2]);
-    if user.is_empty() {
-        return;
-    }
-    let profile = parse_acl_setuser_profile(metrics.acl_user_profile(user), &args[3..]);
-    metrics.set_acl_user_profile(user, profile);
-}
-
-fn parse_acl_setuser_profile(
-    existing: Option<AclUserProfile>,
-    modifiers: &[ArgSlice],
-) -> AclUserProfile {
-    let mut profile = existing.unwrap_or_else(AclUserProfile::restricted);
-    for modifier in modifiers {
-        let token = arg_slice_bytes(modifier);
-        if ascii_eq_ignore_case(token, b"ON") {
-            profile.enabled = true;
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"OFF") {
-            profile.enabled = false;
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"RESETKEYS") {
-            profile.key_patterns.clear();
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"+@ALL") {
-            profile.allow_all_commands = true;
-            continue;
-        }
-        if ascii_eq_ignore_case(token, b"-@ALL") {
-            profile.allow_all_commands = false;
-            profile.allowed_commands.clear();
-            continue;
-        }
-        if let Some(pattern) = token.strip_prefix(b"~") {
-            profile.key_patterns.push(pattern.to_vec());
-            continue;
-        }
-        if let Some(command_name) = token.strip_prefix(b"+") {
-            if !command_name.starts_with(b"@") && !command_name.is_empty() {
-                profile
-                    .allowed_commands
-                    .insert(normalize_acl_command_name(command_name));
-            }
-            continue;
-        }
-        if let Some(command_name) = token.strip_prefix(b"-") {
-            if !command_name.starts_with(b"@") && !command_name.is_empty() {
-                profile
-                    .allowed_commands
-                    .remove(normalize_acl_command_name(command_name).as_slice());
-            }
-        }
-    }
-    profile
-}
-
-fn normalize_acl_command_name(command_name: &[u8]) -> Vec<u8> {
-    command_name
-        .iter()
-        .map(|byte| byte.to_ascii_lowercase())
-        .collect()
+    };
+    metrics.set_client_user(client_id, user);
 }
 
 #[allow(clippy::too_many_arguments)]

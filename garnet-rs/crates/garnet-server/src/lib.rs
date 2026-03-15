@@ -84,8 +84,9 @@ pub use server_runtime::run_with_shutdown_and_cluster_config;
 pub use shard_owner_threads::ShardOwnerThreadPool;
 pub use shard_owner_threads::ShardOwnerThreadPoolError;
 
+use sha2::Digest;
+use sha2::Sha256;
 use std::collections::BTreeMap;
-use std::collections::HashMap;
 use std::collections::HashSet;
 use std::fmt;
 use std::net::SocketAddr;
@@ -166,36 +167,66 @@ pub struct ServerMetrics {
     next_client_id: AtomicU64,
     clients: Mutex<BTreeMap<ClientId, ClientRuntimeInfo>>,
     reply_buffer_settings: Mutex<ReplyBufferSettings>,
-    acl_users: Mutex<HashMap<Vec<u8>, AclUserProfile>>,
     monitor_broadcast: broadcast::Sender<Vec<u8>>,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct AclUserProfile {
     pub(crate) enabled: bool,
+    pub(crate) nopass: bool,
     pub(crate) allow_all_commands: bool,
     pub(crate) allowed_commands: HashSet<Vec<u8>>,
+    pub(crate) denied_commands: HashSet<Vec<u8>>,
     pub(crate) key_patterns: Vec<Vec<u8>>,
+    pub(crate) allow_all_channels: bool,
+    pub(crate) channel_patterns: Vec<Vec<u8>>,
+    pub(crate) password_hashes: HashSet<Vec<u8>>,
 }
 
 impl AclUserProfile {
-    fn default_superuser() -> Self {
+    pub(crate) fn default_superuser() -> Self {
         Self {
             enabled: true,
+            nopass: true,
             allow_all_commands: true,
             allowed_commands: HashSet::new(),
+            denied_commands: HashSet::new(),
             key_patterns: vec![b"*".to_vec()],
+            allow_all_channels: true,
+            channel_patterns: Vec::new(),
+            password_hashes: HashSet::new(),
         }
     }
 
     pub(crate) fn restricted() -> Self {
         Self {
             enabled: false,
+            nopass: false,
             allow_all_commands: false,
             allowed_commands: HashSet::new(),
+            denied_commands: HashSet::new(),
             key_patterns: Vec::new(),
+            allow_all_channels: false,
+            channel_patterns: Vec::new(),
+            password_hashes: HashSet::new(),
         }
     }
+
+    pub(crate) fn password_matches(&self, password: &[u8]) -> bool {
+        let password_hash = acl_password_hash_hex(password);
+        self.password_hashes.contains(password_hash.as_slice())
+    }
+}
+
+pub(crate) fn acl_password_hash_hex(password: &[u8]) -> Vec<u8> {
+    let mut hasher = Sha256::new();
+    hasher.update(password);
+    let digest = hasher.finalize();
+    let mut out = Vec::with_capacity(64);
+    for byte in digest {
+        out.extend_from_slice(format!("{byte:02x}").as_bytes());
+    }
+    out
 }
 
 #[derive(Debug, Clone)]
@@ -450,8 +481,6 @@ impl ClientRuntimeInfo {
 
 impl Default for ServerMetrics {
     fn default() -> Self {
-        let mut acl_users = HashMap::new();
-        acl_users.insert(b"default".to_vec(), AclUserProfile::default_superuser());
         Self {
             accepted_connections: AtomicU64::new(0),
             active_connections: AtomicU64::new(0),
@@ -460,7 +489,6 @@ impl Default for ServerMetrics {
             next_client_id: AtomicU64::new(0),
             clients: Mutex::new(BTreeMap::new()),
             reply_buffer_settings: Mutex::new(ReplyBufferSettings::default()),
-            acl_users: Mutex::new(acl_users),
             monitor_broadcast: broadcast::channel(4096).0,
         }
     }
@@ -827,40 +855,6 @@ impl ServerMetrics {
             killed.push(*client_id);
         }
         killed
-    }
-
-    pub fn acl_user_exists(&self, user: &[u8]) -> bool {
-        self.acl_users
-            .lock()
-            .map(|users| users.get(user).is_some_and(|profile| profile.enabled))
-            .unwrap_or(false)
-    }
-
-    pub fn register_acl_user(&self, user: &[u8]) {
-        if user.is_empty() {
-            return;
-        }
-        if let Ok(mut users) = self.acl_users.lock() {
-            users
-                .entry(user.to_vec())
-                .or_insert_with(AclUserProfile::restricted);
-        }
-    }
-
-    pub(crate) fn set_acl_user_profile(&self, user: &[u8], profile: AclUserProfile) {
-        if user.is_empty() {
-            return;
-        }
-        if let Ok(mut users) = self.acl_users.lock() {
-            users.insert(user.to_vec(), profile);
-        }
-    }
-
-    pub(crate) fn acl_user_profile(&self, user: &[u8]) -> Option<AclUserProfile> {
-        self.acl_users
-            .lock()
-            .ok()
-            .and_then(|users| users.get(user).cloned())
     }
 
     pub fn monitor_subscribe(&self) -> broadcast::Receiver<Vec<u8>> {

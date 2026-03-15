@@ -12697,18 +12697,14 @@ fn server_admin_commands_cover_auth_select_move_swapdb_client_role_wait_and_save
 
     let auth = b"*2\r\n$4\r\nAUTH\r\n$3\r\npwd\r\n";
     let meta = parse_resp_command_arg_slices(auth, &mut args).unwrap();
-    let err = processor
+    processor
         .execute_in_db(
             &args[..meta.argument_count],
             &mut response,
             DbName::fixture(),
         )
-        .unwrap_err();
-    err.append_resp_error(&mut response);
-    assert_eq!(
-        response,
-        b"-ERR AUTH <password> called without any password configured for the default user. Are you sure your configuration is correct?\r\n"
-    );
+        .unwrap();
+    assert_eq!(response, b"+OK\r\n");
 
     response.clear();
     let select_zero = b"*2\r\n$6\r\nSELECT\r\n$1\r\n0\r\n";

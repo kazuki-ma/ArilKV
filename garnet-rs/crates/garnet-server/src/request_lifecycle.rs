@@ -10,6 +10,7 @@
 //! - formal/tla/specs/StreamPelOwnership.tla
 //! - formal/tla/specs/SwapDbWatchVisibility.tla
 
+use crate::AclUserProfile;
 use crate::ClientId;
 use crate::CommandId;
 use crate::aof_durability::AppendFsyncPolicy;
@@ -2473,10 +2474,18 @@ pub struct RequestProcessor {
     client_lib_name: Mutex<Vec<u8>>,
     /// CLIENT SETINFO LIB-VER value (empty = not set).
     client_lib_ver: Mutex<Vec<u8>>,
+    acl_users: Mutex<HashMap<Vec<u8>, AclUserProfile>>,
     cluster_config_store: OnceLock<Arc<ClusterConfigStore>>,
     server_metrics: OnceLock<Arc<crate::ServerMetrics>>,
     replication_coordinator: OnceLock<Arc<RedisReplicationCoordinator>>,
     aof_durability_runtime: OnceLock<Arc<LiveAofDurabilityRuntime>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AclAuthenticationResult {
+    Authenticated,
+    DefaultPasswordNotConfigured,
+    WrongPass,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -2781,6 +2790,10 @@ impl RequestProcessor {
             client_reply_mode: AtomicU8::new(CLIENT_REPLY_ON),
             client_lib_name: Mutex::new(Vec::new()),
             client_lib_ver: Mutex::new(Vec::new()),
+            acl_users: Mutex::new(HashMap::from([(
+                b"default".to_vec(),
+                AclUserProfile::default_superuser(),
+            )])),
             cluster_config_store: OnceLock::new(),
             server_metrics: OnceLock::new(),
             replication_coordinator: OnceLock::new(),
@@ -4021,6 +4034,91 @@ impl RequestProcessor {
 
     pub(crate) fn attach_metrics(&self, metrics: Arc<crate::ServerMetrics>) {
         let _ = self.server_metrics.set(metrics);
+    }
+
+    pub(crate) fn acl_user_exists(&self, user: &[u8]) -> bool {
+        self.acl_users
+            .lock()
+            .map(|users| users.contains_key(user))
+            .unwrap_or(false)
+    }
+
+    pub(crate) fn acl_user_profile(&self, user: &[u8]) -> Option<AclUserProfile> {
+        self.acl_users
+            .lock()
+            .ok()
+            .and_then(|users| users.get(user).cloned())
+    }
+
+    pub(crate) fn acl_users_snapshot(&self) -> Vec<(Vec<u8>, AclUserProfile)> {
+        self.acl_users
+            .lock()
+            .map(|users| {
+                users
+                    .iter()
+                    .map(|(user, profile)| (user.clone(), profile.clone()))
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    pub(crate) fn set_acl_user_profile(
+        &self,
+        user: &[u8],
+        profile: AclUserProfile,
+    ) -> Result<(), RequestExecutionError> {
+        if user.is_empty() {
+            return Err(RequestExecutionError::SyntaxError);
+        }
+        let Ok(mut users) = self.acl_users.lock() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        users.insert(user.to_vec(), profile);
+        Ok(())
+    }
+
+    pub(crate) fn delete_acl_users(
+        &self,
+        usernames: &[&[u8]],
+    ) -> Result<u64, RequestExecutionError> {
+        let Ok(mut users) = self.acl_users.lock() else {
+            return Err(RequestExecutionError::StorageBusy);
+        };
+        let mut deleted = 0u64;
+        for &username in usernames {
+            if ascii_eq_ignore_case(username, b"default") {
+                continue;
+            }
+            if users.remove(username).is_some() {
+                deleted = deleted.saturating_add(1);
+            }
+        }
+        Ok(deleted)
+    }
+
+    pub(crate) fn authenticate_acl_user(
+        &self,
+        user: &[u8],
+        password: &[u8],
+        single_arg_default_auth: bool,
+    ) -> AclAuthenticationResult {
+        let Some(profile) = self.acl_user_profile(user) else {
+            return AclAuthenticationResult::WrongPass;
+        };
+        if !profile.enabled {
+            return AclAuthenticationResult::WrongPass;
+        }
+        if profile.nopass || profile.password_matches(password) {
+            return AclAuthenticationResult::Authenticated;
+        }
+        if single_arg_default_auth
+            && ascii_eq_ignore_case(user, b"default")
+            && profile.password_hashes.is_empty()
+            && !profile.nopass
+        {
+            return AclAuthenticationResult::DefaultPasswordNotConfigured;
+        }
+        AclAuthenticationResult::WrongPass
     }
 
     pub(crate) fn attach_replication_coordinator(

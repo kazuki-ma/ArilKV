@@ -2284,20 +2284,23 @@ impl RequestProcessor {
         let user = current_request_client_id()
             .and_then(|client_id| metrics.client_user(client_id))
             .unwrap_or_else(|| b"default".to_vec());
-        let Some(profile) = metrics.acl_user_profile(&user) else {
+        let Some(profile) = self.acl_user_profile(&user) else {
             return true;
         };
         if !profile.enabled {
             return false;
         }
-        if !profile.allow_all_commands {
-            let command_name = command_name_upper(command)
-                .iter()
-                .map(|byte| byte.to_ascii_lowercase())
-                .collect::<Vec<u8>>();
-            if !profile.allowed_commands.contains(command_name.as_slice()) {
-                return false;
-            }
+        let command_name = command_name_upper(command)
+            .iter()
+            .map(|byte| byte.to_ascii_lowercase())
+            .collect::<Vec<u8>>();
+        if profile.denied_commands.contains(command_name.as_slice()) {
+            return false;
+        }
+        if !profile.allow_all_commands
+            && !profile.allowed_commands.contains(command_name.as_slice())
+        {
+            return false;
         }
         self.acl_profile_allows_keys(&profile.key_patterns, command, arg_refs)
     }

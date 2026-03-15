@@ -4,6 +4,8 @@
 
 use super::object_store::list_listpack_compatible;
 use super::*;
+use crate::AclUserProfile;
+use crate::acl_password_hash_hex;
 use crate::cluster_live_view::append_cluster_info_snapshot;
 use crate::cluster_live_view::append_cluster_myid_snapshot;
 use crate::cluster_live_view::append_cluster_nodes_snapshot;
@@ -118,6 +120,267 @@ const ACL_CATEGORIES: [&[u8]; 21] = [
     b"transaction",
     b"scripting",
 ];
+
+fn append_wrongpass_error(response_out: &mut Vec<u8>) {
+    append_error(
+        response_out,
+        b"WRONGPASS invalid username-password pair or user is disabled",
+    );
+}
+
+fn acl_username_is_valid(username: &[u8]) -> bool {
+    !username.is_empty() && !username.iter().any(|byte| *byte == b' ' || *byte == b'\0')
+}
+
+fn normalize_acl_command_name(command_name: &[u8]) -> Vec<u8> {
+    command_name
+        .iter()
+        .map(|byte| byte.to_ascii_lowercase())
+        .collect()
+}
+
+fn is_valid_acl_password_hash(hash: &[u8]) -> bool {
+    hash.len() == 64 && hash.iter().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn parse_acl_setuser_profile(
+    existing: Option<AclUserProfile>,
+    modifiers: &[&[u8]],
+) -> Result<AclUserProfile, String> {
+    let mut profile = existing.unwrap_or_else(AclUserProfile::restricted);
+    for token in modifiers {
+        if ascii_eq_ignore_case(token, b"RESET") {
+            profile = AclUserProfile::restricted();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ON") {
+            profile.enabled = true;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"OFF") {
+            profile.enabled = false;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"NOPASS") {
+            profile.nopass = true;
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"RESETPASS") {
+            profile.nopass = false;
+            profile.password_hashes.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"RESETKEYS") {
+            profile.key_patterns.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"RESETCHANNELS") {
+            profile.allow_all_channels = false;
+            profile.channel_patterns.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ALLKEYS") {
+            profile.key_patterns.clear();
+            profile.key_patterns.push(b"*".to_vec());
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ALLCHANNELS") {
+            profile.allow_all_channels = true;
+            profile.channel_patterns.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"ALLCOMMANDS") || ascii_eq_ignore_case(token, b"+@ALL") {
+            profile.allow_all_commands = true;
+            profile.denied_commands.clear();
+            continue;
+        }
+        if ascii_eq_ignore_case(token, b"NOCOMMANDS") || ascii_eq_ignore_case(token, b"-@ALL") {
+            profile.allow_all_commands = false;
+            profile.allowed_commands.clear();
+            profile.denied_commands.clear();
+            continue;
+        }
+        if let Some(pattern) = token.strip_prefix(b"~") {
+            profile.key_patterns.push(pattern.to_vec());
+            continue;
+        }
+        if let Some(pattern) = token.strip_prefix(b"&") {
+            profile.allow_all_channels = false;
+            profile.channel_patterns.push(pattern.to_vec());
+            continue;
+        }
+        if let Some(password) = token.strip_prefix(b">") {
+            profile
+                .password_hashes
+                .insert(acl_password_hash_hex(password));
+            continue;
+        }
+        if let Some(password) = token.strip_prefix(b"<") {
+            profile
+                .password_hashes
+                .remove(acl_password_hash_hex(password).as_slice());
+            continue;
+        }
+        if let Some(password_hash) = token.strip_prefix(b"#") {
+            if !is_valid_acl_password_hash(password_hash) {
+                return Err(format!(
+                    "ERR Error in ACL SETUSER modifier '{}': Syntax error",
+                    String::from_utf8_lossy(token)
+                ));
+            }
+            profile
+                .password_hashes
+                .insert(password_hash.to_ascii_lowercase());
+            continue;
+        }
+        if let Some(password_hash) = token.strip_prefix(b"!") {
+            if !is_valid_acl_password_hash(password_hash) {
+                return Err(format!(
+                    "ERR Error in ACL SETUSER modifier '{}': Syntax error",
+                    String::from_utf8_lossy(token)
+                ));
+            }
+            profile
+                .password_hashes
+                .remove(password_hash.to_ascii_lowercase().as_slice());
+            continue;
+        }
+        if let Some(command_name) = token.strip_prefix(b"+") {
+            if !command_name.starts_with(b"@") && !command_name.is_empty() {
+                let normalized = normalize_acl_command_name(command_name);
+                profile.denied_commands.remove(normalized.as_slice());
+                profile.allowed_commands.insert(normalized);
+            }
+            continue;
+        }
+        if let Some(command_name) = token.strip_prefix(b"-") {
+            if !command_name.starts_with(b"@") && !command_name.is_empty() {
+                let normalized = normalize_acl_command_name(command_name);
+                profile.allowed_commands.remove(normalized.as_slice());
+                profile.denied_commands.insert(normalized);
+            }
+            continue;
+        }
+        return Err(format!(
+            "ERR Error in ACL SETUSER modifier '{}': Syntax error",
+            String::from_utf8_lossy(token)
+        ));
+    }
+    Ok(profile)
+}
+
+fn sorted_bytes(entries: impl IntoIterator<Item = Vec<u8>>) -> Vec<Vec<u8>> {
+    let mut entries = entries.into_iter().collect::<Vec<_>>();
+    entries.sort();
+    entries
+}
+
+fn render_acl_commands(profile: &AclUserProfile) -> Vec<u8> {
+    let mut parts = Vec::<Vec<u8>>::new();
+    if profile.allow_all_commands {
+        parts.push(b"+@all".to_vec());
+    } else if profile.allowed_commands.is_empty() && profile.denied_commands.is_empty() {
+        parts.push(b"-@all".to_vec());
+    }
+    for command in sorted_bytes(profile.allowed_commands.iter().cloned()) {
+        let mut token = Vec::with_capacity(command.len() + 1);
+        token.push(b'+');
+        token.extend_from_slice(&command);
+        parts.push(token);
+    }
+    for command in sorted_bytes(profile.denied_commands.iter().cloned()) {
+        let mut token = Vec::with_capacity(command.len() + 1);
+        token.push(b'-');
+        token.extend_from_slice(&command);
+        parts.push(token);
+    }
+    join_acl_tokens(parts)
+}
+
+fn render_acl_keys(profile: &AclUserProfile) -> Vec<u8> {
+    let mut parts = Vec::<Vec<u8>>::new();
+    for pattern in sorted_bytes(profile.key_patterns.iter().cloned()) {
+        let mut token = Vec::with_capacity(pattern.len() + 1);
+        token.push(b'~');
+        token.extend_from_slice(&pattern);
+        parts.push(token);
+    }
+    join_acl_tokens(parts)
+}
+
+fn render_acl_channels(profile: &AclUserProfile) -> Vec<u8> {
+    if profile.allow_all_channels {
+        return b"&*".to_vec();
+    }
+    let mut parts = Vec::<Vec<u8>>::new();
+    for pattern in sorted_bytes(profile.channel_patterns.iter().cloned()) {
+        let mut token = Vec::with_capacity(pattern.len() + 1);
+        token.push(b'&');
+        token.extend_from_slice(&pattern);
+        parts.push(token);
+    }
+    join_acl_tokens(parts)
+}
+
+fn join_acl_tokens(parts: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut out = Vec::new();
+    for (index, part) in parts.iter().enumerate() {
+        if index > 0 {
+            out.push(b' ');
+        }
+        out.extend_from_slice(part);
+    }
+    out
+}
+
+fn render_acl_list_line(username: &[u8], profile: &AclUserProfile) -> Vec<u8> {
+    let mut parts = vec![
+        b"user".to_vec(),
+        username.to_vec(),
+        if profile.enabled {
+            b"on".to_vec()
+        } else {
+            b"off".to_vec()
+        },
+    ];
+    if profile.nopass {
+        parts.push(b"nopass".to_vec());
+    }
+    parts.push(b"sanitize-payload".to_vec());
+
+    let rendered_keys = render_acl_keys(profile);
+    if !rendered_keys.is_empty() {
+        parts.extend(
+            rendered_keys
+                .split(|byte| *byte == b' ')
+                .map(|part| part.to_vec()),
+        );
+    }
+    if profile.allow_all_channels {
+        parts.push(b"&*".to_vec());
+    } else {
+        parts.push(b"resetchannels".to_vec());
+        let rendered_channels = render_acl_channels(profile);
+        if !rendered_channels.is_empty() {
+            parts.extend(
+                rendered_channels
+                    .split(|byte| *byte == b' ')
+                    .filter(|part| !part.is_empty())
+                    .map(|part| part.to_vec()),
+            );
+        }
+    }
+    let rendered_commands = render_acl_commands(profile);
+    if !rendered_commands.is_empty() {
+        parts.extend(
+            rendered_commands
+                .split(|byte| *byte == b' ')
+                .filter(|part| !part.is_empty())
+                .map(|part| part.to_vec()),
+        );
+    }
+    join_acl_tokens(parts)
+}
 const OBJECT_HELP_LINES: [&[u8]; 11] = [
     b"OBJECT <subcommand> [<arg> [value] [opt] ...]. Subcommands are:",
     b"ENCODING <key>",
@@ -530,8 +793,19 @@ impl RequestProcessor {
                 if idx + 2 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
                 }
-                // AUTH is not supported — reject like handle_auth.
-                return Err(RequestExecutionError::AuthNotEnabled);
+                let username = args[idx + 1];
+                let password = args[idx + 2];
+                match self.authenticate_acl_user(username, password, false) {
+                    AclAuthenticationResult::Authenticated => {}
+                    AclAuthenticationResult::DefaultPasswordNotConfigured => {
+                        return Err(RequestExecutionError::AuthNotEnabled);
+                    }
+                    AclAuthenticationResult::WrongPass => {
+                        append_wrongpass_error(response_out);
+                        return Ok(());
+                    }
+                }
+                idx += 3;
             } else if ascii_eq_ignore_case(args[idx], b"SETNAME") {
                 if idx + 1 >= args.len() {
                     return Err(RequestExecutionError::SyntaxError);
@@ -759,10 +1033,27 @@ impl RequestProcessor {
     pub(super) fn handle_auth(
         &self,
         args: &[&[u8]],
-        _response_out: &mut Vec<u8>,
+        response_out: &mut Vec<u8>,
     ) -> Result<(), RequestExecutionError> {
         ensure_ranged_arity(args, 2, 3, "AUTH", "AUTH [username] password")?;
-        Err(RequestExecutionError::AuthNotEnabled)
+        let (user, password, single_arg_default_auth) = if args.len() == 2 {
+            (b"default".as_slice(), args[1], true)
+        } else {
+            (args[1], args[2], false)
+        };
+        match self.authenticate_acl_user(user, password, single_arg_default_auth) {
+            AclAuthenticationResult::Authenticated => {
+                append_simple_string(response_out, b"OK");
+                Ok(())
+            }
+            AclAuthenticationResult::DefaultPasswordNotConfigured => {
+                Err(RequestExecutionError::AuthNotEnabled)
+            }
+            AclAuthenticationResult::WrongPass => {
+                append_wrongpass_error(response_out);
+                Ok(())
+            }
+        }
     }
 
     pub(super) fn handle_select(
@@ -3387,24 +3678,56 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"WHOAMI") {
             require_exact_arity(args, 2, "ACL", "ACL WHOAMI")?;
-            append_bulk_string(response_out, b"default");
+            let whoami = current_request_client_id()
+                .and_then(|client_id| self.server_metrics.get()?.client_user(client_id))
+                .unwrap_or_else(|| b"default".to_vec());
+            append_bulk_string(response_out, &whoami);
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"USERS") {
             require_exact_arity(args, 2, "ACL", "ACL USERS")?;
-            append_bulk_array(response_out, &[b"default"]);
+            let mut users = self
+                .acl_users_snapshot()
+                .into_iter()
+                .map(|(user, _)| user)
+                .collect::<Vec<_>>();
+            users.sort();
+            append_array_length(response_out, users.len());
+            for user in users {
+                append_bulk_string(response_out, &user);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"LIST") {
             require_exact_arity(args, 2, "ACL", "ACL LIST")?;
-            append_bulk_array(
-                response_out,
-                &[b"user default on nopass sanitize-payload ~* &* +@all"],
-            );
+            let mut users = self.acl_users_snapshot();
+            users.sort_by(|(left, _), (right, _)| left.cmp(right));
+            append_array_length(response_out, users.len());
+            for (user, profile) in users {
+                let line = render_acl_list_line(&user, &profile);
+                append_bulk_string(response_out, &line);
+            }
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"SETUSER") {
             ensure_min_arity(args, 3, "ACL", "ACL SETUSER username [rule ...]")?;
+            let username = args[2];
+            if !acl_username_is_valid(username) {
+                append_error(
+                    response_out,
+                    b"ERR Usernames can't contain spaces or null characters",
+                );
+                return Ok(());
+            }
+            let profile =
+                match parse_acl_setuser_profile(self.acl_user_profile(username), &args[3..]) {
+                    Ok(profile) => profile,
+                    Err(message) => {
+                        append_error(response_out, message.as_bytes());
+                        return Ok(());
+                    }
+                };
+            self.set_acl_user_profile(username, profile)?;
             append_simple_string(response_out, b"OK");
             return Ok(());
         }
@@ -3419,14 +3742,14 @@ impl RequestProcessor {
         }
         if ascii_eq_ignore_case(subcommand, b"DELUSER") {
             ensure_min_arity(args, 3, "ACL", "ACL DELUSER username [username ...]")?;
-            // Only "default" user exists; it cannot be deleted.
             for &username in &args[2..] {
                 if ascii_eq_ignore_case(username, b"DEFAULT") {
                     append_error(response_out, b"ERR The 'default' user cannot be removed");
                     return Ok(());
                 }
             }
-            append_integer(response_out, 0);
+            let deleted = self.delete_acl_users(&args[2..])?;
+            append_integer(response_out, i64::try_from(deleted).unwrap_or(i64::MAX));
             return Ok(());
         }
         if ascii_eq_ignore_case(subcommand, b"GENPASS") {
@@ -3489,14 +3812,14 @@ impl RequestProcessor {
         if ascii_eq_ignore_case(subcommand, b"GETUSER") {
             require_exact_arity(args, 3, "ACL", "ACL GETUSER username")?;
             let username = args[2];
-            if !ascii_eq_ignore_case(username, b"DEFAULT") {
+            let Some(profile) = self.acl_user_profile(username) else {
                 if self.resp_protocol_version().is_resp3() {
                     append_null(response_out);
                 } else {
                     append_null_bulk_string(response_out);
                 }
                 return Ok(());
-            }
+            };
             let resp3 = self.resp_protocol_version().is_resp3();
             // Valkey emits a 6-field map: flags, passwords, commands, keys,
             // channels, selectors.
@@ -3507,25 +3830,41 @@ impl RequestProcessor {
             }
 
             append_bulk_string(response_out, b"flags");
-            if resp3 {
-                append_set_length(response_out, 2);
+            let mut flags = vec![if profile.enabled {
+                b"on".to_vec()
             } else {
-                append_array_length(response_out, 2);
+                b"off".to_vec()
+            }];
+            if profile.nopass {
+                flags.push(b"nopass".to_vec());
             }
-            append_bulk_string(response_out, b"on");
-            append_bulk_string(response_out, b"nopass");
+            if resp3 {
+                append_set_length(response_out, flags.len());
+            } else {
+                append_array_length(response_out, flags.len());
+            }
+            for flag in flags {
+                append_bulk_string(response_out, &flag);
+            }
 
             append_bulk_string(response_out, b"passwords");
-            append_array_length(response_out, 0);
+            let password_hashes = sorted_bytes(profile.password_hashes.iter().cloned());
+            append_array_length(response_out, password_hashes.len());
+            for password_hash in password_hashes {
+                append_bulk_string(response_out, &password_hash);
+            }
 
             append_bulk_string(response_out, b"commands");
-            append_bulk_string(response_out, b"+@all");
+            let commands = render_acl_commands(&profile);
+            append_bulk_string(response_out, &commands);
 
             append_bulk_string(response_out, b"keys");
-            append_bulk_string(response_out, b"~*");
+            let keys = render_acl_keys(&profile);
+            append_bulk_string(response_out, &keys);
 
             append_bulk_string(response_out, b"channels");
-            append_bulk_string(response_out, b"&*");
+            let channels = render_acl_channels(&profile);
+            append_bulk_string(response_out, &channels);
 
             append_bulk_string(response_out, b"selectors");
             append_array_length(response_out, 0);

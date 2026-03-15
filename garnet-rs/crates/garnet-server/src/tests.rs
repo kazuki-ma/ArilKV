@@ -1133,6 +1133,179 @@ async fn reset_clears_multi_and_authenticated_state() {
 }
 
 #[tokio::test]
+async fn acl_auth_password_rotation_and_hello_auth_match_external_scenarios() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let metrics = Arc::new(ServerMetrics::default());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let server_metrics = Arc::clone(&metrics);
+    let server = tokio::spawn(async move {
+        run_listener_with_shutdown(listener, 1024, server_metrics, async move {
+            let _ = shutdown_rx.await;
+        })
+        .await
+        .unwrap();
+    });
+
+    let mut client = TcpStream::connect(addr).await.unwrap();
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$7\r\ndefault\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"USERS"]),
+        b"*2\r\n$7\r\ndefault\r\n$7\r\nnewuser\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b">passwd1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd1"]),
+        b"-WRONGPASS invalid username-password pair or user is disabled\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b"on", b"+acl"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$7\r\nnewuser\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b">passwd2"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd2"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd3"]),
+        b"-WRONGPASS invalid username-password pair or user is disabled\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", b"<passwd1"]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd1"]),
+        b"-WRONGPASS invalid username-password pair or user is disabled\r\n",
+    )
+    .await;
+
+    let passwd4_hash = crate::acl_password_hash_hex(b"passwd4");
+    let mut add_hash = vec![b'#'];
+    add_hash.extend_from_slice(&passwd4_hash);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", add_hash.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"AUTH", b"newuser", b"passwd4"]),
+        b"+OK\r\n",
+    )
+    .await;
+
+    let getuser = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"newuser"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        resp_socket_contains_bulk(&getuser, passwd4_hash.as_slice()),
+        "ACL GETUSER should expose the password hash"
+    );
+    assert!(
+        !resp_socket_contains_bulk(&getuser, b"passwd4"),
+        "ACL GETUSER must not expose the plaintext password"
+    );
+
+    let mut remove_hash = vec![b'!'];
+    remove_hash.extend_from_slice(&passwd4_hash);
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"SETUSER", b"newuser", remove_hash.as_slice()]),
+        b"+OK\r\n",
+    )
+    .await;
+    let getuser_after_remove = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"GETUSER", b"newuser"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        !resp_socket_contains_bulk(&getuser_after_remove, passwd4_hash.as_slice()),
+        "ACL GETUSER should stop exposing a removed hash"
+    );
+
+    let hello = send_and_read_resp_value(
+        &mut client,
+        &encode_resp_command(&[b"HELLO", b"3", b"AUTH", b"newuser", b"passwd2"]),
+        Duration::from_secs(1),
+    )
+    .await;
+    assert!(
+        matches!(hello, RespSocketValue::Map(_) | RespSocketValue::Array(_)),
+        "HELLO 3 AUTH should return server info, got {hello:?}"
+    );
+    send_and_expect(
+        &mut client,
+        &encode_resp_command(&[b"ACL", b"WHOAMI"]),
+        b"$7\r\nnewuser\r\n",
+    )
+    .await;
+
+    let _ = shutdown_tx.send(());
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn client_info_and_list_follow_selected_db_and_reset_to_zero() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

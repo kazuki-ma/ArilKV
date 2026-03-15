@@ -18,6 +18,7 @@ mimalloc = { version = "0.1", default-features = false, optional = true }
 core_affinity = "0.8"
 mlua = { version = "0.11.6", features = ["lua51", "vendored"] }
 sha1 = "0.10"
+sha2 = "0.10"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rmp-serde = "1"
