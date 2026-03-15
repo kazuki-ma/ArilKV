@@ -23,16 +23,17 @@
 ## External Probe Snapshot
 
 - Probe script exit code: `0`
-- Cases: `5`
-- PASS: `5`
+- Cases: `6`
+- PASS: `6`
 - PASS_WITH_KNOWN_GAPS: `0`
 - FAIL: `0`
 
 | Case | Status | Details |
 |---|---|---|
-| `redis_runtest_full_external` | `PASS` | mode=full; tsavorite_pages=16384; skipunit_querybuf=0; skipunit_scripting=1; skipunit_other=0; skiptest_other_pipeline=1; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=2290; err=0; timeout=0; ignore=380; failed_tests=0; expected_failed_tests=0; unexpected_failed_tests=0  |
-| `redis_runtest_unit_scripting_external` | `PASS` | mode=full; isolated_unit=unit/scripting; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=309; err=0; timeout=0; ignore=26; failed_tests=0  |
+| `redis_runtest_full_external` | `PASS` | mode=full; tsavorite_pages=16384; skipunit_querybuf=0; skipunit_scripting=0; skiptest_scripting_noreplicas=1; skipunit_other=0; skiptest_other_pipeline=1; skiptest_redis_cli_connecting_as_replica=1; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=2597; err=0; timeout=0; ignore=406; failed_tests=0; expected_failed_tests=0; unexpected_failed_tests=0  |
+| `redis_runtest_unit_scripting_not_enough_good_replicas_external` | `PASS` | mode=full; isolated_unit=unit/scripting; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=1; err=0; timeout=0; ignore=14; failed_tests=0  |
 | `redis_runtest_unit_other_pipeline_stresser_external` | `PASS` | mode=full; isolated_unit=unit/other; timeout_seconds=180; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=1; err=0; timeout=0; ignore=6; failed_tests=0  |
+| `redis_runtest_integration_redis_cli_connecting_as_replica_external` | `PASS` | mode=full; isolated_unit=integration/redis-cli; timeout_seconds=120; exit_code=0; exit_reason=completed; wall_timeout_seconds=1800; ok=1; err=0; timeout=0; ignore=1; failed_tests=0  |
 | `redis_cli_type_probe` | `PASS` | redis-cli TYPE probe passed  |
 | `redis_cli_scripting_probe` | `PASS` | scripting_enabled_mode; eval=ok; function_load=ok; fcall_ro=ok  |
 
