@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=reply_buffer_mutex_snapshot
+new_label=reply_buffer_atomic_snapshot
+reply_buffer_mutex_snapshot.median_set_ops=103509.000
+reply_buffer_mutex_snapshot.median_get_ops=117876.000
+reply_buffer_mutex_snapshot.median_set_p99_ms=0.07900
+reply_buffer_mutex_snapshot.median_get_p99_ms=0.07100
+reply_buffer_atomic_snapshot.median_set_ops=123025.000
+reply_buffer_atomic_snapshot.median_get_ops=145589.000
+reply_buffer_atomic_snapshot.median_set_p99_ms=0.07900
+reply_buffer_atomic_snapshot.median_get_p99_ms=0.07100
+delta.set_ops_pct=18.85
+delta.get_ops_pct=23.51
+delta.set_p99_ms_pct=0.00
+delta.get_p99_ms_pct=0.00
