@@ -108,6 +108,8 @@ pub(crate) fn execute_transaction_queue(
     max_resp_arguments: usize,
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    client_authenticated: bool,
+    client_user: Vec<u8>,
     selected_db: DbName,
 ) -> TransactionExecutionOutcome {
     let queued = std::mem::take(&mut transaction.queued_frames);
@@ -134,6 +136,8 @@ pub(crate) fn execute_transaction_queue(
                 max_resp_arguments,
                 client_no_touch,
                 client_id,
+                client_authenticated,
+                client_user.as_slice(),
                 selected_db,
             )
         })
@@ -214,6 +218,8 @@ fn execute_transaction_queue_on_owner_thread(
     max_resp_arguments: usize,
     client_no_touch: bool,
     client_id: Option<ClientId>,
+    client_authenticated: bool,
+    client_user: &[u8],
     selected_db: DbName,
 ) -> TransactionExecutionOutcome {
     let mut args = vec![ArgSlice::EMPTY; 64.min(max_resp_arguments.max(1))];
@@ -263,8 +269,9 @@ fn execute_transaction_queue_on_owner_thread(
                         .iter()
                         .map(arg_slice_bytes)
                         .collect::<Vec<_>>();
-                    match processor.acl_authorize_client_command(
-                        current_client_id,
+                    match processor.acl_authorize_connection_command(
+                        client_authenticated,
+                        client_user,
                         item_selected_db,
                         command,
                         &acl_args,

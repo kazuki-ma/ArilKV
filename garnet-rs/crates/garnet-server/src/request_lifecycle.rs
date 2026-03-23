@@ -5192,31 +5192,24 @@ impl RequestProcessor {
         )
     }
 
-    pub(crate) fn acl_authorize_client_command(
+    pub(crate) fn acl_authorize_connection_command(
         &self,
-        client_id: ClientId,
+        authenticated: bool,
+        user: &[u8],
         selected_db: DbName,
         command: CommandId,
         args: &[&[u8]],
     ) -> Result<(), ClientAclAuthorizationError> {
-        let Some(metrics) = self.server_metrics.get() else {
-            let user = b"default".to_vec();
-            return self
-                .acl_authorize_user_command(&user, selected_db, command, args)
-                .map_err(ClientAclAuthorizationError::Denied);
-        };
         if self.default_acl_user_unrestricted.load(Ordering::Acquire)
-            && metrics.client_is_authenticated_default_user(client_id)
+            && authenticated
+            && user == b"default"
         {
             return Ok(());
         }
-        let Some((authenticated, user)) = metrics.client_auth_state(client_id) else {
-            return Err(ClientAclAuthorizationError::AuthenticationRequired);
-        };
         if !authenticated {
             return Err(ClientAclAuthorizationError::AuthenticationRequired);
         }
-        let Some(profile) = self.acl_user_profile(&user) else {
+        let Some(profile) = self.acl_user_profile(user) else {
             return Err(ClientAclAuthorizationError::Denied(
                 AclAuthorizationError::Command(
                     acl_base_command_token(args).unwrap_or_else(|| b"unknown".to_vec()),

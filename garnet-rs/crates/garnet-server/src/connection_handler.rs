@@ -550,6 +550,8 @@ enum ClientTrackingMode {
 
 #[derive(Debug, Clone)]
 struct ClientConnectionState {
+    authenticated: bool,
+    authenticated_user: Vec<u8>,
     reply_mode: ClientReplyMode,
     tracking_mode: ClientTrackingMode,
     tracking_redirect_id: Option<i64>,
@@ -567,6 +569,8 @@ struct ClientConnectionState {
 impl Default for ClientConnectionState {
     fn default() -> Self {
         Self {
+            authenticated: false,
+            authenticated_user: b"default".to_vec(),
             reply_mode: ClientReplyMode::On,
             tracking_mode: ClientTrackingMode::Off,
             tracking_redirect_id: None,
@@ -592,6 +596,29 @@ impl ClientConnectionState {
         self.tracking_prefixes.clear();
         self.tracking_caching = None;
     }
+}
+
+fn reset_connection_auth_state(
+    client_state: &mut ClientConnectionState,
+    default_authenticated: bool,
+) {
+    client_state.authenticated = default_authenticated;
+    client_state.authenticated_user.clear();
+    client_state
+        .authenticated_user
+        .extend_from_slice(b"default");
+}
+
+fn sync_connection_auth_state_from_metrics(
+    client_state: &mut ClientConnectionState,
+    metrics: &ServerMetrics,
+    client_id: ClientId,
+) {
+    let Some((authenticated, user)) = metrics.client_auth_state(client_id) else {
+        return;
+    };
+    client_state.authenticated = authenticated;
+    client_state.authenticated_user = user;
 }
 
 fn apply_request_connection_effects(
@@ -726,6 +753,7 @@ fn apply_reset_command_side_effects(
     transaction.reset();
     watch_registration.sync_from_transaction(transaction);
     *client_state = ClientConnectionState::default();
+    reset_connection_auth_state(client_state, processor.default_user_starts_authenticated());
     *monitor_receiver = None;
     *allow_asking_once = false;
     metrics.set_client_user(client_id, b"default".to_vec());
@@ -827,6 +855,10 @@ pub(crate) async fn handle_connection(
     let mut watch_registration = ConnectionWatchRegistration::new(processor.as_ref());
     let mut allow_asking_once = false;
     let mut client_state = ClientConnectionState::default();
+    reset_connection_auth_state(
+        &mut client_state,
+        processor.default_user_starts_authenticated(),
+    );
     let mut disconnect_after_write = false;
     let mut monitor_receiver: Option<broadcast::Receiver<Vec<u8>>> = None;
     let mut wait_target_offset_for_connection = 0u64;
@@ -1086,8 +1118,9 @@ pub(crate) async fn handle_connection(
             };
 
             if let Some(acl_args) = acl_args.as_ref() {
-                if let Err(error) = processor.acl_authorize_client_command(
-                    client_id,
+                if let Err(error) = processor.acl_authorize_connection_command(
+                    client_state.authenticated,
+                    client_state.authenticated_user.as_slice(),
                     client_state.selected_db,
                     command,
                     acl_args,
@@ -1478,8 +1511,9 @@ pub(crate) async fn handle_connection(
                         .iter()
                         .map(arg_slice_bytes)
                         .collect::<Vec<_>>();
-                    if let Err(error) = processor.acl_authorize_client_command(
-                        client_id,
+                    if let Err(error) = processor.acl_authorize_connection_command(
+                        client_state.authenticated,
+                        client_state.authenticated_user.as_slice(),
                         client_state.selected_db,
                         command,
                         &acl_args,
@@ -1612,6 +1646,8 @@ pub(crate) async fn handle_connection(
                                                     max_resp_arguments,
                                                     client_state.no_touch,
                                                     Some(client_id),
+                                                    client_state.authenticated,
+                                                    client_state.authenticated_user.clone(),
                                                     client_state.selected_db,
                                                 );
                                                 watch_registration
@@ -1809,8 +1845,9 @@ pub(crate) async fn handle_connection(
                                 .iter()
                                 .map(arg_slice_bytes)
                                 .collect::<Vec<_>>();
-                            if let Err(error) = processor.acl_authorize_client_command(
-                                client_id,
+                            if let Err(error) = processor.acl_authorize_connection_command(
+                                client_state.authenticated,
+                                client_state.authenticated_user.as_slice(),
                                 client_state.selected_db,
                                 command,
                                 &acl_args,
@@ -2221,6 +2258,8 @@ pub(crate) async fn handle_connection(
                                 frame,
                                 client_state.no_touch,
                                 client_id,
+                                client_state.authenticated,
+                                client_state.authenticated_user.as_slice(),
                                 client_state.selected_db,
                                 wait_target_offset_for_connection,
                                 local_aof_wait_target_offset_for_connection,
@@ -2283,6 +2322,7 @@ pub(crate) async fn handle_connection(
                                     command,
                                     &args[..argument_count],
                                     &blocking_outcome.frame_response,
+                                    &mut client_state,
                                     &metrics,
                                     client_id,
                                 );
@@ -2664,6 +2704,8 @@ async fn execute_blocking_frame_on_owner_thread(
     frame: &[u8],
     client_no_touch: bool,
     client_id: ClientId,
+    client_authenticated: bool,
+    client_user: &[u8],
     selected_db: DbName,
     wait_target_offset_for_connection: u64,
     local_aof_wait_target_offset_for_connection: u64,
@@ -2845,9 +2887,13 @@ async fn execute_blocking_frame_on_owner_thread(
 
         if !command_bypasses_acl(command) {
             let acl_args = args.iter().map(arg_slice_bytes).collect::<Vec<_>>();
-            if let Err(error) =
-                processor.acl_authorize_client_command(client_id, selected_db, command, &acl_args)
-            {
+            if let Err(error) = processor.acl_authorize_connection_command(
+                client_authenticated,
+                client_user,
+                selected_db,
+                command,
+                &acl_args,
+            ) {
                 clear_blocking_request_state(
                     processor,
                     metrics,
@@ -5162,9 +5208,11 @@ fn maybe_apply_hello_side_effects(
     }
     // Scan for SETNAME option and apply the client name.
     let mut idx = 2;
+    let mut saw_auth = false;
     while idx < args.len() {
         let token = arg_slice_bytes(&args[idx]);
         if ascii_eq_ignore_case(token, b"AUTH") {
+            saw_auth = true;
             idx += 3;
         } else if ascii_eq_ignore_case(token, b"SETNAME") {
             if idx + 1 < args.len() {
@@ -5181,16 +5229,24 @@ fn maybe_apply_hello_side_effects(
             idx += 1;
         }
     }
+    if saw_auth {
+        sync_connection_auth_state_from_metrics(client_state, metrics, client_id);
+    }
 }
 
 fn maybe_apply_auth_side_effects(
     command: CommandId,
     args: &[ArgSlice],
     frame_response: &[u8],
+    client_state: &mut ClientConnectionState,
     metrics: &ServerMetrics,
     client_id: ClientId,
 ) {
-    let _ = (command, args, frame_response, metrics, client_id);
+    let _ = args;
+    if command != CommandId::Auth || frame_response.starts_with(b"-") {
+        return;
+    }
+    sync_connection_auth_state_from_metrics(client_state, metrics, client_id);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -7833,5 +7889,39 @@ mod tests {
         let mut out = Vec::new();
         append_integer_frame(&mut out, i64::MIN);
         assert_eq!(out, b":-9223372036854775808\r\n");
+    }
+
+    #[test]
+    fn auth_side_effects_sync_connection_local_auth_state_from_metrics() {
+        let metrics = ServerMetrics::default();
+        let client_id = metrics.register_client(None, None);
+        let mut client_state = ClientConnectionState::default();
+        reset_connection_auth_state(&mut client_state, false);
+
+        metrics.set_client_user(client_id, b"alice".to_vec());
+        metrics.set_client_authenticated(client_id, true);
+        maybe_apply_auth_side_effects(
+            CommandId::Auth,
+            &[],
+            b"+OK\r\n",
+            &mut client_state,
+            &metrics,
+            client_id,
+        );
+
+        assert!(client_state.authenticated);
+        assert_eq!(client_state.authenticated_user, b"alice");
+
+        reset_connection_auth_state(&mut client_state, false);
+        maybe_apply_auth_side_effects(
+            CommandId::Auth,
+            &[],
+            b"-WRONGPASS invalid username-password pair or user is disabled.\r\n",
+            &mut client_state,
+            &metrics,
+            client_id,
+        );
+        assert!(!client_state.authenticated);
+        assert_eq!(client_state.authenticated_user, b"default");
     }
 }
