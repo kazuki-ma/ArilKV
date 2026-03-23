@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=split_client_metrics_updates
+new_label=combined_client_metrics_updates
+split_client_metrics_updates.median_set_ops=50961.000
+split_client_metrics_updates.median_get_ops=56696.000
+split_client_metrics_updates.median_set_p99_ms=0.23900
+split_client_metrics_updates.median_get_p99_ms=0.19900
+combined_client_metrics_updates.median_set_ops=89263.000
+combined_client_metrics_updates.median_get_ops=100033.000
+combined_client_metrics_updates.median_set_p99_ms=0.15100
+combined_client_metrics_updates.median_get_p99_ms=0.11100
+delta.set_ops_pct=75.16
+delta.get_ops_pct=76.44
+delta.set_p99_ms_pct=-36.82
+delta.get_p99_ms_pct=-44.22
