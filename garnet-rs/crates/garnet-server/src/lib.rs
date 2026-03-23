@@ -795,6 +795,18 @@ impl ServerMetrics {
         })
     }
 
+    pub fn client_is_authenticated_default_user(&self, client_id: ClientId) -> bool {
+        self.clients
+            .lock()
+            .ok()
+            .and_then(|clients| {
+                clients
+                    .get(&client_id)
+                    .map(|client| client.authenticated && client.user.as_slice() == b"default")
+            })
+            .unwrap_or(false)
+    }
+
     pub fn client_is_authenticated(&self, client_id: ClientId) -> bool {
         self.clients
             .lock()

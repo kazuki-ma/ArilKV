@@ -5205,16 +5205,16 @@ impl RequestProcessor {
                 .acl_authorize_user_command(&user, selected_db, command, args)
                 .map_err(ClientAclAuthorizationError::Denied);
         };
+        if self.default_acl_user_unrestricted.load(Ordering::Acquire)
+            && metrics.client_is_authenticated_default_user(client_id)
+        {
+            return Ok(());
+        }
         let Some((authenticated, user)) = metrics.client_auth_state(client_id) else {
             return Err(ClientAclAuthorizationError::AuthenticationRequired);
         };
         if !authenticated {
             return Err(ClientAclAuthorizationError::AuthenticationRequired);
-        }
-        if user.as_slice() == b"default"
-            && self.default_acl_user_unrestricted.load(Ordering::Acquire)
-        {
-            return Ok(());
         }
         let Some(profile) = self.acl_user_profile(&user) else {
             return Err(ClientAclAuthorizationError::Denied(

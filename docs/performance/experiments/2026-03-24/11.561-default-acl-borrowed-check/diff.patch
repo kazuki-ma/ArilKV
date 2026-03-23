@@ -1,0 +1,50 @@
+diff --git a/garnet-rs/crates/garnet-server/src/lib.rs b/garnet-rs/crates/garnet-server/src/lib.rs
+index 6789b1eeb4..97aa6826b1 100644
+--- a/garnet-rs/crates/garnet-server/src/lib.rs
++++ b/garnet-rs/crates/garnet-server/src/lib.rs
+@@ -795,6 +795,18 @@ impl ServerMetrics {
+         })
+     }
+ 
++    pub fn client_is_authenticated_default_user(&self, client_id: ClientId) -> bool {
++        self.clients
++            .lock()
++            .ok()
++            .and_then(|clients| {
++                clients
++                    .get(&client_id)
++                    .map(|client| client.authenticated && client.user.as_slice() == b"default")
++            })
++            .unwrap_or(false)
++    }
++
+     pub fn client_is_authenticated(&self, client_id: ClientId) -> bool {
+         self.clients
+             .lock()
+diff --git a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+index 70dd1dd1a6..3de7768023 100644
+--- a/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
++++ b/garnet-rs/crates/garnet-server/src/request_lifecycle.rs
+@@ -5205,17 +5205,17 @@ impl RequestProcessor {
+                 .acl_authorize_user_command(&user, selected_db, command, args)
+                 .map_err(ClientAclAuthorizationError::Denied);
+         };
++        if self.default_acl_user_unrestricted.load(Ordering::Acquire)
++            && metrics.client_is_authenticated_default_user(client_id)
++        {
++            return Ok(());
++        }
+         let Some((authenticated, user)) = metrics.client_auth_state(client_id) else {
+             return Err(ClientAclAuthorizationError::AuthenticationRequired);
+         };
+         if !authenticated {
+             return Err(ClientAclAuthorizationError::AuthenticationRequired);
+         }
+-        if user.as_slice() == b"default"
+-            && self.default_acl_user_unrestricted.load(Ordering::Acquire)
+-        {
+-            return Ok(());
+-        }
+         let Some(profile) = self.acl_user_profile(&user) else {
+             return Err(ClientAclAuthorizationError::Denied(
+                 AclAuthorizationError::Command(

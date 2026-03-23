@@ -1,0 +1,15 @@
+binary_ab_comparison
+base_label=acl_default_path_clone
+new_label=acl_default_path_borrowed_check
+acl_default_path_clone.median_set_ops=120554.000
+acl_default_path_clone.median_get_ops=144245.000
+acl_default_path_clone.median_set_p99_ms=0.07900
+acl_default_path_clone.median_get_p99_ms=0.07100
+acl_default_path_borrowed_check.median_set_ops=124898.000
+acl_default_path_borrowed_check.median_get_ops=148533.000
+acl_default_path_borrowed_check.median_set_p99_ms=0.07900
+acl_default_path_borrowed_check.median_get_p99_ms=0.06300
+delta.set_ops_pct=3.60
+delta.get_ops_pct=2.97
+delta.set_p99_ms_pct=0.00
+delta.get_p99_ms_pct=-11.27
